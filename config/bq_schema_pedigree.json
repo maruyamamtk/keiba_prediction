@@ -1,0 +1,98 @@
+[
+  {
+    "name": "horse_id",
+    "type": "STRING",
+    "mode": "REQUIRED",
+    "description": "馬ID (血統登録番号)"
+  },
+  {
+    "name": "horse_name",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "馬名"
+  },
+  {
+    "name": "sire_id",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "種牡馬ID"
+  },
+  {
+    "name": "sire_name",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "種牡馬名"
+  },
+  {
+    "name": "dam_id",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "繁殖牝馬ID"
+  },
+  {
+    "name": "dam_name",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "繁殖牝馬名"
+  },
+  {
+    "name": "dam_sire_id",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "母父ID"
+  },
+  {
+    "name": "dam_sire_name",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "母父名"
+  },
+  {
+    "name": "sire_line",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "父系統"
+  },
+  {
+    "name": "birth_year",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "生年"
+  },
+  {
+    "name": "sex",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "性別 (牡/牝/セ)"
+  },
+  {
+    "name": "coat_color",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "毛色"
+  },
+  {
+    "name": "breeder",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "生産者"
+  },
+  {
+    "name": "owner",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "馬主"
+  },
+  {
+    "name": "created_at",
+    "type": "TIMESTAMP",
+    "mode": "NULLABLE",
+    "description": "レコード作成日時"
+  },
+  {
+    "name": "updated_at",
+    "type": "TIMESTAMP",
+    "mode": "NULLABLE",
+    "description": "レコード更新日時"
+  }
+]
