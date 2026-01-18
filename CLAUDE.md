@@ -122,6 +122,10 @@ gsutil -m rsync -r ../downloaded_files/ gs://keiba-raw-data/
 
 #### 3.2.1 rawデータセット
 
+- 備考
+  - rawデータのスキーマは別ドキュメントで整理している
+  - @doc/SCHEMA.md
+
 ##### テーブル: `raw.race_info` (BAA: 番組データ)
 ```sql
 CREATE TABLE raw.race_info (
