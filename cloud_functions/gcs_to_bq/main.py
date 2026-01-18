@@ -50,12 +50,14 @@ def extract_data_type(filename: str) -> Optional[str]:
     ファイル名からデータタイプを抽出
 
     Args:
-        filename: ファイル名 (例: BAA260104.csv, KYF260104.csv)
+        filename: ファイル名 (例: BAA260104.csv, Baa/BAA260104.csv)
 
     Returns:
         データタイプ (BAA, KYF など) or None
     """
-    match = re.match(r'^([A-Z]{2,3})\d{6}\.csv$', filename, re.IGNORECASE)
+    # ディレクトリパスが含まれる場合はベース名のみを取得
+    basename = os.path.basename(filename)
+    match = re.match(r'^([A-Z]{2,3})\d{6}\.csv$', basename, re.IGNORECASE)
     if match:
         return match.group(1).upper()
     return None
@@ -97,7 +99,6 @@ def load_to_bigquery(
     Raises:
         GoogleCloudError: BigQueryエラー
     """
-    client = bigquery.Client(project=project_id)
     table_ref = f"{project_id}.{dataset_id}.{table_id}"
 
     # ジョブ設定
@@ -109,22 +110,24 @@ def load_to_bigquery(
     )
 
     try:
-        # データをロード
-        load_job = client.load_table_from_json(
-            rows,
-            table_ref,
-            job_config=job_config
-        )
+        # リソースを適切に管理するためwithステートメントを使用
+        with bigquery.Client(project=project_id) as client:
+            # データをロード
+            load_job = client.load_table_from_json(
+                rows,
+                table_ref,
+                job_config=job_config
+            )
 
-        # ジョブ完了を待機
-        load_job.result()
+            # ジョブ完了を待機
+            load_job.result()
 
-        logger.info(
-            f"Loaded {len(rows)} rows to {table_ref}. "
-            f"Job ID: {load_job.job_id}"
-        )
+            logger.info(
+                f"Loaded {len(rows)} rows to {table_ref}. "
+                f"Job ID: {load_job.job_id}"
+            )
 
-        return len(rows)
+            return len(rows)
 
     except GoogleCloudError as e:
         logger.error(f"BigQuery load error: {e}", exc_info=True)
@@ -167,13 +170,26 @@ def process_file(bucket_name: str, file_name: str) -> Dict[str, any]:
 
         logger.info(f"Processing file: {file_name} (type: {data_type}, table: {table_name})")
 
-        # GCSからファイルを読み込み
-        storage_client = storage.Client()
-        bucket = storage_client.bucket(bucket_name)
-        blob = bucket.blob(file_name)
+        # リソースを適切に管理するためwithステートメントを使用
+        with storage.Client() as storage_client:
+            bucket = storage_client.bucket(bucket_name)
+            blob = bucket.blob(file_name)
 
-        # ファイル内容を取得 (CP932でデコード)
-        file_content = blob.download_as_bytes().decode('cp932', errors='ignore')
+            # ファイル内容を取得 (CP932でデコード)
+            try:
+                file_bytes = blob.download_as_bytes()
+                file_content = file_bytes.decode('cp932', errors='replace')
+
+                # デコードエラーがある場合は警告を出力
+                if '�' in file_content:
+                    logger.warning(
+                        f"CP932 decode errors detected in {file_name}. "
+                        f"Some characters may be replaced with '�'."
+                    )
+            except Exception as e:
+                logger.error(f"Failed to decode file {file_name}: {e}", exc_info=True)
+                result['error'] = f'File decode error: {str(e)}'
+                return result
 
         # データを解析
         parsed_data = JRDBParser.parse_file(file_content, data_type)
