@@ -9,10 +9,11 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import Dict, List
+from typing import List
 
+from dotenv import load_dotenv
 from google.cloud import bigquery
-from google.cloud.exceptions import Conflict, NotFound
+from google.cloud.exceptions import NotFound
 
 
 class BigQueryTableCreator:
@@ -257,6 +258,9 @@ class BigQueryTableCreator:
 
 def main():
     """メイン処理"""
+    # .envファイルを読み込み
+    load_dotenv()
+
     # 環境変数からプロジェクトIDを取得
     project_id = os.getenv("GCP_PROJECT_ID")
 
