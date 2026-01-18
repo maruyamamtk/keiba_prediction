@@ -1,0 +1,71 @@
+name: Claude Code
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+  issue_comment:
+    types: [created, edited]
+  pull_request_review_comment:
+    types: [created, edited]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  claude:
+    # PRコメントまたはPRレビューコメントの場合のみ実行
+    if: |
+      (github.event_name == 'issue_comment' && github.event.issue.pull_request) ||
+      github.event_name == 'pull_request_review_comment' ||
+      github.event_name == 'pull_request'
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Git
+        run: |
+          git config --global user.name "Claude Code Bot"
+          git config --global user.email "claude-code-bot@users.noreply.github.com"
+
+      - name: Run Claude Code Action
+        uses: anthropics/claude-code-action@v1
+        with:
+          # Anthropic APIキー (リポジトリのSecretsに ANTHROPIC_API_KEY を設定)
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+
+          # GitHubトークン (自動的に提供される)
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+          # 使用するClaudeモデル (デフォルト: claude-sonnet-4-5)
+          model: claude-sonnet-4-5
+
+          # タイムアウト設定 (分)
+          timeout_minutes: 30
+
+          # 自動コミット・プッシュを有効化
+          auto_commit: true
+
+          # レビューモード (PRの変更を分析)
+          review_mode: true
+
+      - name: Comment on PR
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issue_number = context.issue.number || context.payload.pull_request.number;
+            if (issue_number) {
+              github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue_number,
+                body: '❌ Claude Code実行中にエラーが発生しました。ログを確認してください。'
+              });
+            }
