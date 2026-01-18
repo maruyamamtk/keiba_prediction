@@ -35,13 +35,26 @@ GCP_PROJECT_ID=your-actual-project-id
 
 このスクリプトは以下の処理を実行します:
 
-1. ✅ 必要なPythonパッケージのインストール
-2. ✅ BigQueryデータセットの作成
+1. **仮想環境の作成と有効化**
+   - 初回実行時に `venv` ディレクトリを作成
+   - 以降の実行では既存の仮想環境を使用
+
+2. **Pythonパッケージのインストール**
+   - `pip`, `setuptools`, `wheel` を最新版にアップグレード
+   - `requirements.txt` に指定されたパッケージをインストール
+   - ⚠️ **注意**: LightGBMはmacOSビルド環境の問題のため `requirements.txt` から除外されています
+     - LightGBMが必要な場合は、後で以下のコマンドで個別にインストール:
+       ```bash
+       source venv/bin/activate
+       python -m pip install lightgbm
+       ```
+
+3. ✅ BigQueryデータセットの作成
    - `raw`: 生データテーブル
    - `features`: 特徴量テーブル
    - `predictions`: 予測結果テーブル
    - `backtests`: バックテスト結果テーブル
-3. ✅ BigQueryテーブルの作成
+4. ✅ BigQueryテーブルの作成
    - `raw.race_info`: レース情報
    - `raw.horse_results`: 競走馬成績データ
    - `raw.pedigree`: 血統データ
@@ -53,6 +66,9 @@ GCP_PROJECT_ID=your-actual-project-id
 BigQueryコンソールで作成されたデータセットとテーブルを確認します:
 
 ```bash
+# 仮想環境の有効化
+source venv/bin/activate
+
 # ブラウザでBigQueryコンソールを開く
 open "https://console.cloud.google.com/bigquery?project=$GCP_PROJECT_ID"
 ```
@@ -60,6 +76,9 @@ open "https://console.cloud.google.com/bigquery?project=$GCP_PROJECT_ID"
 または、`bq` コマンドラインツールで確認:
 
 ```bash
+# 仮想環境の有効化
+source venv/bin/activate
+
 # データセット一覧を表示
 bq ls
 
@@ -135,6 +154,8 @@ JRDBから取得した生データを格納します。
 BigQuery APIの権限が不足している可能性があります。サービスアカウントに適切な権限が付与されているか確認してください:
 
 ```bash
+source venv/bin/activate
+
 gcloud projects get-iam-policy $GCP_PROJECT_ID \
   --flatten="bindings[].members" \
   --filter="bindings.members:serviceAccount:*keiba-prediction*"
@@ -145,6 +166,8 @@ gcloud projects get-iam-policy $GCP_PROJECT_ID \
 テーブルが既に存在する場合、スクリプトはスキップします。テーブルを再作成したい場合は、まず削除してください:
 
 ```bash
+source venv/bin/activate
+
 # テーブルを削除
 bq rm -f -t $GCP_PROJECT_ID:raw.race_info
 
@@ -154,10 +177,39 @@ bq rm -f -t $GCP_PROJECT_ID:raw.race_info
 
 ### エラー: "ModuleNotFoundError: No module named 'google.cloud'"
 
-Pythonパッケージがインストールされていません:
+Pythonパッケージがインストールされていません。スクリプトを再実行してください:
 
 ```bash
-pip install -r requirements.txt
+./scripts/setup_bigquery.sh
+```
+
+または、仮想環境を手動でセットアップ:
+
+```bash
+python3 -m venv venv
+source venv/bin/activate
+python -m pip install --upgrade pip setuptools wheel
+python -m pip install -r requirements.txt
+```
+
+### エラー: "LightGBMのビルド失敗" (macOS)
+
+LightGBMはmacOSのビルド環境の問題のため `requirements.txt` から除外されています。LightGBMが必要な場合は以下を試してください:
+
+```bash
+source venv/bin/activate
+
+# 事前コンパイル済みバイナリのインストール
+python -m pip install lightgbm --only-binary=:all:
+
+# または、より新しいバージョンを試す
+python -m pip install lightgbm>=4.6.0
+```
+
+それでも失敗する場合は、Homebrewから必要なビルドツールをインストール:
+
+```bash
+brew install cmake ninja
 ```
 
 ## Pythonスクリプトの直接実行
@@ -165,6 +217,9 @@ pip install -r requirements.txt
 必要に応じて、Pythonスクリプトを直接実行することもできます:
 
 ```bash
+# 仮想環境の有効化
+source venv/bin/activate
+
 # 環境変数を設定
 export GCP_PROJECT_ID=your-project-id
 

@@ -41,9 +41,23 @@ fi
 log_info "=== BigQueryセットアップを開始します ==="
 log_info "プロジェクトID: $GCP_PROJECT_ID"
 
+# 仮想環境の作成と有効化
+if [ ! -d "venv" ]; then
+    log_info "仮想環境を作成しています..."
+    python3 -m venv venv
+fi
+
+log_info "仮想環境を有効化しています..."
+source venv/bin/activate
+
 # Pythonパッケージのインストール確認
 log_info "Pythonパッケージをインストールしています..."
-pip install -q -r requirements.txt
+python -m pip install --upgrade pip setuptools wheel
+python -m pip install -r requirements.txt
+
+log_warn "注意: LightGBMはmacOSビルド環境の問題でスキップされています。"
+log_warn "LightGBMが必要な場合は、後で以下のコマンドで個別にインストールしてください:"
+log_warn "  python -m pip install lightgbm"
 
 # Pythonスクリプトを実行
 log_info "BigQueryデータセットとテーブルを作成しています..."
