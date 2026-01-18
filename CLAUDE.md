@@ -67,10 +67,12 @@
 
 #### 2.2.1 Cloud Storage (GCS)
 - **バケット構成**:
-  - `gs://keiba-raw-data/`: JRDBダウンロード生データ (lzh, txt, csv)
-  - `gs://keiba-processed-data/`: 加工済みデータ
-  - `gs://keiba-models/`: 学習済みモデル
-  - `gs://keiba-predictions/`: 予測結果
+  - `gs://${PROJECT_ID}-keiba-raw-data/`: JRDBダウンロード生データ (lzh, txt, csv)
+  - `gs://${PROJECT_ID}-keiba-processed-data/`: 加工済みデータ
+  - `gs://${PROJECT_ID}-keiba-models/`: 学習済みモデル
+  - `gs://${PROJECT_ID}-keiba-predictions/`: 予測結果
+
+  ※ バケット名はグローバルに一意である必要があるため、プロジェクトIDをプレフィックスとして使用します
 
 #### 2.2.2 BigQuery
 - **データセット構成**:

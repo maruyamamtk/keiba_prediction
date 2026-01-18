@@ -69,3 +69,13 @@ logs/
 tmp/
 temp/
 *.tmp
+
+# GCP credentials and keys
+key.json
+*.json.key
+credentials.json
+service-account-key.json
+
+# GCP local config
+.gcloud/
+.config/gcloud/
