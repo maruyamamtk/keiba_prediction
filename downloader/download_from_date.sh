@@ -1,0 +1,238 @@
+#!/bin/sh
+
+# Load environment variables
+DIR=$(dirname "$0")
+if [ -f "${DIR}/.env" ]; then
+  set -a
+  . "${DIR}/.env"
+  set +a
+fi
+
+JRDB_BASE_URL=http://www.jrdb.com/member/data/
+EXTENTION=.lzh
+
+# データタイプからファイル名プレフィックスを取得
+# 最新データタイプ（大文字）をフォルダ名に変換
+# 例：KAA → Kaa, BAA → Baa, KYF → Kyf
+datatype_to_path() {
+  local first_char=$(echo $1 | cut -c1)
+  local rest=$(echo $1 | cut -c2- | tr '[A-Z]' '[a-z]')
+  echo "${first_char}${rest}"
+}
+
+filepath() {
+  FILETYPE_LOWER=$(datatype_to_path $FILETYPE)
+  echo ${FILETYPE_LOWER}/${FILETYPE}${FILEDATE}${EXTENTION}
+}
+
+file_exists() {
+  curl -u ${JRDB_USER}:${JRDB_PASSWORD} ${JRDB_BASE_URL}$(filepath) -o /dev/null -w '%{http_code}\n' -s
+}
+
+download() {
+  curl -u ${JRDB_USER}:${JRDB_PASSWORD} ${JRDB_BASE_URL}$(filepath) -L -o ${DOWNLOAD_FILE_OUTPUT_DIRECTORY}$(filepath)
+}
+
+decompression() {
+  FILETYPE_LOWER=$(datatype_to_path $FILETYPE)
+  lha -xw=${DOWNLOAD_FILE_OUTPUT_DIRECTORY}${FILETYPE_LOWER} ${DOWNLOAD_FILE_OUTPUT_DIRECTORY}$(filepath)
+}
+
+convert_encoding() {
+  # 解凍されたテキストファイルを CP932 から UTF-8 に変換
+  FILETYPE_LOWER=$(datatype_to_path $FILETYPE)
+  for file in ${DOWNLOAD_FILE_OUTPUT_DIRECTORY}${FILETYPE_LOWER}/*.txt; do
+    if [ -f "$file" ]; then
+      iconv -f CP932 -t UTF-8 "$file" > "${file}.tmp" && mv "${file}.tmp" "$file"
+    fi
+  done
+}
+
+txt_to_csv() {
+  # テキストファイルを CSV に変換
+  FILETYPE_LOWER=$(datatype_to_path $FILETYPE)
+  for txt_file in ${DOWNLOAD_FILE_OUTPUT_DIRECTORY}${FILETYPE_LOWER}/*.txt; do
+    if [ -f "$txt_file" ]; then
+      csv_file="${txt_file%.txt}.csv"
+      # 固定長テキストをカンマで区切ったCSVに変換（行をそのままCSVの行にする）
+      # JRDB のテキストはスペース区切りまたは固定長形式なので、タブをカンマに置換
+      sed 's/[[:space:]]\+/,/g' "$txt_file" > "$csv_file"
+      rm "$txt_file"
+    fi
+  done
+}
+
+pre_process() {
+  FILETYPE_LOWER=$(datatype_to_path $FILETYPE)
+  mkdir -p ${DOWNLOAD_FILE_OUTPUT_DIRECTORY}${FILETYPE_LOWER}
+}
+
+post_process() {
+  rm -f ${DOWNLOAD_FILE_OUTPUT_DIRECTORY}$(filepath)
+}
+
+download_single_file() {
+  pre_process
+
+  status_code=`file_exists`
+  if [ $status_code != 200 ]
+  then
+    echo "⚠ ${JRDB_BASE_URL}$(filepath) is not found. (HTTP $status_code)"
+    return 1
+  fi
+
+  echo "✓ Downloading $(filepath)..."
+  download
+  echo "✓ Decompressing..."
+  decompression
+  echo "✓ Converting encoding..."
+  convert_encoding
+  echo "✓ Converting to CSV..."
+  txt_to_csv
+  post_process
+  echo "✓ Completed: $FILETYPE $FILEDATE"
+  return 0
+}
+
+# 指定されたデータタイプの全lzhファイルの日付リストを取得
+get_available_dates() {
+  python3 "${DIR}/list_lzh_files.py" "$FILETYPE" "$JRDB_USER" "$JRDB_PASSWORD"
+}
+
+# 日付を比較（yymmdd形式）
+# yyが90以上の場合（1990年代）は除外
+is_date_after_or_equal() {
+  local date=$1
+  local start_date=$2
+
+  # yyの部分を抽出（最初の2桁）
+  local yy=$(echo "$date" | cut -c1-2)
+
+  # yyが90以上の場合は除外（1990年代以前のデータ）
+  if [ "$yy" -ge 90 ]; then
+    return 1
+  fi
+
+  # それ以外は通常の比較
+  [ "$date" -ge "$start_date" ]
+}
+
+main() {
+  # データタイプを入力
+  cat <<EOS
+
+Datatype? (ex. KAA)
+データタイプを入力してください。
+EOS
+  read FILETYPE
+
+  # 入力チェック
+  if [ -z "$FILETYPE" ]; then
+    echo "Error: Datatype is required"
+    exit 1
+  fi
+
+  # 大文字に変換
+  FILETYPE=$(echo "$FILETYPE" | tr '[a-z]' '[A-Z]')
+
+  # 開始日付を入力
+  cat <<EOS
+
+Start date? (ex. 220101)
+yymmdd の形式で入力してください。
+この日付以降のすべてのファイルがダウンロードされます。
+EOS
+  read START_DATE
+
+  # 入力チェック
+  if [ -z "$START_DATE" ]; then
+    echo "Error: Start date is required"
+    exit 1
+  fi
+
+  # 日付の形式チェック（6桁の数字）
+  if ! echo "$START_DATE" | grep -qE '^[0-9]{6}$'; then
+    echo "Error: Invalid date format. Please use yymmdd format (e.g., 220101)"
+    exit 1
+  fi
+
+  echo ""
+  echo "========================================================================"
+  echo "Fetching available files for $FILETYPE..."
+  echo "========================================================================"
+
+  # 利用可能な日付のリストを取得
+  AVAILABLE_DATES=$(get_available_dates)
+
+  if [ -z "$AVAILABLE_DATES" ]; then
+    echo "Error: No files found for $FILETYPE"
+    exit 1
+  fi
+
+  # 開始日付以降のファイルをフィルタリング
+  FILES_TO_DOWNLOAD=""
+  for date in $AVAILABLE_DATES; do
+    if is_date_after_or_equal "$date" "$START_DATE"; then
+      FILES_TO_DOWNLOAD="$FILES_TO_DOWNLOAD $date"
+    fi
+  done
+
+  if [ -z "$FILES_TO_DOWNLOAD" ]; then
+    echo "No files found after $START_DATE"
+    exit 0
+  fi
+
+  # ダウンロード対象のファイル数をカウント
+  FILE_COUNT=$(echo $FILES_TO_DOWNLOAD | wc -w | tr -d ' ')
+
+  echo ""
+  echo "Found $FILE_COUNT file(s) to download:"
+  echo "========================================================================"
+  for date in $FILES_TO_DOWNLOAD; do
+    echo "  • $FILETYPE$date.lzh"
+  done
+  echo "========================================================================"
+  echo ""
+  echo "Start downloading? (y/n)"
+  read CONFIRM
+
+  if [ "$CONFIRM" != "y" ] && [ "$CONFIRM" != "Y" ]; then
+    echo "Download cancelled."
+    exit 0
+  fi
+
+  # ダウンロード開始
+  echo ""
+  echo "========================================================================"
+  echo "Starting download..."
+  echo "========================================================================"
+
+  SUCCESS_COUNT=0
+  FAIL_COUNT=0
+
+  for date in $FILES_TO_DOWNLOAD; do
+    FILEDATE=$date
+    echo ""
+    echo "------------------------------------------------------------------------"
+    echo "Processing: $FILETYPE$FILEDATE.lzh"
+    echo "------------------------------------------------------------------------"
+
+    if download_single_file; then
+      SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
+    else
+      FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+  done
+
+  # 結果サマリー
+  echo ""
+  echo "========================================================================"
+  echo "Download Summary"
+  echo "========================================================================"
+  echo "Total files: $FILE_COUNT"
+  echo "Success: $SUCCESS_COUNT"
+  echo "Failed: $FAIL_COUNT"
+  echo "========================================================================"
+}
+
+main
