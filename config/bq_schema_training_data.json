@@ -1,0 +1,248 @@
+[
+  {
+    "name": "race_id",
+    "type": "STRING",
+    "mode": "REQUIRED",
+    "description": "レースID"
+  },
+  {
+    "name": "horse_id",
+    "type": "STRING",
+    "mode": "REQUIRED",
+    "description": "馬ID"
+  },
+  {
+    "name": "race_date",
+    "type": "DATE",
+    "mode": "REQUIRED",
+    "description": "開催日"
+  },
+  {
+    "name": "target_place",
+    "type": "BOOL",
+    "mode": "NULLABLE",
+    "description": "目的変数: 3着以内 (True/False)"
+  },
+  {
+    "name": "finish_position",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "着順 (ランク学習用)"
+  },
+  {
+    "name": "venue_code",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "競馬場コード"
+  },
+  {
+    "name": "race_number",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "レース番号"
+  },
+  {
+    "name": "course_type",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "芝/ダート"
+  },
+  {
+    "name": "distance",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "距離"
+  },
+  {
+    "name": "track_condition",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "馬場状態"
+  },
+  {
+    "name": "num_horses",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "出走頭数"
+  },
+  {
+    "name": "bracket_number",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "枠番"
+  },
+  {
+    "name": "horse_number",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "馬番"
+  },
+  {
+    "name": "weight",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "斤量"
+  },
+  {
+    "name": "past_3_avg_position",
+    "type": "FLOAT64",
+    "mode": "NULLABLE",
+    "description": "過去3走の平均着順"
+  },
+  {
+    "name": "past_5_avg_position",
+    "type": "FLOAT64",
+    "mode": "NULLABLE",
+    "description": "過去5走の平均着順"
+  },
+  {
+    "name": "past_10_avg_position",
+    "type": "FLOAT64",
+    "mode": "NULLABLE",
+    "description": "過去10走の平均着順"
+  },
+  {
+    "name": "past_3_avg_last3f",
+    "type": "FLOAT64",
+    "mode": "NULLABLE",
+    "description": "過去3走の平均上がり3F"
+  },
+  {
+    "name": "past_5_avg_last3f",
+    "type": "FLOAT64",
+    "mode": "NULLABLE",
+    "description": "過去5走の平均上がり3F"
+  },
+  {
+    "name": "turf_win_rate",
+    "type": "FLOAT64",
+    "mode": "NULLABLE",
+    "description": "芝勝率"
+  },
+  {
+    "name": "dirt_win_rate",
+    "type": "FLOAT64",
+    "mode": "NULLABLE",
+    "description": "ダート勝率"
+  },
+  {
+    "name": "distance_category_win_rate",
+    "type": "FLOAT64",
+    "mode": "NULLABLE",
+    "description": "距離帯別勝率"
+  },
+  {
+    "name": "venue_win_rate",
+    "type": "FLOAT64",
+    "mode": "NULLABLE",
+    "description": "競馬場別勝率"
+  },
+  {
+    "name": "heavy_track_win_rate",
+    "type": "FLOAT64",
+    "mode": "NULLABLE",
+    "description": "重馬場勝率"
+  },
+  {
+    "name": "jockey_id",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "騎手ID"
+  },
+  {
+    "name": "jockey_win_rate",
+    "type": "FLOAT64",
+    "mode": "NULLABLE",
+    "description": "騎手勝率"
+  },
+  {
+    "name": "jockey_venue_win_rate",
+    "type": "FLOAT64",
+    "mode": "NULLABLE",
+    "description": "騎手×競馬場勝率"
+  },
+  {
+    "name": "trainer_id",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "調教師ID"
+  },
+  {
+    "name": "trainer_win_rate",
+    "type": "FLOAT64",
+    "mode": "NULLABLE",
+    "description": "調教師勝率"
+  },
+  {
+    "name": "jockey_te_place",
+    "type": "FLOAT64",
+    "mode": "NULLABLE",
+    "description": "騎手Target Encoding (複勝圏内率)"
+  },
+  {
+    "name": "trainer_te_place",
+    "type": "FLOAT64",
+    "mode": "NULLABLE",
+    "description": "調教師Target Encoding (複勝圏内率)"
+  },
+  {
+    "name": "sire_te_place",
+    "type": "FLOAT64",
+    "mode": "NULLABLE",
+    "description": "種牡馬Target Encoding (複勝圏内率)"
+  },
+  {
+    "name": "dam_sire_te_place",
+    "type": "FLOAT64",
+    "mode": "NULLABLE",
+    "description": "母父Target Encoding (複勝圏内率)"
+  },
+  {
+    "name": "weight_rank",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "レース内斤量順位"
+  },
+  {
+    "name": "ability_rank",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "レース内能力順位"
+  },
+  {
+    "name": "last3f_rank",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "レース内上がり3F順位"
+  },
+  {
+    "name": "front_runner_count",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "レース内逃げ候補数"
+  },
+  {
+    "name": "expected_pace_score",
+    "type": "FLOAT64",
+    "mode": "NULLABLE",
+    "description": "予想ペーススコア"
+  },
+  {
+    "name": "odds_yesterday",
+    "type": "FLOAT64",
+    "mode": "NULLABLE",
+    "description": "前日オッズ"
+  },
+  {
+    "name": "odds_today",
+    "type": "FLOAT64",
+    "mode": "NULLABLE",
+    "description": "当日オッズ"
+  },
+  {
+    "name": "created_at",
+    "type": "TIMESTAMP",
+    "mode": "NULLABLE",
+    "description": "レコード作成日時"
+  }
+]

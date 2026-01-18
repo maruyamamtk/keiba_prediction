@@ -1,0 +1,158 @@
+[
+  {
+    "name": "race_id",
+    "type": "STRING",
+    "mode": "REQUIRED",
+    "description": "レースID"
+  },
+  {
+    "name": "horse_id",
+    "type": "STRING",
+    "mode": "REQUIRED",
+    "description": "馬ID (血統登録番号)"
+  },
+  {
+    "name": "horse_name",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "馬名"
+  },
+  {
+    "name": "bracket_number",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "枠番"
+  },
+  {
+    "name": "horse_number",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "馬番"
+  },
+  {
+    "name": "finish_position",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "着順"
+  },
+  {
+    "name": "finish_time",
+    "type": "FLOAT64",
+    "mode": "NULLABLE",
+    "description": "走破タイム(秒)"
+  },
+  {
+    "name": "last_3f_time",
+    "type": "FLOAT64",
+    "mode": "NULLABLE",
+    "description": "上がり3F(秒)"
+  },
+  {
+    "name": "passing_order",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "通過順 (コーナー毎の順位)"
+  },
+  {
+    "name": "odds",
+    "type": "FLOAT64",
+    "mode": "NULLABLE",
+    "description": "単勝オッズ"
+  },
+  {
+    "name": "popularity",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "人気順位"
+  },
+  {
+    "name": "weight",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "斤量(kg)"
+  },
+  {
+    "name": "jockey_id",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "騎手ID"
+  },
+  {
+    "name": "jockey_name",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "騎手名"
+  },
+  {
+    "name": "trainer_id",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "調教師ID"
+  },
+  {
+    "name": "trainer_name",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "調教師名"
+  },
+  {
+    "name": "horse_weight",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "馬体重(kg)"
+  },
+  {
+    "name": "horse_weight_diff",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "馬体重増減(kg)"
+  },
+  {
+    "name": "idm",
+    "type": "FLOAT64",
+    "mode": "NULLABLE",
+    "description": "IDM (JRDB指数)"
+  },
+  {
+    "name": "jockey_index",
+    "type": "FLOAT64",
+    "mode": "NULLABLE",
+    "description": "騎手指数"
+  },
+  {
+    "name": "info_index",
+    "type": "FLOAT64",
+    "mode": "NULLABLE",
+    "description": "情報指数"
+  },
+  {
+    "name": "total_index",
+    "type": "FLOAT64",
+    "mode": "NULLABLE",
+    "description": "総合指数"
+  },
+  {
+    "name": "race_pace",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "レースペース"
+  },
+  {
+    "name": "horse_pace",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "馬ペース"
+  },
+  {
+    "name": "created_at",
+    "type": "TIMESTAMP",
+    "mode": "NULLABLE",
+    "description": "レコード作成日時"
+  },
+  {
+    "name": "updated_at",
+    "type": "TIMESTAMP",
+    "mode": "NULLABLE",
+    "description": "レコード更新日時"
+  }
+]

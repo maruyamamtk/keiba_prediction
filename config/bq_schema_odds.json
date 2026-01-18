@@ -1,0 +1,44 @@
+[
+  {
+    "name": "race_id",
+    "type": "STRING",
+    "mode": "REQUIRED",
+    "description": "レースID"
+  },
+  {
+    "name": "horse_id",
+    "type": "STRING",
+    "mode": "REQUIRED",
+    "description": "馬ID"
+  },
+  {
+    "name": "odds_type",
+    "type": "STRING",
+    "mode": "REQUIRED",
+    "description": "オッズ種別 (win/place/quinella/exacta/trifecta/trio)"
+  },
+  {
+    "name": "odds_value",
+    "type": "FLOAT64",
+    "mode": "NULLABLE",
+    "description": "オッズ値"
+  },
+  {
+    "name": "odds_timestamp",
+    "type": "TIMESTAMP",
+    "mode": "REQUIRED",
+    "description": "オッズ取得時刻"
+  },
+  {
+    "name": "horse_number",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "馬番"
+  },
+  {
+    "name": "created_at",
+    "type": "TIMESTAMP",
+    "mode": "NULLABLE",
+    "description": "レコード作成日時"
+  }
+]

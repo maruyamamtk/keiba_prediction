@@ -1,0 +1,122 @@
+[
+  {
+    "name": "race_id",
+    "type": "STRING",
+    "mode": "REQUIRED",
+    "description": "レースID (場所コード + 開催回 + 日次 + レース番号)"
+  },
+  {
+    "name": "race_date",
+    "type": "DATE",
+    "mode": "REQUIRED",
+    "description": "開催日"
+  },
+  {
+    "name": "venue_code",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "競馬場コード"
+  },
+  {
+    "name": "venue_name",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "競馬場名"
+  },
+  {
+    "name": "race_number",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "レース番号"
+  },
+  {
+    "name": "race_name",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "レース名"
+  },
+  {
+    "name": "course_type",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "芝/ダート (turf/dirt)"
+  },
+  {
+    "name": "distance",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "距離(メートル)"
+  },
+  {
+    "name": "direction",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "右/左 (right/left)"
+  },
+  {
+    "name": "race_class",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "クラス (G1/G2/G3/OP/1600万下等)"
+  },
+  {
+    "name": "age_condition",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "年齢条件"
+  },
+  {
+    "name": "sex_condition",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "性別条件"
+  },
+  {
+    "name": "weather",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "天候"
+  },
+  {
+    "name": "track_condition",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "馬場状態 (良/稍重/重/不良)"
+  },
+  {
+    "name": "num_horses",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "出走頭数"
+  },
+  {
+    "name": "prize_1st",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "1着賞金(万円)"
+  },
+  {
+    "name": "prize_2nd",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "2着賞金(万円)"
+  },
+  {
+    "name": "prize_3rd",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "3着賞金(万円)"
+  },
+  {
+    "name": "created_at",
+    "type": "TIMESTAMP",
+    "mode": "NULLABLE",
+    "description": "レコード作成日時"
+  },
+  {
+    "name": "updated_at",
+    "type": "TIMESTAMP",
+    "mode": "NULLABLE",
+    "description": "レコード更新日時"
+  }
+]
