@@ -26,10 +26,29 @@ FUNCTION_NAME="gcs-to-bq"
 REGION="${GCP_REGION:-asia-northeast1}"
 RUNTIME="python39"
 ENTRY_POINT="gcs_to_bq"
-TRIGGER_BUCKET="${GCP_PROJECT_ID}-${GCS_BUCKET_RAW:-keiba-raw-data}"
+
+# バケット名の設定（既にフルネームの場合はそのまま使用）
+if [[ "${GCS_BUCKET_RAW}" == *"${GCP_PROJECT_ID}"* ]]; then
+    # 既にプロジェクトIDを含む完全なバケット名の場合
+    TRIGGER_BUCKET="${GCS_BUCKET_RAW}"
+else
+    # プレフィックスのみの場合はプロジェクトIDを追加
+    TRIGGER_BUCKET="${GCP_PROJECT_ID}-${GCS_BUCKET_RAW:-keiba-raw-data}"
+fi
+
 DATASET_RAW="${BQ_DATASET_RAW:-raw}"
 MEMORY="512MB"
 TIMEOUT="540s"
+
+# バケット名の長さチェック（GCSの制限は63文字）
+BUCKET_NAME_LENGTH=${#TRIGGER_BUCKET}
+if [ $BUCKET_NAME_LENGTH -gt 63 ]; then
+    echo "Error: Bucket name is too long (${BUCKET_NAME_LENGTH} characters, max 63)"
+    echo "Bucket name: ${TRIGGER_BUCKET}"
+    echo ""
+    echo "Please shorten GCS_BUCKET_RAW in your .env file or use a shorter project ID"
+    exit 1
+fi
 
 echo "========================================="
 echo "Cloud Function Deployment"
