@@ -97,11 +97,14 @@ gcloud billing projects link $PROJECT_ID --billing-account=BILLING_ACCOUNT_ID
    - Cloud Logging API
    - Cloud Monitoring API
 3. ✅ サービスアカウントの作成と権限設定
+   - ⚠️ 開発環境用の管理者権限を付与（本番環境では最小権限に変更推奨）
 4. ✅ Cloud Storageバケットの作成
    - `${PROJECT_ID}-keiba-raw-data`: JRDBダウンロード生データ（90日後自動削除）
    - `${PROJECT_ID}-keiba-processed-data`: 加工済みデータ
    - `${PROJECT_ID}-keiba-models`: 学習済みモデル（バージョニング有効）
    - `${PROJECT_ID}-keiba-predictions`: 予測結果（バージョニング有効）
+
+**バケット名の命名規則**: バケット名はグローバルに一意である必要があるため、`${PROJECT_ID}-` をプレフィックスとして使用します。
 
 ### 5. セットアップの確認
 

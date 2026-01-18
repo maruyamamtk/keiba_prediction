@@ -67,7 +67,9 @@ apis=(
 
 for api in "${apis[@]}"; do
     log_info "APIを有効化中: $api"
-    gcloud services enable "$api" --project="$GCP_PROJECT_ID" || log_warn "$api の有効化に失敗しました。"
+    if ! gcloud services enable "$api" --project="$GCP_PROJECT_ID" 2>/dev/null; then
+        log_warn "$api の有効化に失敗しました。継続します..."
+    fi
 done
 
 log_info "すべてのAPIの有効化が完了しました。"
@@ -90,7 +92,12 @@ fi
 
 # サービスアカウントに必要なロールを付与
 log_info "サービスアカウントに権限を付与しています..."
+log_warn "注意: 開発環境用の管理者権限を付与します。本番環境では最小権限の原則に従ってください。"
 
+# 注意: 以下は開発・セットアップ環境用の権限です
+# 本番環境では、以下のように最小権限に変更することを推奨します：
+# - roles/storage.admin → roles/storage.objectAdmin
+# - roles/bigquery.admin → roles/bigquery.dataEditor + roles/bigquery.jobUser
 roles=(
     "roles/storage.admin"              # Cloud Storage管理者
     "roles/bigquery.admin"             # BigQuery管理者
@@ -103,11 +110,13 @@ roles=(
 
 for role in "${roles[@]}"; do
     log_info "ロールを付与中: $role"
-    gcloud projects add-iam-policy-binding "$GCP_PROJECT_ID" \
+    if ! gcloud projects add-iam-policy-binding "$GCP_PROJECT_ID" \
         --member="serviceAccount:$SERVICE_ACCOUNT_EMAIL" \
         --role="$role" \
         --condition=None \
-        >/dev/null 2>&1 || log_warn "$role の付与に失敗しました。"
+        >/dev/null 2>&1; then
+        log_warn "$role の付与に失敗しました。継続します..."
+    fi
 done
 
 log_info "サービスアカウントへの権限付与が完了しました。"
