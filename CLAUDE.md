@@ -122,6 +122,10 @@ gsutil -m rsync -r ../downloaded_files/ gs://keiba-raw-data/
 
 #### 3.2.1 rawデータセット
 
+- 備考
+  - rawデータのスキーマは別ドキュメントで整理している
+  - @doc/SCHEMA.md
+
 ##### テーブル: `raw.race_info` (BAA: 番組データ)
 ```sql
 CREATE TABLE raw.race_info (
@@ -270,8 +274,9 @@ CREATE TABLE features.training_data (
 ## 4. 特徴量エンジニアリング
 
 ### 4.1 特徴量一覧
-詳細は `ML_FEATURE.md` を参照。主要カテゴリ：
+**ファイル**: @doc/ML_FEATURE.md
 
+主要カテゴリ：
 1. **ベース特徴**: レース条件、馬場、天候
 2. **過去走集計**: N走平均、最大値、トレンド
 3. **条件適性**: 距離/コース/馬場/季節適性
