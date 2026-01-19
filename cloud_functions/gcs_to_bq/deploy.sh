@@ -79,36 +79,51 @@ echo "Setting up permissions..."
 EVENTARC_SERVICE_ACCOUNT="service-${PROJECT_NUMBER}@gcp-sa-eventarc.iam.gserviceaccount.com"
 PUBSUB_SERVICE_ACCOUNT="service-${PROJECT_NUMBER}@gcp-sa-pubsub.iam.gserviceaccount.com"
 
+echo "  Eventarc Service Account: ${EVENTARC_SERVICE_ACCOUNT}"
+echo "  Pub/Sub Service Account: ${PUBSUB_SERVICE_ACCOUNT}"
+echo ""
+
 echo "  Granting storage.objectAdmin to Eventarc service account..."
-gsutil iam ch "serviceAccount:${EVENTARC_SERVICE_ACCOUNT}:objectAdmin" "gs://${TRIGGER_BUCKET}" 2>/dev/null || true
+gsutil iam ch "serviceAccount:${EVENTARC_SERVICE_ACCOUNT}:objectAdmin" "gs://${TRIGGER_BUCKET}" > /dev/null 2>&1 || echo "    (Already set or no permission needed)"
 
 echo "  Granting pubsub.publisher to GCS service account..."
-PROJECT_NUMBER_GCS=$(gcloud storage service-agent --project="$GCP_PROJECT_ID" 2>/dev/null | grep -o '[0-9]\+' | head -1)
-if [ -n "$PROJECT_NUMBER_GCS" ]; then
-    GCS_SERVICE_ACCOUNT="service-${PROJECT_NUMBER_GCS}@gs-project-accounts.iam.gserviceaccount.com"
-    gcloud projects add-iam-policy-binding "$GCP_PROJECT_ID" \
-        --member="serviceAccount:${GCS_SERVICE_ACCOUNT}" \
-        --role="roles/pubsub.publisher" \
-        --condition=None \
-        --quiet 2>/dev/null || true
-fi
+# GCSサービスアカウントはプロジェクト番号を使用
+GCS_SERVICE_ACCOUNT="service-${PROJECT_NUMBER}@gs-project-accounts.iam.gserviceaccount.com"
+
+echo "  GCS Service Account: ${GCS_SERVICE_ACCOUNT}"
+
+# Pub/Sub Publisher ロールを付与
+gcloud projects add-iam-policy-binding "$GCP_PROJECT_ID" \
+    --member="serviceAccount:${GCS_SERVICE_ACCOUNT}" \
+    --role="roles/pubsub.publisher" \
+    --condition=None \
+    --quiet
+
+# Eventarc Event Receiver ロールも付与
+gcloud projects add-iam-policy-binding "$GCP_PROJECT_ID" \
+    --member="serviceAccount:${GCS_SERVICE_ACCOUNT}" \
+    --role="roles/eventarc.eventReceiver" \
+    --condition=None \
+    --quiet
 
 echo "  Granting BigQuery roles to default compute service account..."
 COMPUTE_SERVICE_ACCOUNT="${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
+echo "  Compute Service Account: ${COMPUTE_SERVICE_ACCOUNT}"
+
 gcloud projects add-iam-policy-binding "$GCP_PROJECT_ID" \
     --member="serviceAccount:${COMPUTE_SERVICE_ACCOUNT}" \
     --role="roles/bigquery.dataEditor" \
     --condition=None \
-    --quiet 2>/dev/null || true
+    --quiet > /dev/null
 
 gcloud projects add-iam-policy-binding "$GCP_PROJECT_ID" \
     --member="serviceAccount:${COMPUTE_SERVICE_ACCOUNT}" \
     --role="roles/bigquery.jobUser" \
     --condition=None \
-    --quiet 2>/dev/null || true
+    --quiet > /dev/null
 
 echo "  Granting Storage Object Viewer to default compute service account..."
-gsutil iam ch "serviceAccount:${COMPUTE_SERVICE_ACCOUNT}:objectViewer" "gs://${TRIGGER_BUCKET}" 2>/dev/null || true
+gsutil iam ch "serviceAccount:${COMPUTE_SERVICE_ACCOUNT}:objectViewer" "gs://${TRIGGER_BUCKET}" > /dev/null 2>&1 || echo "    (Already set or no permission needed)"
 
 echo "Permissions set successfully"
 echo ""
