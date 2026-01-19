@@ -84,7 +84,7 @@ def load_to_bigquery(
     data_type: str
 ) -> int:
     """
-    BigQueryにデータをロード
+    BigQueryにデータをロード (Streaming Insert使用)
 
     Args:
         project_id: プロジェクトID
@@ -101,33 +101,21 @@ def load_to_bigquery(
     """
     table_ref = f"{project_id}.{dataset_id}.{table_id}"
 
-    # ジョブ設定
-    job_config = bigquery.LoadJobConfig(
-        source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
-        write_disposition=bigquery.WriteDisposition.WRITE_APPEND,
-        autodetect=False,  # スキーマは既存テーブルから取得
-        ignore_unknown_values=True,
-    )
-
     try:
-        # リソースを適切に管理するためwithステートメントを使用
-        with bigquery.Client(project=project_id) as client:
-            # データをロード
-            load_job = client.load_table_from_json(
-                rows,
-                table_ref,
-                job_config=job_config
-            )
+        client = bigquery.Client(project=project_id)
+        table = client.get_table(table_ref)
 
-            # ジョブ完了を待機
-            load_job.result()
+        # Streaming Insertでデータを挿入
+        errors = client.insert_rows_json(table, rows)
 
-            logger.info(
-                f"Loaded {len(rows)} rows to {table_ref}. "
-                f"Job ID: {load_job.job_id}"
-            )
+        if errors:
+            error_msgs = [str(e) for e in errors[:5]]
+            logger.error(f"BigQuery insert errors: {error_msgs}")
+            raise GoogleCloudError(f"Insert errors: {error_msgs}")
 
-            return len(rows)
+        logger.info(f"Loaded {len(rows)} rows to {table_ref}.")
+
+        return len(rows)
 
     except GoogleCloudError as e:
         logger.error(f"BigQuery load error: {e}", exc_info=True)
