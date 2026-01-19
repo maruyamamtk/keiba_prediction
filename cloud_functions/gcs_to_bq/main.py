@@ -163,17 +163,24 @@ def process_file(bucket_name: str, file_name: str) -> Dict[str, any]:
         bucket = storage_client.bucket(bucket_name)
         blob = bucket.blob(file_name)
 
-        # ファイル内容を取得 (CP932でデコード)
+        # ファイル内容を取得 (UTF-8優先、失敗時はCP932にフォールバック)
         try:
             file_bytes = blob.download_as_bytes()
-            file_content = file_bytes.decode('cp932', errors='replace')
 
-            # デコードエラーがある場合は警告を出力
-            if '�' in file_content:
-                logger.warning(
-                    f"CP932 decode errors detected in {file_name}. "
-                    f"Some characters may be replaced with '�'."
-                )
+            # UTF-8でデコードを試行
+            try:
+                file_content = file_bytes.decode('utf-8')
+                logger.info(f"File {file_name} decoded as UTF-8")
+            except UnicodeDecodeError:
+                # UTF-8で失敗した場合はCP932でデコード
+                file_content = file_bytes.decode('cp932', errors='replace')
+                logger.info(f"File {file_name} decoded as CP932")
+
+                if '�' in file_content:
+                    logger.warning(
+                        f"CP932 decode errors detected in {file_name}. "
+                        f"Some characters may be replaced with '�'."
+                    )
         except Exception as e:
             logger.error(f"Failed to decode file {file_name}: {e}", exc_info=True)
             result['error'] = f'File decode error: {str(e)}'
