@@ -39,6 +39,12 @@ done
 echo "APIs enabled successfully"
 echo ""
 
+# プロジェクト番号を取得
+echo "Getting project number..."
+PROJECT_NUMBER=$(gcloud projects describe "$GCP_PROJECT_ID" --format="value(projectNumber)")
+echo "Project number: $PROJECT_NUMBER"
+echo ""
+
 # デフォルト値の設定
 FUNCTION_NAME="gcs-to-bq"
 REGION="${GCP_REGION:-asia-northeast1}"
@@ -67,6 +73,45 @@ if [ $BUCKET_NAME_LENGTH -gt 63 ]; then
     echo "Please shorten GCS_BUCKET_RAW in your .env file or use a shorter project ID"
     exit 1
 fi
+
+# Eventarcサービスアカウントに権限を付与
+echo "Setting up permissions..."
+EVENTARC_SERVICE_ACCOUNT="service-${PROJECT_NUMBER}@gcp-sa-eventarc.iam.gserviceaccount.com"
+PUBSUB_SERVICE_ACCOUNT="service-${PROJECT_NUMBER}@gcp-sa-pubsub.iam.gserviceaccount.com"
+
+echo "  Granting storage.objectAdmin to Eventarc service account..."
+gsutil iam ch "serviceAccount:${EVENTARC_SERVICE_ACCOUNT}:objectAdmin" "gs://${TRIGGER_BUCKET}" 2>/dev/null || true
+
+echo "  Granting pubsub.publisher to GCS service account..."
+PROJECT_NUMBER_GCS=$(gcloud storage service-agent --project="$GCP_PROJECT_ID" 2>/dev/null | grep -o '[0-9]\+' | head -1)
+if [ -n "$PROJECT_NUMBER_GCS" ]; then
+    GCS_SERVICE_ACCOUNT="service-${PROJECT_NUMBER_GCS}@gs-project-accounts.iam.gserviceaccount.com"
+    gcloud projects add-iam-policy-binding "$GCP_PROJECT_ID" \
+        --member="serviceAccount:${GCS_SERVICE_ACCOUNT}" \
+        --role="roles/pubsub.publisher" \
+        --condition=None \
+        --quiet 2>/dev/null || true
+fi
+
+echo "  Granting BigQuery roles to default compute service account..."
+COMPUTE_SERVICE_ACCOUNT="${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
+gcloud projects add-iam-policy-binding "$GCP_PROJECT_ID" \
+    --member="serviceAccount:${COMPUTE_SERVICE_ACCOUNT}" \
+    --role="roles/bigquery.dataEditor" \
+    --condition=None \
+    --quiet 2>/dev/null || true
+
+gcloud projects add-iam-policy-binding "$GCP_PROJECT_ID" \
+    --member="serviceAccount:${COMPUTE_SERVICE_ACCOUNT}" \
+    --role="roles/bigquery.jobUser" \
+    --condition=None \
+    --quiet 2>/dev/null || true
+
+echo "  Granting Storage Object Viewer to default compute service account..."
+gsutil iam ch "serviceAccount:${COMPUTE_SERVICE_ACCOUNT}:objectViewer" "gs://${TRIGGER_BUCKET}" 2>/dev/null || true
+
+echo "Permissions set successfully"
+echo ""
 
 echo "========================================="
 echo "Cloud Function Deployment"
