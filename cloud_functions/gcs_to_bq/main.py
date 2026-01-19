@@ -170,26 +170,26 @@ def process_file(bucket_name: str, file_name: str) -> Dict[str, any]:
 
         logger.info(f"Processing file: {file_name} (type: {data_type}, table: {table_name})")
 
-        # リソースを適切に管理するためwithステートメントを使用
-        with storage.Client() as storage_client:
-            bucket = storage_client.bucket(bucket_name)
-            blob = bucket.blob(file_name)
+        # GCSからファイルを取得
+        storage_client = storage.Client()
+        bucket = storage_client.bucket(bucket_name)
+        blob = bucket.blob(file_name)
 
-            # ファイル内容を取得 (CP932でデコード)
-            try:
-                file_bytes = blob.download_as_bytes()
-                file_content = file_bytes.decode('cp932', errors='replace')
+        # ファイル内容を取得 (CP932でデコード)
+        try:
+            file_bytes = blob.download_as_bytes()
+            file_content = file_bytes.decode('cp932', errors='replace')
 
-                # デコードエラーがある場合は警告を出力
-                if '�' in file_content:
-                    logger.warning(
-                        f"CP932 decode errors detected in {file_name}. "
-                        f"Some characters may be replaced with '�'."
-                    )
-            except Exception as e:
-                logger.error(f"Failed to decode file {file_name}: {e}", exc_info=True)
-                result['error'] = f'File decode error: {str(e)}'
-                return result
+            # デコードエラーがある場合は警告を出力
+            if '�' in file_content:
+                logger.warning(
+                    f"CP932 decode errors detected in {file_name}. "
+                    f"Some characters may be replaced with '�'."
+                )
+        except Exception as e:
+            logger.error(f"Failed to decode file {file_name}: {e}", exc_info=True)
+            result['error'] = f'File decode error: {str(e)}'
+            return result
 
         # データを解析
         parsed_data = JRDBParser.parse_file(file_content, data_type)
