@@ -146,49 +146,40 @@ class JRDBParser:
             race_key = line[0:8].strip()
             race_info = JRDBParser.parse_race_id(race_key)
 
-            # 日付を年月日から構築
-            year = race_info['year']
-            month = JRDBParser.safe_int(line[8:10])
-            day = JRDBParser.safe_int(line[10:12])
-
-            race_date = None
-            if year and month and day:
-                try:
-                    race_date = f"{year:04d}-{month:02d}-{day:02d}"
-                except:
-                    pass
+            # 日付 (YYYYMMDD形式、8バイト)
+            race_date = JRDBParser.parse_date(line[8:16])
 
             # 発走時刻 (HHMM)
-            start_time = line[12:16].strip()
+            start_time = line[16:20].strip()
 
             # 距離
-            distance = JRDBParser.safe_int(line[16:20])
+            distance = JRDBParser.safe_int(line[20:24])
 
             # コース種別 (芝/ダート/障害)
-            course_type_code = line[20:21]
+            course_type_code = line[24:25]
             course_type = JRDBParser.COURSE_TYPE_MAP.get(course_type_code, None)
 
             # 右左
-            direction_code = line[21:22]
+            direction_code = line[25:26]
             direction = 'right' if direction_code == '1' else 'left' if direction_code == '2' else 'straight'
 
             # 内外
-            inner_outer = line[22:23].strip()
+            inner_outer = line[26:27].strip()
 
             # 種別コード
-            age_condition = line[23:25].strip()
+            age_condition = line[27:29].strip()
 
             # 条件コード
-            race_condition = line[25:27].strip()
+            race_condition = line[29:31].strip()
 
             # 記号 (性別・外国産馬など)
-            symbol = line[27:30].strip()
+            symbol = line[31:34].strip()
 
             # 重量種別
-            weight_type = line[30:31].strip()
+            weight_type = line[34:35].strip()
 
             # グレード
-            grade_code = line[31:32].strip()
+            grade_code = line[35:36].strip()
             race_class = None
             if grade_code == '1':
                 race_class = 'G1'
@@ -204,7 +195,7 @@ class JRDBParser:
                 race_class = race_condition
 
             # レース名 (約50バイト、全角文字を含む可能性があるため安全に取得)
-            race_name = line[32:82].strip() if len(line) > 82 else line[32:].strip()
+            race_name = line[36:86].strip() if len(line) > 86 else line[36:].strip()
 
             # 出走頭数 (位置が可変のため安全に取得)
             num_horses = None
@@ -213,9 +204,9 @@ class JRDBParser:
             prize_3rd = None
 
             # 行の後半部分から数値を探す
-            if len(line) > 90:
+            if len(line) > 94:
                 # 出走頭数は行末付近
-                tail = line[90:].strip()
+                tail = line[94:].strip()
                 parts = tail.split()
                 if len(parts) > 0:
                     num_horses = JRDBParser.safe_int(parts[0])
