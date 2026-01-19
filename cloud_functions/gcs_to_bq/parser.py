@@ -197,19 +197,19 @@ class JRDBParser:
             # レース名 (約50バイト、全角文字を含む可能性があるため安全に取得)
             race_name = line[36:86].strip() if len(line) > 86 else line[36:].strip()
 
-            # 出走頭数 (位置が可変のため安全に取得)
+            # 出走頭数 (行の後半から正規表現で取得)
             num_horses = None
             prize_1st = None
             prize_2nd = None
             prize_3rd = None
 
-            # 行の後半部分から数値を探す
-            if len(line) > 94:
-                # 出走頭数は行末付近
-                tail = line[94:].strip()
-                parts = tail.split()
-                if len(parts) > 0:
-                    num_horses = JRDBParser.safe_int(parts[0])
+            # 行の後半部分(80文字以降)から頭数を探す
+            # パターン: 頭数(1-2桁) + スペース(0-1) + コード(1-2桁) + レース略称(オプション)
+            if len(line) > 80:
+                tail = line[80:].strip()
+                match = re.search(r'(\d{1,2})[ ]?(\d{1,2})(?:[^\d]*)$', tail)
+                if match:
+                    num_horses = JRDBParser.safe_int(match.group(1))
 
             venue_name = JRDBParser.VENUE_CODE_MAP.get(race_info['venue_code'], '')
 
