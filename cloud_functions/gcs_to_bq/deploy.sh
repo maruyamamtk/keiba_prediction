@@ -21,10 +21,28 @@ if [ -z "$GCP_PROJECT_ID" ]; then
     exit 1
 fi
 
+# 必要なAPIを有効化
+echo "Checking required APIs..."
+REQUIRED_APIS=(
+    "cloudfunctions.googleapis.com"
+    "cloudbuild.googleapis.com"
+    "eventarc.googleapis.com"
+    "run.googleapis.com"
+    "artifactregistry.googleapis.com"
+)
+
+for api in "${REQUIRED_APIS[@]}"; do
+    echo "  Enabling $api..."
+    gcloud services enable "$api" --project="$GCP_PROJECT_ID" --quiet
+done
+
+echo "APIs enabled successfully"
+echo ""
+
 # デフォルト値の設定
 FUNCTION_NAME="gcs-to-bq"
 REGION="${GCP_REGION:-asia-northeast1}"
-RUNTIME="python39"
+RUNTIME="python311"  # Python 3.11に変更（3.9は2026年4月サポート終了）
 ENTRY_POINT="gcs_to_bq"
 
 # バケット名の設定（既にフルネームの場合はそのまま使用）
