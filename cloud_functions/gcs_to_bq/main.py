@@ -32,6 +32,7 @@ PROJECT_ID = os.environ.get('GCP_PROJECT_ID', 'keiba-prediction-452203')
 BQ_DATASET_RAW = os.environ.get('BQ_DATASET_RAW', 'raw')
 
 # データタイプとテーブルのマッピング
+# KAA/KABは開催データ（日単位）でレース単位のテーブルと構造が異なるため除外
 TABLE_MAPPING = {
     'BAA': 'race_info',
     'BAB': 'race_info',
@@ -40,8 +41,6 @@ TABLE_MAPPING = {
     'KYG': 'horse_results',
     'KYH': 'horse_results',
     'SEC': 'horse_results',
-    'KAA': 'race_info',
-    'KAB': 'race_info',
 }
 
 

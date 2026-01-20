@@ -246,91 +246,159 @@ class JRDBParser:
         KYF (競走馬データ) を解析
 
         Args:
-            line: 固定長レコード文字列
+            line: 固定長レコード文字列 (UTF-8変換済み)
 
         Returns:
             解析結果の辞書 or None
         """
         try:
-            if len(line) < 500:
-                logger.warning(f"KYF line too short: {len(line)} bytes")
+            if len(line) < 150:
+                logger.warning(f"KYF line too short: {len(line)} chars")
                 return None
 
-            # レースキー
+            # レースキー (固定位置)
             race_key = line[0:8].strip()
 
-            # 馬番
+            # 馬番 (固定位置)
             horse_number = JRDBParser.safe_int(line[8:10])
 
-            # 血統登録番号 (馬ID)
+            # 血統登録番号/馬ID (固定位置)
             horse_id = line[10:18].strip()
 
-            # 馬名
-            horse_name = line[18:54].strip()
+            # 馬名 (18文字目から、全角スペースまで)
+            remaining = line[18:]
+            horse_name_match = re.match(r'^([^\s0-9]+)', remaining)
+            horse_name = horse_name_match.group(1).strip() if horse_name_match else ''
 
-            # IDM・指数
-            idm = JRDBParser.safe_float(line[54:59])
-            jockey_index = JRDBParser.safe_float(line[59:64])
-            info_index = JRDBParser.safe_float(line[64:69])
-            total_index = JRDBParser.safe_float(line[69:74])
+            # 数値フィールドを正規表現で抽出
+            # IDMなどの指数 (例: "20.0  0.2 -1.0")
+            numbers = re.findall(r'-?\d+\.?\d*', line[18:100])
+            idm = JRDBParser.safe_float(numbers[0]) if len(numbers) > 0 else None
+            jockey_index = JRDBParser.safe_float(numbers[1]) if len(numbers) > 1 else None
+            info_index = JRDBParser.safe_float(numbers[2]) if len(numbers) > 2 else None
+            total_index = JRDBParser.safe_float(numbers[3]) if len(numbers) > 3 else None
 
-            # 脚質
-            pace_type = line[74:75].strip()
-
-            # 距離適性
-            distance_aptitude = line[75:76].strip()
-
-            # 基準オッズ
-            base_odds = JRDBParser.safe_float(line[101:106])
-
-            # 人気順位
-            popularity = JRDBParser.safe_int(line[106:108])
-
-            # 枠番
-            bracket_number = JRDBParser.safe_int(line[115:116])
-
-            # 斤量
-            weight = JRDBParser.safe_int(line[137:140])
-
-            # 騎手コード・名前
-            jockey_code = line[165:170].strip()
-            jockey_name = line[170:182].strip()
-
-            # 調教師コード・名前
-            trainer_code = line[182:187].strip()
-            trainer_name = line[187:199].strip()
+            # 騎手名・調教師名を正規表現で抽出 (日本語名のパターン)
+            # パターン: "数字 日本語名 全角スペース 数字 日本語名"
+            jockey_trainer_match = re.search(
+                r'(\d+)\s+([^\s\d]{2,6})\s+(\d+)\s+([^\s\d]{2,6})',
+                line[100:]
+            )
+            jockey_code = ''
+            jockey_name = ''
+            trainer_code = ''
+            trainer_name = ''
+            if jockey_trainer_match:
+                jockey_code = jockey_trainer_match.group(1)
+                jockey_name = jockey_trainer_match.group(2)
+                trainer_code = jockey_trainer_match.group(3)
+                trainer_name = jockey_trainer_match.group(4)
 
             return {
                 'race_id': race_key,
                 'horse_id': horse_id,
                 'horse_name': horse_name,
-                'bracket_number': bracket_number,
+                'bracket_number': None,
                 'horse_number': horse_number,
-                'finish_position': None,  # KYFでは未定
+                'finish_position': None,
                 'finish_time': None,
                 'last_3f_time': None,
                 'passing_order': None,
-                'odds': base_odds,
-                'popularity': popularity,
-                'weight': weight,
+                'odds': None,
+                'popularity': None,
+                'weight': None,
                 'jockey_id': jockey_code,
                 'jockey_name': jockey_name,
                 'trainer_id': trainer_code,
                 'trainer_name': trainer_name,
-                'horse_weight': None,  # KYFでは未定
+                'horse_weight': None,
                 'horse_weight_diff': None,
                 'idm': idm,
                 'jockey_index': jockey_index,
                 'info_index': info_index,
                 'total_index': total_index,
-                'race_pace': pace_type,
-                'horse_pace': distance_aptitude,
+                'race_pace': None,
+                'horse_pace': None,
                 'created_at': datetime.utcnow().isoformat(),
                 'updated_at': datetime.utcnow().isoformat()
             }
 
         except Exception as e:
             logger.error(f"Error parsing KYF line: {e}", exc_info=True)
+            return None
+
+    @staticmethod
+    def parse_sec_line(line: str) -> Optional[Dict]:
+        """
+        SEC (成績データ) を解析
+
+        Args:
+            line: 固定長レコード文字列 (UTF-8変換済み)
+
+        Returns:
+            解析結果の辞書 or None
+        """
+        try:
+            if len(line) < 100:
+                logger.warning(f"SEC line too short: {len(line)} chars")
+                return None
+
+            # レースキー (固定位置)
+            race_key = line[0:8].strip()
+
+            # 馬番 (固定位置)
+            horse_number = JRDBParser.safe_int(line[8:10])
+
+            # 血統登録番号/馬ID (固定位置)
+            horse_id = line[10:18].strip()
+
+            # SECでは日付(8文字)の後に馬名
+            # 馬名 (26文字目から、全角文字)
+            remaining = line[26:]
+            horse_name_match = re.match(r'^([^\s0-9]+)', remaining)
+            horse_name = horse_name_match.group(1).strip() if horse_name_match else ''
+
+            # 着順を探す
+            # SECの行末は "着順" で終わることが多い
+            # 例: "...101 4" の 4 が着順
+            finish_position = None
+            # 行末から着順を探す
+            tail = line[-20:].strip() if len(line) > 20 else line.strip()
+            pos_match = re.search(r'(\d{1,2})\s*$', tail)
+            if pos_match:
+                finish_position = JRDBParser.safe_int(pos_match.group(1))
+
+            return {
+                'race_id': race_key,
+                'horse_id': horse_id,
+                'horse_name': horse_name,
+                'bracket_number': None,
+                'horse_number': horse_number,
+                'finish_position': finish_position,
+                'finish_time': None,
+                'last_3f_time': None,
+                'passing_order': None,
+                'odds': None,
+                'popularity': None,
+                'weight': None,
+                'jockey_id': None,
+                'jockey_name': None,
+                'trainer_id': None,
+                'trainer_name': None,
+                'horse_weight': None,
+                'horse_weight_diff': None,
+                'idm': None,
+                'jockey_index': None,
+                'info_index': None,
+                'total_index': None,
+                'race_pace': None,
+                'horse_pace': None,
+                'created_at': datetime.utcnow().isoformat(),
+                'updated_at': datetime.utcnow().isoformat()
+            }
+
+        except Exception as e:
+            logger.error(f"Error parsing SEC line: {e}", exc_info=True)
             return None
 
     @staticmethod
@@ -355,6 +423,7 @@ class JRDBParser:
             'KYF': JRDBParser.parse_kyf_line,
             'KYG': JRDBParser.parse_kyf_line,
             'KYH': JRDBParser.parse_kyf_line,
+            'SEC': JRDBParser.parse_sec_line,
         }
 
         parser_func = parser_map.get(data_type.upper())
