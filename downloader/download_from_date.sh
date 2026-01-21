@@ -49,15 +49,23 @@ convert_encoding() {
 }
 
 txt_to_csv() {
-  # テキストファイルを CSV に変換
+  # テキストファイルの拡張子を .csv に変更
+  # 注意: parser.py は固定長テキストの文字位置に基づいてパースするため、
+  # スペースをカンマに変換するとパースが破綻する。
+  # ここでは拡張子変更のみを行い、固定長フォーマットを維持する。
   FILETYPE_LOWER=$(datatype_to_path $FILETYPE)
+
+  # テキストファイル保存ディレクトリを作成
+  TXT_BACKUP_DIR="${DOWNLOAD_FILE_OUTPUT_DIRECTORY}${FILETYPE_LOWER}/txt_backup"
+  mkdir -p "$TXT_BACKUP_DIR"
+
   for txt_file in ${DOWNLOAD_FILE_OUTPUT_DIRECTORY}${FILETYPE_LOWER}/*.txt; do
     if [ -f "$txt_file" ]; then
       csv_file="${txt_file%.txt}.csv"
-      # 固定長テキストをカンマで区切ったCSVに変換（行をそのままCSVの行にする）
-      # JRDB のテキストはスペース区切りまたは固定長形式なので、タブをカンマに置換
-      sed 's/[[:space:]]\+/,/g' "$txt_file" > "$csv_file"
-      rm "$txt_file"
+      # 元のテキストファイルをバックアップディレクトリにコピー
+      cp "$txt_file" "$TXT_BACKUP_DIR/$(basename "$txt_file")"
+      # 拡張子のみ変更（固定長フォーマットを維持）
+      mv "$txt_file" "$csv_file"
     fi
   done
 }
