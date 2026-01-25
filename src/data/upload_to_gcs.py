@@ -10,6 +10,7 @@ GCSアップロードスクリプト
 Issue #6: ローカル→GCS自動アップロードスクリプトの実装
 """
 
+import base64
 import hashlib
 import os
 import sys
@@ -106,8 +107,6 @@ class GCSUploader:
             blob.reload()
             if blob.md5_hash:
                 # Base64エンコードされたMD5を16進数に変換
-                import base64
-
                 md5_bytes = base64.b64decode(blob.md5_hash)
                 return md5_bytes.hex()
             return None
