@@ -38,6 +38,24 @@ if [ ! -f ".env" ]; then
     exit 1
 fi
 
+# GCP認証情報の設定
+# 1. 環境変数GOOGLE_APPLICATION_CREDENTIALSが既に設定されている場合はそれを使用
+# 2. プロジェクトルートにkey.jsonがある場合はそれを使用
+# 3. どちらもない場合はgcloud auth application-default loginが必要
+if [ -z "$GOOGLE_APPLICATION_CREDENTIALS" ]; then
+    if [ -f "$PROJECT_ROOT/key.json" ]; then
+        export GOOGLE_APPLICATION_CREDENTIALS="$PROJECT_ROOT/key.json"
+        echo "認証情報: $PROJECT_ROOT/key.json を使用"
+    else
+        echo "注意: サービスアカウントキーが見つかりません。"
+        echo "gcloud auth application-default login で認証するか、"
+        echo "key.json をプロジェクトルートに配置してください。"
+        echo ""
+    fi
+else
+    echo "認証情報: $GOOGLE_APPLICATION_CREDENTIALS を使用"
+fi
+
 # Pythonスクリプトを実行
 echo "========================================"
 echo "GCSアップロードスクリプト"

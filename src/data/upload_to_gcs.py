@@ -21,8 +21,10 @@ from typing import Optional
 
 from dotenv import load_dotenv
 from google.api_core import retry
+from google.auth.exceptions import DefaultCredentialsError
 from google.cloud import storage
 from google.cloud.exceptions import NotFound
+from google.oauth2 import service_account
 
 
 @dataclass
@@ -55,6 +57,7 @@ class GCSUploader:
         project_id: str,
         bucket_name: str,
         local_base_dir: Optional[Path] = None,
+        credentials_path: Optional[str] = None,
     ):
         """
         初期化
@@ -63,10 +66,11 @@ class GCSUploader:
             project_id: GCPプロジェクトID
             bucket_name: GCSバケット名
             local_base_dir: ローカルの基準ディレクトリ（デフォルト: downloaded_files）
+            credentials_path: サービスアカウントキーファイルのパス（オプション）
         """
         self.project_id = project_id
         self.bucket_name = bucket_name
-        self.client = storage.Client(project=project_id)
+        self.client = self._create_client(project_id, credentials_path)
         self.bucket = self.client.bucket(bucket_name)
 
         if local_base_dir is None:
@@ -75,6 +79,75 @@ class GCSUploader:
             )
         else:
             self.local_base_dir = local_base_dir
+
+    def _create_client(
+        self, project_id: str, credentials_path: Optional[str]
+    ) -> storage.Client:
+        """
+        GCS Clientを作成
+
+        認証の優先順位:
+        1. credentials_path引数で指定されたサービスアカウントキー
+        2. GOOGLE_APPLICATION_CREDENTIALS環境変数
+        3. Application Default Credentials (gcloud auth application-default login)
+
+        Args:
+            project_id: GCPプロジェクトID
+            credentials_path: サービスアカウントキーファイルのパス
+
+        Returns:
+            GCS Client
+
+        Raises:
+            SystemExit: 認証に失敗した場合
+        """
+        # 1. 引数で指定されたサービスアカウントキーを使用
+        if credentials_path:
+            if not os.path.exists(credentials_path):
+                print(f"エラー: サービスアカウントキーファイルが見つかりません: {credentials_path}")
+                sys.exit(1)
+            credentials = service_account.Credentials.from_service_account_file(
+                credentials_path
+            )
+            return storage.Client(project=project_id, credentials=credentials)
+
+        # 2. 環境変数で指定されたサービスアカウントキーを使用
+        env_credentials_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+        if env_credentials_path:
+            if not os.path.exists(env_credentials_path):
+                print(
+                    f"エラー: GOOGLE_APPLICATION_CREDENTIALS で指定されたファイルが見つかりません: "
+                    f"{env_credentials_path}"
+                )
+                sys.exit(1)
+            credentials = service_account.Credentials.from_service_account_file(
+                env_credentials_path
+            )
+            return storage.Client(project=project_id, credentials=credentials)
+
+        # 3. Application Default Credentialsを使用
+        try:
+            return storage.Client(project=project_id)
+        except DefaultCredentialsError:
+            print("エラー: GCP認証情報が見つかりません。")
+            print("")
+            print("以下のいずれかの方法で認証を設定してください:")
+            print("")
+            print("方法1: gcloud CLIでログイン（開発環境向け）")
+            print("  $ gcloud auth application-default login")
+            print("")
+            print("方法2: サービスアカウントキーを環境変数で指定")
+            print("  $ export GOOGLE_APPLICATION_CREDENTIALS=/path/to/keyfile.json")
+            print("")
+            print("方法3: .envファイルにGOOGLE_APPLICATION_CREDENTIALSを設定")
+            print("  GOOGLE_APPLICATION_CREDENTIALS=/path/to/keyfile.json")
+            print("")
+            print("サービスアカウントキーの作成方法:")
+            print("  1. GCPコンソール > IAMと管理 > サービスアカウント")
+            print("  2. サービスアカウントを作成または選択")
+            print("  3. キー > 鍵を追加 > 新しい鍵を作成 > JSON")
+            print("  4. ダウンロードしたJSONファイルを安全な場所に保存")
+            sys.exit(1)
 
     def _calculate_md5(self, file_path: Path) -> str:
         """
@@ -336,6 +409,12 @@ def main():
         action="store_true",
         help="ドライラン（実際にはアップロードしない）",
     )
+    parser.add_argument(
+        "--credentials",
+        type=str,
+        default=None,
+        help="サービスアカウントキーファイルのパス",
+    )
     args = parser.parse_args()
 
     # .envファイルを読み込み
@@ -356,7 +435,7 @@ def main():
     print(f"GCSバケット名: {bucket_name}")
 
     # アップローダーを作成
-    uploader = GCSUploader(project_id, bucket_name)
+    uploader = GCSUploader(project_id, bucket_name, credentials_path=args.credentials)
 
     # バケットの存在確認
     if not uploader.verify_bucket_exists():
