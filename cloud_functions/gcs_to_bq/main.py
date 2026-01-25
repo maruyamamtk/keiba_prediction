@@ -11,6 +11,7 @@ JRDBデータを解析してBigQueryにロードします。
 import os
 import logging
 import re
+import time
 from datetime import datetime
 from typing import Dict, List, Optional
 
@@ -40,7 +41,20 @@ TABLE_MAPPING = {
     'KYF': 'horse_results',
     'KYG': 'horse_results',
     'KYH': 'horse_results',
-    'SEC': 'horse_results',
+    'SEC': 'race_results',  # 成績データは専用テーブルへ
+    'UKC': 'horse_master',  # 馬基本データ
+    'KKA': 'horse_extended',  # 競走馬拡張データ
+    'KAA': 'venue_info',  # 開催データ
+}
+
+# テーブルごとの一意キー (MERGE文で使用)
+TABLE_UNIQUE_KEYS = {
+    'race_info': ['race_id'],
+    'horse_results': ['race_id', 'horse_number'],
+    'race_results': ['race_id', 'horse_number'],
+    'horse_master': ['horse_id'],
+    'horse_extended': ['race_id', 'horse_number'],
+    'venue_info': ['venue_id'],
 }
 
 
@@ -83,7 +97,10 @@ def load_to_bigquery(
     data_type: str
 ) -> int:
     """
-    BigQueryにデータをロード (Streaming Insert使用)
+    BigQueryにデータをロード (MERGE文で重複を防止)
+
+    既存レコードがあればUPDATE、なければINSERTを実行します。
+    一意キーはTABLE_UNIQUE_KEYSで定義されています。
 
     Args:
         project_id: プロジェクトID
@@ -99,20 +116,69 @@ def load_to_bigquery(
         GoogleCloudError: BigQueryエラー
     """
     table_ref = f"{project_id}.{dataset_id}.{table_id}"
+    temp_table_ref = f"{project_id}.{dataset_id}._temp_{table_id}_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
 
     try:
         client = bigquery.Client(project=project_id)
-        table = client.get_table(table_ref)
 
-        # Streaming Insertでデータを挿入
-        errors = client.insert_rows_json(table, rows)
+        # ターゲットテーブルのスキーマを取得
+        target_table = client.get_table(table_ref)
+        schema = target_table.schema
 
-        if errors:
-            error_msgs = [str(e) for e in errors[:5]]
-            logger.error(f"BigQuery insert errors: {error_msgs}")
-            raise GoogleCloudError(f"Insert errors: {error_msgs}")
+        # 一時テーブルを作成
+        temp_table = bigquery.Table(temp_table_ref, schema=schema)
+        temp_table = client.create_table(temp_table)
+        logger.info(f"Created temp table: {temp_table_ref}")
 
-        logger.info(f"Loaded {len(rows)} rows to {table_ref}.")
+        try:
+            # 一時テーブルにデータをStreaming Insert
+            errors = client.insert_rows_json(temp_table, rows)
+            if errors:
+                error_msgs = [str(e) for e in errors[:5]]
+                logger.error(f"BigQuery insert errors: {error_msgs}")
+                raise GoogleCloudError(f"Insert errors: {error_msgs}")
+
+            logger.info(f"Inserted {len(rows)} rows to temp table")
+
+            # Streaming Insertのバッファ反映を待つ
+            time.sleep(5)
+
+            # MERGE文を構築
+            unique_keys = TABLE_UNIQUE_KEYS.get(table_id, ['race_id'])
+            columns = [field.name for field in schema]
+
+            # JOIN条件
+            join_conditions = ' AND '.join([f"T.{key} = S.{key}" for key in unique_keys])
+
+            # UPDATE SET句 (一意キー以外のカラムを更新)
+            update_columns = [col for col in columns if col not in unique_keys]
+            update_set = ', '.join([f"T.{col} = S.{col}" for col in update_columns])
+
+            # INSERT句
+            insert_columns = ', '.join(columns)
+            insert_values = ', '.join([f"S.{col}" for col in columns])
+
+            merge_query = f"""
+            MERGE `{table_ref}` T
+            USING `{temp_table_ref}` S
+            ON {join_conditions}
+            WHEN MATCHED THEN
+                UPDATE SET {update_set}
+            WHEN NOT MATCHED THEN
+                INSERT ({insert_columns})
+                VALUES ({insert_values})
+            """
+
+            logger.info(f"Executing MERGE query...")
+            query_job = client.query(merge_query)
+            query_job.result()  # 完了を待つ
+
+            logger.info(f"MERGE completed: {len(rows)} rows processed to {table_ref}")
+
+        finally:
+            # 一時テーブルを削除
+            client.delete_table(temp_table_ref, not_found_ok=True)
+            logger.info(f"Deleted temp table: {temp_table_ref}")
 
         return len(rows)
 

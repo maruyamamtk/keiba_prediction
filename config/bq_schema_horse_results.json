@@ -3,109 +3,25 @@
     "name": "race_id",
     "type": "STRING",
     "mode": "REQUIRED",
-    "description": "レースID"
+    "description": "レースID (場コード2 + 年2 + 回1 + 日1 + R2)"
+  },
+  {
+    "name": "horse_number",
+    "type": "INT64",
+    "mode": "REQUIRED",
+    "description": "馬番"
   },
   {
     "name": "horse_id",
     "type": "STRING",
     "mode": "REQUIRED",
-    "description": "馬ID (血統登録番号)"
+    "description": "血統登録番号"
   },
   {
     "name": "horse_name",
     "type": "STRING",
     "mode": "NULLABLE",
-    "description": "馬名"
-  },
-  {
-    "name": "bracket_number",
-    "type": "INT64",
-    "mode": "NULLABLE",
-    "description": "枠番"
-  },
-  {
-    "name": "horse_number",
-    "type": "INT64",
-    "mode": "NULLABLE",
-    "description": "馬番"
-  },
-  {
-    "name": "finish_position",
-    "type": "INT64",
-    "mode": "NULLABLE",
-    "description": "着順"
-  },
-  {
-    "name": "finish_time",
-    "type": "FLOAT64",
-    "mode": "NULLABLE",
-    "description": "走破タイム(秒)"
-  },
-  {
-    "name": "last_3f_time",
-    "type": "FLOAT64",
-    "mode": "NULLABLE",
-    "description": "上がり3F(秒)"
-  },
-  {
-    "name": "passing_order",
-    "type": "STRING",
-    "mode": "NULLABLE",
-    "description": "通過順 (コーナー毎の順位)"
-  },
-  {
-    "name": "odds",
-    "type": "FLOAT64",
-    "mode": "NULLABLE",
-    "description": "単勝オッズ"
-  },
-  {
-    "name": "popularity",
-    "type": "INT64",
-    "mode": "NULLABLE",
-    "description": "人気順位"
-  },
-  {
-    "name": "weight",
-    "type": "INT64",
-    "mode": "NULLABLE",
-    "description": "斤量(kg)"
-  },
-  {
-    "name": "jockey_id",
-    "type": "STRING",
-    "mode": "NULLABLE",
-    "description": "騎手ID"
-  },
-  {
-    "name": "jockey_name",
-    "type": "STRING",
-    "mode": "NULLABLE",
-    "description": "騎手名"
-  },
-  {
-    "name": "trainer_id",
-    "type": "STRING",
-    "mode": "NULLABLE",
-    "description": "調教師ID"
-  },
-  {
-    "name": "trainer_name",
-    "type": "STRING",
-    "mode": "NULLABLE",
-    "description": "調教師名"
-  },
-  {
-    "name": "horse_weight",
-    "type": "INT64",
-    "mode": "NULLABLE",
-    "description": "馬体重(kg)"
-  },
-  {
-    "name": "horse_weight_diff",
-    "type": "INT64",
-    "mode": "NULLABLE",
-    "description": "馬体重増減(kg)"
+    "description": "馬名 (全角18文字)"
   },
   {
     "name": "idm",
@@ -132,16 +48,664 @@
     "description": "総合指数"
   },
   {
-    "name": "race_pace",
-    "type": "STRING",
+    "name": "running_style",
+    "type": "INT64",
     "mode": "NULLABLE",
-    "description": "レースペース"
+    "description": "脚質"
   },
   {
-    "name": "horse_pace",
+    "name": "distance_aptitude",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "距離適性"
+  },
+  {
+    "name": "improvement",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "上昇度"
+  },
+  {
+    "name": "rotation",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "ローテーション (間隔週数)"
+  },
+  {
+    "name": "base_odds",
+    "type": "FLOAT64",
+    "mode": "NULLABLE",
+    "description": "基準オッズ"
+  },
+  {
+    "name": "base_popularity",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "基準人気順位"
+  },
+  {
+    "name": "base_place_odds",
+    "type": "FLOAT64",
+    "mode": "NULLABLE",
+    "description": "基準複勝オッズ"
+  },
+  {
+    "name": "base_place_popularity",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "基準複勝人気順位"
+  },
+  {
+    "name": "specific_mark_circle",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "特定情報◎"
+  },
+  {
+    "name": "specific_mark_circle2",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "特定情報○"
+  },
+  {
+    "name": "specific_mark_triangle",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "特定情報▲"
+  },
+  {
+    "name": "specific_mark_triangle2",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "特定情報△"
+  },
+  {
+    "name": "specific_mark_x",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "特定情報×"
+  },
+  {
+    "name": "total_mark_circle",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "総合情報◎"
+  },
+  {
+    "name": "total_mark_circle2",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "総合情報○"
+  },
+  {
+    "name": "total_mark_triangle",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "総合情報▲"
+  },
+  {
+    "name": "total_mark_triangle2",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "総合情報△"
+  },
+  {
+    "name": "total_mark_x",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "総合情報×"
+  },
+  {
+    "name": "popularity_index",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "人気指数"
+  },
+  {
+    "name": "training_index",
+    "type": "FLOAT64",
+    "mode": "NULLABLE",
+    "description": "調教指数"
+  },
+  {
+    "name": "stable_index",
+    "type": "FLOAT64",
+    "mode": "NULLABLE",
+    "description": "厩舎指数"
+  },
+  {
+    "name": "training_arrow_code",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "調教矢印コード"
+  },
+  {
+    "name": "stable_eval_code",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "厩舎評価コード"
+  },
+  {
+    "name": "jockey_expected_win_rate",
+    "type": "FLOAT64",
+    "mode": "NULLABLE",
+    "description": "騎手期待連対率"
+  },
+  {
+    "name": "surge_index",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "激走指数"
+  },
+  {
+    "name": "hoof_code",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "蹄コード"
+  },
+  {
+    "name": "heavy_aptitude_code",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "重適正コード"
+  },
+  {
+    "name": "class_code",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "クラスコード"
+  },
+  {
+    "name": "blinker",
     "type": "STRING",
     "mode": "NULLABLE",
-    "description": "馬ペース"
+    "description": "ブリンカー (1:初装着, 2:再装着, 3:ブリンカ)"
+  },
+  {
+    "name": "jockey_name",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "騎手名 (全角6文字)"
+  },
+  {
+    "name": "weight_carried",
+    "type": "FLOAT64",
+    "mode": "NULLABLE",
+    "description": "負担重量 (kg)"
+  },
+  {
+    "name": "apprentice_class",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "見習い区分 (1:☆1K減, 2:△2K減, 3:▲3K減)"
+  },
+  {
+    "name": "trainer_name",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "調教師名 (全角6文字)"
+  },
+  {
+    "name": "trainer_affiliation",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "調教師所属 (美浦/栗東)"
+  },
+  {
+    "name": "prev_race_key_1",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "前走1レースキー"
+  },
+  {
+    "name": "prev_race_key_2",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "前走2レースキー"
+  },
+  {
+    "name": "prev_race_key_3",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "前走3レースキー"
+  },
+  {
+    "name": "prev_race_key_4",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "前走4レースキー"
+  },
+  {
+    "name": "prev_race_key_5",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "前走5レースキー"
+  },
+  {
+    "name": "bracket_number",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "枠番"
+  },
+  {
+    "name": "overall_mark",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "総合印"
+  },
+  {
+    "name": "idm_mark",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "IDM印"
+  },
+  {
+    "name": "info_mark",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "情報印"
+  },
+  {
+    "name": "jockey_mark",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "騎手印"
+  },
+  {
+    "name": "stable_mark",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "厩舎印"
+  },
+  {
+    "name": "training_mark",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "調教印"
+  },
+  {
+    "name": "surge_mark",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "激走印"
+  },
+  {
+    "name": "turf_aptitude",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "芝適性コード (1:◎, 2:○, 3:△)"
+  },
+  {
+    "name": "dirt_aptitude",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "ダ適性コード (1:◎, 2:○, 3:△)"
+  },
+  {
+    "name": "jockey_code",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "騎手コード"
+  },
+  {
+    "name": "trainer_code",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "調教師コード"
+  },
+  {
+    "name": "prize_money",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "獲得賞金 (万円)"
+  },
+  {
+    "name": "earned_prize",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "収得賞金 (万円)"
+  },
+  {
+    "name": "condition_class",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "条件クラス"
+  },
+  {
+    "name": "ten_index",
+    "type": "FLOAT64",
+    "mode": "NULLABLE",
+    "description": "テン指数"
+  },
+  {
+    "name": "pace_index",
+    "type": "FLOAT64",
+    "mode": "NULLABLE",
+    "description": "ペース指数"
+  },
+  {
+    "name": "agari_index",
+    "type": "FLOAT64",
+    "mode": "NULLABLE",
+    "description": "上がり指数"
+  },
+  {
+    "name": "position_index",
+    "type": "FLOAT64",
+    "mode": "NULLABLE",
+    "description": "位置指数"
+  },
+  {
+    "name": "pace_forecast",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "ペース予想 (H/M/S)"
+  },
+  {
+    "name": "mid_position",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "道中順位"
+  },
+  {
+    "name": "mid_gap",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "道中差"
+  },
+  {
+    "name": "mid_inside_outside",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "道中内外"
+  },
+  {
+    "name": "last_3f_position",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "後3F順位"
+  },
+  {
+    "name": "last_3f_gap",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "後3F差"
+  },
+  {
+    "name": "last_3f_inside_outside",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "後3F内外"
+  },
+  {
+    "name": "goal_position",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "ゴール順位"
+  },
+  {
+    "name": "goal_gap",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "ゴール差"
+  },
+  {
+    "name": "goal_inside_outside",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "ゴール内外"
+  },
+  {
+    "name": "development_code",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "展開記号"
+  },
+  {
+    "name": "distance_aptitude_2",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "距離適性2"
+  },
+  {
+    "name": "confirmed_weight",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "枠確定馬体重 (kg)"
+  },
+  {
+    "name": "confirmed_weight_diff",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "枠確定馬体重増減 (kg)"
+  },
+  {
+    "name": "cancel_flag",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "取消フラグ (1:取消)"
+  },
+  {
+    "name": "sex_code",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "性別コード (1:牡, 2:牝, 3:セン)"
+  },
+  {
+    "name": "owner_name",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "馬主名"
+  },
+  {
+    "name": "owner_club_code",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "馬主会コード"
+  },
+  {
+    "name": "horse_symbol_code",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "馬記号コード"
+  },
+  {
+    "name": "surge_rank",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "激走順位"
+  },
+  {
+    "name": "ls_index_rank",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "LS指数順位"
+  },
+  {
+    "name": "ten_index_rank",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "テン指数順位"
+  },
+  {
+    "name": "pace_index_rank",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "ペース指数順位"
+  },
+  {
+    "name": "agari_index_rank",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "上がり指数順位"
+  },
+  {
+    "name": "position_index_rank",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "位置指数順位"
+  },
+  {
+    "name": "jockey_expected_win_single",
+    "type": "FLOAT64",
+    "mode": "NULLABLE",
+    "description": "騎手期待単勝率"
+  },
+  {
+    "name": "jockey_expected_top3",
+    "type": "FLOAT64",
+    "mode": "NULLABLE",
+    "description": "騎手期待3着内率"
+  },
+  {
+    "name": "transport_class",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "輸送区分"
+  },
+  {
+    "name": "running_form",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "走法"
+  },
+  {
+    "name": "body_type",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "体型"
+  },
+  {
+    "name": "body_total_1",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "体型総合1"
+  },
+  {
+    "name": "body_total_2",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "体型総合2"
+  },
+  {
+    "name": "body_total_3",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "体型総合3"
+  },
+  {
+    "name": "horse_note_1",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "馬特記1"
+  },
+  {
+    "name": "horse_note_2",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "馬特記2"
+  },
+  {
+    "name": "horse_note_3",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "馬特記3"
+  },
+  {
+    "name": "start_index",
+    "type": "FLOAT64",
+    "mode": "NULLABLE",
+    "description": "馬スタート指数"
+  },
+  {
+    "name": "late_start_rate",
+    "type": "FLOAT64",
+    "mode": "NULLABLE",
+    "description": "馬出遅率"
+  },
+  {
+    "name": "reference_prev_race",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "参考前走"
+  },
+  {
+    "name": "reference_jockey_code",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "参考前走騎手コード"
+  },
+  {
+    "name": "big_ticket_index",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "万券指数"
+  },
+  {
+    "name": "big_ticket_mark",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "万券印"
+  },
+  {
+    "name": "demotion_flag",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "降級フラグ (1:降級, 2:2段階降級)"
+  },
+  {
+    "name": "surge_type",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "激走タイプ"
+  },
+  {
+    "name": "rest_reason_code",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "休養理由分類コード"
+  },
+  {
+    "name": "flags",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "フラグ (初芝初ダ初障など)"
+  },
+  {
+    "name": "stable_entry_race_count",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "入厩何走目"
+  },
+  {
+    "name": "stable_entry_date",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "入厩年月日"
+  },
+  {
+    "name": "stable_entry_days_before",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "入厩何日前"
+  },
+  {
+    "name": "pasture",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "放牧先"
+  },
+  {
+    "name": "pasture_rank",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "放牧先ランク (A-E)"
+  },
+  {
+    "name": "stable_rank",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "厩舎ランク (1-9)"
   },
   {
     "name": "created_at",

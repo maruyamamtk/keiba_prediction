@@ -1,0 +1,36 @@
+[
+  {"name": "venue_id", "type": "STRING", "mode": "REQUIRED", "description": "開催ID (場コード+年+回+日)"},
+  {"name": "race_date", "type": "DATE", "mode": "NULLABLE", "description": "開催日"},
+  {"name": "venue_code", "type": "STRING", "mode": "NULLABLE", "description": "場コード"},
+  {"name": "venue_name", "type": "STRING", "mode": "NULLABLE", "description": "競馬場名"},
+  {"name": "year", "type": "INT64", "mode": "NULLABLE", "description": "年"},
+  {"name": "kai", "type": "INT64", "mode": "NULLABLE", "description": "回"},
+  {"name": "day", "type": "STRING", "mode": "NULLABLE", "description": "日 (16進数)"},
+  {"name": "region_code", "type": "INT64", "mode": "NULLABLE", "description": "開催区分(1:関東,2:関西,3:ローカル)"},
+  {"name": "day_of_week", "type": "STRING", "mode": "NULLABLE", "description": "曜日"},
+
+  {"name": "weather_code", "type": "INT64", "mode": "NULLABLE", "description": "天候コード(予想)"},
+
+  {"name": "turf_condition_code", "type": "INT64", "mode": "NULLABLE", "description": "芝馬場状態コード(予想)"},
+  {"name": "turf_condition_inner", "type": "INT64", "mode": "NULLABLE", "description": "芝馬場状態内(1:絶好,2:良,3:稍荒,4:荒)"},
+  {"name": "turf_condition_middle", "type": "INT64", "mode": "NULLABLE", "description": "芝馬場状態中"},
+  {"name": "turf_condition_outer", "type": "INT64", "mode": "NULLABLE", "description": "芝馬場状態外"},
+  {"name": "turf_bias", "type": "INT64", "mode": "NULLABLE", "description": "芝馬場差(予想)"},
+
+  {"name": "straight_bias_innermost", "type": "INT64", "mode": "NULLABLE", "description": "直線馬場差最内(予想)"},
+  {"name": "straight_bias_inner", "type": "INT64", "mode": "NULLABLE", "description": "直線馬場差内(予想)"},
+  {"name": "straight_bias_middle", "type": "INT64", "mode": "NULLABLE", "description": "直線馬場差中(予想)"},
+  {"name": "straight_bias_outer", "type": "INT64", "mode": "NULLABLE", "description": "直線馬場差外(予想)"},
+  {"name": "straight_bias_outermost", "type": "INT64", "mode": "NULLABLE", "description": "直線馬場差大外(予想)"},
+
+  {"name": "dirt_condition_code", "type": "INT64", "mode": "NULLABLE", "description": "ダ馬場状態コード(予想)"},
+  {"name": "dirt_condition_inner", "type": "INT64", "mode": "NULLABLE", "description": "ダ馬場状態内(1:絶好,2:良,3:稍荒,4:荒)"},
+  {"name": "dirt_condition_middle", "type": "INT64", "mode": "NULLABLE", "description": "ダ馬場状態中"},
+  {"name": "dirt_condition_outer", "type": "INT64", "mode": "NULLABLE", "description": "ダ馬場状態外"},
+  {"name": "dirt_bias", "type": "INT64", "mode": "NULLABLE", "description": "ダ馬場差(予想)"},
+
+  {"name": "data_category", "type": "INT64", "mode": "NULLABLE", "description": "データ区分(1:特別登録,2:想定確定,3:枠確定,4:前日)"},
+
+  {"name": "created_at", "type": "TIMESTAMP", "mode": "NULLABLE", "description": "作成日時"},
+  {"name": "updated_at", "type": "TIMESTAMP", "mode": "NULLABLE", "description": "更新日時"}
+]

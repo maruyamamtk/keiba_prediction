@@ -1,0 +1,130 @@
+[
+  {"name": "race_id", "type": "STRING", "mode": "REQUIRED", "description": "レースID (場コード+年+回+日+R)"},
+  {"name": "horse_number", "type": "INT64", "mode": "REQUIRED", "description": "馬番"},
+  {"name": "race_date", "type": "DATE", "mode": "NULLABLE", "description": "レース日"},
+
+  {"name": "jra_win", "type": "INT64", "mode": "NULLABLE", "description": "JRA成績-1着数"},
+  {"name": "jra_place", "type": "INT64", "mode": "NULLABLE", "description": "JRA成績-2着数"},
+  {"name": "jra_show", "type": "INT64", "mode": "NULLABLE", "description": "JRA成績-3着数"},
+  {"name": "jra_out", "type": "INT64", "mode": "NULLABLE", "description": "JRA成績-着外数"},
+
+  {"name": "exchange_win", "type": "INT64", "mode": "NULLABLE", "description": "交流成績-1着数"},
+  {"name": "exchange_place", "type": "INT64", "mode": "NULLABLE", "description": "交流成績-2着数"},
+  {"name": "exchange_show", "type": "INT64", "mode": "NULLABLE", "description": "交流成績-3着数"},
+  {"name": "exchange_out", "type": "INT64", "mode": "NULLABLE", "description": "交流成績-着外数"},
+
+  {"name": "other_win", "type": "INT64", "mode": "NULLABLE", "description": "他成績-1着数"},
+  {"name": "other_place", "type": "INT64", "mode": "NULLABLE", "description": "他成績-2着数"},
+  {"name": "other_show", "type": "INT64", "mode": "NULLABLE", "description": "他成績-3着数"},
+  {"name": "other_out", "type": "INT64", "mode": "NULLABLE", "description": "他成績-着外数"},
+
+  {"name": "surface_win", "type": "INT64", "mode": "NULLABLE", "description": "芝ダ障害別成績-1着数"},
+  {"name": "surface_place", "type": "INT64", "mode": "NULLABLE", "description": "芝ダ障害別成績-2着数"},
+  {"name": "surface_show", "type": "INT64", "mode": "NULLABLE", "description": "芝ダ障害別成績-3着数"},
+  {"name": "surface_out", "type": "INT64", "mode": "NULLABLE", "description": "芝ダ障害別成績-着外数"},
+
+  {"name": "surface_dist_win", "type": "INT64", "mode": "NULLABLE", "description": "芝ダ障害別距離成績-1着数"},
+  {"name": "surface_dist_place", "type": "INT64", "mode": "NULLABLE", "description": "芝ダ障害別距離成績-2着数"},
+  {"name": "surface_dist_show", "type": "INT64", "mode": "NULLABLE", "description": "芝ダ障害別距離成績-3着数"},
+  {"name": "surface_dist_out", "type": "INT64", "mode": "NULLABLE", "description": "芝ダ障害別距離成績-着外数"},
+
+  {"name": "track_dist_win", "type": "INT64", "mode": "NULLABLE", "description": "トラック距離成績-1着数"},
+  {"name": "track_dist_place", "type": "INT64", "mode": "NULLABLE", "description": "トラック距離成績-2着数"},
+  {"name": "track_dist_show", "type": "INT64", "mode": "NULLABLE", "description": "トラック距離成績-3着数"},
+  {"name": "track_dist_out", "type": "INT64", "mode": "NULLABLE", "description": "トラック距離成績-着外数"},
+
+  {"name": "rotation_win", "type": "INT64", "mode": "NULLABLE", "description": "ローテ成績-1着数"},
+  {"name": "rotation_place", "type": "INT64", "mode": "NULLABLE", "description": "ローテ成績-2着数"},
+  {"name": "rotation_show", "type": "INT64", "mode": "NULLABLE", "description": "ローテ成績-3着数"},
+  {"name": "rotation_out", "type": "INT64", "mode": "NULLABLE", "description": "ローテ成績-着外数"},
+
+  {"name": "direction_win", "type": "INT64", "mode": "NULLABLE", "description": "回り成績-1着数"},
+  {"name": "direction_place", "type": "INT64", "mode": "NULLABLE", "description": "回り成績-2着数"},
+  {"name": "direction_show", "type": "INT64", "mode": "NULLABLE", "description": "回り成績-3着数"},
+  {"name": "direction_out", "type": "INT64", "mode": "NULLABLE", "description": "回り成績-着外数"},
+
+  {"name": "jockey_win", "type": "INT64", "mode": "NULLABLE", "description": "騎手成績-1着数"},
+  {"name": "jockey_place", "type": "INT64", "mode": "NULLABLE", "description": "騎手成績-2着数"},
+  {"name": "jockey_show", "type": "INT64", "mode": "NULLABLE", "description": "騎手成績-3着数"},
+  {"name": "jockey_out", "type": "INT64", "mode": "NULLABLE", "description": "騎手成績-着外数"},
+
+  {"name": "good_win", "type": "INT64", "mode": "NULLABLE", "description": "良馬場成績-1着数"},
+  {"name": "good_place", "type": "INT64", "mode": "NULLABLE", "description": "良馬場成績-2着数"},
+  {"name": "good_show", "type": "INT64", "mode": "NULLABLE", "description": "良馬場成績-3着数"},
+  {"name": "good_out", "type": "INT64", "mode": "NULLABLE", "description": "良馬場成績-着外数"},
+
+  {"name": "slightly_heavy_win", "type": "INT64", "mode": "NULLABLE", "description": "稍重成績-1着数"},
+  {"name": "slightly_heavy_place", "type": "INT64", "mode": "NULLABLE", "description": "稍重成績-2着数"},
+  {"name": "slightly_heavy_show", "type": "INT64", "mode": "NULLABLE", "description": "稍重成績-3着数"},
+  {"name": "slightly_heavy_out", "type": "INT64", "mode": "NULLABLE", "description": "稍重成績-着外数"},
+
+  {"name": "heavy_win", "type": "INT64", "mode": "NULLABLE", "description": "重不良成績-1着数"},
+  {"name": "heavy_place", "type": "INT64", "mode": "NULLABLE", "description": "重不良成績-2着数"},
+  {"name": "heavy_show", "type": "INT64", "mode": "NULLABLE", "description": "重不良成績-3着数"},
+  {"name": "heavy_out", "type": "INT64", "mode": "NULLABLE", "description": "重不良成績-着外数"},
+
+  {"name": "slow_pace_win", "type": "INT64", "mode": "NULLABLE", "description": "Sペース成績-1着数"},
+  {"name": "slow_pace_place", "type": "INT64", "mode": "NULLABLE", "description": "Sペース成績-2着数"},
+  {"name": "slow_pace_show", "type": "INT64", "mode": "NULLABLE", "description": "Sペース成績-3着数"},
+  {"name": "slow_pace_out", "type": "INT64", "mode": "NULLABLE", "description": "Sペース成績-着外数"},
+
+  {"name": "medium_pace_win", "type": "INT64", "mode": "NULLABLE", "description": "Mペース成績-1着数"},
+  {"name": "medium_pace_place", "type": "INT64", "mode": "NULLABLE", "description": "Mペース成績-2着数"},
+  {"name": "medium_pace_show", "type": "INT64", "mode": "NULLABLE", "description": "Mペース成績-3着数"},
+  {"name": "medium_pace_out", "type": "INT64", "mode": "NULLABLE", "description": "Mペース成績-着外数"},
+
+  {"name": "high_pace_win", "type": "INT64", "mode": "NULLABLE", "description": "Hペース成績-1着数"},
+  {"name": "high_pace_place", "type": "INT64", "mode": "NULLABLE", "description": "Hペース成績-2着数"},
+  {"name": "high_pace_show", "type": "INT64", "mode": "NULLABLE", "description": "Hペース成績-3着数"},
+  {"name": "high_pace_out", "type": "INT64", "mode": "NULLABLE", "description": "Hペース成績-着外数"},
+
+  {"name": "season_win", "type": "INT64", "mode": "NULLABLE", "description": "季節成績-1着数"},
+  {"name": "season_place", "type": "INT64", "mode": "NULLABLE", "description": "季節成績-2着数"},
+  {"name": "season_show", "type": "INT64", "mode": "NULLABLE", "description": "季節成績-3着数"},
+  {"name": "season_out", "type": "INT64", "mode": "NULLABLE", "description": "季節成績-着外数"},
+
+  {"name": "bracket_win", "type": "INT64", "mode": "NULLABLE", "description": "枠成績-1着数"},
+  {"name": "bracket_place", "type": "INT64", "mode": "NULLABLE", "description": "枠成績-2着数"},
+  {"name": "bracket_show", "type": "INT64", "mode": "NULLABLE", "description": "枠成績-3着数"},
+  {"name": "bracket_out", "type": "INT64", "mode": "NULLABLE", "description": "枠成績-着外数"},
+
+  {"name": "jockey_dist_win", "type": "INT64", "mode": "NULLABLE", "description": "騎手距離成績-1着数"},
+  {"name": "jockey_dist_place", "type": "INT64", "mode": "NULLABLE", "description": "騎手距離成績-2着数"},
+  {"name": "jockey_dist_show", "type": "INT64", "mode": "NULLABLE", "description": "騎手距離成績-3着数"},
+  {"name": "jockey_dist_out", "type": "INT64", "mode": "NULLABLE", "description": "騎手距離成績-着外数"},
+
+  {"name": "jockey_track_dist_win", "type": "INT64", "mode": "NULLABLE", "description": "騎手トラック距離成績-1着数"},
+  {"name": "jockey_track_dist_place", "type": "INT64", "mode": "NULLABLE", "description": "騎手トラック距離成績-2着数"},
+  {"name": "jockey_track_dist_show", "type": "INT64", "mode": "NULLABLE", "description": "騎手トラック距離成績-3着数"},
+  {"name": "jockey_track_dist_out", "type": "INT64", "mode": "NULLABLE", "description": "騎手トラック距離成績-着外数"},
+
+  {"name": "jockey_trainer_win", "type": "INT64", "mode": "NULLABLE", "description": "騎手調教師別成績-1着数"},
+  {"name": "jockey_trainer_place", "type": "INT64", "mode": "NULLABLE", "description": "騎手調教師別成績-2着数"},
+  {"name": "jockey_trainer_show", "type": "INT64", "mode": "NULLABLE", "description": "騎手調教師別成績-3着数"},
+  {"name": "jockey_trainer_out", "type": "INT64", "mode": "NULLABLE", "description": "騎手調教師別成績-着外数"},
+
+  {"name": "jockey_owner_win", "type": "INT64", "mode": "NULLABLE", "description": "騎手馬主別成績-1着数"},
+  {"name": "jockey_owner_place", "type": "INT64", "mode": "NULLABLE", "description": "騎手馬主別成績-2着数"},
+  {"name": "jockey_owner_show", "type": "INT64", "mode": "NULLABLE", "description": "騎手馬主別成績-3着数"},
+  {"name": "jockey_owner_out", "type": "INT64", "mode": "NULLABLE", "description": "騎手馬主別成績-着外数"},
+
+  {"name": "jockey_blinker_win", "type": "INT64", "mode": "NULLABLE", "description": "騎手ブリンカ成績-1着数"},
+  {"name": "jockey_blinker_place", "type": "INT64", "mode": "NULLABLE", "description": "騎手ブリンカ成績-2着数"},
+  {"name": "jockey_blinker_show", "type": "INT64", "mode": "NULLABLE", "description": "騎手ブリンカ成績-3着数"},
+  {"name": "jockey_blinker_out", "type": "INT64", "mode": "NULLABLE", "description": "騎手ブリンカ成績-着外数"},
+
+  {"name": "trainer_owner_win", "type": "INT64", "mode": "NULLABLE", "description": "調教師馬主別成績-1着数"},
+  {"name": "trainer_owner_place", "type": "INT64", "mode": "NULLABLE", "description": "調教師馬主別成績-2着数"},
+  {"name": "trainer_owner_show", "type": "INT64", "mode": "NULLABLE", "description": "調教師馬主別成績-3着数"},
+  {"name": "trainer_owner_out", "type": "INT64", "mode": "NULLABLE", "description": "調教師馬主別成績-着外数"},
+
+  {"name": "sire_turf_place_rate", "type": "INT64", "mode": "NULLABLE", "description": "父馬産駒芝連対率(%)"},
+  {"name": "sire_dirt_place_rate", "type": "INT64", "mode": "NULLABLE", "description": "父馬産駒ダ連対率(%)"},
+  {"name": "sire_avg_place_distance", "type": "INT64", "mode": "NULLABLE", "description": "父馬産駒連対平均距離(m)"},
+  {"name": "broodmare_sire_turf_place_rate", "type": "INT64", "mode": "NULLABLE", "description": "母父馬産駒芝連対率(%)"},
+  {"name": "broodmare_sire_dirt_place_rate", "type": "INT64", "mode": "NULLABLE", "description": "母父馬産駒ダ連対率(%)"},
+  {"name": "broodmare_sire_avg_place_distance", "type": "INT64", "mode": "NULLABLE", "description": "母父馬産駒連対平均距離(m)"},
+
+  {"name": "created_at", "type": "TIMESTAMP", "mode": "NULLABLE", "description": "作成日時"},
+  {"name": "updated_at", "type": "TIMESTAMP", "mode": "NULLABLE", "description": "更新日時"}
+]

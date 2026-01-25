@@ -50,9 +50,56 @@ keiba_prediction/
 │   ├── download_from_date.sh       # 指定日付以降のファイルをダウンロード
 │   ├── download_all_from_date.sh   # 全データタイプ一括ダウンロード
 │   └── README.md                    # ダウンローダーの詳細ドキュメント
+├── cloud_functions/         # Cloud Functions
+│   └── gcs_to_bq/           # GCS→BigQuery自動ロード
+│       ├── main.py          # Cloud Function エントリーポイント
+│       ├── parser.py        # JRDBデータパーサー
+│       └── requirements.txt
+├── config/                  # 設定ファイル
+│   ├── bq_schema_race_info.json     # race_infoテーブルスキーマ
+│   ├── bq_schema_horse_results.json # horse_resultsテーブルスキーマ
+│   └── bq_schema_race_results.json  # race_resultsテーブルスキーマ
 ├── CLAUDE.md                # システム仕様書
 ├── ML_FEATURE.md            # 特徴量設計ドキュメント
 └── README.md                # このファイル
+```
+
+## 📊 データパイプライン
+
+### 対応データタイプ
+
+GCS→BigQuery自動ロード機能が対応しているJRDBデータタイプの一覧です。
+
+| データタイプ | 説明 | BigQueryテーブル |
+|-------------|------|-----------------|
+| BAA | 番組データ (レース基本情報) | `raw.race_info` |
+| BAB | 番組データ (詳細) | `raw.race_info` |
+| BAC | 番組データ (追加情報) | `raw.race_info` |
+| KYF | 競走馬データ (出走馬情報・指数) | `raw.horse_results` |
+| KYG | 競走馬データ (詳細) | `raw.horse_results` |
+| KYH | 競走馬データ (追加情報) | `raw.horse_results` |
+| SEC | 成績データ (レース結果) | `raw.race_results` |
+
+### 未対応データタイプ
+
+以下のデータタイプは、テーブル構造が異なるため現在未対応です。
+
+| データタイプ | 説明 | 理由 |
+|-------------|------|------|
+| KAA/KAB | 開催データ | 日単位の集計データでレース単位のテーブルと構造が異なる |
+| OZ系 | オッズデータ | 専用テーブル・パーサーが必要 |
+
+### データフロー
+
+```
+[ローカル]
+  ↓ download_all_from_date.sh
+[GCS] gs://${PROJECT_ID}-keiba-raw-data/
+  ↓ Cloud Functions (自動トリガー)
+[BigQuery]
+  ├── raw.race_info        ← BAA/BAB/BAC (レース情報)
+  ├── raw.horse_results    ← KYF/KYG/KYH (出馬表・予測指数)
+  └── raw.race_results     ← SEC (レース成績・結果)
 ```
 
 ## 🤖 Claude Code GitHub Action
@@ -113,7 +160,7 @@ keiba_prediction/
 ## 📅 実装計画
 
 - [x] Phase 1: データダウンロード基盤
-- [ ] Phase 2: データパイプライン (GCS + BigQuery)
+- [x] Phase 2: データパイプライン (GCS + BigQuery)
 - [ ] Phase 3: 特徴量エンジニアリング
 - [ ] Phase 4: モデル開発
 - [ ] Phase 5: 運用システム構築

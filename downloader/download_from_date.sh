@@ -80,6 +80,15 @@ post_process() {
 }
 
 download_single_file() {
+  # ローカルにcsvが存在するかチェック（ダウンロード済みならスキップ）
+  FILETYPE_LOWER=$(datatype_to_path $FILETYPE)
+  LOCAL_CSV="${DOWNLOAD_FILE_OUTPUT_DIRECTORY}${FILETYPE_LOWER}/${FILETYPE}${FILEDATE}.csv"
+
+  if [ -f "$LOCAL_CSV" ]; then
+    echo "⏭ Skipping ${FILETYPE}${FILEDATE} - already downloaded"
+    return 0
+  fi
+
   pre_process
 
   status_code=`file_exists`
