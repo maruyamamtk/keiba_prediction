@@ -9,19 +9,38 @@ if [ -f "${DIR}/.env" ]; then
 fi
 
 JRDB_BASE_URL=http://www.jrdb.com/member/data/
-EXTENTION=.lzh
+
+# CSA/KSAは.csvファイルとして直接ダウンロード可能なデータタイプ
+CSV_DATATYPES="CSA KSA"
+
+# 拡張子を取得（CSA/KSAは.csv、それ以外は.lzh）
+get_extension() {
+  case " $CSV_DATATYPES " in
+    *" $1 "*) echo ".csv" ;;
+    *) echo ".lzh" ;;
+  esac
+}
 
 # データタイプからファイル名プレフィックスを取得
 # 最新データタイプ（大文字）をフォルダ名に変換
 # 例：KAA → Kaa, BAA → Baa, KYF → Kyf
+# 例外：CSA → Cs, KSA → Ks（2文字のみ）
 datatype_to_path() {
-  local first_char=$(echo $1 | cut -c1)
-  local rest=$(echo $1 | cut -c2- | tr '[A-Z]' '[a-z]')
-  echo "${first_char}${rest}"
+  # CSA/KSAは特殊パス（2文字のみ）
+  case "$1" in
+    CSA) echo "Cs" ;;
+    KSA) echo "Ks" ;;
+    *)
+      local first_char=$(echo $1 | cut -c1)
+      local rest=$(echo $1 | cut -c2- | tr '[A-Z]' '[a-z]')
+      echo "${first_char}${rest}"
+      ;;
+  esac
 }
 
 filepath() {
   FILETYPE_LOWER=$(datatype_to_path $FILETYPE)
+  EXTENTION=$(get_extension $FILETYPE)
   echo ${FILETYPE_LOWER}/${FILETYPE}${FILEDATE}${EXTENTION}
 }
 
@@ -79,6 +98,22 @@ post_process() {
   rm -f ${DOWNLOAD_FILE_OUTPUT_DIRECTORY}$(filepath)
 }
 
+is_csv_datatype() {
+  case " $CSV_DATATYPES " in
+    *" $1 "*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+convert_encoding_csv() {
+  # CSVファイルを CP932 から UTF-8 に変換
+  FILETYPE_LOWER=$(datatype_to_path $FILETYPE)
+  CSV_FILE="${DOWNLOAD_FILE_OUTPUT_DIRECTORY}${FILETYPE_LOWER}/${FILETYPE}${FILEDATE}.csv"
+  if [ -f "$CSV_FILE" ]; then
+    iconv -f CP932 -t UTF-8 "$CSV_FILE" > "${CSV_FILE}.tmp" && mv "${CSV_FILE}.tmp" "$CSV_FILE"
+  fi
+}
+
 download_single_file() {
   # ローカルにcsvが存在するかチェック（ダウンロード済みならスキップ）
   FILETYPE_LOWER=$(datatype_to_path $FILETYPE)
@@ -100,13 +135,21 @@ download_single_file() {
 
   echo "✓ Downloading $(filepath)..."
   download
-  echo "✓ Decompressing..."
-  decompression
-  echo "✓ Converting encoding..."
-  convert_encoding
-  echo "✓ Converting to CSV..."
-  txt_to_csv
-  post_process
+
+  # CSA/KSAの場合は解凍不要（直接csvでダウンロードされる）
+  if is_csv_datatype "$FILETYPE"; then
+    echo "✓ Converting encoding..."
+    convert_encoding_csv
+  else
+    echo "✓ Decompressing..."
+    decompression
+    echo "✓ Converting encoding..."
+    convert_encoding
+    echo "✓ Converting to CSV..."
+    txt_to_csv
+    post_process
+  fi
+
   echo "✓ Completed: $FILETYPE $FILEDATE"
   return 0
 }
@@ -202,11 +245,14 @@ EOS
   # ダウンロード対象のファイル数をカウント
   FILE_COUNT=$(echo $FILES_TO_DOWNLOAD | wc -w | tr -d ' ')
 
+  # 拡張子を取得
+  FILE_EXT=$(get_extension $FILETYPE)
+
   echo ""
   echo "Found $FILE_COUNT file(s) to download:"
   echo "========================================================================"
   for date in $FILES_TO_DOWNLOAD; do
-    echo "  • $FILETYPE$date.lzh"
+    echo "  • $FILETYPE$date$FILE_EXT"
   done
   echo "========================================================================"
   echo ""
@@ -231,7 +277,7 @@ EOS
     FILEDATE=$date
     echo ""
     echo "------------------------------------------------------------------------"
-    echo "Processing: $FILETYPE$FILEDATE.lzh"
+    echo "Processing: $FILETYPE$FILEDATE$FILE_EXT"
     echo "------------------------------------------------------------------------"
 
     if download_single_file; then
