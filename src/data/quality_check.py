@@ -577,7 +577,11 @@ def main():
     # チェック対象を絞り込み
     configs = TABLE_VALIDATION_CONFIGS
     if args.table:
-        dataset_id, table_id = args.table.split(".")
+        if "." not in args.table:
+            print(f"エラー: テーブル名は 'dataset_id.table_id' 形式で指定してください。")
+            print(f"  例: raw.race_info, features.training_data")
+            sys.exit(1)
+        dataset_id, table_id = args.table.split(".", 1)
         configs = [
             c
             for c in configs

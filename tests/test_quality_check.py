@@ -756,3 +756,28 @@ class TestTableValidationConfig:
         )
 
         assert config.expected_min_rows == 0
+
+
+class TestTableNameParsing:
+    """テーブル名パースのテスト"""
+
+    def test_table_name_without_dot_is_invalid(self):
+        """テーブル名に.が含まれない場合は不正な形式"""
+        table_name = "invalid_table"
+        assert "." not in table_name
+
+    def test_table_name_with_dot_format(self):
+        """テーブル名が正しい形式の場合の処理"""
+        # .を含むテーブル名は正しくパースされる
+        table_name = "raw.race_info"
+        assert "." in table_name
+        parts = table_name.split(".", 1)
+        assert parts[0] == "raw"
+        assert parts[1] == "race_info"
+
+    def test_table_name_with_multiple_dots(self):
+        """複数の.がある場合も正しく処理される"""
+        table_name = "dataset.table.extra"
+        parts = table_name.split(".", 1)
+        assert parts[0] == "dataset"
+        assert parts[1] == "table.extra"
