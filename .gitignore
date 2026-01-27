@@ -52,6 +52,7 @@ ENV/
 
 # Downloaded data files
 downloaded_files/
+reports
 
 # Nested git repository
 # downloader/
