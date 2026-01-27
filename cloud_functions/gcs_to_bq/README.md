@@ -144,8 +144,14 @@ Cloud Consoleでメトリクスを確認:
 
 ## 今後の拡張
 
-- [ ] より多くのデータタイプのサポート (OZ, SEC, など)
+- [ ] より多くのデータタイプのサポート (OZ など)
 - [ ] エラー時のリトライ機能
 - [ ] Cloud Pub/Subへの通知機能
-- [ ] データ品質チェック機能
+- [x] データ品質チェック機能 → `src/data/quality_check.py` で実装済み
 - [ ] 重複データのスキップ機能
+
+## 関連スクリプト
+
+- **GCSアップロード**: `src/data/upload_to_gcs.py` - ローカルからGCSへのアップロード
+- **データ品質チェック**: `src/data/quality_check.py` - BigQueryデータの品質検証
+- **テーブル作成**: `src/data/create_tables.py` - BigQueryテーブルの作成

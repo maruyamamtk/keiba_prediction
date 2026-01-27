@@ -335,6 +335,16 @@ downloader/
 - `BAA` → `Baa/`
 - `JRDB` → `Jrdb/`
 
+## 次のステップ
+
+ダウンロードしたデータをGCPにアップロードしてBigQueryで利用するには、以下のスクリプトを使用してください：
+
+1. **GCSへのアップロード**: `python -m src.data.upload_to_gcs`
+2. **BigQueryへの自動ロード**: Cloud Functionsが自動的にトリガーされます
+3. **データ品質チェック**: `python -m src.data.quality_check`
+
+詳細は [メインREADME](../README.md) を参照してください。
+
 ## ライセンス
 
 このスクリプトは個人用のプロジェクトです。JRDB データの利用は JRDB の利用規約に従ってください。
