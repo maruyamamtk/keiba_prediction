@@ -61,7 +61,7 @@ TABLE_VALIDATION_CONFIGS = [
         primary_key_columns=["race_id", "horse_id"],
         not_null_columns=["race_id", "horse_id"],
         date_columns=[],
-        numeric_columns=["finish_position", "odds", "popularity"],
+        numeric_columns=["base_odds", "base_popularity"],  # 実際のスキーマに合わせて修正
         expected_min_rows=10000,
     ),
     TableValidationConfig(
@@ -136,8 +136,7 @@ NUMERIC_RANGE_CONFIG = {
     "race_number": {"min": 1, "max": 12},
     "distance": {"min": 800, "max": 4000},
     "num_horses": {"min": 1, "max": 18},
-    "finish_position": {"min": 1, "max": 18},
-    "odds": {"min": 1.0, "max": 10000.0},
-    "popularity": {"min": 1, "max": 18},
-    "odds_value": {"min": 1.0, "max": 100000.0},
+    "base_odds": {"min": 1.0, "max": 10000.0},  # horse_results用
+    "base_popularity": {"min": 1, "max": 18},  # horse_results用
+    "odds_value": {"min": 1.0, "max": 100000.0},  # odds用
 }
