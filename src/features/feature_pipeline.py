@@ -431,6 +431,10 @@ def main():
     """メイン関数（CLIから実行）"""
     import argparse
     import os
+    from dotenv import load_dotenv
+
+    # .envファイルから環境変数を読み込み
+    load_dotenv()
 
     parser = argparse.ArgumentParser(description="特徴量パイプラインを実行")
     parser.add_argument("--start-date", required=True, help="開始日 (YYYY-MM-DD)")
