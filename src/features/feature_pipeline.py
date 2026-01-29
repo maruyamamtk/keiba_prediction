@@ -308,8 +308,7 @@ class FeaturePipeline:
         output_df = features[output_columns].copy()
 
         # データ型を調整
-        if "race_date" in output_df.columns:
-            output_df["race_date"] = pd.to_datetime(output_df["race_date"]).dt.date
+        output_df = self._convert_column_types(output_df)
 
         job_config = bigquery.LoadJobConfig(
             write_disposition=bigquery.WriteDisposition.WRITE_APPEND,
@@ -319,6 +318,101 @@ class FeaturePipeline:
         job.result()
 
         logger.info(f"Saved {len(output_df)} rows to {table_id}")
+
+    def _convert_column_types(self, df: pd.DataFrame) -> pd.DataFrame:
+        """BigQueryスキーマに合わせてカラムの型を変換"""
+        import numpy as np
+
+        # 日付型
+        if "race_date" in df.columns:
+            df["race_date"] = pd.to_datetime(df["race_date"]).dt.date
+
+        # 文字列型として保存すべきカラム
+        string_columns = [
+            "race_id",
+            "horse_id",
+            "venue_code",
+            "course_type",
+            "track_condition",
+            "jockey_id",
+            "trainer_id",
+        ]
+        for col in string_columns:
+            if col in df.columns:
+                df[col] = df[col].astype(str).replace("nan", None).replace("None", None)
+
+        # 整数型として保存すべきカラム
+        int_columns = [
+            "race_number",
+            "num_horses",
+            "bracket_number",
+            "horse_number",
+            "finish_position",
+            "career_races",
+            "career_wins",
+            "career_places",
+            "days_since_last_race",
+            "distance",
+            "distance_change",
+        ]
+        for col in int_columns:
+            if col in df.columns:
+                # NaNを含む可能性があるため、Int64を使用
+                df[col] = pd.to_numeric(df[col], errors="coerce").astype("Int64")
+
+        # 浮動小数点型として保存すべきカラム
+        float_columns = [
+            "weight",
+            "finish_time",
+            "last_3f_time",
+            "past_3_avg_position",
+            "past_5_avg_position",
+            "past_10_avg_position",
+            "past_3_avg_last3f",
+            "past_5_avg_last3f",
+            "past_3_win_rate",
+            "past_5_win_rate",
+            "past_3_place_rate",
+            "past_5_place_rate",
+            "position_trend_3",
+            "distance_change_ratio",
+            "turf_win_rate",
+            "turf_place_rate",
+            "dirt_win_rate",
+            "dirt_place_rate",
+            "dist_sprint_place_rate",
+            "dist_mile_place_rate",
+            "dist_intermediate_place_rate",
+            "dist_long_place_rate",
+            "track_good_place_rate",
+            "track_heavy_place_rate",
+            "current_course_aptitude",
+            "current_distance_aptitude",
+            "current_track_aptitude",
+            "current_venue_aptitude",
+            "avg_corner4_position",
+            "avg_corner4_ratio",
+            "front_rate",
+            "closer_rate",
+        ]
+        for col in float_columns:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce").astype("Float64")
+
+        # ブール型
+        if "target_place" in df.columns:
+            df["target_place"] = df["target_place"].astype(bool)
+
+        # distance_category_change は文字列
+        if "distance_category_change" in df.columns:
+            df["distance_category_change"] = (
+                df["distance_category_change"]
+                .astype(str)
+                .replace("nan", None)
+                .replace("None", None)
+            )
+
+        return df
 
     def _get_output_columns(self, features: pd.DataFrame) -> list[str]:
         """出力するカラムを決定"""
