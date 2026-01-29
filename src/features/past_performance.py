@@ -229,11 +229,17 @@ class PastPerformanceFeatures:
 
             # トレンド指標 (直近3走の着順トレンド)
             if len(horse_data) >= 3:
-                recent_3 = horse_data.head(3)["finish_position"].values
-                # 改善傾向: 負の傾きは改善 (着順が下がっている)
-                x = np.array([0, 1, 2])
-                slope, _ = np.polyfit(x, recent_3, 1)
-                feature_row["position_trend_3"] = slope
+                recent_3 = horse_data.head(3)["finish_position"]
+                # 数値型に変換（object型の場合のエラーを防ぐ）
+                recent_3_numeric = pd.to_numeric(recent_3, errors="coerce").dropna()
+                if len(recent_3_numeric) >= 3:
+                    recent_3_values = recent_3_numeric.values[:3].astype(float)
+                    # 改善傾向: 負の傾きは改善 (着順が下がっている)
+                    x = np.array([0, 1, 2], dtype=float)
+                    slope, _ = np.polyfit(x, recent_3_values, 1)
+                    feature_row["position_trend_3"] = float(slope)
+                else:
+                    feature_row["position_trend_3"] = None
             else:
                 feature_row["position_trend_3"] = None
 
