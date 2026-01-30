@@ -132,19 +132,25 @@ class FeaturePipeline:
         start_date: str,
         end_date: str,
     ) -> pd.DataFrame:
-        """対象レースを取得"""
+        """対象レースを取得
+
+        race_resultsテーブルに存在するレースのみを取得する。
+        race_infoテーブルとLEFT JOINして、レース条件情報を補完する。
+        """
         query = f"""
-        SELECT
-            race_id,
-            race_date,
-            venue_code,
-            course_type,
-            distance,
-            track_condition
-        FROM `{self.project_id}.raw.race_info`
-        WHERE race_date >= '{start_date}'
-            AND race_date <= '{end_date}'
-        ORDER BY race_date, race_id
+        SELECT DISTINCT
+            rr.race_id,
+            rr.race_date,
+            COALESCE(ri.venue_code, SUBSTR(rr.race_id, 1, 2)) as venue_code,
+            COALESCE(ri.course_type, rr.course_type) as course_type,
+            COALESCE(ri.distance, rr.distance) as distance,
+            COALESCE(ri.track_condition, rr.track_condition) as track_condition
+        FROM `{self.project_id}.raw.race_results` rr
+        LEFT JOIN `{self.project_id}.raw.race_info` ri
+            ON rr.race_id = ri.race_id
+        WHERE rr.race_date >= '{start_date}'
+            AND rr.race_date <= '{end_date}'
+        ORDER BY rr.race_date, rr.race_id
         """
         return self.client.query(query).to_dataframe()
 
@@ -158,7 +164,10 @@ class FeaturePipeline:
         # 出走馬と成績情報を取得
         horses_df = self._fetch_race_horses(race_id)
         if horses_df.empty:
+            logger.debug(f"No horses found for race {race_id} (race_date: {race_date})")
             return None
+
+        logger.debug(f"Found {len(horses_df)} horses for race {race_id}")
 
         horse_ids = horses_df["horse_id"].tolist()
 
@@ -213,31 +222,36 @@ class FeaturePipeline:
         return features
 
     def _fetch_race_horses(self, race_id: str) -> pd.DataFrame:
-        """レース出走馬と成績を取得"""
+        """レース出走馬と成績を取得
+
+        raw.race_results（レース成績データ）をベースに、
+        raw.horse_results（前日予想データ）からbracket_numberを取得し、
+        raw.race_info（レース情報）からvenue_codeとrace_numberを取得する。
+        """
         query = f"""
         SELECT
-            hr.horse_id,
-            hr.horse_number,
+            rr.horse_id,
+            rr.horse_number,
             hr.bracket_number,
-            hr.weight_carried as weight,
-            hr.jockey_code as jockey_id,
-            hr.trainer_code as trainer_id,
+            rr.weight_carried as weight,
+            rr.jockey_code as jockey_id,
+            rr.trainer_code as trainer_id,
             rr.finish_position,
             rr.finish_time,
             rr.last_3f_time,
             ri.venue_code,
-            ri.course_type,
-            ri.distance,
-            ri.track_condition,
-            ri.num_horses,
+            rr.course_type,
+            rr.distance,
+            rr.track_condition,
+            rr.num_horses,
             ri.race_number
-        FROM `{self.project_id}.raw.horse_results` hr
-        LEFT JOIN `{self.project_id}.raw.race_results` rr
-            ON hr.race_id = rr.race_id
-            AND hr.horse_id = rr.horse_id
+        FROM `{self.project_id}.raw.race_results` rr
+        LEFT JOIN `{self.project_id}.raw.horse_results` hr
+            ON rr.race_id = hr.race_id
+            AND rr.horse_id = hr.horse_id
         LEFT JOIN `{self.project_id}.raw.race_info` ri
-            ON hr.race_id = ri.race_id
-        WHERE hr.race_id = '{race_id}'
+            ON rr.race_id = ri.race_id
+        WHERE rr.race_id = '{race_id}'
             AND (rr.abnormal_code IS NULL OR rr.abnormal_code = 0)
         """
         return self.client.query(query).to_dataframe()
@@ -303,8 +317,14 @@ class FeaturePipeline:
             f"{self.project_id}.{self.config.output_dataset}.{self.config.output_table}"
         )
 
+        # テーブルスキーマを取得
+        table = self.client.get_table(table_id)
+        schema_columns = {field.name for field in table.schema}
+
         # カラムを整理 (training_dataスキーマに合わせる)
         output_columns = self._get_output_columns(features)
+        # スキーマに存在するカラムのみに絞る
+        output_columns = [c for c in output_columns if c in schema_columns]
         output_df = features[output_columns].copy()
 
         # データ型を調整

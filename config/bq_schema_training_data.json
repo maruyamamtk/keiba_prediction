@@ -79,9 +79,9 @@
   },
   {
     "name": "weight",
-    "type": "INT64",
+    "type": "FLOAT64",
     "mode": "NULLABLE",
-    "description": "斤量"
+    "description": "斤量(kg)"
   },
   {
     "name": "past_3_avg_position",
