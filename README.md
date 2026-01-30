@@ -77,26 +77,24 @@ keiba_prediction/
 ├── downloader/              # データダウンロードスクリプト
 │   ├── download_from_date.sh       # 指定日付以降のファイルをダウンロード
 │   ├── download_all_from_date.sh   # 全データタイプ一括ダウンロード
-│   └── README.md                   # ダウンローダーの詳細ドキュメント
-├── src/                     # Pythonソースコード
-│   └── data/                # データパイプライン
-│       ├── create_tables.py       # BigQueryテーブル作成
-│       ├── upload_to_gcs.py       # GCSアップロード
-│       ├── quality_check.py       # データ品質チェック
-│       └── validation_rules.py    # バリデーションルール定義
+│   └── README.md
+├── src/
+│   ├── data/                # データパイプライン
+│   │   ├── create_tables.py       # BigQueryテーブル作成
+│   │   ├── upload_to_gcs.py       # GCSアップロード
+│   │   ├── quality_check.py       # データ品質チェック
+│   │   └── validation_rules.py    # バリデーションルール定義
+│   └── features/            # 特徴量エンジニアリング
+│       ├── feature_pipeline.py    # 特徴量パイプライン
+│       ├── past_performance.py    # 過去走特徴量
+│       └── condition_features.py  # 条件適性特徴量
+├── scripts/                 # ユーティリティスクリプト
+│   └── reload_gcs_to_bq.py        # 既存GCSファイルの再ロード
 ├── tests/                   # テストコード
-│   ├── test_upload_to_gcs.py      # GCSアップロードのテスト
-│   └── test_quality_check.py      # 品質チェックのテスト (27テストケース)
 ├── cloud_functions/         # Cloud Functions
 │   └── gcs_to_bq/           # GCS→BigQuery自動ロード
-│       ├── main.py          # Cloud Function エントリーポイント
-│       ├── parser.py        # JRDBデータパーサー
-│       └── requirements.txt
-├── config/                  # 設定ファイル
-│   ├── bq_schema_race_info.json     # race_infoテーブルスキーマ
-│   ├── bq_schema_horse_results.json # horse_resultsテーブルスキーマ
-│   ├── bq_schema_race_results.json  # race_resultsテーブルスキーマ
-│   └── ...                          # その他のスキーマファイル
+├── notebooks/               # Jupyter Notebook (EDA用)
+├── config/                  # BigQueryスキーマ定義
 ├── reports/                 # 品質チェックレポート出力先
 ├── CLAUDE.md                # システム仕様書
 ├── SCHEMA.md                # JRDBデータスキーマ仕様書
@@ -106,36 +104,116 @@ keiba_prediction/
 
 ## データパイプライン
 
-### 対応データタイプ
+### 全体フロー
 
-GCS→BigQuery自動ロード機能が対応しているJRDBデータタイプの一覧です。
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│ 1. データ取得 (JRDB → ローカル)                                          │
+│    $ sh download_all_from_date.sh                                       │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    ↓
+┌─────────────────────────────────────────────────────────────────────────┐
+│ 2. GCSアップロード (ローカル → GCS)                                      │
+│    $ python -m src.data.upload_to_gcs                                   │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    ↓
+┌─────────────────────────────────────────────────────────────────────────┐
+│ 3. BigQueryロード (GCS → BigQuery)                                      │
+│    - 新規ファイル: Cloud Functionが自動トリガー                          │
+│    - 既存ファイル: $ python scripts/reload_gcs_to_bq.py                 │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    ↓
+┌─────────────────────────────────────────────────────────────────────────┐
+│ 4. 特徴量生成 (BigQuery raw → features)                                 │
+│    $ python -m src.features.feature_pipeline --start-date ... --end-date│
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### Step 1: データ取得 (JRDB → ローカル)
+
+```bash
+cd downloader
+
+# 環境変数の設定（初回のみ）
+cp .env.example .env
+# .env にJRDB認証情報を設定
+
+# 指定日付以降のデータをダウンロード
+sh download_all_from_date.sh
+```
+
+### Step 2: GCSアップロード
+
+```bash
+# 全データをアップロード（差分のみ）
+python -m src.data.upload_to_gcs
+
+# 特定タイプのみアップロード
+python -m src.data.upload_to_gcs --data-type Sec
+```
+
+### Step 3: BigQueryロード
+
+**A) 新規ファイルの場合（自動）**
+
+GCSにファイルがアップロードされると、Cloud Functionが自動的にトリガーされBigQueryにロードされます。
+
+**B) 既存ファイルの場合（手動）**
+
+Cloud Functionはアップロード時のみトリガーされるため、既存ファイルは手動でロードが必要です。
+
+```bash
+# SECファイル（成績データ）を全件ロード
+python scripts/reload_gcs_to_bq.py --data-type SEC --prefix Sec/
+
+# ドライラン（処理対象の確認のみ）
+python scripts/reload_gcs_to_bq.py --data-type SEC --prefix Sec/ --dry-run
+
+# 5ファイルのみテスト
+python scripts/reload_gcs_to_bq.py --data-type SEC --prefix Sec/ --limit 5
+```
+
+### Step 4: データ品質チェック
+
+```bash
+python -m src.data.quality_check
+```
+
+### 対応データタイプ
 
 | データタイプ | 説明 | BigQueryテーブル |
 |-------------|------|-----------------|
-| BAA | 番組データ (レース基本情報) | `raw.race_info` |
-| BAB | 番組データ (詳細) | `raw.race_info` |
-| BAC | 番組データ (追加情報) | `raw.race_info` |
-| KYF | 競走馬データ (出走馬情報・指数) | `raw.horse_results` |
-| KYG | 競走馬データ (詳細) | `raw.horse_results` |
-| KYH | 競走馬データ (追加情報) | `raw.horse_results` |
+| BAA/BAB/BAC | 番組データ (レース基本情報) | `raw.race_info` |
+| KYF/KYG/KYH | 競走馬データ (出馬表・予測指数) | `raw.horse_results` |
 | SEC | 成績データ (レース結果) | `raw.race_results` |
 
-### データフロー
+---
 
+## 特徴量パイプライン
+
+BigQueryの`raw`テーブルから特徴量を生成し、`features.training_data`テーブルに保存します。
+
+### 実行方法
+
+```bash
+# 指定期間の特徴量を生成
+python -m src.features.feature_pipeline --start-date 2024-01-06 --end-date 2024-01-06
+
+# 詳細ログ付きで実行
+python -m src.features.feature_pipeline --start-date 2024-01-06 --end-date 2024-12-31 -v
 ```
-[ローカル]
-  ↓ download_all_from_date.sh
-[ローカル] downloaded_files/
-  ↓ python -m src.data.upload_to_gcs
-[GCS] gs://${PROJECT_ID}-keiba-raw-data/
-  ↓ Cloud Functions (自動トリガー)
-[BigQuery]
-  ├── raw.race_info        ← BAA/BAB/BAC (レース情報)
-  ├── raw.horse_results    ← KYF/KYG/KYH (出馬表・予測指数)
-  └── raw.race_results     ← SEC (レース成績・結果)
-  ↓ python -m src.data.quality_check
-[レポート] reports/quality_report_*.json
-```
+
+### 生成される特徴量
+
+| カテゴリ | 特徴量例 |
+|---------|---------|
+| 過去走統計 | past_3_avg_position, past_5_avg_last3f |
+| 条件適性 | turf_place_rate, dirt_place_rate, dist_sprint_place_rate |
+| 脚質 | front_rate, closer_rate, avg_corner4_position |
+
+**注意**: 特徴量パイプラインは`race_results`テーブルにデータが存在する日付でのみ動作します。
+
+---
 
 ## 主要機能
 
@@ -228,7 +306,28 @@ python -m src.data.create_tables
 
 **作成されるリソース:**
 - データセット: `raw`, `features`, `predictions`, `backtests`
-- テーブル: `race_info`, `horse_results`, `pedigree`, `odds`, `training_data`
+- テーブル: `race_info`, `horse_results`, `race_results`, `training_data` など
+
+### Cloud Functionデプロイ
+
+GCSにファイルがアップロードされた際に自動でBigQueryにロードするCloud Functionをデプロイします。
+
+```bash
+cd cloud_functions/gcs_to_bq
+
+# デプロイ
+gcloud functions deploy gcs-to-bq \
+  --runtime python39 \
+  --trigger-resource ${PROJECT_ID}-keiba-raw-data \
+  --trigger-event google.storage.object.finalize \
+  --entry-point gcs_to_bq \
+  --region asia-northeast1 \
+  --memory 512MB \
+  --timeout 300s \
+  --set-env-vars GCP_PROJECT_ID=${PROJECT_ID}
+```
+
+**注意**: Cloud Functionはファイルアップロード時のみトリガーされます。既存ファイルをロードするには `scripts/reload_gcs_to_bq.py` を使用してください。
 
 ## テスト
 
@@ -317,14 +416,16 @@ python -m pytest tests/ --cov=src --cov-report=html
 - [x] GCSアップロードスクリプト (`src/data/upload_to_gcs.py`)
 - [x] GCS→BigQuery自動ロード (`cloud_functions/gcs_to_bq/`)
 - [x] データ品質チェックスクリプト (`src/data/quality_check.py`)
+- [x] 既存ファイル再ロードスクリプト (`scripts/reload_gcs_to_bq.py`)
 
-### Phase 2: 特徴量エンジニアリング 🚧
+### Phase 2: 特徴量エンジニアリング ✅
 
-- [ ] 過去走集計特徴量
-- [ ] Target Encoding実装
-- [ ] 特徴量パイプライン
+- [x] 過去走集計特徴量 (`src/features/past_performance.py`)
+- [x] 条件適性特徴量 (`src/features/condition_features.py`)
+- [x] 特徴量パイプライン (`src/features/feature_pipeline.py`)
+- [ ] Target Encoding実装 (Phase 3で実装予定)
 
-### Phase 3: モデル開発
+### Phase 3: モデル開発 🚧
 
 - [ ] LightGBM ランク学習
 - [ ] 時系列クロスバリデーション
