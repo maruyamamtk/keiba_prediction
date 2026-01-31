@@ -70,6 +70,20 @@ GCP_PROJECT_ID=your-project-id
 ./infrastructure/scripts/verify_setup.sh
 ```
 
+### 4. Cloud Runへのデプロイ
+
+Dockerイメージをビルド・プッシュ後に実行：
+
+```bash
+./infrastructure/scripts/deploy_cloud_run.sh [image-tag]
+```
+
+このスクリプトは以下の環境変数を自動的にCloud Runに設定します：
+- `GCP_PROJECT_ID`: プロジェクトID
+- `GCP_REGION`: リージョン
+- `GCS_BUCKET_RAW`: GCSバケット名（フルパス）
+- Secret Managerからの認証情報
+
 ## サービスアカウント
 
 ### keiba-pipeline-sa (Cloud Run用)

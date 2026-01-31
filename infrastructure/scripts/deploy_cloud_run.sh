@@ -1,0 +1,119 @@
+#!/bin/bash
+#
+# Cloud Runサービスデプロイスクリプト
+#
+# 使用方法:
+#   ./infrastructure/scripts/deploy_cloud_run.sh [image-tag]
+#
+# 引数:
+#   image-tag: Dockerイメージのタグ (デフォルト: latest)
+#
+
+set -e
+
+# 色付きログ出力
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+log_info() {
+    echo -e "${GREEN}[INFO]${NC} $1"
+}
+
+log_warn() {
+    echo -e "${YELLOW}[WARN]${NC} $1"
+}
+
+log_error() {
+    echo -e "${RED}[ERROR]${NC} $1"
+}
+
+# スクリプトのディレクトリを取得
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+
+# .envファイルを読み込み
+if [ -f "${PROJECT_ROOT}/.env" ]; then
+    log_info ".envファイルを読み込んでいます..."
+    set -a
+    source "${PROJECT_ROOT}/.env"
+    set +a
+else
+    log_error ".envファイルが見つかりません: ${PROJECT_ROOT}/.env"
+    exit 1
+fi
+
+# 必須変数のチェック
+if [ -z "${GCP_PROJECT_ID}" ] || [ "${GCP_PROJECT_ID}" = "your-project-id" ]; then
+    log_error "GCP_PROJECT_IDが設定されていません。.envファイルを確認してください。"
+    exit 1
+fi
+
+# デフォルト値の設定
+GCP_REGION="${GCP_REGION:-asia-northeast1}"
+PIPELINE_SA_NAME="${PIPELINE_SA_NAME:-keiba-pipeline-sa}"
+IMAGE_TAG="${1:-latest}"
+
+# 変数設定
+SERVICE_NAME="keiba-pipeline"
+REPO_NAME="keiba-pipeline"
+IMAGE_URI="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${REPO_NAME}/${SERVICE_NAME}:${IMAGE_TAG}"
+PIPELINE_SA_EMAIL="${PIPELINE_SA_NAME}@${GCP_PROJECT_ID}.iam.gserviceaccount.com"
+
+# GCSバケット名（プロジェクトIDをプレフィックスとして使用）
+GCS_BUCKET_RAW_FULL="${GCP_PROJECT_ID}-${GCS_BUCKET_RAW:-keiba-raw-data}"
+
+log_info "=========================================="
+log_info "Cloud Runサービスをデプロイします"
+log_info "=========================================="
+log_info "プロジェクトID: ${GCP_PROJECT_ID}"
+log_info "リージョン: ${GCP_REGION}"
+log_info "サービス名: ${SERVICE_NAME}"
+log_info "イメージ: ${IMAGE_URI}"
+log_info "サービスアカウント: ${PIPELINE_SA_EMAIL}"
+log_info "GCSバケット: ${GCS_BUCKET_RAW_FULL}"
+log_info "=========================================="
+
+# イメージの存在確認
+log_info "Dockerイメージの存在を確認しています..."
+if ! gcloud artifacts docker images describe "${IMAGE_URI}" 2>/dev/null; then
+    log_error "Dockerイメージが見つかりません: ${IMAGE_URI}"
+    log_error "先にイメージをビルド・プッシュしてください。"
+    exit 1
+fi
+log_info "イメージが見つかりました"
+
+# Cloud Runへデプロイ
+log_info "Cloud Runへデプロイしています..."
+
+gcloud run deploy "${SERVICE_NAME}" \
+    --image="${IMAGE_URI}" \
+    --platform=managed \
+    --region="${GCP_REGION}" \
+    --service-account="${PIPELINE_SA_EMAIL}" \
+    --memory=2Gi \
+    --cpu=2 \
+    --timeout=900 \
+    --concurrency=1 \
+    --max-instances=1 \
+    --no-allow-unauthenticated \
+    --set-env-vars="GCP_PROJECT_ID=${GCP_PROJECT_ID},GCP_REGION=${GCP_REGION},GCS_BUCKET_RAW=${GCS_BUCKET_RAW_FULL},BQ_DATASET_RAW=raw,BQ_DATASET_FEATURES=features,LOG_LEVEL=INFO" \
+    --set-secrets="JRDB_USER=jrdb-user:latest,JRDB_PASSWORD=jrdb-password:latest" \
+    --quiet
+
+log_info "デプロイが完了しました"
+
+# サービスURLを取得
+SERVICE_URL=$(gcloud run services describe "${SERVICE_NAME}" \
+    --region="${GCP_REGION}" \
+    --format="value(status.url)")
+
+log_info "=========================================="
+log_info "デプロイ完了"
+log_info "=========================================="
+log_info "サービスURL: ${SERVICE_URL}"
+log_info ""
+log_info "次のステップ:"
+log_info "  - Cloud Schedulerでトリガーを設定 (Issue #50)"
+log_info ""
