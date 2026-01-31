@@ -4,20 +4,138 @@
 
 Phase 1特徴量を統合し、学習用データを生成する。
 BigQueryのfeatures.training_dataテーブルに出力する。
+
+機能:
+- バッチ処理による特徴量生成
+- 並列処理による高速化
+- リトライ処理によるエラー耐性
+- 進捗管理とログ出力
 """
 
-from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Callable
 import logging
+import time
 import pandas as pd
 from google.cloud import bigquery
+from google.api_core import exceptions as google_exceptions
 
 from src.features.past_performance import PastPerformanceFeatures, PastPerformanceConfig
 from src.features.condition_features import ConditionFeatures, ConditionConfig
 
 # ロガー設定
 logger = logging.getLogger(__name__)
+
+
+# リトライ対象の例外
+RETRYABLE_EXCEPTIONS = (
+    google_exceptions.ServiceUnavailable,
+    google_exceptions.InternalServerError,
+    google_exceptions.DeadlineExceeded,
+    google_exceptions.TooManyRequests,
+    ConnectionError,
+    TimeoutError,
+)
+
+
+def retry_with_backoff(
+    func: Callable,
+    max_retries: int = 3,
+    base_delay: float = 1.0,
+    max_delay: float = 60.0,
+    exceptions: tuple = RETRYABLE_EXCEPTIONS,
+):
+    """
+    指数バックオフ付きでリトライを行うデコレータ
+
+    Args:
+        func: 実行する関数
+        max_retries: 最大リトライ回数
+        base_delay: 初期待機時間（秒）
+        max_delay: 最大待機時間（秒）
+        exceptions: リトライ対象の例外
+
+    Returns:
+        関数の戻り値
+    """
+    last_exception = None
+    for attempt in range(max_retries + 1):
+        try:
+            return func()
+        except exceptions as e:
+            last_exception = e
+            if attempt < max_retries:
+                delay = min(base_delay * (2**attempt), max_delay)
+                logger.warning(
+                    f"Retry attempt {attempt + 1}/{max_retries} after error: {e}. "
+                    f"Waiting {delay:.1f}s..."
+                )
+                time.sleep(delay)
+            else:
+                logger.error(f"All {max_retries} retries failed: {e}")
+    raise last_exception
+
+
+@dataclass
+class ProgressTracker:
+    """進捗管理クラス"""
+
+    total_items: int
+    processed_items: int = 0
+    successful_items: int = 0
+    failed_items: int = 0
+    start_time: Optional[float] = None
+
+    def start(self):
+        """進捗トラッキング開始"""
+        self.start_time = time.time()
+
+    def update(self, success: bool = True):
+        """進捗を更新"""
+        self.processed_items += 1
+        if success:
+            self.successful_items += 1
+        else:
+            self.failed_items += 1
+
+    @property
+    def elapsed_time(self) -> float:
+        """経過時間（秒）"""
+        if self.start_time is None:
+            return 0.0
+        return time.time() - self.start_time
+
+    @property
+    def progress_percent(self) -> float:
+        """進捗率（%）"""
+        if self.total_items == 0:
+            return 100.0
+        return (self.processed_items / self.total_items) * 100
+
+    @property
+    def estimated_remaining_time(self) -> Optional[float]:
+        """推定残り時間（秒）"""
+        if self.processed_items == 0 or self.start_time is None:
+            return None
+        avg_time = self.elapsed_time / self.processed_items
+        remaining_items = self.total_items - self.processed_items
+        return avg_time * remaining_items
+
+    def get_status_message(self) -> str:
+        """進捗状況のメッセージを取得"""
+        remaining = self.estimated_remaining_time
+        remaining_str = (
+            f"{remaining / 60:.1f}分" if remaining is not None else "計算中..."
+        )
+        return (
+            f"[{self.processed_items}/{self.total_items}] "
+            f"{self.progress_percent:.1f}% 完了 | "
+            f"成功: {self.successful_items} | "
+            f"失敗: {self.failed_items} | "
+            f"残り時間: {remaining_str}"
+        )
 
 
 @dataclass
@@ -33,6 +151,17 @@ class FeaturePipelineConfig:
 
     # 条件適性特徴量設定
     condition_config: Optional[ConditionConfig] = None
+
+    # 並列処理設定
+    max_workers: int = 4
+
+    # リトライ設定
+    max_retries: int = 3
+    retry_base_delay: float = 1.0
+    retry_max_delay: float = 60.0
+
+    # 進捗ログ出力間隔（レース数）
+    progress_log_interval: int = 10
 
 
 class FeaturePipeline:
@@ -63,6 +192,7 @@ class FeaturePipeline:
         start_date: str,
         end_date: str,
         batch_size: int = 100,
+        parallel: bool = True,
     ) -> dict:
         """
         指定期間のレースに対して特徴量を生成
@@ -70,12 +200,17 @@ class FeaturePipeline:
         Args:
             start_date: 開始日 (YYYY-MM-DD)
             end_date: 終了日 (YYYY-MM-DD)
-            batch_size: 一度に処理するレース数
+            batch_size: 一度に処理するレース数（BigQueryへの保存単位）
+            parallel: 並列処理を有効にするか
 
         Returns:
             処理結果の統計
         """
         logger.info(f"Feature pipeline started: {start_date} to {end_date}")
+        logger.info(
+            f"Settings: batch_size={batch_size}, parallel={parallel}, "
+            f"max_workers={self.config.max_workers}"
+        )
 
         # 対象レースを取得
         races = self._fetch_target_races(start_date, end_date)
@@ -83,49 +218,134 @@ class FeaturePipeline:
 
         if total_races == 0:
             logger.warning("No races found in the specified period")
-            return {"total_races": 0, "processed_races": 0, "errors": 0}
+            return {
+                "total_races": 0,
+                "processed_races": 0,
+                "errors": 0,
+                "elapsed_time": 0.0,
+            }
 
         logger.info(f"Found {total_races} races to process")
 
-        processed = 0
-        errors = 0
+        # 進捗トラッカー初期化
+        progress = ProgressTracker(total_items=total_races)
+        progress.start()
+
         all_features = []
 
         # バッチ処理
         for i in range(0, total_races, batch_size):
             batch_races = races.iloc[i : i + batch_size]
-            logger.info(
-                f"Processing batch {i // batch_size + 1}/{(total_races + batch_size - 1) // batch_size}"
-            )
+            batch_num = i // batch_size + 1
+            total_batches = (total_races + batch_size - 1) // batch_size
+            logger.info(f"Processing batch {batch_num}/{total_batches}")
 
-            for _, race in batch_races.iterrows():
-                try:
-                    race_features = self._process_race(race)
-                    if race_features is not None and not race_features.empty:
-                        all_features.append(race_features)
-                        processed += 1
-                except Exception as e:
-                    logger.error(f"Error processing race {race['race_id']}: {e}")
-                    errors += 1
+            if parallel and len(batch_races) > 1:
+                batch_features = self._process_batch_parallel(
+                    batch_races, progress
+                )
+            else:
+                batch_features = self._process_batch_sequential(
+                    batch_races, progress
+                )
 
-        # 特徴量を結合
-        if all_features:
-            combined_features = pd.concat(all_features, ignore_index=True)
-            logger.info(f"Generated {len(combined_features)} feature rows")
+            all_features.extend(batch_features)
 
-            # BigQueryに保存
-            self._save_to_bigquery(combined_features)
-        else:
-            logger.warning("No features generated")
+            # バッチ終了時の進捗ログ
+            logger.info(f"Batch {batch_num} completed. {progress.get_status_message()}")
+
+            # バッチ単位でBigQueryに保存（メモリ効率化）
+            if batch_features:
+                combined_batch = pd.concat(batch_features, ignore_index=True)
+                self._save_to_bigquery_with_retry(combined_batch)
+                logger.info(f"Saved {len(combined_batch)} rows from batch {batch_num}")
 
         result = {
             "total_races": total_races,
-            "processed_races": processed,
-            "errors": errors,
+            "processed_races": progress.successful_items,
+            "errors": progress.failed_items,
+            "elapsed_time": progress.elapsed_time,
         }
 
         logger.info(f"Feature pipeline completed: {result}")
         return result
+
+    def _process_batch_parallel(
+        self,
+        races: pd.DataFrame,
+        progress: ProgressTracker,
+    ) -> list[pd.DataFrame]:
+        """バッチを並列処理"""
+        batch_features = []
+
+        with ThreadPoolExecutor(max_workers=self.config.max_workers) as executor:
+            futures = {
+                executor.submit(self._process_race_with_retry, race): race["race_id"]
+                for _, race in races.iterrows()
+            }
+
+            for future in as_completed(futures):
+                race_id = futures[future]
+                try:
+                    race_features = future.result()
+                    if race_features is not None and not race_features.empty:
+                        batch_features.append(race_features)
+                        progress.update(success=True)
+                    else:
+                        progress.update(success=True)  # 空結果も成功として扱う
+                except Exception as e:
+                    logger.error(f"Error processing race {race_id}: {e}")
+                    progress.update(success=False)
+
+                # 進捗ログ出力
+                if progress.processed_items % self.config.progress_log_interval == 0:
+                    logger.info(progress.get_status_message())
+
+        return batch_features
+
+    def _process_batch_sequential(
+        self,
+        races: pd.DataFrame,
+        progress: ProgressTracker,
+    ) -> list[pd.DataFrame]:
+        """バッチを順次処理"""
+        batch_features = []
+
+        for _, race in races.iterrows():
+            try:
+                race_features = self._process_race_with_retry(race)
+                if race_features is not None and not race_features.empty:
+                    batch_features.append(race_features)
+                    progress.update(success=True)
+                else:
+                    progress.update(success=True)  # 空結果も成功として扱う
+            except Exception as e:
+                logger.error(f"Error processing race {race['race_id']}: {e}")
+                progress.update(success=False)
+
+            # 進捗ログ出力
+            if progress.processed_items % self.config.progress_log_interval == 0:
+                logger.info(progress.get_status_message())
+
+        return batch_features
+
+    def _process_race_with_retry(self, race: pd.Series) -> Optional[pd.DataFrame]:
+        """リトライ付きでレースを処理"""
+        return retry_with_backoff(
+            func=lambda: self._process_race(race),
+            max_retries=self.config.max_retries,
+            base_delay=self.config.retry_base_delay,
+            max_delay=self.config.retry_max_delay,
+        )
+
+    def _save_to_bigquery_with_retry(self, features: pd.DataFrame) -> None:
+        """リトライ付きでBigQueryに保存"""
+        retry_with_backoff(
+            func=lambda: self._save_to_bigquery(features),
+            max_retries=self.config.max_retries,
+            base_delay=self.config.retry_base_delay,
+            max_delay=self.config.retry_max_delay,
+        )
 
     def _fetch_target_races(
         self,
@@ -559,6 +779,23 @@ def main():
         help="GCPプロジェクトID",
     )
     parser.add_argument("--batch-size", type=int, default=100, help="バッチサイズ")
+    parser.add_argument(
+        "--max-workers",
+        type=int,
+        default=4,
+        help="並列処理のワーカー数",
+    )
+    parser.add_argument(
+        "--no-parallel",
+        action="store_true",
+        help="並列処理を無効化",
+    )
+    parser.add_argument(
+        "--max-retries",
+        type=int,
+        default=3,
+        help="最大リトライ回数",
+    )
     parser.add_argument("--verbose", "-v", action="store_true", help="詳細ログを出力")
 
     args = parser.parse_args()
@@ -574,16 +811,29 @@ def main():
         logger.error("GCP_PROJECT_ID is not set")
         return 1
 
-    # パイプライン実行
-    pipeline = FeaturePipeline(args.project_id)
-    result = pipeline.run(args.start_date, args.end_date, args.batch_size)
+    # 設定
+    config = FeaturePipelineConfig(
+        max_workers=args.max_workers,
+        max_retries=args.max_retries,
+    )
 
+    # パイプライン実行
+    pipeline = FeaturePipeline(args.project_id, config)
+    result = pipeline.run(
+        args.start_date,
+        args.end_date,
+        args.batch_size,
+        parallel=not args.no_parallel,
+    )
+
+    # 結果出力
     print("\n" + "=" * 60)
     print("特徴量パイプライン実行結果")
     print("=" * 60)
     print(f"対象レース数: {result['total_races']}")
     print(f"処理成功: {result['processed_races']}")
     print(f"エラー: {result['errors']}")
+    print(f"処理時間: {result['elapsed_time']:.1f}秒")
     print("=" * 60)
 
     return 0 if result["errors"] == 0 else 1

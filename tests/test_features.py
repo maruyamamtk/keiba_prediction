@@ -6,6 +6,7 @@
 import pytest
 import pandas as pd
 import numpy as np
+import time
 from unittest.mock import Mock, patch, MagicMock
 from datetime import date
 
@@ -20,6 +21,8 @@ from src.features.condition_features import (
 from src.features.feature_pipeline import (
     FeaturePipeline,
     FeaturePipelineConfig,
+    ProgressTracker,
+    retry_with_backoff,
 )
 
 
@@ -385,6 +388,212 @@ class TestRunningStyleFeatures:
         assert "H002" in call_args
 
 
+class TestProgressTracker:
+    """ProgressTrackerのテスト"""
+
+    def test_initial_state(self):
+        """初期状態のテスト"""
+        tracker = ProgressTracker(total_items=100)
+
+        assert tracker.total_items == 100
+        assert tracker.processed_items == 0
+        assert tracker.successful_items == 0
+        assert tracker.failed_items == 0
+        assert tracker.progress_percent == 0.0
+
+    def test_update_success(self):
+        """成功時の更新テスト"""
+        tracker = ProgressTracker(total_items=100)
+        tracker.start()
+
+        tracker.update(success=True)
+
+        assert tracker.processed_items == 1
+        assert tracker.successful_items == 1
+        assert tracker.failed_items == 0
+        assert tracker.progress_percent == 1.0
+
+    def test_update_failure(self):
+        """失敗時の更新テスト"""
+        tracker = ProgressTracker(total_items=100)
+        tracker.start()
+
+        tracker.update(success=False)
+
+        assert tracker.processed_items == 1
+        assert tracker.successful_items == 0
+        assert tracker.failed_items == 1
+
+    def test_progress_percent(self):
+        """進捗率のテスト"""
+        tracker = ProgressTracker(total_items=10)
+
+        for _ in range(5):
+            tracker.update(success=True)
+
+        assert tracker.progress_percent == 50.0
+
+    def test_progress_percent_zero_total(self):
+        """総数0の場合の進捗率テスト"""
+        tracker = ProgressTracker(total_items=0)
+        assert tracker.progress_percent == 100.0
+
+    def test_elapsed_time(self):
+        """経過時間のテスト"""
+        tracker = ProgressTracker(total_items=10)
+        tracker.start()
+
+        time.sleep(0.1)
+        elapsed = tracker.elapsed_time
+
+        assert elapsed >= 0.1
+
+    def test_elapsed_time_before_start(self):
+        """開始前の経過時間テスト"""
+        tracker = ProgressTracker(total_items=10)
+        assert tracker.elapsed_time == 0.0
+
+    def test_estimated_remaining_time(self):
+        """推定残り時間のテスト"""
+        tracker = ProgressTracker(total_items=10)
+        tracker.start()
+
+        # 5件処理後
+        for _ in range(5):
+            tracker.update(success=True)
+
+        remaining = tracker.estimated_remaining_time
+
+        # 残り5件なので、推定時間は経過時間と同程度
+        assert remaining is not None
+        assert remaining >= 0
+
+    def test_estimated_remaining_time_no_processed(self):
+        """処理前の推定残り時間テスト"""
+        tracker = ProgressTracker(total_items=10)
+        tracker.start()
+
+        assert tracker.estimated_remaining_time is None
+
+    def test_get_status_message(self):
+        """ステータスメッセージのテスト"""
+        tracker = ProgressTracker(total_items=10)
+        tracker.start()
+
+        for _ in range(3):
+            tracker.update(success=True)
+        tracker.update(success=False)
+
+        message = tracker.get_status_message()
+
+        assert "[4/10]" in message
+        assert "40.0%" in message
+        assert "成功: 3" in message
+        assert "失敗: 1" in message
+
+
+class TestRetryWithBackoff:
+    """retry_with_backoffのテスト"""
+
+    def test_success_first_try(self):
+        """初回成功のテスト"""
+        call_count = 0
+
+        def success_func():
+            nonlocal call_count
+            call_count += 1
+            return "success"
+
+        result = retry_with_backoff(success_func, max_retries=3)
+
+        assert result == "success"
+        assert call_count == 1
+
+    def test_success_after_retry(self):
+        """リトライ後成功のテスト"""
+        call_count = 0
+
+        def fail_then_success():
+            nonlocal call_count
+            call_count += 1
+            if call_count < 3:
+                raise ConnectionError("Connection failed")
+            return "success"
+
+        result = retry_with_backoff(
+            fail_then_success,
+            max_retries=3,
+            base_delay=0.01,  # テスト用に短い待機時間
+        )
+
+        assert result == "success"
+        assert call_count == 3
+
+    def test_all_retries_fail(self):
+        """全リトライ失敗のテスト"""
+        call_count = 0
+
+        def always_fail():
+            nonlocal call_count
+            call_count += 1
+            raise ConnectionError("Connection failed")
+
+        with pytest.raises(ConnectionError):
+            retry_with_backoff(
+                always_fail,
+                max_retries=2,
+                base_delay=0.01,
+            )
+
+        assert call_count == 3  # 初回 + 2回リトライ
+
+    def test_non_retryable_exception(self):
+        """リトライ対象外例外のテスト"""
+        call_count = 0
+
+        def raise_value_error():
+            nonlocal call_count
+            call_count += 1
+            raise ValueError("Not retryable")
+
+        with pytest.raises(ValueError):
+            retry_with_backoff(
+                raise_value_error,
+                max_retries=3,
+                exceptions=(ConnectionError,),
+            )
+
+        assert call_count == 1  # リトライせず1回のみ
+
+
+class TestFeaturePipelineConfigEnhanced:
+    """拡張されたFeaturePipelineConfigのテスト"""
+
+    def test_default_parallel_settings(self):
+        """デフォルトの並列処理設定テスト"""
+        config = FeaturePipelineConfig()
+
+        assert config.max_workers == 4
+        assert config.max_retries == 3
+        assert config.retry_base_delay == 1.0
+        assert config.retry_max_delay == 60.0
+        assert config.progress_log_interval == 10
+
+    def test_custom_parallel_settings(self):
+        """カスタム並列処理設定テスト"""
+        config = FeaturePipelineConfig(
+            max_workers=8,
+            max_retries=5,
+            retry_base_delay=2.0,
+            progress_log_interval=20,
+        )
+
+        assert config.max_workers == 8
+        assert config.max_retries == 5
+        assert config.retry_base_delay == 2.0
+        assert config.progress_log_interval == 20
+
+
 class TestIntegration:
     """統合テスト"""
 
@@ -425,3 +634,21 @@ class TestIntegration:
         assert result["total_races"] == 0
         assert result["processed_races"] == 0
         assert result["errors"] == 0
+        assert "elapsed_time" in result
+
+    def test_pipeline_parallel_option(self, mock_all_clients):
+        """並列/順次処理オプションのテスト"""
+        mock_pipeline, _, _ = mock_all_clients
+        mock_instance = MagicMock()
+        mock_pipeline.return_value = mock_instance
+        mock_instance.query.return_value.to_dataframe.return_value = pd.DataFrame()
+
+        pipeline = FeaturePipeline("test-project")
+
+        # 並列処理
+        result_parallel = pipeline.run("2024-01-01", "2024-01-31", parallel=True)
+        assert result_parallel["total_races"] == 0
+
+        # 順次処理
+        result_sequential = pipeline.run("2024-01-01", "2024-01-31", parallel=False)
+        assert result_sequential["total_races"] == 0
