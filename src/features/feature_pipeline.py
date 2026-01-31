@@ -13,10 +13,11 @@ BigQueryのfeatures.training_dataテーブルに出力する。
 """
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional, Callable
 import logging
+import threading
 import time
 import pandas as pd
 from google.cloud import bigquery
@@ -78,27 +79,29 @@ def retry_with_backoff(
     raise last_exception
 
 
-@dataclass
 class ProgressTracker:
-    """進捗管理クラス"""
+    """進捗管理クラス（スレッドセーフ）"""
 
-    total_items: int
-    processed_items: int = 0
-    successful_items: int = 0
-    failed_items: int = 0
-    start_time: Optional[float] = None
+    def __init__(self, total_items: int):
+        self.total_items = total_items
+        self.processed_items = 0
+        self.successful_items = 0
+        self.failed_items = 0
+        self.start_time: Optional[float] = None
+        self._lock = threading.Lock()
 
     def start(self):
         """進捗トラッキング開始"""
         self.start_time = time.time()
 
     def update(self, success: bool = True):
-        """進捗を更新"""
-        self.processed_items += 1
-        if success:
-            self.successful_items += 1
-        else:
-            self.failed_items += 1
+        """進捗を更新（スレッドセーフ）"""
+        with self._lock:
+            self.processed_items += 1
+            if success:
+                self.successful_items += 1
+            else:
+                self.failed_items += 1
 
     @property
     def elapsed_time(self) -> float:
