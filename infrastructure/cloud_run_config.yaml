@@ -1,0 +1,41 @@
+# Cloud Run サービス設定
+#
+# このファイルはCloud Runサービスのデプロイ時に使用される設定を定義します。
+# gcloud run deploy コマンドで --flags-file オプションとして使用できます。
+#
+# 使用例:
+#   gcloud run deploy keiba-pipeline --flags-file=infrastructure/cloud_run_config.yaml
+#
+
+# サービス基本設定
+platform: managed
+region: asia-northeast1
+
+# リソース設定
+memory: 2Gi
+cpu: 2
+timeout: 900  # 15分
+
+# 同時実行設定
+concurrency: 1  # パイプラインは1リクエストずつ処理
+max-instances: 1  # 同時に1インスタンスのみ
+
+# 認証設定
+# Cloud Scheduler/内部呼び出しのみ許可
+no-allow-unauthenticated: true
+
+# 環境変数
+# 機密情報はSecret Managerから取得するため、ここには含めない
+# 注意: GCP_PROJECT_IDはデプロイ時に --set-env-vars で指定する必要があります
+# 例: gcloud run deploy ... --set-env-vars="GCP_PROJECT_ID=${GCP_PROJECT_ID}"
+set-env-vars:
+  GCP_REGION: asia-northeast1
+  BQ_DATASET_RAW: raw
+  BQ_DATASET_FEATURES: features
+  LOG_LEVEL: INFO
+
+# Secret Managerからの環境変数
+# フォーマット: ENV_VAR=SECRET_NAME:VERSION
+set-secrets:
+  JRDB_USER: jrdb-user:latest
+  JRDB_PASSWORD: jrdb-password:latest
