@@ -14,7 +14,7 @@ from datetime import datetime, timedelta
 
 from flask import Flask, jsonify, request
 
-from src.data.jrdb_downloader import JRDBDownloader, create_downloader_from_env
+from src.data.jrdb_downloader import create_downloader_from_env
 
 # ロギング設定
 logging.basicConfig(

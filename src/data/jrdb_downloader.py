@@ -146,19 +146,6 @@ class JRDBDownloader:
 
         return sorted(set(matches))
 
-    def _file_exists_on_server(self, datatype: str, filedate: str) -> bool:
-        """サーバー上にファイルが存在するか確認"""
-        folder = self.datatype_to_folder(datatype)
-        ext = self.get_extension(datatype)
-        url = f"{self.JRDB_BASE_URL}{folder}/{datatype}{filedate}{ext}"
-
-        try:
-            request = urllib.request.Request(url, method="HEAD")
-            response = urllib.request.urlopen(request, timeout=10)
-            return response.status == 200
-        except Exception:
-            return False
-
     def _download_file(self, datatype: str, filedate: str) -> Optional[Path]:
         """
         ファイルをダウンロード
@@ -356,15 +343,21 @@ class JRDBDownloader:
 
         logger.info(f"ダウンロード対象: {total}ファイル ({datatype})")
 
+        folder = self.datatype_to_folder(datatype)
         for date in target_dates:
-            folder = self.datatype_to_folder(datatype)
             csv_path = self.output_dir / folder / f"{datatype}{date}.csv"
 
             if csv_path.exists():
                 skipped += 1
                 continue
 
-            if self.download_single(datatype, date):
+            # download_singleはスキップ判定済みなので直接ダウンロード処理を呼ぶ
+            downloaded_path = self._download_file(datatype, date)
+            if downloaded_path is None:
+                failed += 1
+                continue
+
+            if self._process_downloaded_file(datatype, date, downloaded_path):
                 downloaded += 1
             else:
                 failed += 1
