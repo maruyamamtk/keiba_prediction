@@ -5,10 +5,12 @@ FROM python:3.9-slim
 WORKDIR /app
 
 # システム依存パッケージのインストール
-# - curl: ヘルスチェック用
-# - p7zip-full: lzhファイルの展開用
+# - curl: ヘルスチェック用およびJRDBダウンロード用
+# - lhasa: lzhファイルの展開用（lhaコマンドを提供）
+# - p7zip-full: lzh展開のフォールバック用
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
+    lhasa \
     p7zip-full \
     && rm -rf /var/lib/apt/lists/*
 
