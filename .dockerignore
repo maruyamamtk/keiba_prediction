@@ -1,0 +1,53 @@
+# .dockerignore
+
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+.venv/
+*.egg-info/
+.eggs/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# テスト
+.pytest_cache/
+.coverage
+htmlcov/
+tests/
+
+# ドキュメント
+*.md
+docs/
+reports/
+
+# ローカル環境
+.env
+.env.local
+*.log
+
+# ダウンロードデータ（大容量）
+downloaded_files/
+
+# Jupyter
+notebooks/
+*.ipynb
+.ipynb_checkpoints/
+
+# その他
+.DS_Store
+*.json
+!config/*.json
+infrastructure/
+cloud_functions/
