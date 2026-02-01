@@ -5,7 +5,14 @@ Cloud Run エントリーポイント
 HTTPリクエストを受け付け、データパイプラインを実行する。
 Cloud Schedulerからのトリガーで定期実行される。
 
+パイプライン全体:
+1. JRDBダウンロード (JRDB → 一時ディレクトリ)
+2. GCSアップロード (一時ディレクトリ → GCS)
+3. BigQueryロード (GCS → BigQuery, Cloud Functionが自動実行)
+4. 特徴量生成 (BigQuery raw → features)
+
 Issue #53: JRDBダウンローダーのコンテナ化
+Issue #66: データパイプライン統合とCloud Run対応
 """
 
 import logging
@@ -14,7 +21,8 @@ from datetime import datetime, timedelta
 
 from flask import Flask, jsonify, request
 
-from src.data.jrdb_downloader import create_downloader_from_env
+from src.data.pipeline import create_pipeline_from_env
+from src.features.feature_pipeline import FeaturePipeline, FeaturePipelineConfig
 
 # ロギング設定
 logging.basicConfig(
@@ -44,16 +52,16 @@ def health_check():
 
 
 @app.route("/download", methods=["POST"])
-def download_jrdb():
+def download_and_upload():
     """
-    JRDBからデータをダウンロードするエンドポイント
+    JRDBダウンロード→GCSアップロードを実行するエンドポイント
 
     リクエストボディ（JSON）:
         start_date: 開始日付（yymmdd形式）。省略時は昨日
         datatype: データタイプ（省略時はすべて）
 
     Returns:
-        ダウンロード結果
+        ダウンロード・アップロード結果
     """
     try:
         # リクエストパラメータを取得
@@ -61,131 +69,174 @@ def download_jrdb():
         start_date = data.get("start_date", get_default_start_date())
         datatype = data.get("datatype")
 
-        logger.info(f"JRDBダウンロード開始: start_date={start_date}, datatype={datatype}")
+        logger.info(
+            f"ダウンロード・アップロード開始: start_date={start_date}, datatype={datatype}"
+        )
 
-        # ダウンローダーを作成
-        downloader = create_downloader_from_env()
-        if downloader is None:
+        # パイプラインを作成
+        pipeline = create_pipeline_from_env(use_temp_dir=True)
+        if pipeline is None:
             return jsonify({
                 "status": "error",
-                "message": "JRDB認証情報が設定されていません"
+                "message": "パイプラインの初期化に失敗しました（認証情報を確認してください）"
             }), 500
 
-        try:
-            if datatype:
-                # 特定のデータタイプのみ
-                result = downloader.download_from_date(datatype.upper(), start_date)
-                download_results = {datatype.upper(): {
-                    "total_files": result.total_files,
-                    "downloaded_files": result.downloaded_files,
-                    "skipped_files": result.skipped_files,
-                    "failed_files": result.failed_files,
-                }}
-            else:
-                # すべてのデータタイプ
-                results = downloader.download_all_from_date(start_date)
-                download_results = {
-                    dt: {
-                        "total_files": r.total_files,
-                        "downloaded_files": r.downloaded_files,
-                        "skipped_files": r.skipped_files,
-                        "failed_files": r.failed_files,
-                    }
-                    for dt, r in results.items()
-                }
+        # パイプライン実行
+        result = pipeline.run_download_and_upload(
+            start_date=start_date,
+            datatype=datatype,
+        )
 
-            # 合計を計算
-            total_downloaded = sum(r["downloaded_files"] for r in download_results.values())
-            total_failed = sum(r["failed_files"] for r in download_results.values())
-
+        if result.success:
             response = {
-                "status": "success" if total_failed == 0 else "partial_success",
-                "message": f"ダウンロード完了: {total_downloaded}ファイル",
+                "status": "success",
+                "message": "ダウンロード・アップロードが完了しました",
                 "start_date": start_date,
-                "output_dir": str(downloader.get_output_dir()),
-                "results": download_results,
+                "download": {
+                    "total_files": result.download_result.total_files,
+                    "downloaded_files": result.download_result.downloaded_files,
+                    "skipped_files": result.download_result.skipped_files,
+                    "failed_files": result.download_result.failed_files,
+                } if result.download_result else None,
+                "upload": {
+                    "total_files": result.upload_result.total_files,
+                    "uploaded_files": result.upload_result.uploaded_files,
+                    "skipped_files": result.upload_result.skipped_files,
+                    "failed_files": result.upload_result.failed_files,
+                    "uploaded_bytes": result.upload_result.uploaded_bytes,
+                } if result.upload_result else None,
                 "timestamp": datetime.utcnow().isoformat(),
             }
-
-            logger.info(f"JRDBダウンロード完了: {total_downloaded}ファイル")
+            logger.info("ダウンロード・アップロードが完了しました")
             return jsonify(response), 200
-
-        finally:
-            # 一時ディレクトリの場合はクリーンアップ
-            # 注意: GCSアップロード後にクリーンアップする必要がある
-            pass
+        else:
+            response = {
+                "status": "error",
+                "message": result.error_message or "パイプライン実行に失敗しました",
+                "timestamp": datetime.utcnow().isoformat(),
+            }
+            logger.error(f"パイプライン実行に失敗: {result.error_message}")
+            return jsonify(response), 500
 
     except Exception as e:
-        logger.error(f"JRDBダウンロード中にエラーが発生しました: {e}", exc_info=True)
+        logger.error(f"パイプライン実行中にエラーが発生しました: {e}", exc_info=True)
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
 @app.route("/run", methods=["POST"])
-def run_pipeline():
+def run_full_pipeline():
     """
-    データパイプラインを実行するエンドポイント
+    フルデータパイプラインを実行するエンドポイント
 
     Cloud Schedulerから呼び出される。
 
     リクエストボディ（JSON）:
         start_date: 開始日付（yymmdd形式）。省略時は昨日
+        end_date: 終了日付（YYYY-MM-DD形式、特徴量生成用）。省略時はstart_dateから変換
         steps: 実行するステップのリスト（省略時はすべて）
-               ["download", "upload", "features"]
+               ["download_upload", "features"]
+
+    パイプライン全体:
+        1. download_upload: JRDB→GCS (このCloud Runで実行)
+        2. BigQueryロード: GCS→BigQuery (Cloud Functionが自動実行)
+        3. features: 特徴量生成 (このCloud Runで実行)
     """
     try:
         # リクエストパラメータを取得
         data = request.get_json(silent=True) or {}
         start_date = data.get("start_date", get_default_start_date())
-        steps = data.get("steps", ["download", "upload", "features"])
+        steps = data.get("steps", ["download_upload", "features"])
 
-        logger.info(f"パイプライン実行を開始します: start_date={start_date}, steps={steps}")
+        logger.info(f"フルパイプライン実行開始: start_date={start_date}, steps={steps}")
 
         results = {
             "start_date": start_date,
             "steps": {},
         }
 
-        # Step 1: JRDBダウンロード
-        if "download" in steps:
-            logger.info("Step 1: JRDBダウンロード開始")
-            downloader = create_downloader_from_env()
-            if downloader is None:
+        # Step 1+2: JRDBダウンロード→GCSアップロード
+        if "download_upload" in steps:
+            logger.info("Step 1+2: JRDBダウンロード→GCSアップロード開始")
+
+            pipeline = create_pipeline_from_env(use_temp_dir=True)
+            if pipeline is None:
                 return jsonify({
                     "status": "error",
-                    "message": "JRDB認証情報が設定されていません"
+                    "message": "パイプラインの初期化に失敗しました"
                 }), 500
 
-            download_results = downloader.download_all_from_date(start_date)
-            total_downloaded = sum(r.downloaded_files for r in download_results.values())
-            total_failed = sum(r.failed_files for r in download_results.values())
+            result = pipeline.run_download_and_upload(start_date=start_date)
 
-            results["steps"]["download"] = {
-                "status": "success" if total_failed == 0 else "partial_success",
-                "downloaded_files": total_downloaded,
-                "failed_files": total_failed,
-                "output_dir": str(downloader.get_output_dir()),
-            }
-            logger.info(f"Step 1: JRDBダウンロード完了: {total_downloaded}ファイル")
+            if result.success:
+                results["steps"]["download_upload"] = {
+                    "status": "success",
+                    "download": {
+                        "downloaded_files": result.download_result.downloaded_files,
+                        "skipped_files": result.download_result.skipped_files,
+                        "failed_files": result.download_result.failed_files,
+                    } if result.download_result else None,
+                    "upload": {
+                        "uploaded_files": result.upload_result.uploaded_files,
+                        "skipped_files": result.upload_result.skipped_files,
+                        "failed_files": result.upload_result.failed_files,
+                    } if result.upload_result else None,
+                }
+                logger.info("Step 1+2完了")
+            else:
+                results["steps"]["download_upload"] = {
+                    "status": "error",
+                    "message": result.error_message,
+                }
+                logger.error(f"Step 1+2失敗: {result.error_message}")
 
-        # Step 2: GCSアップロード（TODO: 後続Issueで実装）
-        if "upload" in steps:
-            logger.info("Step 2: GCSアップロード（未実装）")
-            results["steps"]["upload"] = {
-                "status": "skipped",
-                "message": "GCSアップロードは後続Issueで実装予定"
-            }
+        # Note: Step 3 (BigQueryロード) はCloud Functionが自動実行するためスキップ
 
-        # Step 3: 特徴量生成（TODO: 後続Issueで実装）
+        # Step 4: 特徴量生成
         if "features" in steps:
-            logger.info("Step 3: 特徴量生成（未実装）")
-            results["steps"]["features"] = {
-                "status": "skipped",
-                "message": "特徴量生成は後続Issueで実装予定"
-            }
+            logger.info("Step 4: 特徴量生成開始")
+
+            project_id = os.environ.get("GCP_PROJECT_ID")
+            if not project_id:
+                results["steps"]["features"] = {
+                    "status": "error",
+                    "message": "GCP_PROJECT_IDが設定されていません",
+                }
+                logger.error("GCP_PROJECT_IDが設定されていません")
+            else:
+                try:
+                    # start_dateをYYYY-MM-DD形式に変換
+                    start_date_formatted = datetime.strptime(start_date, "%y%m%d").strftime("%Y-%m-%d")
+                    end_date_formatted = data.get("end_date", start_date_formatted)
+
+                    # 特徴量パイプライン実行
+                    config = FeaturePipelineConfig(max_workers=2)
+                    feature_pipeline = FeaturePipeline(project_id, config)
+                    feature_result = feature_pipeline.run(
+                        start_date=start_date_formatted,
+                        end_date=end_date_formatted,
+                        batch_size=50,
+                        parallel=True,
+                    )
+
+                    results["steps"]["features"] = {
+                        "status": "success" if feature_result["errors"] == 0 else "partial_success",
+                        "total_races": feature_result["total_races"],
+                        "processed_races": feature_result["processed_races"],
+                        "errors": feature_result["errors"],
+                        "elapsed_time": feature_result["elapsed_time"],
+                    }
+                    logger.info(f"Step 4完了: {feature_result['processed_races']}レース処理")
+
+                except Exception as e:
+                    results["steps"]["features"] = {
+                        "status": "error",
+                        "message": str(e),
+                    }
+                    logger.error(f"Step 4失敗: {e}", exc_info=True)
 
         # 全体の結果を判定
         step_statuses = [s.get("status") for s in results["steps"].values()]
-        if all(s in ("success", "skipped") for s in step_statuses):
+        if all(s == "success" for s in step_statuses):
             overall_status = "success"
         elif any(s == "error" for s in step_statuses):
             overall_status = "error"
@@ -194,16 +245,16 @@ def run_pipeline():
 
         response = {
             "status": overall_status,
-            "message": "パイプライン実行が完了しました",
+            "message": "フルパイプライン実行が完了しました",
             "timestamp": datetime.utcnow().isoformat(),
             **results,
         }
 
-        logger.info("パイプライン実行が完了しました")
+        logger.info(f"フルパイプライン実行完了: {overall_status}")
         return jsonify(response), 200
 
     except Exception as e:
-        logger.error(f"パイプライン実行中にエラーが発生しました: {e}", exc_info=True)
+        logger.error(f"フルパイプライン実行中にエラーが発生しました: {e}", exc_info=True)
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
