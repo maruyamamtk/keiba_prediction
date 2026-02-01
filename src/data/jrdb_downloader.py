@@ -266,10 +266,17 @@ class JRDBDownloader:
         # 解凍後のlzhファイルを削除
         downloaded_path.unlink(missing_ok=True)
 
+        # バックアップディレクトリを作成
+        backup_dir = output_folder / "txt_backup"
+        backup_dir.mkdir(exist_ok=True)
+
         # 解凍されたtxtファイルのエンコーディング変換
         for txt_file in output_folder.glob("*.txt"):
             if not self._convert_encoding(txt_file):
                 continue
+
+            # 元のtxtファイルをバックアップディレクトリにコピー
+            shutil.copy(txt_file, backup_dir / txt_file.name)
 
             # 拡張子を.csvに変更（固定長フォーマットは維持）
             csv_file = txt_file.with_suffix(".csv")
