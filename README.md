@@ -80,14 +80,18 @@ keiba_prediction/
 │   └── README.md
 ├── src/
 │   ├── data/                # データパイプライン
-│   │   ├── create_tables.py       # BigQueryテーブル作成
+│   │   ├── jrdb_downloader.py     # JRDBダウンローダー
 │   │   ├── upload_to_gcs.py       # GCSアップロード
+│   │   ├── pipeline.py            # パイプライン統合（ダウンロード→アップロード）
+│   │   ├── create_tables.py       # BigQueryテーブル作成
 │   │   ├── quality_check.py       # データ品質チェック
 │   │   └── validation_rules.py    # バリデーションルール定義
 │   └── features/            # 特徴量エンジニアリング
 │       ├── feature_pipeline.py    # 特徴量パイプライン
 │       ├── past_performance.py    # 過去走特徴量
 │       └── condition_features.py  # 条件適性特徴量
+├── main.py                  # Cloud Runエントリーポイント
+├── Dockerfile               # Dockerイメージ定義
 ├── scripts/                 # ユーティリティスクリプト
 │   └── reload_gcs_to_bq.py        # 既存GCSファイルの再ロード
 ├── tests/                   # テストコード
@@ -106,10 +110,16 @@ keiba_prediction/
 
 ### 全体フロー
 
+現在は手動実行ですが、将来的にはCloud Run Functions で完全自動化する予定です。
+
+#### 現状（手動実行）
+
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
 │ 1. データ取得 (JRDB → ローカル)                                          │
-│    $ sh download_all_from_date.sh                                       │
+│    $ sh downloader/download_all_from_date.sh                            │
+│    または                                                                │
+│    $ python -m src.data.jrdb_downloader --start-date 240101             │
 └─────────────────────────────────────────────────────────────────────────┘
                                     ↓
 ┌─────────────────────────────────────────────────────────────────────────┐
@@ -129,7 +139,31 @@ keiba_prediction/
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Step 1: データ取得 (JRDB → ローカル)
+#### 将来計画（Cloud Run Functions での自動化）
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│ Cloud Scheduler (毎日AM 6:00)                                            │
+│   ↓ HTTPリクエスト                                                       │
+│ Cloud Run: /run エンドポイント                                           │
+│   ├─ Step 1+2: JRDBダウンロード → GCSアップロード                        │
+│   │            (一時ディレクトリを使用、完了後自動削除)                    │
+│   ├─ Step 3: BigQueryロード (Cloud Functionが自動トリガー)               │
+│   └─ Step 4: 特徴量生成 (BigQuery raw → features)                       │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+**自動化のメリット:**
+- 人手不要の完全自動運用
+- 一時ディレクトリによるディスク容量の節約
+- エラー時の自動リトライ
+- Cloud Loggingでの一元的なログ管理
+
+### 手動実行の手順
+
+#### Step 1: データ取得 (JRDB → ローカル)
+
+**方法A: シェルスクリプト（従来の方法）**
 
 ```bash
 cd downloader
@@ -142,7 +176,20 @@ cp .env.example .env
 sh download_all_from_date.sh
 ```
 
-### Step 2: GCSアップロード
+**方法B: Pythonモジュール（推奨）**
+
+```bash
+# 全データタイプをダウンロード
+python -m src.data.jrdb_downloader --start-date 240101
+
+# 特定のデータタイプのみ
+python -m src.data.jrdb_downloader --start-date 240101 --datatype BAA
+
+# 出力先を指定
+python -m src.data.jrdb_downloader --start-date 240101 --output-dir /path/to/dir
+```
+
+#### Step 2: GCSアップロード
 
 ```bash
 # 全データをアップロード（差分のみ）
@@ -150,9 +197,25 @@ python -m src.data.upload_to_gcs
 
 # 特定タイプのみアップロード
 python -m src.data.upload_to_gcs --data-type Sec
+
+# ドライラン（実際にはアップロードしない）
+python -m src.data.upload_to_gcs --dry-run
 ```
 
-### Step 3: BigQueryロード
+#### Step 1+2 統合: ダウンロード→アップロード
+
+```bash
+# ダウンロード→アップロードを一括実行
+python -m src.data.pipeline --start-date 240101
+
+# 特定のデータタイプのみ
+python -m src.data.pipeline --start-date 240101 --datatype BAA
+
+# 既存のdownloaded_filesを使用（一時ディレクトリを使わない）
+python -m src.data.pipeline --start-date 240101 --no-temp-dir
+```
+
+#### Step 3: BigQueryロード
 
 **A) 新規ファイルの場合（自動）**
 
@@ -173,10 +236,24 @@ python scripts/reload_gcs_to_bq.py --data-type SEC --prefix Sec/ --dry-run
 python scripts/reload_gcs_to_bq.py --data-type SEC --prefix Sec/ --limit 5
 ```
 
-### Step 4: データ品質チェック
+#### Step 4: 特徴量生成
 
 ```bash
+# 指定期間の特徴量を生成
+python -m src.features.feature_pipeline --start-date 2024-01-06 --end-date 2024-01-06
+
+# 詳細ログ付きで実行
+python -m src.features.feature_pipeline --start-date 2024-01-06 --end-date 2024-12-31 -v
+```
+
+#### Step 5: データ品質チェック
+
+```bash
+# 全テーブルのチェック
 python -m src.data.quality_check
+
+# 特定テーブルのみチェック
+python -m src.data.quality_check --table raw.race_info
 ```
 
 ### 対応データタイプ
@@ -187,21 +264,60 @@ python -m src.data.quality_check
 | KYF/KYG/KYH | 競走馬データ (出馬表・予測指数) | `raw.horse_results` |
 | SEC | 成績データ (レース結果) | `raw.race_results` |
 
+### Cloud Runでの実行（将来の自動化に向けた準備）
+
+Cloud Run環境でパイプライン全体を実行できます。
+
+#### ローカルでのテスト
+
+```bash
+# Flaskサーバーを起動
+python main.py
+
+# 別のターミナルで実行
+# ヘルスチェック
+curl http://localhost:8080/
+
+# ダウンロード→アップロード
+curl -X POST http://localhost:8080/download \
+  -H "Content-Type: application/json" \
+  -d '{"start_date": "240101"}'
+
+# フルパイプライン実行
+curl -X POST http://localhost:8080/run \
+  -H "Content-Type: application/json" \
+  -d '{"start_date": "240101", "end_date": "2024-01-01"}'
+```
+
+#### Cloud Runへのデプロイ
+
+```bash
+# イメージをビルド＆デプロイ
+gcloud builds submit --tag gcr.io/${PROJECT_ID}/keiba-pipeline
+gcloud run deploy keiba-pipeline \
+  --image gcr.io/${PROJECT_ID}/keiba-pipeline \
+  --platform managed \
+  --region asia-northeast1 \
+  --memory 2Gi \
+  --timeout 900 \
+  --set-env-vars GCP_PROJECT_ID=${PROJECT_ID} \
+  --set-secrets JRDB_USER=jrdb-user:latest,JRDB_PASSWORD=jrdb-password:latest
+
+# Cloud Schedulerで定期実行（毎日AM 6:00）
+gcloud scheduler jobs create http daily-data-pipeline \
+  --location asia-northeast1 \
+  --schedule "0 6 * * *" \
+  --uri "https://keiba-pipeline-xxxxx.a.run.app/run" \
+  --http-method POST \
+  --headers "Content-Type=application/json" \
+  --message-body '{"steps": ["download_upload", "features"]}'
+```
+
 ---
 
 ## 特徴量パイプライン
 
 BigQueryの`raw`テーブルから特徴量を生成し、`features.training_data`テーブルに保存します。
-
-### 実行方法
-
-```bash
-# 指定期間の特徴量を生成
-python -m src.features.feature_pipeline --start-date 2024-01-06 --end-date 2024-01-06
-
-# 詳細ログ付きで実行
-python -m src.features.feature_pipeline --start-date 2024-01-06 --end-date 2024-12-31 -v
-```
 
 ### 生成される特徴量
 
@@ -212,6 +328,8 @@ python -m src.features.feature_pipeline --start-date 2024-01-06 --end-date 2024-
 | 脚質 | front_rate, closer_rate, avg_corner4_position |
 
 **注意**: 特徴量パイプラインは`race_results`テーブルにデータが存在する日付でのみ動作します。
+
+詳細は [ML_FEATURE.md](./ML_FEATURE.md) を参照してください。
 
 ---
 
@@ -272,6 +390,27 @@ python -m src.data.quality_check --no-alert
 ============================================================
 ```
 
+### JRDBダウンローダー (`src/data/jrdb_downloader.py`)
+
+JRDBからデータをダウンロードし、解凍・エンコーディング変換を行います。
+
+```bash
+# 全データタイプをダウンロード
+python -m src.data.jrdb_downloader --start-date 240101
+
+# 特定のデータタイプのみ
+python -m src.data.jrdb_downloader --start-date 240101 --datatype BAA
+
+# 出力先を指定
+python -m src.data.jrdb_downloader --start-date 240101 --output-dir /path/to/dir
+```
+
+**特徴:**
+- lzhファイルの自動解凍
+- CP932からUTF-8へのエンコーディング変換
+- 環境変数からの認証情報取得（Cloud Run対応）
+- 一時ディレクトリのサポート
+
 ### GCSアップロード (`src/data/upload_to_gcs.py`)
 
 ローカルのダウンロードデータをGCSにアップロードします。
@@ -295,6 +434,23 @@ python -m src.data.upload_to_gcs --force
 - リトライ機能（最大3回）
 - プログレス表示
 - 詳細なアップロードレポート
+
+### パイプライン統合 (`src/data/pipeline.py`)
+
+ダウンロード→GCSアップロードを一括実行します。
+
+```bash
+# ダウンロード→アップロードを一括実行
+python -m src.data.pipeline --start-date 240101
+
+# 特定のデータタイプのみ
+python -m src.data.pipeline --start-date 240101 --datatype BAA
+```
+
+**特徴:**
+- 一時ディレクトリの自動管理（Cloud Run環境向け）
+- エラーハンドリングとクリーンアップ
+- 統合されたログ出力
 
 ### BigQueryテーブル作成 (`src/data/create_tables.py`)
 
@@ -413,7 +569,9 @@ python -m pytest tests/ --cov=src --cov-report=html
 
 - [x] GCSバケット作成
 - [x] BigQueryデータセット・テーブル作成 (`src/data/create_tables.py`)
+- [x] JRDBダウンローダー (`src/data/jrdb_downloader.py`)
 - [x] GCSアップロードスクリプト (`src/data/upload_to_gcs.py`)
+- [x] パイプライン統合 (`src/data/pipeline.py`)
 - [x] GCS→BigQuery自動ロード (`cloud_functions/gcs_to_bq/`)
 - [x] データ品質チェックスクリプト (`src/data/quality_check.py`)
 - [x] 既存ファイル再ロードスクリプト (`scripts/reload_gcs_to_bq.py`)
@@ -425,13 +583,22 @@ python -m pytest tests/ --cov=src --cov-report=html
 - [x] 特徴量パイプライン (`src/features/feature_pipeline.py`)
 - [ ] Target Encoding実装 (Phase 3で実装予定)
 
-### Phase 3: モデル開発 🚧
+### Phase 3: Cloud Run統合 🚧
+
+- [x] Cloud Runエントリーポイント (`main.py`)
+- [x] Dockerfile作成
+- [x] フルパイプライン統合（ダウンロード→アップロード→特徴量生成）
+- [ ] Cloud Scheduler設定
+- [ ] Secret Managerでの認証情報管理
+- [ ] Cloud Loggingとの統合
+
+### Phase 4: モデル開発
 
 - [ ] LightGBM ランク学習
 - [ ] 時系列クロスバリデーション
 - [ ] バックテスト
 
-### Phase 4: 運用システム構築
+### Phase 5: 運用システム構築
 
 - [ ] 予測パイプライン
 - [ ] Webダッシュボード
