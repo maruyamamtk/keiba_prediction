@@ -10,6 +10,7 @@ Cloud Run環境での実行を想定しています。
 - BigQueryへのUPSERT (MERGE文)
 - バッチ処理対応
 - エラーハンドリングと失敗ファイルの記録
+- ロード履歴の記録と重複スキップ機能
 """
 
 import logging
@@ -20,7 +21,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 
 from google.cloud import bigquery, storage
 from google.cloud.exceptions import GoogleCloudError
@@ -65,6 +66,9 @@ TABLE_UNIQUE_KEYS = {
     "horse_extended": ["race_id", "horse_number"],
     "venue_info": ["venue_id"],
 }
+
+# ロード履歴テーブル名
+LOAD_HISTORY_TABLE = "load_history"
 
 
 @dataclass
@@ -162,6 +166,103 @@ class BigQueryLoader:
             self._storage_client = storage.Client(project=self.project_id)
             logger.info("Cloud Storageクライアントを初期化しました")
         return self._storage_client
+
+    def _get_loaded_files(self) -> Set[str]:
+        """
+        ロード履歴テーブルから成功したファイル名のセットを取得
+
+        Returns:
+            ロード済みファイル名のセット
+        """
+        table_ref = f"{self.project_id}.{self.dataset_id}.{LOAD_HISTORY_TABLE}"
+
+        query = f"""
+        SELECT DISTINCT file_name
+        FROM `{table_ref}`
+        WHERE status = 'success'
+        """
+
+        try:
+            query_job = self.bq_client.query(query)
+            results = query_job.result()
+            loaded_files = {row.file_name for row in results}
+            logger.info(f"ロード履歴から {len(loaded_files)} 件の成功ファイルを取得しました")
+            return loaded_files
+        except Exception as e:
+            # テーブルが存在しない場合は空のセットを返す
+            if "Not found" in str(e):
+                logger.warning(
+                    f"ロード履歴テーブルが見つかりません: {table_ref}. "
+                    "スキップ機能は無効になります。"
+                )
+                return set()
+            logger.error(f"ロード履歴の取得に失敗しました: {e}")
+            raise
+
+    def _record_load_history(
+        self,
+        file_name: str,
+        status: str,
+        records_count: int = 0,
+        table_name: Optional[str] = None,
+        data_type: Optional[str] = None,
+        error_message: Optional[str] = None,
+        duration_seconds: float = 0.0,
+        file_size_bytes: Optional[int] = None,
+    ) -> None:
+        """
+        ロード履歴をBigQueryに記録
+
+        Args:
+            file_name: ファイル名
+            status: ステータス (success/failed)
+            records_count: ロードしたレコード数
+            table_name: ロード先テーブル名
+            data_type: データタイプ
+            error_message: エラーメッセージ
+            duration_seconds: 処理時間
+            file_size_bytes: ファイルサイズ
+        """
+        table_ref = f"{self.project_id}.{self.dataset_id}.{LOAD_HISTORY_TABLE}"
+
+        row = {
+            "file_name": file_name,
+            "loaded_at": datetime.utcnow().isoformat(),
+            "records_count": records_count,
+            "table_name": table_name,
+            "data_type": data_type,
+            "status": status,
+            "error_message": error_message,
+            "duration_seconds": duration_seconds,
+            "file_size_bytes": file_size_bytes,
+        }
+
+        try:
+            errors = self.bq_client.insert_rows_json(table_ref, [row])
+            if errors:
+                logger.warning(f"ロード履歴の記録に失敗しました: {errors}")
+            else:
+                logger.debug(f"ロード履歴を記録しました: {file_name} ({status})")
+        except Exception as e:
+            # ロード履歴の記録失敗はワーニングに留める
+            logger.warning(f"ロード履歴の記録に失敗しました: {e}")
+
+    def _is_file_already_loaded(
+        self, file_name: str, loaded_files: Optional[Set[str]] = None
+    ) -> bool:
+        """
+        ファイルが既にロード済みかどうかを確認
+
+        Args:
+            file_name: ファイル名
+            loaded_files: ロード済みファイルのセット (キャッシュ用)
+
+        Returns:
+            ロード済みの場合True
+        """
+        if loaded_files is None:
+            loaded_files = self._get_loaded_files()
+        return file_name in loaded_files
 
     def _download_file_from_gcs(self, blob_name: str) -> Optional[str]:
         """
@@ -300,18 +401,23 @@ class BigQueryLoader:
             logger.error(f"BigQuery ロードエラー: {e}")
             raise
 
-    def load_file(self, blob_name: str) -> LoadResult:
+    def load_file(
+        self, blob_name: str, record_history: bool = True
+    ) -> LoadResult:
         """
         単一ファイルをGCSからBigQueryにロード
 
         Args:
             blob_name: GCS上のファイルパス
+            record_history: ロード履歴を記録するか (デフォルト: True)
 
         Returns:
             LoadResult: ロード結果
         """
         start_time = time.time()
         result = LoadResult(file_name=blob_name, status="failed")
+        data_type = None
+        table_name = None
 
         try:
             # ファイル名からデータタイプを抽出
@@ -372,12 +478,26 @@ class BigQueryLoader:
         finally:
             result.duration_seconds = time.time() - start_time
 
+            # ロード履歴を記録
+            if record_history:
+                self._record_load_history(
+                    file_name=blob_name,
+                    status=result.status,
+                    records_count=result.records_processed,
+                    table_name=table_name,
+                    data_type=data_type,
+                    error_message=result.error,
+                    duration_seconds=result.duration_seconds,
+                )
+
         return result
 
     def load_files_batch(
         self,
         blob_names: List[str],
         continue_on_error: bool = True,
+        skip_loaded: bool = False,
+        record_history: bool = True,
     ) -> BatchLoadResult:
         """
         複数ファイルをバッチでロード
@@ -385,6 +505,8 @@ class BigQueryLoader:
         Args:
             blob_names: GCS上のファイルパスのリスト
             continue_on_error: エラー時に処理を継続するか
+            skip_loaded: 既にロード済みのファイルをスキップするか
+            record_history: ロード履歴を記録するか
 
         Returns:
             BatchLoadResult: バッチロード結果
@@ -394,10 +516,28 @@ class BigQueryLoader:
 
         logger.info(f"バッチロード開始: {len(blob_names)} ファイル")
 
+        # 重複スキップが有効な場合、ロード済みファイルを取得
+        loaded_files: Set[str] = set()
+        if skip_loaded:
+            loaded_files = self._get_loaded_files()
+            logger.info(f"重複スキップ機能: 有効 ({len(loaded_files)} 件のロード済みファイル)")
+
         for i, blob_name in enumerate(blob_names, 1):
+            # 重複スキップ判定
+            if skip_loaded and blob_name in loaded_files:
+                logger.info(f"スキップ ({i}/{len(blob_names)}): {blob_name} (ロード済み)")
+                result = LoadResult(
+                    file_name=blob_name,
+                    status="skipped",
+                    error="既にロード済み",
+                )
+                batch_result.results.append(result)
+                batch_result.skipped_count += 1
+                continue
+
             logger.info(f"処理中 ({i}/{len(blob_names)}): {blob_name}")
 
-            result = self.load_file(blob_name)
+            result = self.load_file(blob_name, record_history=record_history)
             batch_result.results.append(result)
 
             if result.status == "success":
@@ -536,6 +676,16 @@ def main():
         action="store_true",
         help="エラー時に処理を中断する",
     )
+    parser.add_argument(
+        "--skip-loaded",
+        action="store_true",
+        help="既にロード済みのファイルをスキップする (重複スキップ機能)",
+    )
+    parser.add_argument(
+        "--no-history",
+        action="store_true",
+        help="ロード履歴を記録しない",
+    )
 
     args = parser.parse_args()
 
@@ -572,6 +722,8 @@ def main():
     result = loader.load_files_batch(
         files_to_load,
         continue_on_error=not args.stop_on_error,
+        skip_loaded=args.skip_loaded,
+        record_history=not args.no_history,
     )
 
     # 結果出力

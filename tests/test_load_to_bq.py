@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src" / "data"))
 from load_to_bq import (
     BatchLoadResult,
     BigQueryLoader,
+    LOAD_HISTORY_TABLE,
     LoadResult,
     create_loader_from_env,
     extract_data_type,
@@ -503,3 +504,260 @@ class TestBigQueryLoaderMerge:
 
         # 一時テーブルは削除される
         mock_client.delete_table.assert_called()
+
+
+class TestGetLoadedFiles:
+    """_get_loaded_filesメソッドのテスト"""
+
+    @patch("load_to_bq.bigquery.Client")
+    def test_get_loaded_files_success(self, mock_bq_client):
+        """ロード済みファイル一覧を取得する"""
+        loader = BigQueryLoader(project_id="test-project")
+
+        mock_client = MagicMock()
+        mock_bq_client.return_value = mock_client
+
+        # クエリ結果をモック
+        mock_row1 = MagicMock()
+        mock_row1.file_name = "BAA260104.csv"
+        mock_row2 = MagicMock()
+        mock_row2.file_name = "KYF260104.csv"
+
+        mock_query_job = MagicMock()
+        mock_query_job.result.return_value = [mock_row1, mock_row2]
+        mock_client.query.return_value = mock_query_job
+
+        result = loader._get_loaded_files()
+
+        assert result == {"BAA260104.csv", "KYF260104.csv"}
+        mock_client.query.assert_called_once()
+        # クエリが正しいテーブルを参照していることを確認
+        query_call = mock_client.query.call_args[0][0]
+        assert LOAD_HISTORY_TABLE in query_call
+        assert "status = 'success'" in query_call
+
+    @patch("load_to_bq.bigquery.Client")
+    def test_get_loaded_files_table_not_found(self, mock_bq_client):
+        """テーブルが存在しない場合は空のセットを返す"""
+        loader = BigQueryLoader(project_id="test-project")
+
+        mock_client = MagicMock()
+        mock_bq_client.return_value = mock_client
+
+        # テーブルが見つからないエラー
+        mock_client.query.side_effect = Exception("Not found: Table test-project.raw.load_history")
+
+        result = loader._get_loaded_files()
+
+        assert result == set()
+
+    @patch("load_to_bq.bigquery.Client")
+    def test_get_loaded_files_other_error(self, mock_bq_client):
+        """その他のエラーは例外を発生させる"""
+        loader = BigQueryLoader(project_id="test-project")
+
+        mock_client = MagicMock()
+        mock_bq_client.return_value = mock_client
+
+        # その他のエラー
+        mock_client.query.side_effect = Exception("Network error")
+
+        with pytest.raises(Exception):
+            loader._get_loaded_files()
+
+
+class TestRecordLoadHistory:
+    """_record_load_historyメソッドのテスト"""
+
+    @patch("load_to_bq.bigquery.Client")
+    def test_record_load_history_success(self, mock_bq_client):
+        """ロード履歴を正常に記録する"""
+        loader = BigQueryLoader(project_id="test-project")
+
+        mock_client = MagicMock()
+        mock_bq_client.return_value = mock_client
+        mock_client.insert_rows_json.return_value = []
+
+        loader._record_load_history(
+            file_name="BAA260104.csv",
+            status="success",
+            records_count=100,
+            table_name="race_info",
+            data_type="BAA",
+            duration_seconds=1.5,
+        )
+
+        mock_client.insert_rows_json.assert_called_once()
+        call_args = mock_client.insert_rows_json.call_args
+        table_ref = call_args[0][0]
+        rows = call_args[0][1]
+
+        assert LOAD_HISTORY_TABLE in table_ref
+        assert len(rows) == 1
+        assert rows[0]["file_name"] == "BAA260104.csv"
+        assert rows[0]["status"] == "success"
+        assert rows[0]["records_count"] == 100
+        assert rows[0]["table_name"] == "race_info"
+        assert rows[0]["data_type"] == "BAA"
+
+    @patch("load_to_bq.bigquery.Client")
+    def test_record_load_history_failure(self, mock_bq_client):
+        """ロード履歴の記録失敗時はワーニングのみ（例外は発生しない）"""
+        loader = BigQueryLoader(project_id="test-project")
+
+        mock_client = MagicMock()
+        mock_bq_client.return_value = mock_client
+        mock_client.insert_rows_json.return_value = [{"error": "insert error"}]
+
+        # 例外は発生しない（ワーニングのみ）
+        loader._record_load_history(
+            file_name="BAA260104.csv",
+            status="failed",
+            error_message="Test error",
+        )
+
+        mock_client.insert_rows_json.assert_called_once()
+
+
+class TestIsFileAlreadyLoaded:
+    """_is_file_already_loadedメソッドのテスト"""
+
+    def test_file_is_loaded(self):
+        """ファイルがロード済みの場合Trueを返す"""
+        loader = BigQueryLoader(project_id="test-project")
+        loaded_files = {"BAA260104.csv", "KYF260104.csv"}
+
+        result = loader._is_file_already_loaded("BAA260104.csv", loaded_files)
+
+        assert result is True
+
+    def test_file_is_not_loaded(self):
+        """ファイルが未ロードの場合Falseを返す"""
+        loader = BigQueryLoader(project_id="test-project")
+        loaded_files = {"BAA260104.csv", "KYF260104.csv"}
+
+        result = loader._is_file_already_loaded("SEC260104.csv", loaded_files)
+
+        assert result is False
+
+
+class TestLoadFilesWithSkip:
+    """重複スキップ機能を含むload_files_batchメソッドのテスト"""
+
+    def test_batch_load_with_skip_loaded(self):
+        """skip_loaded=Trueでロード済みファイルをスキップする"""
+        loader = BigQueryLoader(project_id="test-project")
+
+        # ロード済みファイルを返すモック
+        with patch.object(
+            loader, "_get_loaded_files", return_value={"file1.csv", "file2.csv"}
+        ):
+            with patch.object(loader, "load_file") as mock_load:
+                mock_load.return_value = LoadResult(
+                    file_name="file3.csv",
+                    status="success",
+                    records_processed=10,
+                )
+
+                result = loader.load_files_batch(
+                    ["file1.csv", "file2.csv", "file3.csv"],
+                    skip_loaded=True,
+                )
+
+        # file1.csvとfile2.csvはスキップされ、file3.csvのみロードされる
+        assert result.total_files == 3
+        assert result.success_count == 1
+        assert result.skipped_count == 2
+        assert result.failed_count == 0
+
+        # load_fileはfile3.csvのみ呼ばれる
+        mock_load.assert_called_once_with("file3.csv", record_history=True)
+
+    def test_batch_load_without_skip_loaded(self):
+        """skip_loaded=Falseで全ファイルをロードする"""
+        loader = BigQueryLoader(project_id="test-project")
+
+        with patch.object(loader, "load_file") as mock_load:
+            mock_load.return_value = LoadResult(
+                file_name="test.csv",
+                status="success",
+                records_processed=10,
+            )
+
+            result = loader.load_files_batch(
+                ["file1.csv", "file2.csv"],
+                skip_loaded=False,
+            )
+
+        # 全ファイルがロードされる
+        assert result.total_files == 2
+        assert result.success_count == 2
+        assert mock_load.call_count == 2
+
+    def test_batch_load_skip_reason_in_result(self):
+        """スキップされたファイルの理由が結果に含まれる"""
+        loader = BigQueryLoader(project_id="test-project")
+
+        with patch.object(
+            loader, "_get_loaded_files", return_value={"file1.csv"}
+        ):
+            with patch.object(loader, "load_file"):
+                result = loader.load_files_batch(
+                    ["file1.csv"],
+                    skip_loaded=True,
+                )
+
+        assert len(result.results) == 1
+        assert result.results[0].status == "skipped"
+        assert result.results[0].error == "既にロード済み"
+
+
+class TestLoadFileWithHistory:
+    """履歴記録を含むload_fileメソッドのテスト"""
+
+    def test_load_file_records_history_on_success(self):
+        """成功時にロード履歴を記録する"""
+        loader = BigQueryLoader(project_id="test-project")
+
+        with patch.object(loader, "_download_file_from_gcs", return_value="data"):
+            with patch.object(loader, "_load_to_bigquery", return_value=100):
+                with patch.object(loader, "_record_load_history") as mock_history:
+                    with patch("load_to_bq.JRDBParser") as mock_parser:
+                        mock_parser.parse_file.return_value = [{"data": "test"}]
+
+                        result = loader.load_file("BAA260104.csv")
+
+        assert result.status == "success"
+        mock_history.assert_called_once()
+        call_kwargs = mock_history.call_args[1]
+        assert call_kwargs["file_name"] == "BAA260104.csv"
+        assert call_kwargs["status"] == "success"
+        assert call_kwargs["records_count"] == 100
+
+    def test_load_file_records_history_on_failure(self):
+        """失敗時にロード履歴を記録する"""
+        loader = BigQueryLoader(project_id="test-project")
+
+        with patch.object(loader, "_download_file_from_gcs", return_value=None):
+            with patch.object(loader, "_record_load_history") as mock_history:
+                result = loader.load_file("BAA260104.csv")
+
+        assert result.status == "failed"
+        mock_history.assert_called_once()
+        call_kwargs = mock_history.call_args[1]
+        assert call_kwargs["status"] == "failed"
+        assert call_kwargs["error_message"] is not None
+
+    def test_load_file_no_history_when_disabled(self):
+        """record_history=Falseで履歴を記録しない"""
+        loader = BigQueryLoader(project_id="test-project")
+
+        with patch.object(loader, "_download_file_from_gcs", return_value="data"):
+            with patch.object(loader, "_load_to_bigquery", return_value=100):
+                with patch.object(loader, "_record_load_history") as mock_history:
+                    with patch("load_to_bq.JRDBParser") as mock_parser:
+                        mock_parser.parse_file.return_value = [{"data": "test"}]
+
+                        loader.load_file("BAA260104.csv", record_history=False)
+
+        mock_history.assert_not_called()
