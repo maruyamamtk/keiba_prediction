@@ -1,0 +1,56 @@
+[
+  {
+    "name": "file_name",
+    "type": "STRING",
+    "mode": "REQUIRED",
+    "description": "ロードされたファイル名 (GCS上のパス)"
+  },
+  {
+    "name": "loaded_at",
+    "type": "TIMESTAMP",
+    "mode": "REQUIRED",
+    "description": "ロード実行日時"
+  },
+  {
+    "name": "records_count",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "ロードされたレコード数"
+  },
+  {
+    "name": "table_name",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "ロード先テーブル名"
+  },
+  {
+    "name": "data_type",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "データタイプ (BAA, KYF, SEC等)"
+  },
+  {
+    "name": "status",
+    "type": "STRING",
+    "mode": "REQUIRED",
+    "description": "ステータス (success/failed)"
+  },
+  {
+    "name": "error_message",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "エラーメッセージ (失敗時)"
+  },
+  {
+    "name": "duration_seconds",
+    "type": "FLOAT64",
+    "mode": "NULLABLE",
+    "description": "処理時間(秒)"
+  },
+  {
+    "name": "file_size_bytes",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "ファイルサイズ(バイト)"
+  }
+]
