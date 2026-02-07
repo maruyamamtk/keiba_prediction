@@ -11,6 +11,7 @@ Issue #58: 過去分全件ロード処理の実装
 
 import logging
 import os
+import uuid
 from datetime import date
 from typing import Optional
 
@@ -251,8 +252,6 @@ async def load_full(
     Returns:
         受付結果
     """
-    import uuid
-
     job_id = str(uuid.uuid4())[:8]
     start_date_str = request.start_date or "全期間"
     end_date_str = request.end_date or "全期間"

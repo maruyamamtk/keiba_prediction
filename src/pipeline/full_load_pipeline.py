@@ -8,6 +8,7 @@ Issue #58: 過去分全件ロード処理の実装
 """
 
 import logging
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -326,8 +327,6 @@ class FullLoadPipeline:
         Returns:
             フィルタ済みファイルリスト
         """
-        import re
-
         filtered = []
         pattern = re.compile(r"(\d{6})\.")  # yymmdd部分を抽出
 
