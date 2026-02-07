@@ -26,7 +26,7 @@ from dotenv import load_dotenv
 from google.cloud import bigquery
 from google.cloud.exceptions import NotFound
 
-from src.data.validation_rules import (
+from src.manual.validation_rules import (
     DATE_RANGE_CONFIG,
     NUMERIC_RANGE_CONFIG,
     TABLE_VALIDATION_CONFIGS,

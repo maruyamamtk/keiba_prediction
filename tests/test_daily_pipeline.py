@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-src.pipeline.daily_pipeline と src.api.app のテスト
+src.automation.pipeline.daily_pipeline と src.automation.api.app のテスト
 
 日次パイプラインとHTTP APIのテスト。
 """
@@ -11,10 +11,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.data.jrdb_downloader import DownloadResult
-from src.data.load_to_bq import BatchLoadResult, LoadResult
-from src.data.upload_to_gcs import UploadResult
-from src.pipeline.daily_pipeline import (
+from src.automation.data.jrdb_downloader import DownloadResult
+from src.automation.data.load_to_bq import BatchLoadResult, LoadResult
+from src.automation.data.upload_to_gcs import UploadResult
+from src.automation.pipeline.daily_pipeline import (
     DailyPipeline,
     PipelineResult,
     StepResult,
@@ -365,7 +365,7 @@ class TestDailyPipelineAPI:
         """テストクライアント"""
         from fastapi.testclient import TestClient
 
-        from src.api.app import app
+        from src.automation.api.app import app
 
         return TestClient(app)
 
@@ -392,7 +392,7 @@ class TestDailyPipelineAPI:
         )
         assert response.status_code == 422
 
-    @patch("src.api.app.get_pipeline")
+    @patch("src.automation.api.app.get_pipeline")
     def test_load_daily_success(self, mock_get_pipeline, client):
         """日次ロード成功"""
         mock_pipeline = MagicMock()
@@ -419,7 +419,7 @@ class TestDailyPipelineAPI:
         assert data["files_loaded"] == 3
         assert data["records_loaded"] == 100
 
-    @patch("src.api.app.get_pipeline")
+    @patch("src.automation.api.app.get_pipeline")
     def test_load_daily_default_date(self, mock_get_pipeline, client):
         """日付省略時は当日"""
         mock_pipeline = MagicMock()
@@ -436,7 +436,7 @@ class TestDailyPipelineAPI:
         assert response.status_code == 200
         mock_pipeline.run.assert_called_once_with(None)
 
-    @patch("src.api.app.get_pipeline")
+    @patch("src.automation.api.app.get_pipeline")
     def test_load_daily_failed(self, mock_get_pipeline, client):
         """日次ロード失敗"""
         mock_pipeline = MagicMock()

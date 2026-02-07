@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-src.pipeline.full_load_pipeline と src.api.app の全件ロードテスト
+src.automation.pipeline.full_load_pipeline と src.automation.api.app の全件ロードテスト
 
 過去分全件ロードパイプラインとHTTP APIのテスト。
 """
@@ -11,10 +11,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.data.jrdb_downloader import DownloadResult
-from src.data.load_to_bq import BatchLoadResult
-from src.data.upload_to_gcs import UploadResult
-from src.pipeline.full_load_pipeline import (
+from src.automation.data.jrdb_downloader import DownloadResult
+from src.automation.data.load_to_bq import BatchLoadResult
+from src.automation.data.upload_to_gcs import UploadResult
+from src.automation.pipeline.full_load_pipeline import (
     FullLoadPipeline,
     FullLoadResult,
     FullLoadStepResult,
@@ -393,7 +393,7 @@ class TestFullLoadAPI:
     @pytest.fixture
     def client(self):
         from fastapi.testclient import TestClient
-        from src.api.app import app
+        from src.automation.api.app import app
         return TestClient(app)
 
     def test_root_version_updated(self, client):
@@ -435,7 +435,7 @@ class TestFullLoadAPI:
         )
         assert response.status_code == 422
 
-    @patch("src.api.app.FullLoadPipeline")
+    @patch("src.automation.api.app.FullLoadPipeline")
     def test_load_full_sync_success(self, MockPipeline, client):
         """同期全件ロード成功"""
         mock_pipeline = MagicMock()
@@ -463,7 +463,7 @@ class TestFullLoadAPI:
         assert data["files_loaded"] == 50
         assert data["records_loaded"] == 5000
 
-    @patch("src.api.app.FullLoadPipeline")
+    @patch("src.automation.api.app.FullLoadPipeline")
     def test_load_full_sync_failed(self, MockPipeline, client):
         """同期全件ロード失敗"""
         mock_pipeline = MagicMock()

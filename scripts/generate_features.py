@@ -32,7 +32,7 @@ sys.path.insert(0, str(project_root))
 
 from dotenv import load_dotenv
 
-from src.features.feature_pipeline import (
+from src.ml.features.feature_pipeline import (
     FeaturePipeline,
     FeaturePipelineConfig,
 )

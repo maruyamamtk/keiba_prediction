@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.data.jrdb_downloader import (
+from src.automation.data.jrdb_downloader import (
     CSV_DATATYPES,
     DownloadResult,
     JRDBDownloader,

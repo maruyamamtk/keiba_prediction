@@ -3,15 +3,11 @@ load_to_bq モジュールのユニットテスト
 """
 
 import os
-import sys
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-# テスト対象モジュールをインポート
-sys.path.insert(0, str(Path(__file__).parent.parent / "src" / "data"))
-from load_to_bq import (
+from src.automation.data.load_to_bq import (
     BatchLoadResult,
     BigQueryLoader,
     LOAD_HISTORY_TABLE,
@@ -167,7 +163,7 @@ class TestBigQueryLoaderInit:
 class TestBigQueryLoaderClients:
     """BigQueryLoaderのクライアント初期化テスト"""
 
-    @patch("load_to_bq.bigquery.Client")
+    @patch("google.cloud.bigquery.Client")
     def test_bq_client_lazy_init(self, mock_bq_client):
         loader = BigQueryLoader(project_id="test-project")
         mock_client_instance = MagicMock()
@@ -178,7 +174,7 @@ class TestBigQueryLoaderClients:
         assert client == mock_client_instance
         mock_bq_client.assert_called_once_with(project="test-project")
 
-    @patch("load_to_bq.bigquery.Client")
+    @patch("google.cloud.bigquery.Client")
     def test_bq_client_cached(self, mock_bq_client):
         loader = BigQueryLoader(project_id="test-project")
         mock_bq_client.return_value = MagicMock()
@@ -188,7 +184,7 @@ class TestBigQueryLoaderClients:
         _ = loader.bq_client
         mock_bq_client.assert_called_once()
 
-    @patch("load_to_bq.storage.Client")
+    @patch("google.cloud.storage.Client")
     def test_storage_client_lazy_init(self, mock_storage_client):
         loader = BigQueryLoader(project_id="test-project")
         mock_client_instance = MagicMock()
@@ -202,7 +198,7 @@ class TestBigQueryLoaderClients:
 class TestBigQueryLoaderDownload:
     """BigQueryLoaderのGCSダウンロードテスト"""
 
-    @patch("load_to_bq.storage.Client")
+    @patch("google.cloud.storage.Client")
     def test_download_file_success_utf8(self, mock_storage_client):
         loader = BigQueryLoader(project_id="test-project")
 
@@ -221,7 +217,7 @@ class TestBigQueryLoaderDownload:
         result = loader._download_file_from_gcs("test.csv")
         assert result == "テストデータ"
 
-    @patch("load_to_bq.storage.Client")
+    @patch("google.cloud.storage.Client")
     def test_download_file_success_cp932(self, mock_storage_client):
         loader = BigQueryLoader(project_id="test-project")
 
@@ -240,7 +236,7 @@ class TestBigQueryLoaderDownload:
         result = loader._download_file_from_gcs("test.csv")
         assert result == "テストデータ"
 
-    @patch("load_to_bq.storage.Client")
+    @patch("google.cloud.storage.Client")
     def test_download_file_not_exists(self, mock_storage_client):
         loader = BigQueryLoader(project_id="test-project")
 
@@ -261,7 +257,7 @@ class TestBigQueryLoaderDownload:
 class TestBigQueryLoaderLoadFile:
     """BigQueryLoaderのload_fileメソッドテスト"""
 
-    @patch("load_to_bq.JRDBParser", None)
+    @patch("src.automation.data.load_to_bq.JRDBParser", None)
     def test_load_file_no_parser(self):
         """パーサーが利用できない場合のテスト"""
         loader = BigQueryLoader(project_id="test-project")
@@ -292,7 +288,7 @@ class TestBigQueryLoaderLoadFile:
 class TestBigQueryLoaderListFiles:
     """BigQueryLoaderのlist_csv_filesメソッドテスト"""
 
-    @patch("load_to_bq.storage.Client")
+    @patch("google.cloud.storage.Client")
     def test_list_csv_files(self, mock_storage_client):
         loader = BigQueryLoader(project_id="test-project")
 
@@ -320,7 +316,7 @@ class TestBigQueryLoaderListFiles:
         assert "KYF260104.csv" in result
         assert "data.txt" not in result
 
-    @patch("load_to_bq.storage.Client")
+    @patch("google.cloud.storage.Client")
     def test_list_csv_files_with_data_type_filter(self, mock_storage_client):
         loader = BigQueryLoader(project_id="test-project")
 
@@ -440,7 +436,7 @@ class TestCreateLoaderFromEnv:
 class TestBigQueryLoaderMerge:
     """BigQueryLoaderのMERGE処理テスト"""
 
-    @patch("load_to_bq.bigquery.Client")
+    @patch("google.cloud.bigquery.Client")
     def test_load_to_bigquery_success(self, mock_bq_client):
         loader = BigQueryLoader(project_id="test-project")
 
@@ -480,7 +476,7 @@ class TestBigQueryLoaderMerge:
         mock_client.query.assert_called()
         mock_client.delete_table.assert_called()
 
-    @patch("load_to_bq.bigquery.Client")
+    @patch("google.cloud.bigquery.Client")
     def test_load_to_bigquery_insert_error(self, mock_bq_client):
         loader = BigQueryLoader(project_id="test-project")
 
@@ -509,7 +505,7 @@ class TestBigQueryLoaderMerge:
 class TestGetLoadedFiles:
     """_get_loaded_filesメソッドのテスト"""
 
-    @patch("load_to_bq.bigquery.Client")
+    @patch("google.cloud.bigquery.Client")
     def test_get_loaded_files_success(self, mock_bq_client):
         """ロード済みファイル一覧を取得する"""
         loader = BigQueryLoader(project_id="test-project")
@@ -536,7 +532,7 @@ class TestGetLoadedFiles:
         assert LOAD_HISTORY_TABLE in query_call
         assert "status = 'success'" in query_call
 
-    @patch("load_to_bq.bigquery.Client")
+    @patch("google.cloud.bigquery.Client")
     def test_get_loaded_files_table_not_found(self, mock_bq_client):
         """テーブルが存在しない場合は空のセットを返す"""
         loader = BigQueryLoader(project_id="test-project")
@@ -551,7 +547,7 @@ class TestGetLoadedFiles:
 
         assert result == set()
 
-    @patch("load_to_bq.bigquery.Client")
+    @patch("google.cloud.bigquery.Client")
     def test_get_loaded_files_other_error(self, mock_bq_client):
         """その他のエラーは例外を発生させる"""
         loader = BigQueryLoader(project_id="test-project")
@@ -569,7 +565,7 @@ class TestGetLoadedFiles:
 class TestRecordLoadHistory:
     """_record_load_historyメソッドのテスト"""
 
-    @patch("load_to_bq.bigquery.Client")
+    @patch("google.cloud.bigquery.Client")
     def test_record_load_history_success(self, mock_bq_client):
         """ロード履歴を正常に記録する"""
         loader = BigQueryLoader(project_id="test-project")
@@ -600,7 +596,7 @@ class TestRecordLoadHistory:
         assert rows[0]["table_name"] == "race_info"
         assert rows[0]["data_type"] == "BAA"
 
-    @patch("load_to_bq.bigquery.Client")
+    @patch("google.cloud.bigquery.Client")
     def test_record_load_history_failure(self, mock_bq_client):
         """ロード履歴の記録失敗時はワーニングのみ（例外は発生しない）"""
         loader = BigQueryLoader(project_id="test-project")
@@ -722,7 +718,7 @@ class TestLoadFileWithHistory:
         with patch.object(loader, "_download_file_from_gcs", return_value="data"):
             with patch.object(loader, "_load_to_bigquery", return_value=100):
                 with patch.object(loader, "_record_load_history") as mock_history:
-                    with patch("load_to_bq.JRDBParser") as mock_parser:
+                    with patch("src.automation.data.load_to_bq.JRDBParser") as mock_parser:
                         mock_parser.parse_file.return_value = [{"data": "test"}]
 
                         result = loader.load_file("BAA260104.csv")
@@ -755,7 +751,7 @@ class TestLoadFileWithHistory:
         with patch.object(loader, "_download_file_from_gcs", return_value="data"):
             with patch.object(loader, "_load_to_bigquery", return_value=100):
                 with patch.object(loader, "_record_load_history") as mock_history:
-                    with patch("load_to_bq.JRDBParser") as mock_parser:
+                    with patch("src.automation.data.load_to_bq.JRDBParser") as mock_parser:
                         mock_parser.parse_file.return_value = [{"data": "test"}]
 
                         loader.load_file("BAA260104.csv", record_history=False)

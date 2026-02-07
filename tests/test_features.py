@@ -10,15 +10,15 @@ import time
 from unittest.mock import Mock, patch, MagicMock
 from datetime import date
 
-from src.features.past_performance import (
+from src.ml.features.past_performance import (
     PastPerformanceFeatures,
     PastPerformanceConfig,
 )
-from src.features.condition_features import (
+from src.ml.features.condition_features import (
     ConditionFeatures,
     ConditionConfig,
 )
-from src.features.feature_pipeline import (
+from src.ml.features.feature_pipeline import (
     FeaturePipeline,
     FeaturePipelineConfig,
     ProgressTracker,

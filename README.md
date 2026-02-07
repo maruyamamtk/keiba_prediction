@@ -57,55 +57,57 @@ sh download_all_from_date.sh
 gcloud auth application-default login
 
 # BigQueryデータセット・テーブル作成
-python -m src.data.create_tables
+python -m src.manual.create_tables
 ```
 
 ### 4. データアップロード
 
 ```bash
 # GCSへのアップロード
-python -m src.data.upload_to_gcs
+python -m src.automation.data.upload_to_gcs
 
 # データ品質チェック
-python -m src.data.quality_check
+python -m src.manual.quality_check
 ```
 
 ## プロジェクト構成
 
 ```
 keiba_prediction/
-├── downloader/              # データダウンロードスクリプト
-│   ├── download_from_date.sh       # 指定日付以降のファイルをダウンロード
-│   ├── download_all_from_date.sh   # 全データタイプ一括ダウンロード
-│   └── README.md
 ├── src/
-│   ├── data/                # データパイプライン
-│   │   ├── jrdb_downloader.py     # JRDBダウンローダー
-│   │   ├── upload_to_gcs.py       # GCSアップロード
-│   │   ├── load_to_bq.py          # BigQueryロード
-│   │   ├── pipeline.py            # パイプライン統合（ダウンロード→アップロード）
-│   │   ├── create_tables.py       # BigQueryテーブル作成
-│   │   ├── quality_check.py       # データ品質チェック
-│   │   └── validation_rules.py    # バリデーションルール定義
-│   ├── pipeline/            # 統合パイプライン
-│   │   ├── daily_pipeline.py      # 日次パイプライン（ダウンロード→アップロード→ロード）
-│   │   └── full_load_pipeline.py  # 過去分全件ロードパイプライン
-│   ├── api/                 # FastAPI HTTPエンドポイント
-│   │   └── app.py                 # APIサーバー（日次ロード・全件ロード）
-│   └── features/            # 特徴量エンジニアリング
-│       ├── feature_pipeline.py    # 特徴量パイプライン
-│       ├── past_performance.py    # 過去走特徴量
-│       └── condition_features.py  # 条件適性特徴量
-├── main.py                  # Cloud Runエントリーポイント
-├── Dockerfile               # Dockerイメージ定義
+│   ├── automation/          # 自動化処理（GCP運用向け）
+│   │   ├── data/            # データ取得・アップロード・ロード
+│   │   │   ├── jrdb_downloader.py  # JRDBダウンローダー
+│   │   │   ├── jrdb_parser.py      # JRDBデータパーサー
+│   │   │   ├── upload_to_gcs.py    # GCSアップロード
+│   │   │   └── load_to_bq.py       # BigQueryロード（MERGE処理・重複スキップ）
+│   │   ├── pipeline/        # 統合パイプライン
+│   │   │   ├── daily_pipeline.py   # 日次パイプライン（DL→GCS→BQ）
+│   │   │   └── full_load_pipeline.py # 過去分全件ロード
+│   │   └── api/             # FastAPI HTTPエンドポイント
+│   │       └── app.py       # APIサーバー（日次・全件ロード）
+│   ├── manual/              # 手動実行スクリプト
+│   │   ├── create_tables.py        # BigQueryテーブル作成
+│   │   ├── quality_check.py        # データ品質チェック
+│   │   └── validation_rules.py     # バリデーションルール定義
+│   └── ml/                  # 機械学習・特徴量エンジニアリング
+│       └── features/        # 特徴量モジュール
+│           ├── feature_pipeline.py # 特徴量パイプライン
+│           ├── past_performance.py # 過去走特徴量
+│           └── condition_features.py # 条件適性特徴量
 ├── scripts/                 # ユーティリティスクリプト
-│   └── reload_gcs_to_bq.py        # 既存GCSファイルの再ロード
+│   ├── reload_gcs_to_bq.py         # 既存GCSファイルの再ロード
+│   └── generate_features.py        # 特徴量生成スクリプト
 ├── tests/                   # テストコード
-├── cloud_functions/         # Cloud Functions
-│   └── gcs_to_bq/           # GCS→BigQuery自動ロード
+├── legacy/                  # レガシーコード（参照用）
+│   ├── downloader/          # 旧シェルスクリプト版ダウンローダー
+│   ├── cloud_functions/     # 旧Cloud Functions（Cloud Runに移行済み）
+│   ├── main.py              # 旧Flaskエントリーポイント（FastAPIに移行済み）
+│   └── data_pipeline.py     # 旧パイプライン（DailyPipeline等に移行済み）
 ├── notebooks/               # Jupyter Notebook (EDA用)
 ├── config/                  # BigQueryスキーマ定義
 ├── reports/                 # 品質チェックレポート出力先
+├── Dockerfile               # Dockerイメージ定義（Cloud Run用）
 ├── CLAUDE.md                # システム仕様書
 ├── SCHEMA.md                # JRDBデータスキーマ仕様書
 ├── ML_FEATURE.md            # 特徴量設計ドキュメント
@@ -125,12 +127,12 @@ keiba_prediction/
 │ 1. データ取得 (JRDB → ローカル)                                          │
 │    $ sh downloader/download_all_from_date.sh                            │
 │    または                                                                │
-│    $ python -m src.data.jrdb_downloader --start-date 240101             │
+│    $ python -m src.automation.data.jrdb_downloader --start-date 240101             │
 └─────────────────────────────────────────────────────────────────────────┘
                                     ↓
 ┌─────────────────────────────────────────────────────────────────────────┐
 │ 2. GCSアップロード (ローカル → GCS)                                      │
-│    $ python -m src.data.upload_to_gcs                                   │
+│    $ python -m src.automation.data.upload_to_gcs                                   │
 └─────────────────────────────────────────────────────────────────────────┘
                                     ↓
 ┌─────────────────────────────────────────────────────────────────────────┐
@@ -141,7 +143,7 @@ keiba_prediction/
                                     ↓
 ┌─────────────────────────────────────────────────────────────────────────┐
 │ 4. 特徴量生成 (BigQuery raw → features)                                 │
-│    $ python -m src.features.feature_pipeline --start-date ... --end-date│
+│    $ python -m src.ml.features.feature_pipeline --start-date ... --end-date│
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -211,39 +213,39 @@ sh download_all_from_date.sh
 
 ```bash
 # 全データタイプをダウンロード
-python -m src.data.jrdb_downloader --start-date 240101
+python -m src.automation.data.jrdb_downloader --start-date 240101
 
 # 特定のデータタイプのみ
-python -m src.data.jrdb_downloader --start-date 240101 --datatype BAA
+python -m src.automation.data.jrdb_downloader --start-date 240101 --datatype BAA
 
 # 出力先を指定
-python -m src.data.jrdb_downloader --start-date 240101 --output-dir /path/to/dir
+python -m src.automation.data.jrdb_downloader --start-date 240101 --output-dir /path/to/dir
 ```
 
 #### Step 2: GCSアップロード
 
 ```bash
 # 全データをアップロード（差分のみ）
-python -m src.data.upload_to_gcs
+python -m src.automation.data.upload_to_gcs
 
 # 特定タイプのみアップロード
-python -m src.data.upload_to_gcs --data-type Sec
+python -m src.automation.data.upload_to_gcs --data-type Sec
 
 # ドライラン（実際にはアップロードしない）
-python -m src.data.upload_to_gcs --dry-run
+python -m src.automation.data.upload_to_gcs --dry-run
 ```
 
 #### Step 1+2 統合: ダウンロード→アップロード
 
 ```bash
 # ダウンロード→アップロードを一括実行
-python -m src.data.pipeline --start-date 240101
+python -m legacy.data_pipeline --start-date 240101
 
 # 特定のデータタイプのみ
-python -m src.data.pipeline --start-date 240101 --datatype BAA
+python -m legacy.data_pipeline --start-date 240101 --datatype BAA
 
 # 既存のdownloaded_filesを使用（一時ディレクトリを使わない）
-python -m src.data.pipeline --start-date 240101 --no-temp-dir
+python -m legacy.data_pipeline --start-date 240101 --no-temp-dir
 ```
 
 #### Step 1+2+3 統合: 日次パイプライン（推奨）
@@ -252,20 +254,20 @@ python -m src.data.pipeline --start-date 240101 --no-temp-dir
 
 ```bash
 # 当日のデータを処理（ダウンロード→GCSアップロード→BigQueryロード）
-python -m src.pipeline.daily_pipeline
+python -m src.automation.pipeline.daily_pipeline
 
 # 特定日付を指定
-python -m src.pipeline.daily_pipeline --date 2024-01-15
+python -m src.automation.pipeline.daily_pipeline --date 2024-01-15
 
 # JSON形式で結果を出力
-python -m src.pipeline.daily_pipeline --date 2024-01-15 --json
+python -m src.automation.pipeline.daily_pipeline --date 2024-01-15 --json
 ```
 
 **FastAPI経由での実行:**
 
 ```bash
 # APIサーバーを起動
-uvicorn src.api.app:app --reload --port 8080
+uvicorn src.automation.api.app:app --reload --port 8080
 
 # 同期ロード（処理完了まで待機）
 curl -X POST http://localhost:8080/api/v1/load/daily \
@@ -326,10 +328,10 @@ curl http://localhost:8080/health
 
 ```bash
 # 全期間のデータを一括処理
-python -m src.pipeline.full_load_pipeline
+python -m src.automation.pipeline.full_load_pipeline
 
 # 期間を指定して処理
-python -m src.pipeline.full_load_pipeline --start-date 2020-01-01 --end-date 2024-12-31
+python -m src.automation.pipeline.full_load_pipeline --start-date 2020-01-01 --end-date 2024-12-31
 
 # API経由で非同期実行
 curl -X POST http://localhost:8080/api/v1/load/full \
@@ -364,16 +366,16 @@ python scripts/reload_gcs_to_bq.py --data-type SEC --prefix Sec/ --limit 5
 
 ```bash
 # 重複スキップを有効にしてロード（推奨）
-python -m src.data.load_to_bq --prefix Sec/ --skip-loaded
+python -m src.automation.data.load_to_bq --prefix Sec/ --skip-loaded
 
 # 特定のデータタイプのみ
-python -m src.data.load_to_bq --data-types SEC --skip-loaded
+python -m src.automation.data.load_to_bq --data-types SEC --skip-loaded
 
 # 履歴記録を無効化（テスト用）
-python -m src.data.load_to_bq --prefix Sec/ --no-history
+python -m src.automation.data.load_to_bq --prefix Sec/ --no-history
 
 # 重複スキップと組み合わせ
-python -m src.data.load_to_bq --prefix Sec/ --skip-loaded --data-types BAA KYF SEC
+python -m src.automation.data.load_to_bq --prefix Sec/ --skip-loaded --data-types BAA KYF SEC
 ```
 
 **重複スキップ機能の利点:**
@@ -386,20 +388,20 @@ python -m src.data.load_to_bq --prefix Sec/ --skip-loaded --data-types BAA KYF S
 
 ```bash
 # 指定期間の特徴量を生成
-python -m src.features.feature_pipeline --start-date 2024-01-06 --end-date 2024-01-06
+python -m src.ml.features.feature_pipeline --start-date 2024-01-06 --end-date 2024-01-06
 
 # 詳細ログ付きで実行
-python -m src.features.feature_pipeline --start-date 2024-01-06 --end-date 2024-12-31 -v
+python -m src.ml.features.feature_pipeline --start-date 2024-01-06 --end-date 2024-12-31 -v
 ```
 
 #### Step 5: データ品質チェック
 
 ```bash
 # 全テーブルのチェック
-python -m src.data.quality_check
+python -m src.manual.quality_check
 
 # 特定テーブルのみチェック
-python -m src.data.quality_check --table raw.race_info
+python -m src.manual.quality_check --table raw.race_info
 ```
 
 ### 対応データタイプ
@@ -489,13 +491,13 @@ JRDBダウンロード→GCSアップロード→BigQueryロードの統合処�
 
 ```bash
 # 当日のデータを処理
-python -m src.pipeline.daily_pipeline
+python -m src.automation.pipeline.daily_pipeline
 
 # 特定日付を指定
-python -m src.pipeline.daily_pipeline --date 2024-01-15
+python -m src.automation.pipeline.daily_pipeline --date 2024-01-15
 
 # JSON形式で結果を出力
-python -m src.pipeline.daily_pipeline --date 2024-01-15 --json
+python -m src.automation.pipeline.daily_pipeline --date 2024-01-15 --json
 ```
 
 **FastAPI HTTPエンドポイント (`src/api/app.py`):**
@@ -504,10 +506,10 @@ APIサーバーを起動し、HTTPリクエストでパイプラインを実行�
 
 ```bash
 # 開発環境でサーバー起動
-uvicorn src.api.app:app --reload --port 8080
+uvicorn src.automation.api.app:app --reload --port 8080
 
 # 本番環境（Cloud Run）
-python -m src.api.app
+python -m src.automation.api.app
 ```
 
 **エンドポイント一覧:**
@@ -613,13 +615,13 @@ gcloud scheduler jobs create http daily-data-pipeline \
 
 ```bash
 # 全期間のデータを処理
-python -m src.pipeline.full_load_pipeline
+python -m src.automation.pipeline.full_load_pipeline
 
 # 期間を指定
-python -m src.pipeline.full_load_pipeline --start-date 2020-01-01 --end-date 2024-12-31
+python -m src.automation.pipeline.full_load_pipeline --start-date 2020-01-01 --end-date 2024-12-31
 
 # JSON形式で結果を出力
-python -m src.pipeline.full_load_pipeline --start-date 2020-01-01 --end-date 2024-12-31 --json
+python -m src.automation.pipeline.full_load_pipeline --start-date 2020-01-01 --end-date 2024-12-31 --json
 ```
 
 **FastAPI経由での実行:**
@@ -668,16 +670,16 @@ BigQueryにロードされたデータの品質を自動チェックします。
 
 ```bash
 # 全テーブルのチェック
-python -m src.data.quality_check
+python -m src.manual.quality_check
 
 # 特定テーブルのみチェック
-python -m src.data.quality_check --table raw.race_info
+python -m src.manual.quality_check --table raw.race_info
 
 # レポート出力先を指定
-python -m src.data.quality_check --output reports/my_report.json
+python -m src.manual.quality_check --output reports/my_report.json
 
 # アラートを無効化
-python -m src.data.quality_check --no-alert
+python -m src.manual.quality_check --no-alert
 ```
 
 **チェック項目:**
@@ -723,13 +725,13 @@ JRDBからデータをダウンロードし、解凍・エンコーディング�
 
 ```bash
 # 全データタイプをダウンロード
-python -m src.data.jrdb_downloader --start-date 240101
+python -m src.automation.data.jrdb_downloader --start-date 240101
 
 # 特定のデータタイプのみ
-python -m src.data.jrdb_downloader --start-date 240101 --datatype BAA
+python -m src.automation.data.jrdb_downloader --start-date 240101 --datatype BAA
 
 # 出力先を指定
-python -m src.data.jrdb_downloader --start-date 240101 --output-dir /path/to/dir
+python -m src.automation.data.jrdb_downloader --start-date 240101 --output-dir /path/to/dir
 ```
 
 **特徴:**
@@ -744,16 +746,16 @@ python -m src.data.jrdb_downloader --start-date 240101 --output-dir /path/to/dir
 
 ```bash
 # 全データをアップロード
-python -m src.data.upload_to_gcs
+python -m src.automation.data.upload_to_gcs
 
 # 特定のデータタイプのみアップロード
-python -m src.data.upload_to_gcs --data-type Baa
+python -m src.automation.data.upload_to_gcs --data-type Baa
 
 # ドライラン（実際にはアップロードしない）
-python -m src.data.upload_to_gcs --dry-run
+python -m src.automation.data.upload_to_gcs --dry-run
 
 # 強制アップロード（差分チェックをスキップ）
-python -m src.data.upload_to_gcs --force
+python -m src.automation.data.upload_to_gcs --force
 ```
 
 **特徴:**
@@ -768,10 +770,10 @@ python -m src.data.upload_to_gcs --force
 
 ```bash
 # ダウンロード→アップロードを一括実行
-python -m src.data.pipeline --start-date 240101
+python -m legacy.data_pipeline --start-date 240101
 
 # 特定のデータタイプのみ
-python -m src.data.pipeline --start-date 240101 --datatype BAA
+python -m legacy.data_pipeline --start-date 240101 --datatype BAA
 ```
 
 **特徴:**
@@ -785,19 +787,19 @@ GCSにアップロードされたJRDBデータをBigQueryにロードします�
 
 ```bash
 # 全CSVファイルをロード
-python -m src.data.load_to_bq
+python -m src.automation.data.load_to_bq
 
 # 重複スキップを有効化（推奨）
-python -m src.data.load_to_bq --skip-loaded
+python -m src.automation.data.load_to_bq --skip-loaded
 
 # 特定のデータタイプのみロード
-python -m src.data.load_to_bq --data-types BAA KYF SEC
+python -m src.automation.data.load_to_bq --data-types BAA KYF SEC
 
 # 特定のプレフィックス配下のファイルをロード
-python -m src.data.load_to_bq --prefix Sec/
+python -m src.automation.data.load_to_bq --prefix Sec/
 
 # エラー時に処理を中断
-python -m src.data.load_to_bq --stop-on-error
+python -m src.automation.data.load_to_bq --stop-on-error
 ```
 
 **主な機能:**

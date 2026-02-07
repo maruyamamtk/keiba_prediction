@@ -23,8 +23,8 @@ import pandas as pd
 from google.cloud import bigquery
 from google.api_core import exceptions as google_exceptions
 
-from src.features.past_performance import PastPerformanceFeatures, PastPerformanceConfig
-from src.features.condition_features import ConditionFeatures, ConditionConfig
+from src.ml.features.past_performance import PastPerformanceFeatures, PastPerformanceConfig
+from src.ml.features.condition_features import ConditionFeatures, ConditionConfig
 
 # ロガー設定
 logger = logging.getLogger(__name__)
