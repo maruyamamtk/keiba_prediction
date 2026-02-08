@@ -16,6 +16,7 @@ Cloud Run環境での実行を想定しています。
 import logging
 import os
 import re
+import sys
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
