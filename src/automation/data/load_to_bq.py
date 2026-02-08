@@ -681,6 +681,11 @@ def main():
 
     args = parser.parse_args()
 
+    # .envファイルから環境変数を読み込み
+    from dotenv import load_dotenv
+
+    load_dotenv()
+
     # プロジェクトIDの決定
     project_id = args.project_id or os.environ.get("GCP_PROJECT_ID")
     if not project_id:

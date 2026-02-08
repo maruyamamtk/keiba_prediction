@@ -358,7 +358,10 @@ curl -X POST http://localhost:8080/api/v1/load/full \
 `raw.load_history`テーブルのロード履歴を参照し、既にロード済みのファイルを自動でスキップします。
 
 ```bash
-# 重複スキップを有効にしてロード（推奨）
+# 全データタイプを一括ロード（推奨）
+python3 -m src.automation.data.load_to_bq --skip-loaded
+
+# 特定プレフィックス配下のみロード
 python3 -m src.automation.data.load_to_bq --prefix Sec/ --skip-loaded
 
 # 特定のデータタイプのみ
