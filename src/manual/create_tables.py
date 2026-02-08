@@ -212,15 +212,49 @@ class BigQueryTableCreator:
                 "clustering_fields": ["race_id", "horse_id", "odds_type"],
                 "description": "オッズデータ",
             },
-            # featuresデータセット
             {
-                "dataset_id": "features",
-                "table_id": "training_data",
-                "schema_file": "bq_schema_training_data.json",
+                "dataset_id": "raw",
+                "table_id": "race_results",
+                "schema_file": "bq_schema_race_results.json",
                 "partition_field": "race_date",
-                "clustering_fields": ["venue_code", "horse_id"],
-                "description": "機械学習用の特徴量データ",
+                "clustering_fields": ["horse_id", "jockey_code"],
+                "description": "レース成績データ (SEC: 成績データ)",
             },
+            {
+                "dataset_id": "raw",
+                "table_id": "horse_master",
+                "schema_file": "bq_schema_horse_master.json",
+                "partition_field": None,
+                "clustering_fields": ["horse_id"],
+                "description": "競走馬マスタ (UKC: 馬基本データ)",
+            },
+            {
+                "dataset_id": "raw",
+                "table_id": "horse_extended",
+                "schema_file": "bq_schema_horse_extended.json",
+                "partition_field": None,
+                "clustering_fields": ["race_id", "horse_number"],
+                "description": "競走馬拡張データ (KKA: 競走馬拡張データ)",
+            },
+            {
+                "dataset_id": "raw",
+                "table_id": "venue_info",
+                "schema_file": "bq_schema_venue_info.json",
+                "partition_field": "race_date",
+                "clustering_fields": ["venue_code"],
+                "description": "開催場情報 (KAA: 開催データ)",
+            },
+            {
+                "dataset_id": "raw",
+                "table_id": "load_history",
+                "schema_file": "bq_schema_load_history.json",
+                "partition_field": None,
+                "clustering_fields": ["table_name", "data_type"],
+                "description": "データロード履歴",
+            },
+            # featuresデータセット
+            # training_dataテーブルは特徴量パイプライン初回実行時に
+            # SQLの出力スキーマから自動作成されるため、ここでは定義しない
         ]
 
         for table in tables:
