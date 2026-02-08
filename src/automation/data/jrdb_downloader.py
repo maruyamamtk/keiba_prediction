@@ -53,15 +53,16 @@ class JRDBDownloader:
         Args:
             username: JRDB認証ユーザー名
             password: JRDBパスワード
-            output_dir: ダウンロード先ディレクトリ（デフォルト: 一時ディレクトリ）
+            output_dir: ダウンロード先ディレクトリ（デフォルト: downloaded_files/）
         """
         self.username = username
         self.password = password
 
         if output_dir is None:
-            self.output_dir = Path(tempfile.mkdtemp(prefix="jrdb_"))
+            self.output_dir = Path(__file__).resolve().parent.parent.parent.parent / "downloaded_files"
         else:
             self.output_dir = output_dir
+        self.output_dir.mkdir(parents=True, exist_ok=True)
 
         self._setup_auth_handler()
 

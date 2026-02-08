@@ -59,12 +59,10 @@ class TestJRDBDownloaderInit:
             assert downloader.output_dir == Path(tmpdir)
 
     def test_init_without_output_dir(self):
-        """出力ディレクトリ未指定での初期化（一時ディレクトリ）"""
+        """出力ディレクトリ未指定での初期化（downloaded_files/）"""
         downloader = JRDBDownloader("user", "pass")
         assert downloader.output_dir.exists()
-        assert str(downloader.output_dir).startswith(tempfile.gettempdir())
-        # クリーンアップ
-        downloader.cleanup()
+        assert downloader.output_dir.name == "downloaded_files"
 
     def test_get_output_dir(self):
         """出力ディレクトリの取得"""

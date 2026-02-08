@@ -1,7 +1,6 @@
 # Google Cloud Platform
 google-cloud-bigquery==3.14.1
 google-cloud-storage==2.14.0
-google-cloud-functions==1.15.0
 db-dtypes==1.2.0  # BigQuery to_dataframe()に必要
 
 # Data Processing
@@ -22,7 +21,6 @@ python-dotenv==1.0.0
 requests==2.31.0
 
 # Web Framework (Cloud Run)
-flask==3.0.0
 fastapi==0.109.0
 uvicorn[standard]==0.27.0
 pydantic==2.5.3

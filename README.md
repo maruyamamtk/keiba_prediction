@@ -205,7 +205,7 @@ keiba_prediction/
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│ 1. データ取得 (JRDB → 一時ディレクトリ)                                  │
+│ 1. データ取得 (JRDB → downloaded_files/)                                  │
 │    $ python3 -m src.automation.data.jrdb_downloader --start-date 240101 │
 └─────────────────────────────────────────────────────────────────────────┘
                                     ↓
@@ -233,7 +233,7 @@ keiba_prediction/
 **実現済み:**
 - ✅ Cloud Run: FastAPI HTTPエンドポイント（`/api/v1/load/daily`, `/api/v1/load/full`）
 - ✅ Step 1+2+3の統合: JRDBダウンロード → GCSアップロード → BigQueryロード（`DailyPipeline`, `FullLoadPipeline`）
-- ✅ 一時ディレクトリを使用、完了後自動削除
+- ✅ downloaded_files/ に保存（永続）
 - ✅ HTTPリクエスト経由でのトリガー対応（Cloud Scheduler連携可能）
 - ✅ 過去分全件ロードによる初回セットアップ・データ補完
 
@@ -250,7 +250,7 @@ keiba_prediction/
 │ Cloud Scheduler (毎日AM 6:00)                                            │
 │   ↓ HTTPリクエスト                                                       │
 │ Cloud Run: /api/v1/load/daily/async エンドポイント                      │
-│   ├─ Step 1: JRDBダウンロード (一時ディレクトリ使用)                     │
+│   ├─ Step 1: JRDBダウンロード (downloaded_files/)                        │
 │   ├─ Step 2: GCSアップロード                                             │
 │   └─ Step 3: BigQueryロード (DailyPipelineが直接実行)                   │
 │              ├─ 重複スキップ機能                                        │
@@ -269,7 +269,7 @@ keiba_prediction/
 
 **自動化のメリット:**
 - 人手不要の完全自動運用（Cloud Scheduler連携時）
-- 一時ディレクトリによるディスク容量の節約
+- downloaded_files/ への永続保存でデータの再利用が容易
 - 統合パイプラインによるエラーハンドリング
 - ロード履歴による重複防止・処理効率化
 
@@ -428,7 +428,7 @@ python3 -m src.automation.data.jrdb_downloader --start-date 240101 --output-dir 
 - lzhファイルの自動解凍
 - CP932からUTF-8へのエンコーディング変換
 - 環境変数からの認証情報取得（Cloud Run対応）
-- 一時ディレクトリのサポート
+- downloaded_files/ への永続保存
 
 ### GCSアップロード
 
@@ -585,7 +585,7 @@ python3 -m src.automation.api.app
 - **統合処理**: ダウンロード→アップロード→ロードを一括実行
 - **詳細な結果追跡**: 各ステップの成功/失敗、処理ファイル数、レコード数を記録
 - **エラーハンドリング**: 各ステップで失敗した場合も、他のステップの結果を保持
-- **自動クリーンアップ**: 一時ディレクトリの自動削除
+- **永続保存**: downloaded_files/ にデータを保持
 - **重複スキップ**: `load_to_bq`の重複スキップ機能と連携
 - **冪等性**: 同じ日付で複数回実行しても安全（既にロード済みのファイルはスキップ）
 - **Cloud Scheduler連携**: REST API経由での自動実行に対応
