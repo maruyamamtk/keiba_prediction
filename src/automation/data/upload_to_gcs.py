@@ -79,7 +79,7 @@ class GCSUploader:
 
         if local_base_dir is None:
             self.local_base_dir = (
-                Path(__file__).parent.parent.parent / "downloaded_files"
+                Path(__file__).parent.parent.parent.parent / "downloaded_files"
             )
         else:
             self.local_base_dir = local_base_dir

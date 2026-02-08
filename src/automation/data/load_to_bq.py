@@ -20,20 +20,12 @@ import sys
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
-from pathlib import Path
 from typing import Dict, List, Optional, Set
 
 from google.cloud import bigquery, storage
 from google.cloud.exceptions import GoogleCloudError
 
-# 同一パッケージからパーサーをインポート
-# Cloud Functions版のパーサーを再利用
-sys.path.insert(0, str(Path(__file__).parent.parent.parent / "cloud_functions" / "gcs_to_bq"))
-try:
-    from parser import JRDBParser
-except ImportError:
-    # フォールバック: cloud_functions ディレクトリがない場合
-    JRDBParser = None
+from src.automation.data.jrdb_parser import JRDBParser
 
 # ログ設定 (Cloud Run対応)
 logger = logging.getLogger(__name__)
@@ -688,6 +680,11 @@ def main():
     )
 
     args = parser.parse_args()
+
+    # .envファイルから環境変数を読み込み
+    from dotenv import load_dotenv
+
+    load_dotenv()
 
     # プロジェクトIDの決定
     project_id = args.project_id or os.environ.get("GCP_PROJECT_ID")

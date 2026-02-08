@@ -13,13 +13,13 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.data.quality_check import (
+from src.manual.quality_check import (
     CheckResult,
     DataQualityChecker,
     QualityReport,
     send_alert,
 )
-from src.data.validation_rules import (
+from src.manual.validation_rules import (
     Severity,
     TableValidationConfig,
 )
@@ -140,7 +140,7 @@ class TestDataQualityCheckerTableExists:
         mock_client = MagicMock()
 
         with patch(
-            "src.data.quality_check.bigquery.Client", return_value=mock_client
+            "src.manual.quality_check.bigquery.Client", return_value=mock_client
         ):
             checker = DataQualityChecker(project_id="test-project")
 
@@ -168,7 +168,7 @@ class TestDataQualityCheckerTableExists:
         mock_client.get_table.side_effect = NotFound("Table not found")
 
         with patch(
-            "src.data.quality_check.bigquery.Client", return_value=mock_client
+            "src.manual.quality_check.bigquery.Client", return_value=mock_client
         ):
             checker = DataQualityChecker(project_id="test-project")
 
@@ -200,7 +200,7 @@ class TestDataQualityCheckerRowCount:
         mock_client.query.return_value = mock_query_job
 
         with patch(
-            "src.data.quality_check.bigquery.Client", return_value=mock_client
+            "src.manual.quality_check.bigquery.Client", return_value=mock_client
         ):
             checker = DataQualityChecker(project_id="test-project")
 
@@ -229,7 +229,7 @@ class TestDataQualityCheckerRowCount:
         mock_client.query.return_value = mock_query_job
 
         with patch(
-            "src.data.quality_check.bigquery.Client", return_value=mock_client
+            "src.manual.quality_check.bigquery.Client", return_value=mock_client
         ):
             checker = DataQualityChecker(project_id="test-project")
 
@@ -264,7 +264,7 @@ class TestDataQualityCheckerNullValues:
         mock_client.query.return_value = mock_query_job
 
         with patch(
-            "src.data.quality_check.bigquery.Client", return_value=mock_client
+            "src.manual.quality_check.bigquery.Client", return_value=mock_client
         ):
             checker = DataQualityChecker(project_id="test-project")
 
@@ -294,7 +294,7 @@ class TestDataQualityCheckerNullValues:
         mock_client.query.return_value = mock_query_job
 
         with patch(
-            "src.data.quality_check.bigquery.Client", return_value=mock_client
+            "src.manual.quality_check.bigquery.Client", return_value=mock_client
         ):
             checker = DataQualityChecker(project_id="test-project")
 
@@ -320,7 +320,7 @@ class TestDataQualityCheckerNullValues:
         mock_client = MagicMock()
 
         with patch(
-            "src.data.quality_check.bigquery.Client", return_value=mock_client
+            "src.manual.quality_check.bigquery.Client", return_value=mock_client
         ):
             checker = DataQualityChecker(project_id="test-project")
 
@@ -352,7 +352,7 @@ class TestDataQualityCheckerDuplicates:
         mock_client.query.return_value = mock_query_job
 
         with patch(
-            "src.data.quality_check.bigquery.Client", return_value=mock_client
+            "src.manual.quality_check.bigquery.Client", return_value=mock_client
         ):
             checker = DataQualityChecker(project_id="test-project")
 
@@ -382,7 +382,7 @@ class TestDataQualityCheckerDuplicates:
         mock_client.query.return_value = mock_query_job
 
         with patch(
-            "src.data.quality_check.bigquery.Client", return_value=mock_client
+            "src.manual.quality_check.bigquery.Client", return_value=mock_client
         ):
             checker = DataQualityChecker(project_id="test-project")
 
@@ -422,7 +422,7 @@ class TestDataQualityCheckerDateRange:
         mock_client.query.return_value = mock_query_job
 
         with patch(
-            "src.data.quality_check.bigquery.Client", return_value=mock_client
+            "src.manual.quality_check.bigquery.Client", return_value=mock_client
         ):
             checker = DataQualityChecker(project_id="test-project")
 
@@ -457,7 +457,7 @@ class TestDataQualityCheckerDateRange:
         mock_client.query.return_value = mock_query_job
 
         with patch(
-            "src.data.quality_check.bigquery.Client", return_value=mock_client
+            "src.manual.quality_check.bigquery.Client", return_value=mock_client
         ):
             checker = DataQualityChecker(project_id="test-project")
 
@@ -499,7 +499,7 @@ class TestDataQualityCheckerNumericRange:
         mock_client.query.return_value = mock_query_job
 
         with patch(
-            "src.data.quality_check.bigquery.Client", return_value=mock_client
+            "src.manual.quality_check.bigquery.Client", return_value=mock_client
         ):
             checker = DataQualityChecker(project_id="test-project")
 
@@ -535,7 +535,7 @@ class TestDataQualityCheckerNumericRange:
         mock_client.query.return_value = mock_query_job
 
         with patch(
-            "src.data.quality_check.bigquery.Client", return_value=mock_client
+            "src.manual.quality_check.bigquery.Client", return_value=mock_client
         ):
             checker = DataQualityChecker(project_id="test-project")
 
@@ -563,7 +563,7 @@ class TestDataQualityCheckerReport:
         mock_client = MagicMock()
 
         with patch(
-            "src.data.quality_check.bigquery.Client", return_value=mock_client
+            "src.manual.quality_check.bigquery.Client", return_value=mock_client
         ):
             checker = DataQualityChecker(project_id="test-project")
 
@@ -604,7 +604,7 @@ class TestDataQualityCheckerReport:
         mock_client = MagicMock()
 
         with patch(
-            "src.data.quality_check.bigquery.Client", return_value=mock_client
+            "src.manual.quality_check.bigquery.Client", return_value=mock_client
         ):
             checker = DataQualityChecker(project_id="test-project")
 
@@ -628,7 +628,7 @@ class TestDataQualityCheckerReport:
         mock_client = MagicMock()
 
         with patch(
-            "src.data.quality_check.bigquery.Client", return_value=mock_client
+            "src.manual.quality_check.bigquery.Client", return_value=mock_client
         ):
             checker = DataQualityChecker(project_id="test-project")
 
@@ -656,7 +656,7 @@ class TestDataQualityCheckerSaveReport:
         mock_client = MagicMock()
 
         with patch(
-            "src.data.quality_check.bigquery.Client", return_value=mock_client
+            "src.manual.quality_check.bigquery.Client", return_value=mock_client
         ):
             checker = DataQualityChecker(project_id="test-project")
 

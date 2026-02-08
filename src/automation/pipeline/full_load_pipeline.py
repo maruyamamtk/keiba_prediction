@@ -1,56 +1,61 @@
 """
-日次パイプライン
+過去分全件ロードパイプライン
 
-その日に追加されたデータのダウンロード→GCS→BigQueryへの格納を行う。
-Cloud Schedulerからトリガーされ、Cloud Run内で完結する。
+指定期間のデータをJRDBからダウンロード→GCS→BigQueryに一括ロードする。
+HTTP APIで手動トリガーし、初回セットアップやデータ欠損の補完に使用。
 
-Issue #57: 日次パイプラインの実装
+Issue #58: 過去分全件ロード処理の実装
 """
 
 import logging
+import re
 import time
+import uuid
 from dataclasses import dataclass, field
 from datetime import date, datetime
-from pathlib import Path
 from typing import List, Optional
 
-from src.data.jrdb_downloader import JRDBDownloader, create_downloader_from_env
-from src.data.load_to_bq import BigQueryLoader
-from src.data.upload_to_gcs import GCSUploader, create_uploader_from_env
+from src.automation.data.jrdb_downloader import JRDBDownloader, create_downloader_from_env
+from src.automation.data.load_to_bq import BigQueryLoader
+from src.automation.data.upload_to_gcs import GCSUploader, create_uploader_from_env
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass
-class StepResult:
+class FullLoadStepResult:
     """各ステップの実行結果"""
 
     step_name: str
-    status: str  # "success", "failed", "skipped"
+    status: str  # "success", "failed", "partial"
     duration_seconds: float = 0.0
     details: dict = field(default_factory=dict)
     error_message: Optional[str] = None
 
 
 @dataclass
-class PipelineResult:
-    """パイプライン実行結果"""
+class FullLoadResult:
+    """全件ロードパイプライン実行結果"""
 
     status: str  # "success", "partial", "failed"
-    target_date: str
+    job_id: str
+    start_date: str
+    end_date: str
     files_downloaded: int = 0
     files_uploaded: int = 0
     files_loaded: int = 0
     records_loaded: int = 0
     duration_seconds: float = 0.0
-    steps: List[StepResult] = field(default_factory=list)
+    steps: List[FullLoadStepResult] = field(default_factory=list)
     error_message: Optional[str] = None
 
     def to_dict(self) -> dict:
         """辞書形式に変換"""
         return {
             "status": self.status,
-            "target_date": self.target_date,
+            "job_id": self.job_id,
+            "start_date": self.start_date,
+            "end_date": self.end_date,
             "files_downloaded": self.files_downloaded,
             "files_uploaded": self.files_uploaded,
             "files_loaded": self.files_loaded,
@@ -70,14 +75,14 @@ class PipelineResult:
         }
 
 
-class DailyPipeline:
+class FullLoadPipeline:
     """
-    日次データパイプライン
+    過去分全件ロードパイプライン
 
     処理フロー:
-    1. JRDBから指定日のデータをダウンロード
-    2. GCSにアップロード
-    3. BigQueryにロード
+    1. 指定期間のデータをJRDBからダウンロード
+    2. GCSにアップロード（差分のみ）
+    3. BigQueryにロード（重複スキップ）
     """
 
     def __init__(
@@ -86,14 +91,6 @@ class DailyPipeline:
         uploader: Optional[GCSUploader] = None,
         bq_loader: Optional[BigQueryLoader] = None,
     ):
-        """
-        初期化
-
-        Args:
-            downloader: JRDBダウンローダー（Noneの場合は環境変数から作成）
-            uploader: GCSアップローダー（Noneの場合は環境変数から作成）
-            bq_loader: BigQueryローダー（Noneの場合は環境変数から作成）
-        """
         self._downloader = downloader
         self._uploader = uploader
         self._bq_loader = bq_loader
@@ -120,7 +117,7 @@ class DailyPipeline:
     def bq_loader(self) -> BigQueryLoader:
         """BigQueryローダー（遅延初期化）"""
         if self._bq_loader is None:
-            from src.data.load_to_bq import create_loader_from_env
+            from src.automation.data.load_to_bq import create_loader_from_env
 
             self._bq_loader = create_loader_from_env()
             if self._bq_loader is None:
@@ -128,50 +125,50 @@ class DailyPipeline:
         return self._bq_loader
 
     @staticmethod
-    def parse_target_date(target_date: Optional[str] = None) -> date:
+    def parse_date(date_str: Optional[str]) -> Optional[date]:
         """
-        対象日付をパース
+        日付文字列をパース
 
         Args:
-            target_date: 日付文字列（YYYY-MM-DD形式、Noneの場合は当日）
+            date_str: YYYY-MM-DD形式の日付文字列（Noneも許容）
 
         Returns:
-            dateオブジェクト
+            dateオブジェクトまたはNone
         """
-        if target_date is None:
-            return date.today()
-
+        if date_str is None:
+            return None
         try:
-            return datetime.strptime(target_date, "%Y-%m-%d").date()
+            return datetime.strptime(date_str, "%Y-%m-%d").date()
         except ValueError as e:
-            raise ValueError(f"日付形式が不正です（YYYY-MM-DD形式で指定）: {target_date}") from e
+            raise ValueError(
+                f"日付形式が不正です（YYYY-MM-DD形式で指定）: {date_str}"
+            ) from e
 
     @staticmethod
     def date_to_yymmdd(d: date) -> str:
         """dateオブジェクトをyymmdd形式に変換"""
         return d.strftime("%y%m%d")
 
-    def _step_download(self, target_date: date) -> StepResult:
+    def _step_download(
+        self, start_date: Optional[date], end_date: Optional[date]
+    ) -> FullLoadStepResult:
         """
         Step 1: JRDBからデータをダウンロード
 
-        Args:
-            target_date: 対象日付
-
-        Returns:
-            StepResult
+        start_dateから全データタイプをダウンロード。
+        end_dateはJRDBのAPIでは直接フィルタできないため、
+        ダウンローダーがサーバー上の利用可能日付をフィルタする。
         """
         step_name = "download"
         start_time = time.time()
 
         try:
-            yymmdd = self.date_to_yymmdd(target_date)
-            logger.info(f"ダウンロード開始: {yymmdd}")
+            # start_dateが指定されていない場合はデフォルト（2020年）
+            yymmdd = self.date_to_yymmdd(start_date) if start_date else "200101"
+            logger.info(f"全件ダウンロード開始: {yymmdd}〜")
 
-            # 全データタイプをダウンロード
             results = self.downloader.download_all_from_date(yymmdd)
 
-            # 結果集計
             total_downloaded = sum(r.downloaded_files for r in results.values())
             total_skipped = sum(r.skipped_files for r in results.values())
             total_failed = sum(r.failed_files for r in results.values())
@@ -186,7 +183,7 @@ class DailyPipeline:
             if total_failed > 0:
                 logger.warning(f"ダウンロード失敗: {total_failed}ファイル")
 
-            return StepResult(
+            return FullLoadStepResult(
                 step_name=step_name,
                 status="success" if total_failed == 0 else "partial",
                 duration_seconds=time.time() - start_time,
@@ -195,29 +192,22 @@ class DailyPipeline:
 
         except Exception as e:
             logger.error(f"ダウンロードエラー: {e}")
-            return StepResult(
+            return FullLoadStepResult(
                 step_name=step_name,
                 status="failed",
                 duration_seconds=time.time() - start_time,
                 error_message=str(e),
             )
 
-    def _step_upload(self) -> StepResult:
-        """
-        Step 2: GCSにアップロード
-
-        Returns:
-            StepResult
-        """
+    def _step_upload(self) -> FullLoadStepResult:
+        """Step 2: GCSにアップロード"""
         step_name = "upload"
         start_time = time.time()
 
         try:
-            # ダウンローダーの出力ディレクトリを使用
             output_dir = self.downloader.get_output_dir()
             logger.info(f"GCSアップロード開始: {output_dir}")
 
-            # アップローダーのローカルディレクトリを一時的に変更
             original_base_dir = self.uploader.local_base_dir
             self.uploader.local_base_dir = output_dir
 
@@ -236,7 +226,7 @@ class DailyPipeline:
             if result.failed_files > 0:
                 logger.warning(f"アップロード失敗: {result.failed_files}ファイル")
 
-            return StepResult(
+            return FullLoadStepResult(
                 step_name=step_name,
                 status="success" if result.failed_files == 0 else "partial",
                 duration_seconds=time.time() - start_time,
@@ -245,49 +235,49 @@ class DailyPipeline:
 
         except Exception as e:
             logger.error(f"アップロードエラー: {e}")
-            return StepResult(
+            return FullLoadStepResult(
                 step_name=step_name,
                 status="failed",
                 duration_seconds=time.time() - start_time,
                 error_message=str(e),
             )
 
-    def _step_load_to_bq(self, target_date: date) -> StepResult:
+    def _step_load_to_bq(
+        self, start_date: Optional[date], end_date: Optional[date]
+    ) -> FullLoadStepResult:
         """
         Step 3: BigQueryにロード
 
-        Args:
-            target_date: 対象日付
-
-        Returns:
-            StepResult
+        GCS上の全CSVファイルをロード（重複スキップ有効）。
+        日付フィルタが指定されている場合、ファイル名のyymmdd部分でフィルタする。
         """
         step_name = "load_to_bq"
         start_time = time.time()
 
         try:
-            yymmdd = self.date_to_yymmdd(target_date)
-            logger.info(f"BigQueryロード開始: {yymmdd}")
+            logger.info("BigQuery全件ロード開始")
 
-            # GCS上の対象ファイルを検索
-            # prefixパターン: csv/ または各データタイプフォルダ
             csv_files = self.bq_loader.list_csv_files(prefix="")
 
-            # 対象日付のファイルをフィルタ
-            target_files = [f for f in csv_files if yymmdd in f]
+            # 日付範囲でフィルタ
+            if start_date or end_date:
+                csv_files = self._filter_files_by_date(
+                    csv_files, start_date, end_date
+                )
 
-            if not target_files:
-                logger.info(f"ロード対象ファイルなし: {yymmdd}")
-                return StepResult(
+            if not csv_files:
+                logger.info("ロード対象ファイルなし")
+                return FullLoadStepResult(
                     step_name=step_name,
                     status="success",
                     duration_seconds=time.time() - start_time,
                     details={"files": 0, "records": 0, "skipped": 0},
                 )
 
-            # バッチロード実行（重複スキップ有効）
+            logger.info(f"ロード対象: {len(csv_files)}ファイル")
+
             result = self.bq_loader.load_files_batch(
-                target_files,
+                csv_files,
                 continue_on_error=True,
                 skip_loaded=True,
                 record_history=True,
@@ -298,13 +288,13 @@ class DailyPipeline:
                 "records": result.total_records,
                 "skipped": result.skipped_count,
                 "failed": result.failed_count,
+                "total_target": len(csv_files),
             }
 
             if result.failed_count > 0:
                 logger.warning(f"ロード失敗: {result.failed_count}ファイル")
-                logger.warning(f"失敗ファイル: {result.failed_files}")
 
-            return StepResult(
+            return FullLoadStepResult(
                 step_name=step_name,
                 status="success" if result.failed_count == 0 else "partial",
                 duration_seconds=time.time() - start_time,
@@ -313,39 +303,100 @@ class DailyPipeline:
 
         except Exception as e:
             logger.error(f"BigQueryロードエラー: {e}")
-            return StepResult(
+            return FullLoadStepResult(
                 step_name=step_name,
                 status="failed",
                 duration_seconds=time.time() - start_time,
                 error_message=str(e),
             )
 
-    def run(self, target_date: Optional[str] = None) -> PipelineResult:
+    @staticmethod
+    def _filter_files_by_date(
+        files: List[str],
+        start_date: Optional[date],
+        end_date: Optional[date],
+    ) -> List[str]:
         """
-        パイプラインを実行
+        ファイル名のyymmdd部分で日付フィルタ
 
         Args:
-            target_date: 対象日付（YYYY-MM-DD形式、Noneの場合は当日）
+            files: ファイル名のリスト
+            start_date: 開始日
+            end_date: 終了日
 
         Returns:
-            PipelineResult
+            フィルタ済みファイルリスト
+        """
+        filtered = []
+        pattern = re.compile(r"(\d{6})\.")  # yymmdd部分を抽出
+
+        start_yymmdd = start_date.strftime("%y%m%d") if start_date else None
+        end_yymmdd = end_date.strftime("%y%m%d") if end_date else None
+
+        for f in files:
+            match = pattern.search(f)
+            if not match:
+                continue
+
+            file_date = match.group(1)
+
+            # 90以上のyyは1990年代なので除外
+            yy = int(file_date[:2])
+            if yy >= 90:
+                continue
+
+            if start_yymmdd and file_date < start_yymmdd:
+                continue
+            if end_yymmdd and file_date > end_yymmdd:
+                continue
+
+            filtered.append(f)
+
+        return filtered
+
+    def run(
+        self,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+    ) -> FullLoadResult:
+        """
+        全件ロードパイプラインを実行
+
+        Args:
+            start_date: 開始日付（YYYY-MM-DD形式、省略時は全期間）
+            end_date: 終了日付（YYYY-MM-DD形式、省略時は全期間）
+
+        Returns:
+            FullLoadResult
         """
         start_time = time.time()
-        result = PipelineResult(status="success", target_date="")
+        job_id = str(uuid.uuid4())[:8]
+
+        parsed_start = self.parse_date(start_date)
+        parsed_end = self.parse_date(end_date)
+
+        result = FullLoadResult(
+            status="success",
+            job_id=job_id,
+            start_date=start_date or "全期間",
+            end_date=end_date or "全期間",
+        )
+
+        logger.info(
+            f"全件ロードパイプライン開始: job_id={job_id}, "
+            f"期間={result.start_date}〜{result.end_date}"
+        )
 
         try:
-            # 日付パース
-            parsed_date = self.parse_target_date(target_date)
-            result.target_date = parsed_date.strftime("%Y-%m-%d")
-            logger.info(f"日次パイプライン開始: {result.target_date}")
-
             # Step 1: ダウンロード
-            download_result = self._step_download(parsed_date)
+            download_result = self._step_download(parsed_start, parsed_end)
             result.steps.append(download_result)
 
             if download_result.status == "failed":
                 result.status = "failed"
-                result.error_message = f"ダウンロード失敗: {download_result.error_message}"
+                result.error_message = (
+                    f"ダウンロード失敗: {download_result.error_message}"
+                )
                 result.duration_seconds = time.time() - start_time
                 return result
 
@@ -357,33 +408,38 @@ class DailyPipeline:
 
             if upload_result.status == "failed":
                 result.status = "failed"
-                result.error_message = f"アップロード失敗: {upload_result.error_message}"
+                result.error_message = (
+                    f"アップロード失敗: {upload_result.error_message}"
+                )
                 result.duration_seconds = time.time() - start_time
                 return result
 
             result.files_uploaded = upload_result.details.get("uploaded", 0)
 
             # Step 3: BigQueryロード
-            bq_result = self._step_load_to_bq(parsed_date)
+            bq_result = self._step_load_to_bq(parsed_start, parsed_end)
             result.steps.append(bq_result)
 
             if bq_result.status == "failed":
                 result.status = "failed"
-                result.error_message = f"BigQueryロード失敗: {bq_result.error_message}"
+                result.error_message = (
+                    f"BigQueryロード失敗: {bq_result.error_message}"
+                )
                 result.duration_seconds = time.time() - start_time
                 return result
 
             result.files_loaded = bq_result.details.get("files", 0)
             result.records_loaded = bq_result.details.get("records", 0)
 
-            # 全体ステータスの判定
+            # 全体ステータス判定
             if any(s.status == "partial" for s in result.steps):
                 result.status = "partial"
 
             result.duration_seconds = time.time() - start_time
             logger.info(
-                f"日次パイプライン完了: status={result.status}, "
-                f"files_loaded={result.files_loaded}, records={result.records_loaded}"
+                f"全件ロードパイプライン完了: job_id={job_id}, "
+                f"status={result.status}, files={result.files_loaded}, "
+                f"records={result.records_loaded}"
             )
 
             return result
@@ -396,7 +452,6 @@ class DailyPipeline:
             return result
 
         finally:
-            # 一時ディレクトリのクリーンアップ
             if self._downloader:
                 try:
                     self._downloader.cleanup()
@@ -404,41 +459,31 @@ class DailyPipeline:
                     logger.warning(f"クリーンアップエラー: {e}")
 
 
-def create_pipeline_from_env() -> Optional[DailyPipeline]:
-    """
-    環境変数からDailyPipelineを作成
-
-    Returns:
-        DailyPipelineインスタンス（設定不足の場合はNone）
-    """
-    try:
-        return DailyPipeline()
-    except Exception as e:
-        logger.error(f"パイプラインの作成に失敗: {e}")
-        return None
-
-
 def main():
     """CLIエントリーポイント"""
     import argparse
     import json
-    import os
     import sys
 
     from dotenv import load_dotenv
 
-    # ロギング設定
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
 
-    parser = argparse.ArgumentParser(description="日次データパイプライン")
+    parser = argparse.ArgumentParser(description="過去分全件ロードパイプライン")
     parser.add_argument(
-        "--date",
+        "--start-date",
         type=str,
         default=None,
-        help="対象日付（YYYY-MM-DD形式、デフォルト: 当日）",
+        help="開始日付（YYYY-MM-DD形式、省略時は全期間）",
+    )
+    parser.add_argument(
+        "--end-date",
+        type=str,
+        default=None,
+        help="終了日付（YYYY-MM-DD形式、省略時は全期間）",
     )
     parser.add_argument(
         "--json",
@@ -447,23 +492,22 @@ def main():
     )
     args = parser.parse_args()
 
-    # .envを読み込み
     load_dotenv()
 
-    # パイプライン実行
-    pipeline = DailyPipeline()
+    pipeline = FullLoadPipeline()
 
     try:
-        result = pipeline.run(args.date)
+        result = pipeline.run(args.start_date, args.end_date)
 
         if args.json:
             print(json.dumps(result.to_dict(), indent=2, ensure_ascii=False))
         else:
             print("\n" + "=" * 60)
-            print("日次パイプライン結果")
+            print("全件ロードパイプライン結果")
             print("=" * 60)
+            print(f"ジョブID: {result.job_id}")
             print(f"ステータス: {result.status}")
-            print(f"対象日付: {result.target_date}")
+            print(f"期間: {result.start_date} 〜 {result.end_date}")
             print(f"ダウンロードファイル数: {result.files_downloaded}")
             print(f"アップロードファイル数: {result.files_uploaded}")
             print(f"ロードファイル数: {result.files_loaded}")
@@ -475,7 +519,10 @@ def main():
 
             print("\nステップ詳細:")
             for step in result.steps:
-                print(f"  {step.step_name}: {step.status} ({step.duration_seconds:.2f}秒)")
+                print(
+                    f"  {step.step_name}: {step.status} "
+                    f"({step.duration_seconds:.2f}秒)"
+                )
                 if step.error_message:
                     print(f"    エラー: {step.error_message}")
 

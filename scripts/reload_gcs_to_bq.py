@@ -16,10 +16,7 @@ from datetime import datetime
 from dotenv import load_dotenv
 from google.cloud import storage, bigquery
 
-# プロジェクトルートをパスに追加
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'cloud_functions', 'gcs_to_bq'))
-
-from parser import JRDBParser
+from src.automation.data.jrdb_parser import JRDBParser
 
 # ログ設定
 logging.basicConfig(

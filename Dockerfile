@@ -21,9 +21,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # アプリケーションコードをコピー
 COPY src/ ./src/
 COPY scripts/ ./scripts/
-COPY downloader/ ./downloader/
 COPY config/ ./config/
-COPY main.py .
 
 # 環境変数のデフォルト値
 ENV PORT=8080
@@ -32,5 +30,5 @@ ENV PYTHONUNBUFFERED=1
 # ポートを公開
 EXPOSE 8080
 
-# アプリケーションを起動
-CMD ["python", "main.py"]
+# FastAPIアプリケーションを起動
+CMD ["uvicorn", "src.automation.api.app:app", "--host", "0.0.0.0", "--port", "8080"]

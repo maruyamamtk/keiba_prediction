@@ -14,7 +14,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.data.upload_to_gcs import (
+from src.automation.data.upload_to_gcs import (
     GCSUploader,
     UploadResult,
     create_uploader_from_env,
@@ -79,10 +79,10 @@ class TestGCSUploaderCreation:
 
         try:
             with patch(
-                "src.data.upload_to_gcs.service_account.Credentials"
+                "src.automation.data.upload_to_gcs.service_account.Credentials"
                 ".from_service_account_file"
             ) as mock_creds, patch(
-                "src.data.upload_to_gcs.storage.Client"
+                "src.automation.data.upload_to_gcs.storage.Client"
             ) as mock_client:
                 mock_creds.return_value = MagicMock()
                 uploader = GCSUploader(
@@ -108,9 +108,9 @@ class TestGCSUploaderCreation:
     def test_create_with_adc(self):
         """Application Default Credentialsで初期化"""
         with patch(
-            "src.data.upload_to_gcs.auth_default"
+            "src.automation.data.upload_to_gcs.auth_default"
         ) as mock_auth_default, patch(
-            "src.data.upload_to_gcs.storage.Client"
+            "src.automation.data.upload_to_gcs.storage.Client"
         ) as mock_client:
             mock_auth_default.return_value = (MagicMock(), "detected-project")
             uploader = GCSUploader(
@@ -132,10 +132,10 @@ class TestGCSUploaderCreation:
             with patch.dict(
                 os.environ, {"GOOGLE_APPLICATION_CREDENTIALS": credentials_path}
             ), patch(
-                "src.data.upload_to_gcs.service_account.Credentials"
+                "src.automation.data.upload_to_gcs.service_account.Credentials"
                 ".from_service_account_file"
             ) as mock_creds, patch(
-                "src.data.upload_to_gcs.storage.Client"
+                "src.automation.data.upload_to_gcs.storage.Client"
             ) as mock_client:
                 mock_creds.return_value = MagicMock()
                 uploader = GCSUploader(
@@ -151,7 +151,7 @@ class TestGCSUploaderCreation:
         from google.auth.exceptions import DefaultCredentialsError
 
         with patch.dict(os.environ, {}, clear=True), patch(
-            "src.data.upload_to_gcs.auth_default"
+            "src.automation.data.upload_to_gcs.auth_default"
         ) as mock_auth_default:
             mock_auth_default.side_effect = DefaultCredentialsError(
                 "Could not automatically determine credentials"
@@ -173,8 +173,8 @@ class TestGCSUploaderMD5:
             temp_path = Path(f.name)
 
         try:
-            with patch("src.data.upload_to_gcs.storage.Client"), patch(
-                "src.data.upload_to_gcs.auth_default",
+            with patch("src.automation.data.upload_to_gcs.storage.Client"), patch(
+                "src.automation.data.upload_to_gcs.auth_default",
                 return_value=(MagicMock(), "project"),
             ):
                 uploader = GCSUploader(
@@ -201,8 +201,8 @@ class TestGCSUploaderMD5:
             temp_path = Path(f.name)
 
         try:
-            with patch("src.data.upload_to_gcs.storage.Client"), patch(
-                "src.data.upload_to_gcs.auth_default",
+            with patch("src.automation.data.upload_to_gcs.storage.Client"), patch(
+                "src.automation.data.upload_to_gcs.auth_default",
                 return_value=(MagicMock(), "project"),
             ):
                 uploader = GCSUploader(
@@ -229,8 +229,8 @@ class TestGCSUploaderShouldUpload:
             temp_path = Path(f.name)
 
         try:
-            with patch("src.data.upload_to_gcs.storage.Client"), patch(
-                "src.data.upload_to_gcs.auth_default",
+            with patch("src.automation.data.upload_to_gcs.storage.Client"), patch(
+                "src.automation.data.upload_to_gcs.auth_default",
                 return_value=(MagicMock(), "project"),
             ):
                 uploader = GCSUploader(
@@ -252,8 +252,8 @@ class TestGCSUploaderShouldUpload:
             temp_path = Path(f.name)
 
         try:
-            with patch("src.data.upload_to_gcs.storage.Client"), patch(
-                "src.data.upload_to_gcs.auth_default",
+            with patch("src.automation.data.upload_to_gcs.storage.Client"), patch(
+                "src.automation.data.upload_to_gcs.auth_default",
                 return_value=(MagicMock(), "project"),
             ):
                 uploader = GCSUploader(
@@ -277,8 +277,8 @@ class TestGCSUploaderShouldUpload:
             temp_path = Path(f.name)
 
         try:
-            with patch("src.data.upload_to_gcs.storage.Client"), patch(
-                "src.data.upload_to_gcs.auth_default",
+            with patch("src.automation.data.upload_to_gcs.storage.Client"), patch(
+                "src.automation.data.upload_to_gcs.auth_default",
                 return_value=(MagicMock(), "project"),
             ):
                 uploader = GCSUploader(
@@ -307,8 +307,8 @@ class TestGCSUploaderUploadFile:
             temp_path = Path(f.name)
 
         try:
-            with patch("src.data.upload_to_gcs.storage.Client"), patch(
-                "src.data.upload_to_gcs.auth_default",
+            with patch("src.automation.data.upload_to_gcs.storage.Client"), patch(
+                "src.automation.data.upload_to_gcs.auth_default",
                 return_value=(MagicMock(), "project"),
             ):
                 uploader = GCSUploader(
@@ -332,8 +332,8 @@ class TestGCSUploaderUploadFile:
             temp_path = Path(f.name)
 
         try:
-            with patch("src.data.upload_to_gcs.storage.Client"), patch(
-                "src.data.upload_to_gcs.auth_default",
+            with patch("src.automation.data.upload_to_gcs.storage.Client"), patch(
+                "src.automation.data.upload_to_gcs.auth_default",
                 return_value=(MagicMock(), "project"),
             ):
                 uploader = GCSUploader(
@@ -350,8 +350,8 @@ class TestGCSUploaderUploadFile:
 
     def test_upload_file_not_found(self):
         """存在しないファイルをアップロードしようとした場合"""
-        with patch("src.data.upload_to_gcs.storage.Client"), patch(
-            "src.data.upload_to_gcs.auth_default",
+        with patch("src.automation.data.upload_to_gcs.storage.Client"), patch(
+            "src.automation.data.upload_to_gcs.auth_default",
             return_value=(MagicMock(), "project"),
         ):
             uploader = GCSUploader(
@@ -370,8 +370,8 @@ class TestGCSUploaderUploadFile:
             temp_path = Path(f.name)
 
         try:
-            with patch("src.data.upload_to_gcs.storage.Client"), patch(
-                "src.data.upload_to_gcs.auth_default",
+            with patch("src.automation.data.upload_to_gcs.storage.Client"), patch(
+                "src.automation.data.upload_to_gcs.auth_default",
                 return_value=(MagicMock(), "project"),
             ):
                 uploader = GCSUploader(
@@ -399,8 +399,8 @@ class TestGCSUploaderUploadDirectory:
     def test_upload_directory_empty(self):
         """存在しないディレクトリの場合は空の結果を返す"""
         with tempfile.TemporaryDirectory() as temp_dir:
-            with patch("src.data.upload_to_gcs.storage.Client"), patch(
-                "src.data.upload_to_gcs.auth_default",
+            with patch("src.automation.data.upload_to_gcs.storage.Client"), patch(
+                "src.automation.data.upload_to_gcs.auth_default",
                 return_value=(MagicMock(), "project"),
             ):
                 uploader = GCSUploader(
@@ -430,8 +430,8 @@ class TestGCSUploaderUploadDirectory:
             (data_dir / "file3.json").write_text("{}")
             (data_dir / "file4.py").write_text("code")
 
-            with patch("src.data.upload_to_gcs.storage.Client"), patch(
-                "src.data.upload_to_gcs.auth_default",
+            with patch("src.automation.data.upload_to_gcs.storage.Client"), patch(
+                "src.automation.data.upload_to_gcs.auth_default",
                 return_value=(MagicMock(), "project"),
             ):
                 uploader = GCSUploader(
@@ -460,9 +460,9 @@ class TestGCSUploaderUploadDirectory:
             mock_client.bucket.return_value = mock_bucket
 
             with patch(
-                "src.data.upload_to_gcs.storage.Client", return_value=mock_client
+                "src.automation.data.upload_to_gcs.storage.Client", return_value=mock_client
             ), patch(
-                "src.data.upload_to_gcs.auth_default",
+                "src.automation.data.upload_to_gcs.auth_default",
                 return_value=(MagicMock(), "project"),
             ):
                 uploader = GCSUploader(
@@ -486,8 +486,8 @@ class TestGCSUploaderUploadDirectory:
             (data_dir / "file1.csv").write_text("data1")
             (data_dir / "file2.csv").write_text("data2")
 
-            with patch("src.data.upload_to_gcs.storage.Client"), patch(
-                "src.data.upload_to_gcs.auth_default",
+            with patch("src.automation.data.upload_to_gcs.storage.Client"), patch(
+                "src.automation.data.upload_to_gcs.auth_default",
                 return_value=(MagicMock(), "project"),
             ):
                 uploader = GCSUploader(
@@ -513,8 +513,8 @@ class TestGCSUploaderUploadDirectory:
             data_dir.mkdir()
             (data_dir / "file1.csv").write_text("data1")
 
-            with patch("src.data.upload_to_gcs.storage.Client"), patch(
-                "src.data.upload_to_gcs.auth_default",
+            with patch("src.automation.data.upload_to_gcs.storage.Client"), patch(
+                "src.automation.data.upload_to_gcs.auth_default",
                 return_value=(MagicMock(), "project"),
             ):
                 uploader = GCSUploader(
@@ -547,8 +547,8 @@ class TestGCSUploaderUploadAll:
                 data_dir.mkdir()
                 (data_dir / "file1.csv").write_text("data1")
 
-            with patch("src.data.upload_to_gcs.storage.Client"), patch(
-                "src.data.upload_to_gcs.auth_default",
+            with patch("src.automation.data.upload_to_gcs.storage.Client"), patch(
+                "src.automation.data.upload_to_gcs.auth_default",
                 return_value=(MagicMock(), "project"),
             ):
                 uploader = GCSUploader(
@@ -579,8 +579,8 @@ class TestGCSUploaderUploadAll:
             hidden_dir.mkdir()
             (hidden_dir / "secret.csv").write_text("secret")
 
-            with patch("src.data.upload_to_gcs.storage.Client"), patch(
-                "src.data.upload_to_gcs.auth_default",
+            with patch("src.automation.data.upload_to_gcs.storage.Client"), patch(
+                "src.automation.data.upload_to_gcs.auth_default",
                 return_value=(MagicMock(), "project"),
             ):
                 uploader = GCSUploader(
@@ -599,8 +599,8 @@ class TestGCSUploaderUploadAll:
 
     def test_upload_all_nonexistent_base_dir(self):
         """ベースディレクトリが存在しない場合は空の結果を返す"""
-        with patch("src.data.upload_to_gcs.storage.Client"), patch(
-            "src.data.upload_to_gcs.auth_default",
+        with patch("src.automation.data.upload_to_gcs.storage.Client"), patch(
+            "src.automation.data.upload_to_gcs.auth_default",
             return_value=(MagicMock(), "project"),
         ):
             uploader = GCSUploader(
@@ -623,9 +623,9 @@ class TestGCSUploaderVerifyBucket:
         mock_client = MagicMock()
 
         with patch(
-            "src.data.upload_to_gcs.storage.Client", return_value=mock_client
+            "src.automation.data.upload_to_gcs.storage.Client", return_value=mock_client
         ), patch(
-            "src.data.upload_to_gcs.auth_default",
+            "src.automation.data.upload_to_gcs.auth_default",
             return_value=(MagicMock(), "project"),
         ):
             uploader = GCSUploader(
@@ -644,9 +644,9 @@ class TestGCSUploaderVerifyBucket:
         mock_client.get_bucket.side_effect = NotFound("Bucket not found")
 
         with patch(
-            "src.data.upload_to_gcs.storage.Client", return_value=mock_client
+            "src.automation.data.upload_to_gcs.storage.Client", return_value=mock_client
         ), patch(
-            "src.data.upload_to_gcs.auth_default",
+            "src.automation.data.upload_to_gcs.auth_default",
             return_value=(MagicMock(), "project"),
         ):
             uploader = GCSUploader(
@@ -674,9 +674,9 @@ class TestGCSUploaderRetry:
             mock_bucket.blob.return_value = mock_blob
 
             with patch(
-                "src.data.upload_to_gcs.storage.Client", return_value=mock_client
+                "src.automation.data.upload_to_gcs.storage.Client", return_value=mock_client
             ), patch(
-                "src.data.upload_to_gcs.auth_default",
+                "src.automation.data.upload_to_gcs.auth_default",
                 return_value=(MagicMock(), "project"),
             ):
                 uploader = GCSUploader(
@@ -711,12 +711,12 @@ class TestGCSUploaderRetry:
             ]
 
             with patch(
-                "src.data.upload_to_gcs.storage.Client", return_value=mock_client
+                "src.automation.data.upload_to_gcs.storage.Client", return_value=mock_client
             ), patch(
-                "src.data.upload_to_gcs.auth_default",
+                "src.automation.data.upload_to_gcs.auth_default",
                 return_value=(MagicMock(), "project"),
             ), patch(
-                "src.data.upload_to_gcs.time.sleep"
+                "src.automation.data.upload_to_gcs.time.sleep"
             ):
                 uploader = GCSUploader(
                     project_id="test-project",
@@ -747,12 +747,12 @@ class TestGCSUploaderRetry:
             mock_blob.upload_from_filename.side_effect = Exception("Permanent error")
 
             with patch(
-                "src.data.upload_to_gcs.storage.Client", return_value=mock_client
+                "src.automation.data.upload_to_gcs.storage.Client", return_value=mock_client
             ), patch(
-                "src.data.upload_to_gcs.auth_default",
+                "src.automation.data.upload_to_gcs.auth_default",
                 return_value=(MagicMock(), "project"),
             ), patch(
-                "src.data.upload_to_gcs.time.sleep"
+                "src.automation.data.upload_to_gcs.time.sleep"
             ):
                 uploader = GCSUploader(
                     project_id="test-project",
@@ -776,8 +776,8 @@ class TestCreateUploaderFromEnv:
         """環境変数から正常にUploaderを作成"""
         with patch.dict(
             os.environ, {"GCP_PROJECT_ID": "test-project", "GCS_BUCKET_RAW": "raw-data"}
-        ), patch("src.data.upload_to_gcs.storage.Client"), patch(
-            "src.data.upload_to_gcs.auth_default",
+        ), patch("src.automation.data.upload_to_gcs.storage.Client"), patch(
+            "src.automation.data.upload_to_gcs.auth_default",
             return_value=(MagicMock(), "project"),
         ):
             uploader = create_uploader_from_env()
@@ -790,8 +790,8 @@ class TestCreateUploaderFromEnv:
         """デフォルトのバケットサフィックスを使用"""
         with patch.dict(
             os.environ, {"GCP_PROJECT_ID": "test-project"}, clear=True
-        ), patch("src.data.upload_to_gcs.storage.Client"), patch(
-            "src.data.upload_to_gcs.auth_default",
+        ), patch("src.automation.data.upload_to_gcs.storage.Client"), patch(
+            "src.automation.data.upload_to_gcs.auth_default",
             return_value=(MagicMock(), "project"),
         ):
             uploader = create_uploader_from_env()
@@ -811,8 +811,8 @@ class TestCreateUploaderFromEnv:
         with tempfile.TemporaryDirectory() as temp_dir:
             with patch.dict(
                 os.environ, {"GCP_PROJECT_ID": "test-project"}
-            ), patch("src.data.upload_to_gcs.storage.Client"), patch(
-                "src.data.upload_to_gcs.auth_default",
+            ), patch("src.automation.data.upload_to_gcs.storage.Client"), patch(
+                "src.automation.data.upload_to_gcs.auth_default",
                 return_value=(MagicMock(), "project"),
             ):
                 uploader = create_uploader_from_env(local_base_dir=Path(temp_dir))
@@ -825,7 +825,7 @@ class TestCreateUploaderFromEnv:
         from google.auth.exceptions import DefaultCredentialsError
 
         with patch.dict(os.environ, {"GCP_PROJECT_ID": "test-project"}), patch(
-            "src.data.upload_to_gcs.auth_default"
+            "src.automation.data.upload_to_gcs.auth_default"
         ) as mock_auth:
             mock_auth.side_effect = DefaultCredentialsError("No credentials")
             uploader = create_uploader_from_env()

@@ -19,8 +19,8 @@ from fastapi import BackgroundTasks, FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
 
-from src.pipeline.daily_pipeline import DailyPipeline, PipelineResult
-from src.pipeline.full_load_pipeline import FullLoadPipeline, FullLoadResult
+from src.automation.pipeline.daily_pipeline import DailyPipeline, PipelineResult
+from src.automation.pipeline.full_load_pipeline import FullLoadPipeline, FullLoadResult
 
 # ロギング設定（Cloud Logging連携）
 logging.basicConfig(
