@@ -187,8 +187,8 @@ with temp_base_race_entries as (
         case when r_r_5.idm is not null then 0.5 else 0 end)
         , 0)
     )as ema_idm
-    ,greatest(coalesce(r_r_1.idm, 0), coalesce(r_r_2.idm, 0), coalesce(r_r_3.idm, 0), coalesce(r_r_4.idm, 0), coalesce(r_r_5.idm, 0)) as max_idm
-    ,least(coalesce(r_r_1.idm, 0), coalesce(r_r_2.idm, 0), coalesce(r_r_3.idm, 0), coalesce(r_r_4.idm, 0), coalesce(r_r_5.idm, 0)) as min_idm
+    ,(SELECT MAX(v) FROM UNNEST([r_r_1.idm, r_r_2.idm, r_r_3.idm, r_r_4.idm, r_r_5.idm]) v WHERE v IS NOT NULL) as max_idm
+    ,(SELECT MIN(v) FROM UNNEST([r_r_1.idm, r_r_2.idm, r_r_3.idm, r_r_4.idm, r_r_5.idm]) v WHERE v IS NOT NULL) as min_idm
     /* finish_position (着順) */
     ,safe_divide(
       (coalesce(r_r_1.finish_position, 0) + coalesce(r_r_2.finish_position, 0) + coalesce(r_r_3.finish_position, 0) + coalesce(r_r_4.finish_position, 0) + coalesce(r_r_5.finish_position, 0))
@@ -210,8 +210,8 @@ with temp_base_race_entries as (
         case when r_r_5.finish_position is not null then 0.5 else 0 end)
         , 0)
     ) as ema_finish_position
-    ,greatest(coalesce(r_r_1.finish_position, 0), coalesce(r_r_2.finish_position, 0), coalesce(r_r_3.finish_position, 0), coalesce(r_r_4.finish_position, 0), coalesce(r_r_5.finish_position, 0)) as max_finish_position
-    ,least(coalesce(r_r_1.finish_position, 0), coalesce(r_r_2.finish_position, 0), coalesce(r_r_3.finish_position, 0), coalesce(r_r_4.finish_position, 0), coalesce(r_r_5.finish_position, 0)) as min_finish_position
+    ,(SELECT MAX(v) FROM UNNEST([r_r_1.finish_position, r_r_2.finish_position, r_r_3.finish_position, r_r_4.finish_position, r_r_5.finish_position]) v WHERE v IS NOT NULL) as max_finish_position
+    ,(SELECT MIN(v) FROM UNNEST([r_r_1.finish_position, r_r_2.finish_position, r_r_3.finish_position, r_r_4.finish_position, r_r_5.finish_position]) v WHERE v IS NOT NULL) as min_finish_position
     /* win_popularity (単勝人気) */
     ,safe_divide(
       (coalesce(r_r_1.win_popularity, 0) + coalesce(r_r_2.win_popularity, 0) + coalesce(r_r_3.win_popularity, 0) + coalesce(r_r_4.win_popularity, 0) + coalesce(r_r_5.win_popularity, 0))
@@ -233,8 +233,8 @@ with temp_base_race_entries as (
         case when r_r_5.win_popularity is not null then 0.5 else 0 end)
         , 0)
     ) as ema_win_popularity
-    ,greatest(coalesce(r_r_1.win_popularity, 0), coalesce(r_r_2.win_popularity, 0), coalesce(r_r_3.win_popularity, 0), coalesce(r_r_4.win_popularity, 0), coalesce(r_r_5.win_popularity, 0)) as max_win_popularity
-    ,least(coalesce(r_r_1.win_popularity, 0), coalesce(r_r_2.win_popularity, 0), coalesce(r_r_3.win_popularity, 0), coalesce(r_r_4.win_popularity, 0), coalesce(r_r_5.win_popularity, 0)) as min_win_popularity
+    ,(SELECT MAX(v) FROM UNNEST([r_r_1.win_popularity, r_r_2.win_popularity, r_r_3.win_popularity, r_r_4.win_popularity, r_r_5.win_popularity]) v WHERE v IS NOT NULL) as max_win_popularity
+    ,(SELECT MIN(v) FROM UNNEST([r_r_1.win_popularity, r_r_2.win_popularity, r_r_3.win_popularity, r_r_4.win_popularity, r_r_5.win_popularity]) v WHERE v IS NOT NULL) as min_win_popularity
   from
     temp_base_race_entries as t_b_r_e
     left join `{project_id}`.raw.race_results as r_r_1
@@ -283,8 +283,8 @@ with temp_base_race_entries as (
         case when finish_position_rate_5 is not null then 0.5 else 0 end)
         , 0)
     ) as ema_finish_position_rate
-    ,greatest(coalesce(finish_position_rate_1, 0), coalesce(finish_position_rate_2, 0), coalesce(finish_position_rate_3, 0), coalesce(finish_position_rate_4, 0), coalesce(finish_position_rate_5, 0)) as max_finish_position_rate
-    ,least(coalesce(finish_position_rate_1, 0), coalesce(finish_position_rate_2, 0), coalesce(finish_position_rate_3, 0), coalesce(finish_position_rate_4, 0), coalesce(finish_position_rate_5, 0)) as min_finish_position_rate
+    ,(SELECT MAX(v) FROM UNNEST([finish_position_rate_1, finish_position_rate_2, finish_position_rate_3, finish_position_rate_4, finish_position_rate_5]) v WHERE v IS NOT NULL) as max_finish_position_rate
+    ,(SELECT MIN(v) FROM UNNEST([finish_position_rate_1, finish_position_rate_2, finish_position_rate_3, finish_position_rate_4, finish_position_rate_5]) v WHERE v IS NOT NULL) as min_finish_position_rate
 
     /* popularity_rate (人気率) */
     ,safe_divide(
@@ -307,8 +307,8 @@ with temp_base_race_entries as (
         case when popularity_rate_5 is not null then 0.5 else 0 end)
         , 0)
     ) as ema_popularity_rate
-    ,greatest(coalesce(popularity_rate_1, 0), coalesce(popularity_rate_2, 0), coalesce(popularity_rate_3, 0), coalesce(popularity_rate_4, 0), coalesce(popularity_rate_5, 0)) as max_popularity_rate
-    ,least(coalesce(popularity_rate_1, 0), coalesce(popularity_rate_2, 0), coalesce(popularity_rate_3, 0), coalesce(popularity_rate_4, 0), coalesce(popularity_rate_5, 0)) as min_popularity_rate
+    ,(SELECT MAX(v) FROM UNNEST([popularity_rate_1, popularity_rate_2, popularity_rate_3, popularity_rate_4, popularity_rate_5]) v WHERE v IS NOT NULL) as max_popularity_rate
+    ,(SELECT MIN(v) FROM UNNEST([popularity_rate_1, popularity_rate_2, popularity_rate_3, popularity_rate_4, popularity_rate_5]) v WHERE v IS NOT NULL) as min_popularity_rate
 
     /* upside_rate (上昇率) */
     ,safe_divide(
@@ -331,8 +331,8 @@ with temp_base_race_entries as (
         case when upside_rate_5 is not null then 0.5 else 0 end)
       , 0)
     ) as ema_upside_rate
-    ,greatest(coalesce(upside_rate_1, 0), coalesce(upside_rate_2, 0), coalesce(upside_rate_3, 0), coalesce(upside_rate_4, 0), coalesce(upside_rate_5, 0)) as max_upside_rate
-    ,least(coalesce(upside_rate_1, 0), coalesce(upside_rate_2, 0), coalesce(upside_rate_3, 0), coalesce(upside_rate_4, 0), coalesce(upside_rate_5, 0)) as min_upside_rate
+    ,(SELECT MAX(v) FROM UNNEST([upside_rate_1, upside_rate_2, upside_rate_3, upside_rate_4, upside_rate_5]) v WHERE v IS NOT NULL) as max_upside_rate
+    ,(SELECT MIN(v) FROM UNNEST([upside_rate_1, upside_rate_2, upside_rate_3, upside_rate_4, upside_rate_5]) v WHERE v IS NOT NULL) as min_upside_rate
   from
     temp_past_race_features as t_p_r_f
 )
@@ -549,7 +549,7 @@ with temp_base_race_entries as (
       when r_i.course_type = 'dirt' then safe_divide(broodmare_sire_dirt_place_rate, broodmare_sire_turf_place_rate)
       when r_i.course_type = 'turf' then safe_divide(broodmare_sire_turf_place_rate, broodmare_sire_dirt_place_rate)
       else null
-    end as broodmare_sire_surface_place_rate
+    end as broodmare_sire_surface_place_ratio
     ,r_i.distance-broodmare_sire_avg_place_distance as broodmare_sire_place_distance_diff
   from
     `{project_id}`.raw.race_info as r_i

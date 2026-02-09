@@ -156,6 +156,24 @@ class TestFeaturePipeline:
 
         assert q1 == q2
 
+    def test_build_query_rejects_invalid_start_date(self, mock_bq_client):
+        """不正な開始日が拒否されること"""
+        pipeline = FeaturePipeline("test-project")
+        with pytest.raises(ValueError, match="YYYY-MM-DD"):
+            pipeline._build_query("2025/01/01", "2025-01-31")
+
+    def test_build_query_rejects_invalid_end_date(self, mock_bq_client):
+        """不正な終了日が拒否されること"""
+        pipeline = FeaturePipeline("test-project")
+        with pytest.raises(ValueError, match="YYYY-MM-DD"):
+            pipeline._build_query("2025-01-01", "20250131")
+
+    def test_build_query_rejects_sql_injection(self, mock_bq_client):
+        """SQLインジェクション的な入力が拒否されること"""
+        pipeline = FeaturePipeline("test-project")
+        with pytest.raises(ValueError, match="YYYY-MM-DD"):
+            pipeline._build_query("2025-01-01'; DROP TABLE --", "2025-01-31")
+
     def test_run_delete_then_insert(self, mock_bq_client):
         """runメソッドがDELETE→INSERT順で実行されること"""
         mock_instance = MagicMock()

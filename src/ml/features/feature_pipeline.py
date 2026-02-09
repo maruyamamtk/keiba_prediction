@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Callable
 import logging
+import re
 import time
 from google.cloud import bigquery
 from google.api_core import exceptions as google_exceptions
@@ -117,6 +118,22 @@ class FeaturePipeline:
             )
         return SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
 
+    @staticmethod
+    def _validate_date(date_str: str) -> None:
+        """
+        日付文字列がYYYY-MM-DD形式であることを検証する
+
+        Args:
+            date_str: 検証する日付文字列
+
+        Raises:
+            ValueError: 不正な日付形式の場合
+        """
+        if not re.match(r"^\d{4}-\d{2}-\d{2}$", date_str):
+            raise ValueError(
+                f"日付はYYYY-MM-DD形式で指定してください: '{date_str}'"
+            )
+
     def _build_query(self, start_date: str, end_date: str) -> str:
         """
         SQLテンプレートにパラメータを埋め込んでクエリを生成
@@ -127,7 +144,12 @@ class FeaturePipeline:
 
         Returns:
             パラメータ埋め込み済みのSQL文字列
+
+        Raises:
+            ValueError: 日付形式が不正な場合
         """
+        self._validate_date(start_date)
+        self._validate_date(end_date)
         return self.sql_template.format(
             project_id=self.project_id,
             start_date=start_date,
