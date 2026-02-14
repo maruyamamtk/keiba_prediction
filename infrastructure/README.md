@@ -7,40 +7,56 @@
 - Google Cloud SDK (`gcloud`) がインストール済み
 - GCPプロジェクトが作成済み
 - 適切な権限を持つユーザーでログイン済み
+- Docker がインストール済み（ローカルビルドの場合）
 
 ## アーキテクチャ概要
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                         Cloud Scheduler                                  │
-│                    (毎日 AM 6:00 JST トリガー)                            │
+│                         Cloud Scheduler                                │
+│                    (毎日 AM 6:00 JST トリガー)                         │
+│                POST /api/v1/load/daily/async                           │
 └─────────────────────────────────────────────────────────────────────────┘
                                     ↓
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                           Cloud Run                                      │
-│                    (データパイプラインサービス)                            │
-│                                                                         │
-│  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐                 │
-│  │ JRDBから    │ →  │ GCSに      │ →  │ 特徴量生成  │                 │
-│  │ ダウンロード │    │ アップロード │    │ パイプライン │                 │
-│  └─────────────┘    └─────────────┘    └─────────────┘                 │
+│                     Cloud Run (keiba-pipeline)                         │
+│                  FastAPI + uvicorn (src.automation.api.app)             │
+│                                                                        │
+│  ┌─────────────┐    ┌─────────────┐    ┌──────────────┐              │
+│  │ JRDBから    │ →  │ GCSに      │ →  │ BigQueryに   │              │
+│  │ ダウンロード │    │ アップロード │    │ MERGE/UPSERT │              │
+│  └─────────────┘    └─────────────┘    └──────────────┘              │
+│         (JRDBDownloader)  (GCSUploader)    (BigQueryLoader)            │
+│                                                                        │
+│  ┌──────────────┐                                                     │
+│  │ 特徴量生成   │  (FeaturePipeline - SQL駆動)                        │
+│  └──────────────┘                                                     │
 └─────────────────────────────────────────────────────────────────────────┘
                                     ↓
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                      Cloud Storage (GCS)                                 │
-│                   (keiba-raw-data バケット)                              │
-└─────────────────────────────────────────────────────────────────────────┘
-                                    ↓ (自動トリガー)
-┌─────────────────────────────────────────────────────────────────────────┐
-│                       Cloud Functions                                    │
-│                    (gcs_to_bq: GCS → BigQuery)                          │
+│                      Cloud Storage (GCS)                               │
+│               (${PROJECT_ID}-keiba-raw-data バケット)                  │
 └─────────────────────────────────────────────────────────────────────────┘
                                     ↓
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                          BigQuery                                        │
-│              (raw, features, predictions データセット)                   │
+│                          BigQuery                                      │
+│              (raw, features, predictions データセット)                  │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
+
+## APIエンドポイント
+
+| メソッド | エンドポイント | 用途 |
+|---------|---------------|------|
+| GET | `/` | ヘルスチェック（簡易） |
+| GET | `/health` | ヘルスチェック（詳細） |
+| POST | `/api/v1/load/daily` | 日次ロード（同期） |
+| POST | `/api/v1/load/daily/async` | 日次ロード（非同期、Cloud Scheduler用） |
+| POST | `/api/v1/load/full` | 全件ロード（非同期） |
+| POST | `/api/v1/load/full/sync` | 全件ロード（同期、テスト用） |
+| POST | `/api/v1/features/generate` | 特徴量生成（同期） |
+| POST | `/api/v1/features/generate/async` | 特徴量生成（非同期） |
+| GET | `/docs` | OpenAPI (Swagger UI) ドキュメント |
 
 ## セットアップ手順
 
@@ -60,6 +76,7 @@ GCP_PROJECT_ID=your-project-id
 
 このスクリプトは以下を実行します：
 - 必要なGCP APIを有効化
+- Artifact Registryリポジトリの作成
 - Cloud Run用サービスアカウントの作成
 - 必要な権限の付与
 - Secret ManagerへのJRDB認証情報の登録
@@ -70,300 +87,78 @@ GCP_PROJECT_ID=your-project-id
 ./infrastructure/scripts/verify_setup.sh
 ```
 
-### 4. Cloud Runへのデプロイ
-
-#### 4.1 必要なファイルの作成
-
-Cloud Runにデプロイするために、以下のファイルをプロジェクトルートに作成します。
-
-##### 4.1.1 Dockerfile
-
-プロジェクトルートに `Dockerfile` を作成します：
-
-```dockerfile
-# Dockerfile
-FROM python:3.9-slim
-
-# 作業ディレクトリを設定
-WORKDIR /app
-
-# システム依存パッケージのインストール
-# - curl: ヘルスチェック用
-# - p7zip-full: lzhファイルの展開用
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl \
-    p7zip-full \
-    && rm -rf /var/lib/apt/lists/*
-
-# 依存パッケージをインストール
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-# アプリケーションコードをコピー
-COPY src/ ./src/
-COPY scripts/ ./scripts/
-COPY downloader/ ./downloader/
-COPY config/ ./config/
-COPY main.py .
-
-# 環境変数のデフォルト値
-ENV PORT=8080
-ENV PYTHONUNBUFFERED=1
-
-# ポートを公開
-EXPOSE 8080
-
-# アプリケーションを起動
-CMD ["python", "main.py"]
-```
-
-##### 4.1.2 .dockerignore
-
-ビルドコンテキストから不要なファイルを除外するため、プロジェクトルートに `.dockerignore` を作成します：
-
-```
-# .dockerignore
-
-# Git
-.git
-.gitignore
-
-# Python
-__pycache__
-*.py[cod]
-*$py.class
-*.so
-.Python
-venv/
-.venv/
-*.egg-info/
-.eggs/
-
-# IDE
-.idea/
-.vscode/
-*.swp
-*.swo
-
-# テスト
-.pytest_cache/
-.coverage
-htmlcov/
-tests/
-
-# ドキュメント
-*.md
-docs/
-reports/
-
-# ローカル環境
-.env
-.env.local
-*.log
-
-# ダウンロードデータ（大容量）
-downloaded_files/
-
-# Jupyter
-notebooks/
-*.ipynb
-.ipynb_checkpoints/
-
-# その他
-.DS_Store
-*.json
-!config/*.json
-infrastructure/
-cloud_functions/
-```
-
-##### 4.1.3 main.py（エントリーポイント）
-
-Cloud Runで実行されるエントリーポイントとして、プロジェクトルートに `main.py` を作成します：
-
-```python
-#!/usr/bin/env python3
-"""
-Cloud Run エントリーポイント
-
-HTTPリクエストを受け付け、データパイプラインを実行する。
-Cloud Schedulerからのトリガーで定期実行される。
-"""
-
-import logging
-import os
-import sys
-from datetime import datetime, timedelta
-from pathlib import Path
-
-from flask import Flask, jsonify, request
-
-# ロギング設定
-logging.basicConfig(
-    level=os.environ.get("LOG_LEVEL", "INFO"),
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-)
-logger = logging.getLogger(__name__)
-
-app = Flask(__name__)
-
-
-@app.route("/", methods=["GET"])
-def health_check():
-    """ヘルスチェック用エンドポイント"""
-    return jsonify({"status": "healthy", "timestamp": datetime.utcnow().isoformat()})
-
-
-@app.route("/run", methods=["POST"])
-def run_pipeline():
-    """
-    データパイプラインを実行するエンドポイント
-
-    Cloud Schedulerから呼び出される。
-    """
-    try:
-        logger.info("パイプライン実行を開始します")
-
-        # TODO: 以下の処理を実装
-        # 1. JRDBからデータをダウンロード
-        # 2. GCSにアップロード
-        # 3. 特徴量生成パイプラインを実行
-
-        # 現時点ではプレースホルダーとして成功を返す
-        result = {
-            "status": "success",
-            "message": "パイプライン実行が完了しました",
-            "timestamp": datetime.utcnow().isoformat(),
-        }
-
-        logger.info("パイプライン実行が完了しました")
-        return jsonify(result), 200
-
-    except Exception as e:
-        logger.error(f"パイプライン実行中にエラーが発生しました: {e}", exc_info=True)
-        return jsonify({"status": "error", "message": str(e)}), 500
-
-
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8080))
-    logger.info(f"サーバーをポート {port} で起動します")
-    app.run(host="0.0.0.0", port=port)
-```
-
-##### 4.1.4 requirements.txt の更新
-
-`requirements.txt` に Flask を追加します（未追加の場合）：
+### 4. Dockerイメージのビルド・プッシュ
 
 ```bash
-# requirements.txt に以下を追加
-echo "flask==3.0.0" >> requirements.txt
+./infrastructure/scripts/build_and_push.sh [image-tag]
 ```
 
-または、Cloud Run用の依存関係を別ファイルで管理する場合は `requirements-cloudrun.txt` を作成：
+`image-tag`を省略した場合は`latest`が使用されます。
 
-```
-# requirements-cloudrun.txt
-flask==3.0.0
-gunicorn==21.2.0
-```
+このスクリプトは以下を実行します：
+- Artifact Registryへの認証設定
+- `linux/amd64`プラットフォームでのDockerイメージビルド（Apple Silicon Mac対応）
+- Artifact Registryへのプッシュ
 
-#### 4.2 Dockerイメージのビルド・プッシュ
+> **注意（Apple Silicon Mac使用時）**: M1/M2/M3/M4 Macでは`--platform linux/amd64`オプションが必須です。スクリプトは自動的にこのオプションを付与します。
 
-**前提条件:**
-- 4.1 で必要なファイル（Dockerfile, .dockerignore, main.py）を作成済み
-- Dockerがインストール済み（またはCloud Buildを使用）
-- `setup_gcp.sh`が実行済み（Artifact Registryリポジトリが作成されていること）
-
-**手順:**
-
-1. **Docker認証の設定**（初回のみ）
-
-   ```bash
-   gcloud auth configure-docker asia-northeast1-docker.pkg.dev
-   ```
-
-2. **イメージのビルド**
-
-   プロジェクトルートで以下を実行します：
-
-   ```bash
-   # 環境変数を読み込み
-   source .env
-
-   # イメージをビルド（タグはlatestまたは任意のバージョン）
-   # ※ Cloud Runはamd64アーキテクチャが必要なため --platform オプションを指定
-   docker build --platform linux/amd64 -t asia-northeast1-docker.pkg.dev/${GCP_PROJECT_ID}/keiba-pipeline/keiba-pipeline:latest .
-   ```
-
-   > **注意（Apple Silicon Mac使用時）**: M1/M2/M3 Macでは`--platform linux/amd64`オプションが必須です。このオプションがないとarm64イメージがビルドされ、Cloud Runデプロイ時に「must support amd64/linux」エラーが発生します。
-
-3. **ローカルでの動作確認**（オプション）
-
-   ```bash
-   # コンテナをローカルで起動
-   docker run -p 8080:8080 \
-     -e GCP_PROJECT_ID=${GCP_PROJECT_ID} \
-     asia-northeast1-docker.pkg.dev/${GCP_PROJECT_ID}/keiba-pipeline/keiba-pipeline:latest
-
-   # 別ターミナルでヘルスチェック
-   curl http://localhost:8080/
-   ```
-
-   **ポート8080が使用中の場合:**
-
-   別のポート（例：8081）を使用してください：
-
-   ```bash
-   # ポート8081でコンテナを起動
-   docker run -p 8081:8080 \
-     -e GCP_PROJECT_ID=${GCP_PROJECT_ID} \
-     asia-northeast1-docker.pkg.dev/${GCP_PROJECT_ID}/keiba-pipeline/keiba-pipeline:latest
-
-   # 別ターミナルでヘルスチェック
-   curl http://localhost:8081/
-   ```
-
-   使用中のポートを確認するには：
-
-   ```bash
-   lsof -i :8080
-   ```
-
-4. **Artifact Registryへプッシュ**
-
-   ```bash
-   docker push asia-northeast1-docker.pkg.dev/${GCP_PROJECT_ID}/keiba-pipeline/keiba-pipeline:latest
-   ```
-
-**代替方法: Cloud Buildを使用したビルド**
-
-ローカルにDockerがない場合は、Cloud Buildを使用してビルドできます：
-
-```bash
-# 環境変数を読み込み
-source .env
-
-# Cloud Buildでビルド・プッシュを一括実行
-gcloud builds submit \
-  --tag asia-northeast1-docker.pkg.dev/${GCP_PROJECT_ID}/keiba-pipeline/keiba-pipeline:latest \
-  .
-```
-
-#### 4.3 Cloud Runサービスのデプロイ
-
-イメージのプッシュ後、以下を実行してCloud Runにデプロイします：
+### 5. Cloud Runへデプロイ
 
 ```bash
 ./infrastructure/scripts/deploy_cloud_run.sh [image-tag]
 ```
 
-`image-tag`を省略した場合は`latest`が使用されます。
-
 このスクリプトは以下の環境変数を自動的にCloud Runに設定します：
 - `GCP_PROJECT_ID`: プロジェクトID
 - `GCP_REGION`: リージョン
 - `GCS_BUCKET_RAW`: GCSバケット名（フルパス）
-- Secret Managerからの認証情報
+- `BQ_DATASET_RAW`: rawデータセット名
+- `BQ_DATASET_FEATURES`: 特徴量データセット名
+- Secret Managerからの認証情報 (`JRDB_USER`, `JRDB_PASSWORD`)
+
+### 6. デプロイ後の動作確認
+
+```bash
+./infrastructure/scripts/verify_deployment.sh
+```
+
+このスクリプトは以下の動作確認を行います：
+- ルートエンドポイント (`GET /`) の疎通
+- ヘルスチェック (`GET /health`) の疎通
+- 日次ロード (`POST /api/v1/load/daily`) のテスト実行（対話的に選択可能）
+- OpenAPIドキュメント (`GET /docs`) の疎通
+
+### 7. Cloud Schedulerの設定 (Issue #60)
+
+日次データ取得を自動化するCloud Schedulerジョブを設定します：
+
+```bash
+# サービスURLを取得
+SERVICE_URL=$(gcloud run services describe keiba-pipeline \
+    --region=asia-northeast1 \
+    --format="value(status.url)")
+
+# Cloud Schedulerジョブを作成（毎日AM 6:00 JST）
+gcloud scheduler jobs create http daily-data-load \
+    --location=asia-northeast1 \
+    --schedule="0 6 * * *" \
+    --time-zone="Asia/Tokyo" \
+    --uri="${SERVICE_URL}/api/v1/load/daily/async" \
+    --http-method=POST \
+    --headers="Content-Type=application/json" \
+    --oidc-service-account-email="keiba-pipeline-sa@${GCP_PROJECT_ID}.iam.gserviceaccount.com" \
+    --oidc-token-audience="${SERVICE_URL}"
+```
+
+## スクリプト一覧
+
+| スクリプト | 用途 |
+|-----------|------|
+| `setup_gcp.sh` | GCP初期セットアップ（API有効化、SA作成、権限付与） |
+| `verify_setup.sh` | セットアップ状態の確認 |
+| `build_and_push.sh` | Dockerイメージのビルド・プッシュ |
+| `deploy_cloud_run.sh` | Cloud Runサービスのデプロイ |
+| `verify_deployment.sh` | デプロイ後の動作確認 |
 
 ## サービスアカウント
 
@@ -377,6 +172,7 @@ gcloud builds submit \
 - `roles/bigquery.jobUser` - BigQueryジョブ実行
 - `roles/secretmanager.secretAccessor` - Secret Manager読み取り
 - `roles/logging.logWriter` - Cloud Logging書き込み
+- `roles/monitoring.metricWriter` - Cloud Monitoring書き込み
 
 ## Secret Manager
 
@@ -398,6 +194,18 @@ Cloud Runサービスに設定される環境変数：
 | `GCS_BUCKET_RAW` | rawデータ用バケット | `${PROJECT_ID}-keiba-raw-data` |
 | `BQ_DATASET_RAW` | rawデータセット | `raw` |
 | `BQ_DATASET_FEATURES` | 特徴量データセット | `features` |
+| `LOG_LEVEL` | ログレベル | `INFO` |
+
+## Cloud Run設定
+
+| 項目 | 値 | 説明 |
+|------|-----|------|
+| メモリ | 2Gi | JRDBデータの処理に十分な量 |
+| CPU | 2 | 並列処理対応 |
+| タイムアウト | 900秒 | 全件ロード等の長時間処理対応 |
+| 同時実行数 | 1 | パイプラインは逐次処理 |
+| 最大インスタンス | 1 | 同時実行の防止 |
+| 認証 | 必須 | Cloud Scheduler/内部呼び出しのみ |
 
 ## トラブルシューティング
 
@@ -417,29 +225,15 @@ ERROR: (gcloud.iam.service-accounts.create) Resource already exists
 
 → サービスアカウントは既に存在しています。スクリプトは既存のアカウントに権限を追加します。
 
-### Secret Manager登録エラー
-
-```
-ERROR: (gcloud.secrets.create) ALREADY_EXISTS
-```
-
-→ シークレットは既に存在しています。バージョンを追加する場合は手動で実行してください。
-
 ### Dockerビルドエラー
 
-#### ファイルが見つからない
+#### アーキテクチャエラー（Apple Silicon Mac）
 
 ```
-COPY failed: file not found in build context
+Cloud Run does not support image: Container manifest type must support amd64/linux.
 ```
 
-→ Dockerfile内で指定しているファイル/ディレクトリが存在するか確認してください。特に以下のファイルが必要です：
-- `requirements.txt`
-- `main.py`
-- `src/` ディレクトリ
-- `scripts/` ディレクトリ
-- `downloader/` ディレクトリ
-- `config/` ディレクトリ
+→ `build_and_push.sh`スクリプトは自動的に`--platform linux/amd64`を指定します。手動ビルドの場合はこのオプションを必ず付けてください。
 
 #### Docker認証エラー
 
@@ -453,34 +247,7 @@ denied: Permission denied
 gcloud auth configure-docker asia-northeast1-docker.pkg.dev
 ```
 
-#### イメージプッシュエラー
-
-```
-denied: Unauthenticated request
-```
-
-→ gcloudにログインしているか確認してください：
-
-```bash
-gcloud auth login
-gcloud auth application-default login
-```
-
 ### Cloud Runデプロイエラー
-
-#### アーキテクチャエラー（Apple Silicon Mac）
-
-```
-Cloud Run does not support image: Container manifest type 'application/vnd.oci.image.index.v1+json' must support amd64/linux.
-```
-
-→ Apple Silicon Mac（M1/M2/M3）でビルドしたイメージはarm64アーキテクチャのため、Cloud Runで動作しません。`--platform linux/amd64`オプションを付けて再ビルドしてください：
-
-```bash
-source .env
-docker build --platform linux/amd64 -t asia-northeast1-docker.pkg.dev/${GCP_PROJECT_ID}/keiba-pipeline/keiba-pipeline:latest .
-docker push asia-northeast1-docker.pkg.dev/${GCP_PROJECT_ID}/keiba-pipeline/keiba-pipeline:latest
-```
 
 #### イメージが見つからない
 
@@ -502,4 +269,10 @@ gcloud artifacts docker images list \
 Container failed to start. Failed to start and then listen on the port defined by the PORT environment variable.
 ```
 
-→ main.pyが環境変数`PORT`で指定されたポートでリッスンしているか確認してください。Cloud Runはデフォルトでポート8080を使用します。
+→ uvicornがポート8080でリッスンしているか確認してください。Dockerfileの`CMD`が正しく設定されていることを確認します。
+
+### Cloud Runログの確認
+
+```bash
+gcloud run services logs read keiba-pipeline --region=asia-northeast1 --limit=50
+```
