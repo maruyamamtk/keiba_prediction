@@ -144,7 +144,7 @@ if gcloud scheduler jobs describe "${JOB_NAME}" \
         --time-zone="${TIME_ZONE}" \
         --uri="${TARGET_URI}" \
         --http-method=POST \
-        --headers="Content-Type=application/json" \
+        --update-headers="Content-Type=application/json" \
         --message-body='{}' \
         --oidc-service-account-email="${PIPELINE_SA_EMAIL}" \
         --oidc-token-audience="${SERVICE_URL}" \
