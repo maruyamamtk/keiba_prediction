@@ -135,7 +135,7 @@ log_info "Cloud Schedulerジョブを設定しています..."
 
 # 既存ジョブの確認
 if gcloud scheduler jobs describe "${JOB_NAME}" \
-    --location="${GCP_REGION}" 2>/dev/null; then
+    --location="${GCP_REGION}" > /dev/null 2>&1; then
     log_info "既存のジョブ ${JOB_NAME} を更新します..."
 
     gcloud scheduler jobs update http "${JOB_NAME}" \
