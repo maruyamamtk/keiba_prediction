@@ -334,9 +334,9 @@ Cloud RunにデプロイされたFastAPIアプリケーションは以下のエ�
 - 特徴量生成API（同期/非同期） ← Issue #59で追加
 - Docker化とCloud Runデプロイスクリプト ← Issue #71で整備
 - デプロイ検証スクリプト ← Issue #71で追加
+- Cloud Schedulerセットアップスクリプト ← Issue #60で追加
 
 **Phase 3: 未実装**
-- Cloud Scheduler設定（ジョブ作成が必要）
 - Secret Managerでの認証情報管理
 - Cloud Loggingとの統合
 
@@ -470,22 +470,14 @@ curl http://localhost:8080/health
 **Cloud Scheduler設定（自動実行）**
 
 ```bash
-# サービスURLを取得
-SERVICE_URL=$(gcloud run services describe keiba-pipeline \
-    --region=asia-northeast1 \
-    --format="value(status.url)")
+# Cloud Schedulerジョブの作成（毎日AM 6:00 JSTに日次パイプラインを自動実行）
+./infrastructure/scripts/setup_scheduler.sh
 
-# 日次ロードジョブ（毎日AM 6:00 JST）
-gcloud scheduler jobs create http daily-data-load \
-    --location=asia-northeast1 \
-    --schedule="0 6 * * *" \
-    --time-zone="Asia/Tokyo" \
-    --uri="${SERVICE_URL}/api/v1/load/daily/async" \
-    --http-method=POST \
-    --headers="Content-Type=application/json" \
-    --oidc-service-account-email="keiba-pipeline-sa@${GCP_PROJECT_ID}.iam.gserviceaccount.com" \
-    --oidc-token-audience="${SERVICE_URL}"
+# 手動で即時実行（テスト用）
+gcloud scheduler jobs run daily-data-pipeline --location=asia-northeast1
 ```
+
+詳細な設定内容は [infrastructure/README.md](./infrastructure/README.md#7-cloud-schedulerの設定) を参照してください。
 
 ---
 
@@ -613,7 +605,7 @@ python -m pytest tests/ --cov=src --cov-report=html
 - ✅ 特徴量生成API（同期/非同期） - Issue #59
 - ✅ Docker化とCloud Runデプロイスクリプト - Issue #71
 - ✅ デプロイ検証スクリプト - Issue #71
-- ⬜ Cloud Scheduler設定（ジョブ作成が必要）
+- ✅ Cloud Schedulerセットアップスクリプト - Issue #60
 - ⬜ Secret Managerでの認証情報管理
 - ⬜ Cloud Loggingとの統合
 

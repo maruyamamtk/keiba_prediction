@@ -128,26 +128,44 @@ GCP_PROJECT_ID=your-project-id
 - 日次ロード (`POST /api/v1/load/daily`) のテスト実行（対話的に選択可能）
 - OpenAPIドキュメント (`GET /docs`) の疎通
 
-### 7. Cloud Schedulerの設定 (Issue #60)
+### 7. Cloud Schedulerの設定
 
 日次データ取得を自動化するCloud Schedulerジョブを設定します：
 
 ```bash
-# サービスURLを取得
-SERVICE_URL=$(gcloud run services describe keiba-pipeline \
-    --region=asia-northeast1 \
-    --format="value(status.url)")
+./infrastructure/scripts/setup_scheduler.sh
+```
 
-# Cloud Schedulerジョブを作成（毎日AM 6:00 JST）
-gcloud scheduler jobs create http daily-data-load \
-    --location=asia-northeast1 \
-    --schedule="0 6 * * *" \
-    --time-zone="Asia/Tokyo" \
-    --uri="${SERVICE_URL}/api/v1/load/daily/async" \
-    --http-method=POST \
-    --headers="Content-Type=application/json" \
-    --oidc-service-account-email="keiba-pipeline-sa@${GCP_PROJECT_ID}.iam.gserviceaccount.com" \
-    --oidc-token-audience="${SERVICE_URL}"
+このスクリプトは以下を実行します：
+- Cloud Scheduler APIの有効化確認
+- サービスアカウントへのCloud Run Invoker権限付与
+- Cloud Schedulerジョブの作成（既存なら更新）
+
+#### ジョブ設定
+
+| 項目 | 値 |
+|------|-----|
+| ジョブ名 | `daily-data-pipeline` |
+| スケジュール | `0 6 * * *`（毎日AM 6:00 JST） |
+| ターゲット | `POST /api/v1/load/daily/async` |
+| 認証 | OIDCトークン（`keiba-pipeline-sa`） |
+| タイムアウト | 900秒（15分） |
+| リトライ | 最大3回、バックオフ5秒〜300秒 |
+
+#### ジョブの操作
+
+```bash
+# 手動で即時実行（テスト用）
+gcloud scheduler jobs run daily-data-pipeline --location=asia-northeast1
+
+# ジョブの一時停止
+gcloud scheduler jobs pause daily-data-pipeline --location=asia-northeast1
+
+# ジョブの再開
+gcloud scheduler jobs resume daily-data-pipeline --location=asia-northeast1
+
+# ジョブの削除
+gcloud scheduler jobs delete daily-data-pipeline --location=asia-northeast1
 ```
 
 ## スクリプト一覧
@@ -159,6 +177,7 @@ gcloud scheduler jobs create http daily-data-load \
 | `build_and_push.sh` | Dockerイメージのビルド・プッシュ |
 | `deploy_cloud_run.sh` | Cloud Runサービスのデプロイ |
 | `verify_deployment.sh` | デプロイ後の動作確認 |
+| `setup_scheduler.sh` | Cloud Schedulerジョブの作成・更新 |
 
 ## サービスアカウント
 
