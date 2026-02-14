@@ -4,9 +4,11 @@
 Cloud Run用HTTPエンドポイントを提供する。
 - 日次パイプライン: Cloud Schedulerからトリガー
 - 全件ロード: 手動トリガー（初回セットアップ/データ補完）
+- 特徴量生成: 手動トリガーまたはパイプライン統合
 
 Issue #57: 日次パイプラインの実装
 Issue #58: 過去分全件ロード処理の実装
+Issue #59: 特徴量生成パイプラインのCloud Run統合
 """
 
 import logging
@@ -110,6 +112,42 @@ class FullLoadResponse(BaseModel):
     files_loaded: int = Field(default=0, description="ロードしたファイル数")
     records_loaded: int = Field(default=0, description="ロードしたレコード数")
     duration_seconds: float = Field(default=0.0, description="処理時間（秒）")
+    error_message: Optional[str] = Field(default=None, description="エラーメッセージ")
+
+
+class FeatureGenerateRequest(BaseModel):
+    """特徴量生成リクエスト"""
+
+    start_date: str = Field(
+        description="開始日付（YYYY-MM-DD形式）",
+        json_schema_extra={"example": "2024-01-01"},
+    )
+    end_date: str = Field(
+        description="終了日付（YYYY-MM-DD形式）",
+        json_schema_extra={"example": "2024-12-31"},
+    )
+
+    @field_validator("start_date", "end_date")
+    @classmethod
+    def validate_date_format(cls, v: str) -> str:
+        import re
+
+        if not re.match(r"^\d{4}-\d{2}-\d{2}$", v):
+            raise ValueError(
+                f"日付はYYYY-MM-DD形式で指定してください: '{v}'"
+            )
+        return v
+
+
+class FeatureGenerateResponse(BaseModel):
+    """特徴量生成レスポンス"""
+
+    status: str = Field(description="処理ステータス (success/failed)")
+    start_date: str = Field(description="開始日付")
+    end_date: str = Field(description="終了日付")
+    deleted_rows: int = Field(default=0, description="削除した行数")
+    inserted_rows: int = Field(default=0, description="挿入した行数")
+    elapsed_time: float = Field(default=0.0, description="処理時間（秒）")
     error_message: Optional[str] = Field(default=None, description="エラーメッセージ")
 
 
@@ -333,6 +371,106 @@ async def load_full_sync(request: FullLoadRequest):
     except Exception as e:
         logger.error(f"同期全件ロードエラー: {e}")
         raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@app.post("/api/v1/features/generate", response_model=FeatureGenerateResponse)
+async def generate_features(request: FeatureGenerateRequest):
+    """
+    特徴量生成を同期実行
+
+    指定した日付範囲の特徴量を生成してfeatures.training_dataに書き込む。
+
+    Args:
+        request: リクエストボディ
+
+    Returns:
+        処理結果
+    """
+    logger.info(
+        f"特徴量生成リクエスト受信: {request.start_date} 〜 {request.end_date}"
+    )
+
+    try:
+        project_id = os.environ.get("GCP_PROJECT_ID")
+        if not project_id:
+            raise HTTPException(
+                status_code=500, detail="GCP_PROJECT_IDが未設定です"
+            )
+
+        from src.ml.features.feature_pipeline import FeaturePipeline
+
+        pipeline = FeaturePipeline(project_id=project_id)
+        result = pipeline.run(request.start_date, request.end_date)
+
+        response = FeatureGenerateResponse(
+            status="success",
+            start_date=result["start_date"],
+            end_date=result["end_date"],
+            deleted_rows=result["deleted_rows"],
+            inserted_rows=result["inserted_rows"],
+            elapsed_time=round(result["elapsed_time"], 2),
+        )
+
+        logger.info(
+            f"特徴量生成完了: inserted={result['inserted_rows']}, "
+            f"elapsed={result['elapsed_time']:.2f}s"
+        )
+        return response
+
+    except ValueError as e:
+        logger.warning(f"バリデーションエラー: {e}")
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        logger.error(f"特徴量生成エラー: {e}")
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@app.post("/api/v1/features/generate/async")
+async def generate_features_async(
+    request: FeatureGenerateRequest, background_tasks: BackgroundTasks
+):
+    """
+    特徴量生成を非同期実行
+
+    処理はバックグラウンドで実行され、すぐにレスポンスを返す。
+
+    Args:
+        request: リクエストボディ
+        background_tasks: バックグラウンドタスク
+
+    Returns:
+        受付結果
+    """
+    logger.info(
+        f"非同期特徴量生成リクエスト受付: {request.start_date} 〜 {request.end_date}"
+    )
+
+    def run_feature_generation():
+        try:
+            project_id = os.environ.get("GCP_PROJECT_ID")
+            if not project_id:
+                logger.error("GCP_PROJECT_IDが未設定です")
+                return
+
+            from src.ml.features.feature_pipeline import FeaturePipeline
+
+            pipeline = FeaturePipeline(project_id=project_id)
+            result = pipeline.run(request.start_date, request.end_date)
+            logger.info(
+                f"非同期特徴量生成完了: inserted={result['inserted_rows']}, "
+                f"elapsed={result['elapsed_time']:.2f}s"
+            )
+        except Exception as e:
+            logger.error(f"非同期特徴量生成エラー: {e}")
+
+    background_tasks.add_task(run_feature_generation)
+
+    return {
+        "status": "accepted",
+        "start_date": request.start_date,
+        "end_date": request.end_date,
+        "message": "特徴量生成をバックグラウンドで実行中",
+    }
 
 
 def create_app() -> FastAPI:

@@ -1,10 +1,11 @@
 """
 過去分全件ロードパイプライン
 
-指定期間のデータをJRDBからダウンロード→GCS→BigQueryに一括ロードする。
+指定期間のデータをJRDBからダウンロード→GCS→BigQuery→特徴量生成を一括実行する。
 HTTP APIで手動トリガーし、初回セットアップやデータ欠損の補完に使用。
 
 Issue #58: 過去分全件ロード処理の実装
+Issue #59: 特徴量生成パイプラインのCloud Run統合
 """
 
 import logging
@@ -45,6 +46,7 @@ class FullLoadResult:
     files_uploaded: int = 0
     files_loaded: int = 0
     records_loaded: int = 0
+    features_inserted: int = 0
     duration_seconds: float = 0.0
     steps: List[FullLoadStepResult] = field(default_factory=list)
     error_message: Optional[str] = None
@@ -60,6 +62,7 @@ class FullLoadResult:
             "files_uploaded": self.files_uploaded,
             "files_loaded": self.files_loaded,
             "records_loaded": self.records_loaded,
+            "features_inserted": self.features_inserted,
             "duration_seconds": round(self.duration_seconds, 2),
             "steps": [
                 {
@@ -83,6 +86,7 @@ class FullLoadPipeline:
     1. 指定期間のデータをJRDBからダウンロード
     2. GCSにアップロード（差分のみ）
     3. BigQueryにロード（重複スキップ）
+    4. 特徴量生成
     """
 
     def __init__(
@@ -90,10 +94,12 @@ class FullLoadPipeline:
         downloader: Optional[JRDBDownloader] = None,
         uploader: Optional[GCSUploader] = None,
         bq_loader: Optional[BigQueryLoader] = None,
+        feature_pipeline=None,
     ):
         self._downloader = downloader
         self._uploader = uploader
         self._bq_loader = bq_loader
+        self._feature_pipeline = feature_pipeline
 
     @property
     def downloader(self) -> JRDBDownloader:
@@ -123,6 +129,22 @@ class FullLoadPipeline:
             if self._bq_loader is None:
                 raise RuntimeError("BigQueryローダーの初期化に失敗しました")
         return self._bq_loader
+
+    @property
+    def feature_pipeline(self):
+        """特徴量パイプライン（遅延初期化）"""
+        if self._feature_pipeline is None:
+            import os
+
+            from src.ml.features.feature_pipeline import FeaturePipeline
+
+            project_id = os.environ.get("GCP_PROJECT_ID")
+            if not project_id:
+                raise RuntimeError(
+                    "特徴量パイプラインの初期化に失敗: GCP_PROJECT_IDが未設定"
+                )
+            self._feature_pipeline = FeaturePipeline(project_id=project_id)
+        return self._feature_pipeline
 
     @staticmethod
     def parse_date(date_str: Optional[str]) -> Optional[date]:
@@ -354,6 +376,70 @@ class FullLoadPipeline:
 
         return filtered
 
+    def _step_generate_features(
+        self,
+        start_date: Optional[date],
+        end_date: Optional[date],
+    ) -> FullLoadStepResult:
+        """
+        Step 4: 特徴量生成
+
+        BigQuery上のrawデータから特徴量を生成してfeatures.training_dataに書き込む。
+
+        Args:
+            start_date: 開始日付
+            end_date: 終了日付
+
+        Returns:
+            FullLoadStepResult
+        """
+        step_name = "generate_features"
+        start_time = time.time()
+
+        try:
+            # デフォルト日付範囲の設定
+            start_str = (
+                start_date.strftime("%Y-%m-%d") if start_date else "2016-01-01"
+            )
+            end_str = (
+                end_date.strftime("%Y-%m-%d")
+                if end_date
+                else date.today().strftime("%Y-%m-%d")
+            )
+            logger.info(f"特徴量生成開始: {start_str} 〜 {end_str}")
+
+            result = self.feature_pipeline.run(
+                start_date=start_str,
+                end_date=end_str,
+            )
+
+            details = {
+                "deleted_rows": result.get("deleted_rows", 0),
+                "inserted_rows": result.get("inserted_rows", 0),
+                "elapsed_time": round(result.get("elapsed_time", 0), 2),
+            }
+
+            logger.info(
+                f"特徴量生成完了: inserted={details['inserted_rows']}, "
+                f"elapsed={details['elapsed_time']}s"
+            )
+
+            return FullLoadStepResult(
+                step_name=step_name,
+                status="success",
+                duration_seconds=time.time() - start_time,
+                details=details,
+            )
+
+        except Exception as e:
+            logger.error(f"特徴量生成エラー: {e}")
+            return FullLoadStepResult(
+                step_name=step_name,
+                status="failed",
+                duration_seconds=time.time() - start_time,
+                error_message=str(e),
+            )
+
     def run(
         self,
         start_date: Optional[str] = None,
@@ -431,6 +517,25 @@ class FullLoadPipeline:
             result.files_loaded = bq_result.details.get("files", 0)
             result.records_loaded = bq_result.details.get("records", 0)
 
+            # Step 4: 特徴量生成
+            feature_result = self._step_generate_features(
+                parsed_start, parsed_end
+            )
+            result.steps.append(feature_result)
+
+            if feature_result.status == "failed":
+                # 特徴量生成失敗はpartialとする（データロードは成功しているため）
+                result.status = "partial"
+                result.error_message = (
+                    f"特徴量生成失敗: {feature_result.error_message}"
+                )
+                result.duration_seconds = time.time() - start_time
+                return result
+
+            result.features_inserted = feature_result.details.get(
+                "inserted_rows", 0
+            )
+
             # 全体ステータス判定
             if any(s.status == "partial" for s in result.steps):
                 result.status = "partial"
@@ -439,7 +544,8 @@ class FullLoadPipeline:
             logger.info(
                 f"全件ロードパイプライン完了: job_id={job_id}, "
                 f"status={result.status}, files={result.files_loaded}, "
-                f"records={result.records_loaded}"
+                f"records={result.records_loaded}, "
+                f"features_inserted={result.features_inserted}"
             )
 
             return result
