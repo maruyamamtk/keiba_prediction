@@ -1,4 +1,9 @@
-# 競馬予測MLシステム 仕様書
+# 競馬予測MLシステム 設計仕様書
+
+このドキュメントは、競馬予測MLシステムの設計思想、目的、および未実装機能の仕様を記載します。
+**実装済みの機能の実行手順については [README.md](./README.md) を参照してください。**
+
+---
 
 ## 1. プロジェクト概要
 
@@ -15,230 +20,94 @@
 - **評価指標**: NDCG@3, Recall@3
 - **バックテスト期間**: 最低6ヶ月以上
 
-### 1.4 技術スタック
-- **言語**: Python 3.9+
-- **機械学習**: LightGBM (Learning to Rank)
-- **開発環境**: Jupyter Notebook (EDA), スクリプト実行 (本番)
-- **クラウド**: GCP (Cloud Storage, BigQuery, Cloud Run, Cloud Scheduler)
-- **通知**: メール (SendGrid/Gmail API), LINE (LINE Notify)
-- **可視化**: Streamlit または Dash (Webダッシュボード)
-
 ---
 
 ## 2. システムアーキテクチャ
 
-### 2.1 全体構成
+### 2.1 実装状況
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                     Data Layer [実装済み]                         │
-├─────────────────────────────────────────────────────────────────┤
-│  [Cloud Scheduler] → [Cloud Run / FastAPI] 日次パイプライン      │
-│    1. JRDBDownloader: JRDB公式からHTTPダウンロード + lzh解凍     │
-│    2. GCSUploader: GCSへバッチアップロード (MD5重複チェック付き)  │
-│    3. BigQueryLoader: MERGE(UPSERT)でBigQueryにロード            │
-└─────────────────────────────────────────────────────────────────┘
-                                ↓
-┌─────────────────────────────────────────────────────────────────┐
-│                Feature Engineering Layer [実装済み]               │
-├─────────────────────────────────────────────────────────────────┤
-│  [BigQuery] SQL駆動方式 (feature_query_raw.sql)                  │
-│    - 5段階CTE: ベース → 過去走 → 集計 → 馬マスター → 差分指標   │
-│    - 出力: features.training_data (257カラム)                     │
-└─────────────────────────────────────────────────────────────────┘
-                                ↓
-┌─────────────────────────────────────────────────────────────────┐
-│                    Model Training Layer [未実装]                  │
-├─────────────────────────────────────────────────────────────────┤
-│  [Jupyter Notebook] EDA & モデル開発                             │
-│  [Python Script] LightGBM ランク学習                             │
-│  [GCS] モデルファイル保存                                         │
-└─────────────────────────────────────────────────────────────────┘
-                                ↓
-┌─────────────────────────────────────────────────────────────────┐
-│                Prediction & Operation Layer [未実装]              │
-├─────────────────────────────────────────────────────────────────┤
-│  [Cloud Run] 予測スクリプト実行                                  │
-│  [BigQuery] 予測結果保存                                         │
-│  [Streamlit on Cloud Run] Webダッシュボード                      │
-│  [メール/LINE] 通知                                              │
-└─────────────────────────────────────────────────────────────────┘
-```
+現在のシステムは以下の3つのレイヤーで構成されています。
 
-### 2.2 GCPリソース構成
+#### Data Layer ✅ 実装済み
+- Cloud Run（FastAPI）による日次/全件データパイプライン
+- JRDBダウンロード → GCSアップロード → BigQueryロード（MERGE UPSERT）
+- ロード履歴管理による重複スキップ
+
+#### Feature Engineering Layer ✅ 実装済み
+- BigQuery SQL駆動方式（feature_query_raw.sql）
+- 5段階CTE: ベース → 過去走 → 集計 → 馬マスター → 差分指標
+- 出力: features.training_data（257カラム、466,265行）
+- Cloud Run APIエンドポイント（同期/非同期）
+
+#### Model Training Layer ⬜ 未実装
+- Jupyter Notebook（EDA & モデル開発）
+- LightGBM ランク学習
+- モデルファイルのGCS保存
+
+#### Prediction & Operation Layer ⬜ 未実装
+- 予測パイプライン
+- Webダッシュボード（Streamlit）
+- 通知システム（メール/LINE）
+
+詳細なアーキテクチャ図と実行手順は [README.md](./README.md) を参照してください。
+
+### 2.2 GCPリソース構成（設計）
 
 #### 2.2.1 Cloud Storage (GCS)
-- **バケット構成**:
-  - `gs://${PROJECT_ID}-keiba-raw-data/`: JRDBダウンロード生データ (lzh, txt, csv)
-  - `gs://${PROJECT_ID}-keiba-processed-data/`: 加工済みデータ
-  - `gs://${PROJECT_ID}-keiba-models/`: 学習済みモデル
-  - `gs://${PROJECT_ID}-keiba-predictions/`: 予測結果
-
-  ※ バケット名はグローバルに一意である必要があるため、プロジェクトIDをプレフィックスとして使用します
+- `gs://${PROJECT_ID}-keiba-raw-data/`: JRDBダウンロード生データ（実装済み）
+- `gs://${PROJECT_ID}-keiba-processed-data/`: 加工済みデータ（未実装）
+- `gs://${PROJECT_ID}-keiba-models/`: 学習済みモデル（未実装）
+- `gs://${PROJECT_ID}-keiba-predictions/`: 予測結果（未実装）
 
 #### 2.2.2 BigQuery
-- **データセット構成**:
-  - `raw`: 生データテーブル (JRDB各種データタイプ)
-  - `features`: 特徴量テーブル
-  - `predictions`: 予測結果テーブル
-  - `backtests`: バックテスト結果テーブル
+- `raw`: 生データテーブル（実装済み）
+- `features`: 特徴量テーブル（実装済み）
+- `predictions`: 予測結果テーブル（テーブルのみ作成済み）
+- `backtests`: バックテスト結果テーブル（テーブルのみ作成済み）
 
-#### 2.2.3 Cloud Run [実装済み]
-- **サービス一覧**:
-  - `data-pipeline-service`: データ取得パイプライン (FastAPI)
-    - `POST /daily-load`: 日次ロード実行
-    - `POST /full-load`: 全件ロード実行
-    - `GET /health`: ヘルスチェック
-    - `GET /status/{job_id}`: ジョブ状態確認
-  - `dashboard-service`: Webダッシュボード (Streamlit) [未実装]
+詳細なテーブル構成は [README.md](./README.md#bigqueryテーブル構成) を参照してください。
 
-#### 2.2.4 Cloud Scheduler [実装済み]
-- **ジョブ一覧**:
-  - `daily-data-download`: 毎日AM 6:00 データダウンロード (Cloud Run HTTP POST)
-  - `pre-race-prediction`: レース前日 PM 9:00 予測実行 [未実装]
-  - `race-day-prediction`: レース当日 AM 8:00 予測更新 [未実装]
+#### 2.2.3 Cloud Run
+- `keiba-pipeline`: データパイプライン・特徴量生成（実装済み）
+- `dashboard-service`: Webダッシュボード（未実装）
+
+APIエンドポイントの詳細は [README.md](./README.md#apiエンドポイント) を参照してください。
+
+#### 2.2.4 Cloud Scheduler
+- `daily-data-load`: 毎日AM 6:00 データロード（設定手順は実装済み、ジョブ作成は要実施）
+- `pre-race-prediction`: レース前日 PM 9:00 予測実行（未実装）
+- `race-day-prediction`: レース当日 AM 8:00 予測更新（未実装）
 
 ---
 
-## 3. データパイプライン
+## 3. データ管理方針
 
-### 3.1 データ取得フロー [実装済み]
+### 3.1 データ取得フロー
 
-#### 3.1.1 データパイプライン (Python実装)
-```
-JRDB公式サイト
-    ↓ (JRDBDownloader: HTTP Basic認証 + lzh解凍 + CP932→UTF-8変換)
-ローカル: downloaded_files/ (または Cloud Run上の /tmp)
-    ↓ (GCSUploader: MD5ハッシュ重複チェック + バッチアップロード)
-GCS: gs://{PROJECT_ID}-keiba-raw-data/
-    ↓ (BigQueryLoader: JRDBパース + MERGE文によるUPSERT)
-BigQuery: raw.{各テーブル}
-    ↓ (FeaturePipeline: SQL駆動方式)
-BigQuery: features.training_data (257カラム)
-```
+JRDB → GCS → BigQuery → features.training_data の流れでデータを取得・加工します。
 
-#### 3.1.2 実行方法
+**実装済みの詳細は [README.md](./README.md#データパイプライン) を参照してください。**
 
-**自動実行 (Cloud Scheduler + Cloud Run)**
-- **トリガー**: 毎日AM 6:00 → Cloud Run FastAPI `POST /daily-load`
-- **処理**: JRDBDownloader → GCSUploader → BigQueryLoader を順次実行
+### 3.2 BigQueryテーブル構成
 
-**手動実行 (ローカル)**
-```bash
-# 日次: スクリプト直接実行 or API呼び出し
-python scripts/reload_gcs_to_bq.py --start-date 2024-01-01 --end-date 2024-01-31
-
-# 全件ロード: full-load パイプライン
-# POST /full-load (Cloud Run API)
-
-# 特徴量生成
-python scripts/generate_features.py --start-date 2024-01-01 --end-date 2024-12-31
-```
-
-#### 3.1.3 主要クラス (src/automation/data/)
-- `JRDBDownloader`: JRDB公式からHTTP Basic認証でダウンロード、lzh解凍、エンコーディング変換
-- `JRDBParser`: 固定長テキスト(JRDB形式)をDict/DataFrameに変換 (15+データタイプ対応)
-- `GCSUploader`: GCSへバッチアップロード (MD5重複チェック、リトライ付き)
-- `BigQueryLoader`: GCSファイルをパースしBigQueryにMERGE(UPSERT)ロード
-
-### 3.2 BigQueryテーブル設計
-
-#### 3.2.1 rawデータセット [実装済み]
-
-- 備考
-  - rawデータのスキーマは別ドキュメントで整理している
-  - @SCHEMA.md
-  - スキーマ定義ファイル: `config/bq_schema_*.json`
-
-##### 現在のテーブル一覧と状態
-
-| テーブル | データソース | 行数 | 状態 |
-|---------|-------------|------|------|
-| `raw.race_info` | BAA (番組データ) | ~33,400 | ✅ 稼働中 |
-| `raw.horse_results` | KYF (競走馬データ) | ~486,500 | ✅ 稼働中 |
-| `raw.race_results` | SEC (成績データ) | ~486,500 | ✅ 稼働中 |
-| `raw.horse_extended` | KKA (拡張馬データ) | ~486,500 | ✅ 稼働中 |
-| `raw.horse_master` | KSA (馬マスター) | ~21,500 | ✅ 稼働中 |
-| `raw.venue_info` | KAB (開催情報) | ~418 | ✅ 稼働中 |
-| `raw.load_history` | (管理用) | ~3,350 | ✅ 稼働中 |
-| `raw.pedigree` | 血統データ | 0 | ⬚ テーブルのみ作成済み |
-| `raw.odds` | OZ (オッズデータ) | 0 | ⬚ テーブルのみ作成済み |
-
-- `race_info`: race_dateでパーティション
-- `odds`: odds_timestampでパーティション、(race_id, horse_id, odds_type)でクラスタリング
-- `pedigree`: (sire_id, dam_sire_id)でクラスタリング
-
-#### 3.2.2 featuresデータセット [実装済み]
-
-##### テーブル: `features.training_data` (257カラム, 466,265行)
-
-SQL駆動方式（`src/ml/features/feature_query_raw.sql`）により5段階CTEで生成。
-`race_date`でパーティション。期間: 2016-01-05〜2026-02-08。
-
-**主要カラムカテゴリ**:
-- **基本情報**: race_id, race_date, venue_code, race_number, course_type, distance, direction, num_horses 等
-- **馬情報**: horse_id, horse_name, horse_age, bracket_number, horse_number 等
-- **人的要素**: jockey_name, jockey_code, trainer_name, trainer_code 等
-- **JRDB指数**: idm, jockey_index, info_index, total_index, training_index, stable_index 等
-- **過去5走データ**: finish_position_{1-5}, win_odds_{1-5}, idm_{1-5}, improvement_code_{1-5} 等
-- **集計メトリクス**: mean/ema/max/min の idm, finish_position, win_popularity 等
-- **条件別複勝率**: surface/distance/track/rotation/direction/condition/pace/season/bracket 別 top1/2/3_finish_rate
-- **騎手×条件**: jockey_dist, jockey_track_dist, jockey_trainer, jockey_owner 別成績
-- **血統指標**: sire_surface_place_rate, broodmare_sire_place_rate 等
-- **差分指標**: 各条件別成績と全体成績の差分 (surface_top3_finish_rate_diff 等)
-- **総合スコア**: total_diff_sum (全差分の合計 = 激走指標)
-
-※ 全257カラムの詳細は `src/ml/features/feature_query_raw.sql` を参照
-
-#### 3.2.3 その他のデータセット [テーブル未作成]
-
-- `predictions`: 予測結果テーブル（データセットのみ作成済み）
-- `backtests`: バックテスト結果テーブル（データセットのみ作成済み）
+詳細なテーブル構成は [README.md](./README.md#bigqueryテーブル構成) を参照してください。
+スキーマ仕様は [SCHEMA.md](./SCHEMA.md) を参照してください。
 
 ---
 
-## 4. 特徴量エンジニアリング [実装済み]
+## 4. 特徴量エンジニアリング
 
-### 4.1 実装方式: SQL駆動型パイプライン
+### 4.1 実装方針
 
-特徴量生成はBigQuery SQL（`src/ml/features/feature_query_raw.sql`）により一括処理される。
-Pythonオーケストレータ（`src/ml/features/feature_pipeline.py`）がSQLテンプレートにパラメータを埋め込み、
-BigQueryジョブとして実行する方式。
+特徴量生成はBigQuery SQL駆動方式を採用しています。
+- SQL（`src/ml/features/feature_query_raw.sql`）で一括処理
+- 5段階CTE: ベース → 過去走 → 集計 → 馬マスター → 差分指標
+- 出力: features.training_data（257カラム、466,265行）
 
-#### 実行方法
-```bash
-# CLIから実行
-python scripts/generate_features.py --start-date 2024-01-01 --end-date 2024-12-31
+**実装済みの詳細は [README.md](./README.md) および [ML_FEATURE.md](./ML_FEATURE.md) を参照してください。**
 
-# Python APIから実行
-from src.ml.features import FeaturePipeline, FeaturePipelineConfig
-pipeline = FeaturePipeline(project_id="keiba-prediction-1768734113")
-result = pipeline.run(start_date="2024-01-01", end_date="2024-12-31")
-```
-
-#### SQLテンプレートの構造 (5段階CTE)
-1. **temp_base_race_entries**: レース基本情報 + 出走馬情報の結合
-2. **temp_past_race_features**: 過去5走の詳細データ抽出 (オッズ, 人気, IDM, タイム差等)
-3. **temp_past_race_features2**: 過去走の集計指標計算 (mean/EMA/max/min, レート, 差分)
-4. **temp_horse_master_feature**: 条件別複勝率 (芝ダ, 距離, コース, ペース, 季節, 枠, 騎手×条件等) + 血統指標
-5. **temp_horse_master_feature2**: 条件別成績と全体成績の差分指標
-
-### 4.2 特徴量カテゴリ (257カラム)
-**ファイル**: @ML_FEATURE.md
-
-実装済みカテゴリ：
-1. **ベース特徴**: レース条件、馬場状態、馬場バイアス (venue_info)
-2. **JRDB指数**: IDM、騎手指数、情報指数、総合指数、調教指数、厩舎指数等
-3. **過去5走データ**: 着順、オッズ、人気、IDM、改善コード、出遅れ、位置取り不利等
-4. **集計メトリクス**: 過去走の平均/EMA/最大/最小 (IDM, 着順, 人気等)
-5. **条件別複勝率**: 芝ダ/距離/コース/回り/方向/馬場/ペース/季節/枠 別
-6. **騎手×条件**: 騎手×距離、騎手×コース、騎手×調教師、騎手×馬主等
-7. **血統指標**: 種牡馬/母父の芝ダ別複勝率、距離適性差分
-8. **差分指標**: 条件別成績 - 全体成績の差分 (27項目)
-9. **総合指標**: total_diff_sum (全差分合計 = 激走スコア)
-
-### 4.3 リーク対策チェックリスト
-- [ ] 発走後に確定する情報を使用していない (確定オッズ、確定馬体重など)
+### 4.2 リーク対策チェックリスト
+- [ ] 発走後に確定する情報を使用していない（確定オッズ、確定馬体重など）
 - [ ] 条件別成績は当該レースを除外して計算
 - [ ] 同一レース内の情報漏洩がない
 - [ ] 時系列分割でバックテスト実施
@@ -461,53 +330,26 @@ def backtest_metrics(history_df, initial_capital):
 
 ---
 
-## 7. 運用フロー
+## 7. 運用設計
 
-### 7.1 日次データパイプライン [実装済み]
+### 7.1 実装済み機能
 
-#### 7.1.1 日次データ取得 (AM 6:00)
-Cloud Scheduler → Cloud Run FastAPI `POST /daily-load`
-1. **JRDBダウンロード**: 指定日のJRDBデータをHTTP Basic認証でダウンロード
-2. **GCSアップロード**: MD5チェック付きでGCSにアップロード
-3. **BigQueryロード**: JRDBパーサーでパースし、MERGE文でBigQueryにUPSERT
+日次データパイプライン、Cloud Runデプロイ、APIエンドポイントの詳細は [README.md](./README.md) および [infrastructure/README.md](./infrastructure/README.md) を参照してください。
 
-実装: `src/automation/pipeline/daily_pipeline.py` → `DailyPipeline`
+### 7.2 予測パイプライン設計（未実装）
 
-#### 7.1.2 予測パイプライン [未実装 - 設計のみ]
-- 前日PM 9:00: 特徴量生成 → 予測実行 → 通知
-- 当日AM 8:00: オッズ更新 → 予測再実行 → 通知
+#### 7.2.1 実行タイミング
+- **前日PM 9:00**: 特徴量生成 → 予測実行 → 通知
+- **当日AM 8:00**: オッズ更新 → 予測再実行 → 通知
 
-### 7.2 Cloud Runデプロイ [実装済み]
-
-#### 7.2.1 API (FastAPI)
-実装: `src/automation/api/app.py`
-- `POST /daily-load`: 日次ロード (BackgroundTasksで非同期実行)
-- `POST /full-load`: 全件ロード
-- `GET /health`: ヘルスチェック
-- `GET /status/{job_id}`: ジョブ状態確認
-
-#### 7.2.2 Dockerfile
-```dockerfile
-FROM python:3.9-slim
-# lzh解凍ツールをインストール
-RUN apt-get update && apt-get install -y lhasa p7zip-full
-WORKDIR /app
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-COPY . .
-EXPOSE 8080
-CMD ["uvicorn", "src.automation.api.app:app", "--host", "0.0.0.0", "--port", "8080"]
-```
-
-#### 7.2.3 デプロイ
-```bash
-# infrastructure/scripts/deploy_cloud_run.sh を使用
-bash infrastructure/scripts/deploy_cloud_run.sh
-```
+#### 7.2.2 実装方針
+- Cloud Schedulerから Cloud Run HTTPエンドポイントをトリガー
+- 予測結果を `predictions` データセットに保存
+- 期待回収率上位の馬券を抽出し通知
 
 ---
 
-## 8. Webダッシュボード [未実装 - 設計のみ]
+## 8. Webダッシュボード設計（未実装）
 
 ### 8.1 機能要件
 
@@ -656,59 +498,9 @@ def send_line_notification(predictions_df):
 
 ---
 
-## 10. 実装計画
+## 10. 実装状況
 
-### 10.1 Phase 1: データ基盤構築 ✅ 完了
-
-- [x] GCPプロジェクト作成、権限設定
-- [x] GCSバケット作成
-- [x] BigQueryデータセット・テーブル作成 (config/bq_schema_*.json)
-- [x] ローカル→GCS自動アップロードスクリプト (GCSUploader)
-- [x] GCS→BigQueryロード (BigQueryLoader / MERGE UPSERT方式)
-- [x] 既存データの一括アップロード・ロード (FullLoadPipeline)
-- [x] データ品質チェック (src/manual/quality_check.py)
-- [x] BigQuery SQLでのデータ集計確認
-- [x] 日次パイプライン自動化 (Cloud Scheduler → Cloud Run FastAPI)
-- [x] テスト作成 (7テストファイル)
-
-### 10.2 Phase 2: 特徴量エンジニアリング ✅ 完了
-
-- [x] SQL駆動方式で特徴量パイプライン実装 (feature_query_raw.sql, 5段階CTE)
-- [x] 過去5走の詳細データ (着順, オッズ, IDM, 改善コード等)
-- [x] 集計メトリクス (mean/EMA/max/min)
-- [x] 条件別複勝率 (芝ダ/距離/コース/回り/方向/馬場/ペース/季節/枠)
-- [x] 騎手×条件別成績 (騎手×距離, ×コース, ×調教師, ×馬主等)
-- [x] 血統指標 (種牡馬/母父の芝ダ別複勝率, 距離適性)
-- [x] 差分指標 (条件別 - 全体成績) + 総合激走スコア
-- [x] Jupyter NotebookでEDA (4ノートブック)
-- [x] BigQueryに特徴量テーブル作成 (257カラム, 466,265行)
-- [x] 特徴量ドキュメント作成 (ML_FEATURE.md)
-
-### 10.3 Phase 3: モデル開発 ⬚ 未着手
-
-- [ ] LightGBM ランク学習ベースライン構築
-- [ ] 時系列CVでの評価
-- [ ] ハイパーパラメータチューニング
-- [ ] バックテスト実装
-- [ ] 投資戦略検証 (Kelly基準)
-- [ ] モデル評価レポート作成
-
-### 10.4 Phase 4: 運用システム構築 (一部実装済み)
-
-- [x] データパイプラインCloud Runデプロイ
-- [x] Cloud Scheduler設定 (日次データ取得)
-- [x] エラーハンドリング・ログ実装
-- [ ] 予測パイプライン実装
-- [ ] Webダッシュボード実装 (Streamlit)
-- [ ] メール/LINE通知実装
-- [ ] 結合テスト
-
-### 10.5 Phase 5: 運用開始 ⬚ 未着手
-
-- [ ] 本番運用開始
-- [ ] 日次モニタリング
-- [ ] 週次パフォーマンスレビュー
-- [ ] 月次モデル再学習
+実装状況の詳細は [README.md](./README.md#実装状況) を参照してください。
 
 ---
 
@@ -763,141 +555,32 @@ def send_line_notification(predictions_df):
 
 ## 13. 参考資料
 
-### 13.1 ドキュメント
-- `ML_FEATURE.md`: 特徴量設計詳細
-- `SCHEMA.md`: JRDBデータスキーマ詳細
-- `docs/GCP_SETUP.md`: GCPセットアップガイド
-- `docs/BIGQUERY_SETUP.md`: BigQueryセットアップガイド
-- `infrastructure/README.md`: インフラセットアップ完全ガイド
-- `infrastructure/ENV_MANAGEMENT.md`: 環境変数管理
+### 13.1 プロジェクトドキュメント
+- [README.md](./README.md): 実装済み機能の実行手順、APIエンドポイント、テーブル構成
+- [ML_FEATURE.md](./ML_FEATURE.md): 特徴量設計詳細、リーク対策
+- [SCHEMA.md](./SCHEMA.md): JRDBデータスキーマ詳細
+- [infrastructure/README.md](./infrastructure/README.md): インフラセットアップ完全ガイド
 
 ### 13.2 外部リソース
-- JRDB公式: http://www.jrdb.com/
-- LightGBM Documentation: https://lightgbm.readthedocs.io/
-- GCP Documentation: https://cloud.google.com/docs
+- [JRDB公式](http://www.jrdb.com/): JRDBデータ提供元
+- [LightGBM Documentation](https://lightgbm.readthedocs.io/): LightGBMドキュメント
+- [GCP Documentation](https://cloud.google.com/docs): Google Cloud Platform ドキュメント
 
 ---
 
-## 付録A: ディレクトリ構成
-
-```
-keiba_prediction/
-├── src/                            # メインソースコード
-│   ├── automation/                 # 自動化パイプライン [実装済み]
-│   │   ├── data/
-│   │   │   ├── jrdb_downloader.py  # JRDBダウンロード (HTTP + lzh解凍 + エンコーディング変換)
-│   │   │   ├── jrdb_parser.py      # JRDBデータパース (固定長テキスト → Dict/DataFrame)
-│   │   │   ├── load_to_bq.py       # BigQueryロード (MERGE UPSERT)
-│   │   │   └── upload_to_gcs.py    # GCSアップロード (MD5重複チェック)
-│   │   ├── pipeline/
-│   │   │   ├── daily_pipeline.py   # 日次パイプライン (Cloud Scheduler→Cloud Run)
-│   │   │   └── full_load_pipeline.py # 全件ロードパイプライン (初回セットアップ用)
-│   │   └── api/
-│   │       └── app.py              # FastAPI HTTPエンドポイント (Cloud Run)
-│   │
-│   ├── ml/                         # 機械学習モジュール
-│   │   └── features/               # [実装済み]
-│   │       ├── __init__.py
-│   │       ├── feature_pipeline.py  # SQL駆動パイプラインオーケストレータ
-│   │       └── feature_query_raw.sql # 特徴量生成SQL (5段階CTE, 257カラム出力)
-│   │
-│   └── manual/                     # 手動実行スクリプト [実装済み]
-│       ├── create_tables.py        # BigQueryテーブル作成
-│       ├── quality_check.py        # データ品質チェック
-│       └── validation_rules.py     # 検証ルール定義
-│
-├── scripts/                        # スタンドアロンスクリプト [実装済み]
-│   ├── generate_features.py        # 特徴量生成CLI
-│   ├── reload_gcs_to_bq.py         # GCS→BQ再ロード
-│   ├── setup_gcp.sh                # GCP初期セットアップ
-│   ├── setup_bigquery.sh           # BigQuery初期化
-│   └── sync_to_gcs.sh              # ローカル→GCS同期
-│
-├── tests/                          # テストコード [実装済み]
-│   ├── test_features.py            # 特徴量パイプラインテスト
-│   ├── test_jrdb_downloader.py     # ダウンローダーテスト
-│   ├── test_load_to_bq.py          # BQロードテスト
-│   ├── test_upload_to_gcs.py       # GCSアップロードテスト
-│   ├── test_daily_pipeline.py      # 日次パイプラインテスト
-│   ├── test_full_load_pipeline.py  # 全件ロードテスト
-│   └── test_quality_check.py       # 品質チェックテスト
-│
-├── config/                         # 設定ファイル (BigQueryスキーマ定義)
-│   ├── bq_schema_race_info.json
-│   ├── bq_schema_horse_results.json
-│   ├── bq_schema_race_results.json
-│   ├── bq_schema_horse_master.json
-│   ├── bq_schema_horse_extended.json
-│   ├── bq_schema_venue_info.json
-│   ├── bq_schema_pedigree.json
-│   ├── bq_schema_odds.json
-│   ├── bq_schema_training_data.json
-│   └── bq_schema_load_history.json
-│
-├── infrastructure/                 # GCPインフラストラクチャ
-│   ├── README.md                   # セットアップ完全ガイド
-│   ├── ENV_MANAGEMENT.md           # 環境変数管理
-│   ├── cloud_run_config.yaml       # Cloud Run設定
-│   └── scripts/
-│       ├── setup_gcp.sh            # GCP初期セットアップ
-│       ├── deploy_cloud_run.sh     # Cloud Runデプロイ
-│       └── verify_setup.sh         # セットアップ検証
-│
-├── docs/                           # ドキュメント
-│   ├── GCP_SETUP.md
-│   └── BIGQUERY_SETUP.md
-│
-├── notebooks/                      # Jupyter Notebook (EDA)
-│   ├── 01_data_exploration.ipynb
-│   ├── 02_race_analysis.ipynb
-│   ├── 03_horse_analysis.ipynb
-│   └── 04_feature_correlation.ipynb
-│
-├── legacy/                         # 旧実装 (互換性のため保持)
-│   ├── downloader/                 # 旧シェルスクリプトダウンローダー
-│   └── cloud_functions/            # 旧Cloud Functions実装
-│
-├── downloaded_files/               # ローカルダウンロードデータ (gitignore)
-├── requirements.txt
-├── Dockerfile
-├── .env.example
-├── .gitignore
-├── CLAUDE.md                       # 本仕様書
-├── ML_FEATURE.md                   # 特徴量設計
-├── SCHEMA.md                       # JRDBデータスキーマ
-└── README.md
-```
-
 ---
 
-## 付録B: 環境変数
+## 付録: 削除済みセクション
 
-```bash
-# .env.example
+以下のセクションは削除され、README.mdに統合されました。
 
-# GCP
-GCP_PROJECT_ID=your-project-id
-GCP_REGION=asia-northeast1
-GCS_BUCKET_RAW=keiba-raw-data
-GCS_BUCKET_MODELS=keiba-models
-
-# BigQuery
-BQ_DATASET_RAW=raw
-BQ_DATASET_FEATURES=features
-BQ_DATASET_PREDICTIONS=predictions
-
-# JRDB
-JRDB_USER=your-jrdb-user
-JRDB_PASSWORD=your-jrdb-password
-
-# Notification
-SENDGRID_API_KEY=your-sendgrid-key
-LINE_NOTIFY_TOKEN=your-line-token
-
-# Model
-MODEL_VERSION=v1.0.0
-PREDICTION_THRESHOLD=0.3
-```
+- データパイプライン詳細（実行手順）
+- BigQueryテーブル詳細（カラム定義）
+- 特徴量パイプライン実行手順
+- Cloud Run APIエンドポイント一覧
+- 実装計画の詳細
+- ディレクトリ構成
+- 環境変数一覧
 
 ## 実装時の注意事項
 ### 環境情報
@@ -939,6 +622,7 @@ Cloud Run または Cloud Function のデプロイメント完了を宣言する
 |------|-----------|----------|--------|
 | 2026-01-18 | 1.0.0 | 初版作成 | Claude |
 | 2026-02-10 | 2.0.0 | 実装状況を反映: データパイプライン・特徴量パイプライン完了、ディレクトリ構成・BigQueryスキーマ・実装計画を現状に合わせて全面更新 | Claude |
+| 2026-02-14 | 3.0.0 | README.mdとの重複を除外し、設計仕様書として再構成。実装済み機能の手順詳細はREADME.mdへ移行。Issue #59（特徴量生成API）とIssue #71（デプロイスクリプト整備）の内容を反映 | Claude |
 
 ---
 
