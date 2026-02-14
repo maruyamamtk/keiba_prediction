@@ -243,6 +243,7 @@ class TestDailyPipelineRun:
         downloader = MagicMock()
         uploader = MagicMock()
         bq_loader = MagicMock()
+        feature_pipeline = MagicMock()
 
         # ダウンロード
         download_result = DownloadResult(
@@ -276,8 +277,18 @@ class TestDailyPipelineRun:
         )
         bq_loader.load_files_batch.return_value = batch_result
 
+        # 特徴量生成
+        feature_pipeline.run.return_value = {
+            "start_date": "2024-01-15",
+            "end_date": "2024-01-15",
+            "deleted_rows": 10,
+            "inserted_rows": 50,
+            "elapsed_time": 3.0,
+        }
+
         pipeline = DailyPipeline(
-            downloader=downloader, uploader=uploader, bq_loader=bq_loader
+            downloader=downloader, uploader=uploader, bq_loader=bq_loader,
+            feature_pipeline=feature_pipeline,
         )
         result = pipeline.run("2024-01-15")
 
@@ -287,8 +298,12 @@ class TestDailyPipelineRun:
         assert result.files_uploaded == 5
         assert result.files_loaded == 1
         assert result.records_loaded == 100
-        assert len(result.steps) == 3
+        assert result.features_inserted == 50
+        assert len(result.steps) == 4
         downloader.cleanup.assert_called_once()
+        feature_pipeline.run.assert_called_once_with(
+            start_date="2024-01-15", end_date="2024-01-15"
+        )
 
     def test_run_download_failure(self):
         """ダウンロード失敗時にパイプラインが停止"""
@@ -313,6 +328,88 @@ class TestDailyPipelineRun:
         downloader.cleanup.assert_called_once()
 
 
+class TestDailyPipelineStepGenerateFeatures:
+    """DailyPipeline._step_generate_featuresのテスト"""
+
+    def test_step_generate_features_success(self):
+        """特徴量生成成功"""
+        feature_pipeline = MagicMock()
+        feature_pipeline.run.return_value = {
+            "start_date": "2024-01-15",
+            "end_date": "2024-01-15",
+            "deleted_rows": 10,
+            "inserted_rows": 50,
+            "elapsed_time": 3.0,
+        }
+
+        pipeline = DailyPipeline(feature_pipeline=feature_pipeline)
+        result = pipeline._step_generate_features(date(2024, 1, 15))
+
+        assert result.status == "success"
+        assert result.details["inserted_rows"] == 50
+        assert result.details["deleted_rows"] == 10
+        feature_pipeline.run.assert_called_once_with(
+            start_date="2024-01-15", end_date="2024-01-15"
+        )
+
+    def test_step_generate_features_error(self):
+        """特徴量生成エラー"""
+        feature_pipeline = MagicMock()
+        feature_pipeline.run.side_effect = Exception("BigQueryエラー")
+
+        pipeline = DailyPipeline(feature_pipeline=feature_pipeline)
+        result = pipeline._step_generate_features(date(2024, 1, 15))
+
+        assert result.status == "failed"
+        assert "BigQueryエラー" in result.error_message
+
+    def test_run_feature_failure_results_in_partial(self):
+        """特徴量生成失敗時はpartialステータス"""
+        downloader = MagicMock()
+        uploader = MagicMock()
+        bq_loader = MagicMock()
+        feature_pipeline = MagicMock()
+
+        # ダウンロード成功
+        download_result = DownloadResult(
+            total_files=10, downloaded_files=5, skipped_files=3, failed_files=0
+        )
+        downloader.download_all_from_date.return_value = {"BAA": download_result}
+        downloader.get_output_dir.return_value = Path("/tmp/test")
+
+        # アップロード成功
+        uploader.local_base_dir = Path("/original")
+        upload_result = UploadResult(
+            total_files=5, uploaded_files=5, skipped_files=0,
+            failed_files=0, uploaded_bytes=1024,
+        )
+        uploader.upload_all.return_value = upload_result
+
+        # BigQueryロード成功
+        bq_loader.list_csv_files.return_value = ["Baa/BAA240115.csv"]
+        batch_result = BatchLoadResult(
+            total_files=1, success_count=1, skipped_count=0,
+            failed_count=0, total_records=100, results=[], failed_files=[],
+            duration_seconds=5.0,
+        )
+        bq_loader.load_files_batch.return_value = batch_result
+
+        # 特徴量生成失敗
+        feature_pipeline.run.side_effect = Exception("SQL実行エラー")
+
+        pipeline = DailyPipeline(
+            downloader=downloader, uploader=uploader, bq_loader=bq_loader,
+            feature_pipeline=feature_pipeline,
+        )
+        result = pipeline.run("2024-01-15")
+
+        assert result.status == "partial"
+        assert "特徴量生成失敗" in result.error_message
+        assert result.files_loaded == 1
+        assert result.records_loaded == 100
+        assert len(result.steps) == 4
+
+
 class TestPipelineResultToDict:
     """PipelineResult.to_dictのテスト"""
 
@@ -325,6 +422,7 @@ class TestPipelineResultToDict:
             files_uploaded=5,
             files_loaded=3,
             records_loaded=100,
+            features_inserted=50,
             duration_seconds=10.5,
             steps=[
                 StepResult(
@@ -341,6 +439,7 @@ class TestPipelineResultToDict:
         assert d["status"] == "success"
         assert d["target_date"] == "2024-01-15"
         assert d["files_loaded"] == 3
+        assert d["features_inserted"] == 50
         assert d["duration_seconds"] == 10.5
         assert len(d["steps"]) == 1
         assert d["steps"][0]["step_name"] == "download"
@@ -468,3 +567,86 @@ class TestDailyPipelineAPI:
         data = response.json()
         assert data["status"] == "accepted"
         assert data["target_date"] == "2024-01-15"
+
+
+class TestFeatureGenerateAPI:
+    """特徴量生成APIエンドポイントのテスト"""
+
+    @pytest.fixture
+    def client(self):
+        """テストクライアント"""
+        from fastapi.testclient import TestClient
+
+        from src.automation.api.app import app
+
+        return TestClient(app)
+
+    def test_generate_features_validation_error(self, client):
+        """日付形式が不正な場合"""
+        response = client.post(
+            "/api/v1/features/generate",
+            json={"start_date": "invalid", "end_date": "2024-12-31"},
+        )
+        assert response.status_code == 422
+
+    def test_generate_features_missing_fields(self, client):
+        """必須フィールド欠落"""
+        response = client.post(
+            "/api/v1/features/generate",
+            json={},
+        )
+        assert response.status_code == 422
+
+    @patch("src.ml.features.feature_pipeline.FeaturePipeline")
+    @patch.dict("os.environ", {"GCP_PROJECT_ID": "test-project"})
+    def test_generate_features_success(self, MockPipeline, client):
+        """特徴量生成成功"""
+        mock_pipeline = MagicMock()
+        mock_pipeline.run.return_value = {
+            "start_date": "2024-01-01",
+            "end_date": "2024-12-31",
+            "deleted_rows": 100,
+            "inserted_rows": 500,
+            "elapsed_time": 30.5,
+        }
+        MockPipeline.return_value = mock_pipeline
+
+        response = client.post(
+            "/api/v1/features/generate",
+            json={"start_date": "2024-01-01", "end_date": "2024-12-31"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "success"
+        assert data["inserted_rows"] == 500
+        assert data["deleted_rows"] == 100
+        assert data["elapsed_time"] == 30.5
+
+    @patch("src.ml.features.feature_pipeline.FeaturePipeline")
+    @patch.dict("os.environ", {"GCP_PROJECT_ID": "test-project"})
+    def test_generate_features_error(self, MockPipeline, client):
+        """特徴量生成失敗"""
+        mock_pipeline = MagicMock()
+        mock_pipeline.run.side_effect = Exception("BigQuery接続エラー")
+        MockPipeline.return_value = mock_pipeline
+
+        response = client.post(
+            "/api/v1/features/generate",
+            json={"start_date": "2024-01-01", "end_date": "2024-12-31"},
+        )
+
+        assert response.status_code == 500
+
+    def test_generate_features_async_accepted(self, client):
+        """非同期特徴量生成が受付される"""
+        response = client.post(
+            "/api/v1/features/generate/async",
+            json={"start_date": "2024-01-01", "end_date": "2024-12-31"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "accepted"
+        assert data["start_date"] == "2024-01-01"
+        assert data["end_date"] == "2024-12-31"

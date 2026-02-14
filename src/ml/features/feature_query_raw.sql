@@ -652,7 +652,3 @@ from
   left join temp_horse_master_feature2 as t_h_m_f
     on t_p_r_f.race_id = t_h_m_f.race_id
     and t_p_r_f.horse_number = t_h_m_f.horse_number
-order by
-  t_h_m_f.venue_code
-  ,t_p_r_f.race_number
-  ,t_p_r_f.horse_number

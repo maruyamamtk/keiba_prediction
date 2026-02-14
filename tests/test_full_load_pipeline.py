@@ -297,9 +297,18 @@ class TestFullLoadRun:
     def test_run_success(self):
         """全体成功"""
         downloader, uploader, bq_loader = self._create_pipeline_mocks()
+        feature_pipeline = MagicMock()
+        feature_pipeline.run.return_value = {
+            "start_date": "2024-01-01",
+            "end_date": "2024-12-31",
+            "deleted_rows": 100,
+            "inserted_rows": 500,
+            "elapsed_time": 30.0,
+        }
 
         pipeline = FullLoadPipeline(
-            downloader=downloader, uploader=uploader, bq_loader=bq_loader
+            downloader=downloader, uploader=uploader, bq_loader=bq_loader,
+            feature_pipeline=feature_pipeline,
         )
         result = pipeline.run("2024-01-01", "2024-12-31")
 
@@ -310,16 +319,29 @@ class TestFullLoadRun:
         assert result.files_uploaded == 80
         assert result.files_loaded == 1
         assert result.records_loaded == 100
-        assert len(result.steps) == 3
+        assert result.features_inserted == 500
+        assert len(result.steps) == 4
         assert result.job_id  # 生成されている
         downloader.cleanup.assert_called_once()
+        feature_pipeline.run.assert_called_once_with(
+            start_date="2024-01-01", end_date="2024-12-31"
+        )
 
     def test_run_without_dates(self):
         """日付指定なし（全期間）"""
         downloader, uploader, bq_loader = self._create_pipeline_mocks()
+        feature_pipeline = MagicMock()
+        feature_pipeline.run.return_value = {
+            "start_date": "2016-01-01",
+            "end_date": date.today().strftime("%Y-%m-%d"),
+            "deleted_rows": 0,
+            "inserted_rows": 1000,
+            "elapsed_time": 60.0,
+        }
 
         pipeline = FullLoadPipeline(
-            downloader=downloader, uploader=uploader, bq_loader=bq_loader
+            downloader=downloader, uploader=uploader, bq_loader=bq_loader,
+            feature_pipeline=feature_pipeline,
         )
         result = pipeline.run()
 
@@ -350,6 +372,108 @@ class TestFullLoadRun:
         downloader.cleanup.assert_called_once()
 
 
+class TestFullLoadStepGenerateFeatures:
+    """FullLoadPipeline._step_generate_featuresのテスト"""
+
+    def test_step_generate_features_success(self):
+        """特徴量生成成功"""
+        feature_pipeline = MagicMock()
+        feature_pipeline.run.return_value = {
+            "start_date": "2024-01-01",
+            "end_date": "2024-12-31",
+            "deleted_rows": 100,
+            "inserted_rows": 500,
+            "elapsed_time": 30.0,
+        }
+
+        pipeline = FullLoadPipeline(feature_pipeline=feature_pipeline)
+        result = pipeline._step_generate_features(
+            date(2024, 1, 1), date(2024, 12, 31)
+        )
+
+        assert result.status == "success"
+        assert result.details["inserted_rows"] == 500
+        assert result.details["deleted_rows"] == 100
+        feature_pipeline.run.assert_called_once_with(
+            start_date="2024-01-01", end_date="2024-12-31"
+        )
+
+    def test_step_generate_features_default_dates(self):
+        """日付未指定時のデフォルト値"""
+        feature_pipeline = MagicMock()
+        feature_pipeline.run.return_value = {
+            "start_date": "2016-01-01",
+            "end_date": date.today().strftime("%Y-%m-%d"),
+            "deleted_rows": 0,
+            "inserted_rows": 1000,
+            "elapsed_time": 60.0,
+        }
+
+        pipeline = FullLoadPipeline(feature_pipeline=feature_pipeline)
+        result = pipeline._step_generate_features(None, None)
+
+        assert result.status == "success"
+        call_args = feature_pipeline.run.call_args
+        assert call_args[1]["start_date"] == "2016-01-01"
+        assert call_args[1]["end_date"] == date.today().strftime("%Y-%m-%d")
+
+    def test_step_generate_features_error(self):
+        """特徴量生成エラー"""
+        feature_pipeline = MagicMock()
+        feature_pipeline.run.side_effect = Exception("BigQueryエラー")
+
+        pipeline = FullLoadPipeline(feature_pipeline=feature_pipeline)
+        result = pipeline._step_generate_features(
+            date(2024, 1, 1), date(2024, 12, 31)
+        )
+
+        assert result.status == "failed"
+        assert "BigQueryエラー" in result.error_message
+
+    def test_run_feature_failure_results_in_partial(self):
+        """特徴量生成失敗時はpartialステータス"""
+        downloader = MagicMock()
+        uploader = MagicMock()
+        bq_loader = MagicMock()
+        feature_pipeline = MagicMock()
+
+        # 3ステップ成功
+        download_result = DownloadResult(
+            total_files=100, downloaded_files=80,
+            skipped_files=20, failed_files=0,
+        )
+        downloader.download_all_from_date.return_value = {"BAA": download_result}
+        downloader.get_output_dir.return_value = Path("/tmp/test")
+        uploader.local_base_dir = Path("/original")
+        upload_result = UploadResult(
+            total_files=80, uploaded_files=80, skipped_files=0,
+            failed_files=0, uploaded_bytes=10240,
+        )
+        uploader.upload_all.return_value = upload_result
+        bq_loader.list_csv_files.return_value = ["Baa/BAA240115.csv"]
+        batch_result = BatchLoadResult(
+            total_files=1, success_count=1, skipped_count=0,
+            failed_count=0, total_records=100, results=[], failed_files=[],
+            duration_seconds=5.0,
+        )
+        bq_loader.load_files_batch.return_value = batch_result
+
+        # 特徴量生成失敗
+        feature_pipeline.run.side_effect = Exception("SQL実行エラー")
+
+        pipeline = FullLoadPipeline(
+            downloader=downloader, uploader=uploader, bq_loader=bq_loader,
+            feature_pipeline=feature_pipeline,
+        )
+        result = pipeline.run("2024-01-01", "2024-12-31")
+
+        assert result.status == "partial"
+        assert "特徴量生成失敗" in result.error_message
+        assert result.files_loaded == 1
+        assert result.records_loaded == 100
+        assert len(result.steps) == 4
+
+
 class TestFullLoadResultToDict:
     """FullLoadResult.to_dictのテスト"""
 
@@ -364,6 +488,7 @@ class TestFullLoadResultToDict:
             files_uploaded=80,
             files_loaded=50,
             records_loaded=5000,
+            features_inserted=500,
             duration_seconds=120.5,
             steps=[
                 FullLoadStepResult(
@@ -382,6 +507,7 @@ class TestFullLoadResultToDict:
         assert d["start_date"] == "2024-01-01"
         assert d["end_date"] == "2024-12-31"
         assert d["files_loaded"] == 50
+        assert d["features_inserted"] == 500
         assert d["duration_seconds"] == 120.5
         assert len(d["steps"]) == 1
 

@@ -1,22 +1,28 @@
 """
 日次パイプライン
 
-その日に追加されたデータのダウンロード→GCS→BigQueryへの格納を行う。
+その日に追加されたデータのダウンロード→GCS→BigQueryへの格納→特徴量生成を行う。
 Cloud Schedulerからトリガーされ、Cloud Run内で完結する。
 
 Issue #57: 日次パイプラインの実装
+Issue #59: 特徴量生成パイプラインのCloud Run統合
 """
+
+from __future__ import annotations
 
 import logging
 import time
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
-from typing import List, Optional
+from typing import TYPE_CHECKING, List, Optional
 
 from src.automation.data.jrdb_downloader import JRDBDownloader, create_downloader_from_env
 from src.automation.data.load_to_bq import BigQueryLoader
 from src.automation.data.upload_to_gcs import GCSUploader, create_uploader_from_env
+
+if TYPE_CHECKING:
+    from src.ml.features.feature_pipeline import FeaturePipeline
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +48,7 @@ class PipelineResult:
     files_uploaded: int = 0
     files_loaded: int = 0
     records_loaded: int = 0
+    features_inserted: int = 0
     duration_seconds: float = 0.0
     steps: List[StepResult] = field(default_factory=list)
     error_message: Optional[str] = None
@@ -55,6 +62,7 @@ class PipelineResult:
             "files_uploaded": self.files_uploaded,
             "files_loaded": self.files_loaded,
             "records_loaded": self.records_loaded,
+            "features_inserted": self.features_inserted,
             "duration_seconds": round(self.duration_seconds, 2),
             "steps": [
                 {
@@ -78,6 +86,7 @@ class DailyPipeline:
     1. JRDBから指定日のデータをダウンロード
     2. GCSにアップロード
     3. BigQueryにロード
+    4. 特徴量生成（オプション）
     """
 
     def __init__(
@@ -85,6 +94,7 @@ class DailyPipeline:
         downloader: Optional[JRDBDownloader] = None,
         uploader: Optional[GCSUploader] = None,
         bq_loader: Optional[BigQueryLoader] = None,
+        feature_pipeline: Optional[FeaturePipeline] = None,
     ):
         """
         初期化
@@ -93,10 +103,12 @@ class DailyPipeline:
             downloader: JRDBダウンローダー（Noneの場合は環境変数から作成）
             uploader: GCSアップローダー（Noneの場合は環境変数から作成）
             bq_loader: BigQueryローダー（Noneの場合は環境変数から作成）
+            feature_pipeline: 特徴量パイプライン（Noneの場合は環境変数から作成）
         """
         self._downloader = downloader
         self._uploader = uploader
         self._bq_loader = bq_loader
+        self._feature_pipeline = feature_pipeline
 
     @property
     def downloader(self) -> JRDBDownloader:
@@ -126,6 +138,22 @@ class DailyPipeline:
             if self._bq_loader is None:
                 raise RuntimeError("BigQueryローダーの初期化に失敗しました")
         return self._bq_loader
+
+    @property
+    def feature_pipeline(self):
+        """特徴量パイプライン（遅延初期化）"""
+        if self._feature_pipeline is None:
+            import os
+
+            from src.ml.features.feature_pipeline import FeaturePipeline
+
+            project_id = os.environ.get("GCP_PROJECT_ID")
+            if not project_id:
+                raise RuntimeError(
+                    "特徴量パイプラインの初期化に失敗: GCP_PROJECT_IDが未設定"
+                )
+            self._feature_pipeline = FeaturePipeline(project_id=project_id)
+        return self._feature_pipeline
 
     @staticmethod
     def parse_target_date(target_date: Optional[str] = None) -> date:
@@ -320,6 +348,57 @@ class DailyPipeline:
                 error_message=str(e),
             )
 
+    def _step_generate_features(self, target_date: date) -> StepResult:
+        """
+        Step 4: 特徴量生成
+
+        BigQuery上のrawデータから特徴量を生成してfeatures.training_dataに書き込む。
+
+        Args:
+            target_date: 対象日付
+
+        Returns:
+            StepResult
+        """
+        step_name = "generate_features"
+        start_time = time.time()
+
+        try:
+            date_str = target_date.strftime("%Y-%m-%d")
+            logger.info(f"特徴量生成開始: {date_str}")
+
+            result = self.feature_pipeline.run(
+                start_date=date_str,
+                end_date=date_str,
+            )
+
+            details = {
+                "deleted_rows": result.get("deleted_rows", 0),
+                "inserted_rows": result.get("inserted_rows", 0),
+                "elapsed_time": round(result.get("elapsed_time", 0), 2),
+            }
+
+            logger.info(
+                f"特徴量生成完了: inserted={details['inserted_rows']}, "
+                f"elapsed={details['elapsed_time']}s"
+            )
+
+            return StepResult(
+                step_name=step_name,
+                status="success",
+                duration_seconds=time.time() - start_time,
+                details=details,
+            )
+
+        except Exception as e:
+            logger.error(f"特徴量生成エラー: {e}")
+            return StepResult(
+                step_name=step_name,
+                status="failed",
+                duration_seconds=time.time() - start_time,
+                error_message=str(e),
+            )
+
     def run(self, target_date: Optional[str] = None) -> PipelineResult:
         """
         パイプラインを実行
@@ -376,6 +455,23 @@ class DailyPipeline:
             result.files_loaded = bq_result.details.get("files", 0)
             result.records_loaded = bq_result.details.get("records", 0)
 
+            # Step 4: 特徴量生成
+            feature_result = self._step_generate_features(parsed_date)
+            result.steps.append(feature_result)
+
+            if feature_result.status == "failed":
+                # 特徴量生成失敗はpartialとする（データロードは成功しているため）
+                result.status = "partial"
+                result.error_message = (
+                    f"特徴量生成失敗: {feature_result.error_message}"
+                )
+                result.duration_seconds = time.time() - start_time
+                return result
+
+            result.features_inserted = feature_result.details.get(
+                "inserted_rows", 0
+            )
+
             # 全体ステータスの判定
             if any(s.status == "partial" for s in result.steps):
                 result.status = "partial"
@@ -383,7 +479,8 @@ class DailyPipeline:
             result.duration_seconds = time.time() - start_time
             logger.info(
                 f"日次パイプライン完了: status={result.status}, "
-                f"files_loaded={result.files_loaded}, records={result.records_loaded}"
+                f"files_loaded={result.files_loaded}, records={result.records_loaded}, "
+                f"features_inserted={result.features_inserted}"
             )
 
             return result
