@@ -8,7 +8,7 @@
 #   ./infrastructure/scripts/verify_deployment.sh
 #
 
-set -e
+# テスト集計のため set -e は使用しない（個別にエラーハンドリング）
 
 # 色付きログ出力
 RED='\033[0;31m'
@@ -39,6 +39,10 @@ log_fail() {
 # スクリプトのディレクトリを取得
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+
+# 一時ディレクトリの作成とクリーンアップ
+TMPDIR=$(mktemp -d)
+trap 'rm -rf "${TMPDIR}"' EXIT
 
 # .envファイルを読み込み
 if [ -f "${PROJECT_ROOT}/.env" ]; then
@@ -84,17 +88,17 @@ FAILED=0
 log_info ""
 log_info "1. ルートエンドポイント (GET /) をテスト..."
 
-HTTP_CODE=$(curl -s -o /tmp/verify_root.json -w "%{http_code}" \
+HTTP_CODE=$(curl -s -o "${TMPDIR}/root.json" -w "%{http_code}" \
     -H "Authorization: Bearer ${TOKEN}" \
-    "${SERVICE_URL}/")
+    "${SERVICE_URL}/" 2>/dev/null) || HTTP_CODE="000"
 
 if [ "${HTTP_CODE}" = "200" ]; then
     log_success "GET / -> ${HTTP_CODE}"
-    cat /tmp/verify_root.json | python3 -m json.tool 2>/dev/null || cat /tmp/verify_root.json
+    python3 -m json.tool "${TMPDIR}/root.json" 2>/dev/null || cat "${TMPDIR}/root.json" 2>/dev/null
     PASSED=$((PASSED + 1))
 else
     log_fail "GET / -> ${HTTP_CODE}"
-    cat /tmp/verify_root.json 2>/dev/null
+    cat "${TMPDIR}/root.json" 2>/dev/null
     FAILED=$((FAILED + 1))
 fi
 
@@ -104,17 +108,17 @@ fi
 log_info ""
 log_info "2. ヘルスチェック (GET /health) をテスト..."
 
-HTTP_CODE=$(curl -s -o /tmp/verify_health.json -w "%{http_code}" \
+HTTP_CODE=$(curl -s -o "${TMPDIR}/health.json" -w "%{http_code}" \
     -H "Authorization: Bearer ${TOKEN}" \
-    "${SERVICE_URL}/health")
+    "${SERVICE_URL}/health" 2>/dev/null) || HTTP_CODE="000"
 
 if [ "${HTTP_CODE}" = "200" ]; then
     log_success "GET /health -> ${HTTP_CODE}"
-    cat /tmp/verify_health.json | python3 -m json.tool 2>/dev/null || cat /tmp/verify_health.json
+    python3 -m json.tool "${TMPDIR}/health.json" 2>/dev/null || cat "${TMPDIR}/health.json" 2>/dev/null
     PASSED=$((PASSED + 1))
 else
     log_fail "GET /health -> ${HTTP_CODE}"
-    cat /tmp/verify_health.json 2>/dev/null
+    cat "${TMPDIR}/health.json" 2>/dev/null
     FAILED=$((FAILED + 1))
 fi
 
@@ -123,31 +127,32 @@ fi
 # ========================================
 log_info ""
 log_info "3. 日次ロード (POST /api/v1/load/daily) をテスト..."
-log_info "   ※ 特定日付を指定してテスト実行（実データのダウンロード・ロードが実行されます）"
+log_warn "   ※ 実データのダウンロード・ロードが実行されます"
 
-read -p "日次ロードのテスト実行をスキップしますか？ (y/N): " SKIP_DAILY
+SKIP_DAILY=""
+read -r -p "日次ロードのテスト実行をスキップしますか？ (y/N): " SKIP_DAILY 2>/dev/null </dev/tty || SKIP_DAILY="y"
 if [ "${SKIP_DAILY}" = "y" ] || [ "${SKIP_DAILY}" = "Y" ]; then
     log_warn "日次ロードテストをスキップしました"
 else
     # 直近の土曜日を指定（データが存在する可能性が高い）
-    TEST_DATE=$(date -v-saturday +%Y-%m-%d 2>/dev/null || date -d "last saturday" +%Y-%m-%d 2>/dev/null || echo "2026-02-08")
+    TEST_DATE=$(date -v-saturday +%Y-%m-%d 2>/dev/null || date -d "last saturday" +%Y-%m-%d 2>/dev/null || date +%Y-%m-%d)
     log_info "   テスト日付: ${TEST_DATE}"
 
-    HTTP_CODE=$(curl -s -o /tmp/verify_daily.json -w "%{http_code}" \
+    HTTP_CODE=$(curl -s -o "${TMPDIR}/daily.json" -w "%{http_code}" \
         -X POST \
         -H "Authorization: Bearer ${TOKEN}" \
         -H "Content-Type: application/json" \
         -d "{\"target_date\": \"${TEST_DATE}\"}" \
         --max-time 120 \
-        "${SERVICE_URL}/api/v1/load/daily")
+        "${SERVICE_URL}/api/v1/load/daily" 2>/dev/null) || HTTP_CODE="000"
 
     if [ "${HTTP_CODE}" = "200" ]; then
         log_success "POST /api/v1/load/daily -> ${HTTP_CODE}"
-        cat /tmp/verify_daily.json | python3 -m json.tool 2>/dev/null || cat /tmp/verify_daily.json
+        python3 -m json.tool "${TMPDIR}/daily.json" 2>/dev/null || cat "${TMPDIR}/daily.json" 2>/dev/null
         PASSED=$((PASSED + 1))
     else
         log_fail "POST /api/v1/load/daily -> ${HTTP_CODE}"
-        cat /tmp/verify_daily.json 2>/dev/null
+        cat "${TMPDIR}/daily.json" 2>/dev/null
         FAILED=$((FAILED + 1))
     fi
 fi
@@ -160,7 +165,7 @@ log_info "4. OpenAPIドキュメント (GET /docs) をテスト..."
 
 HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
     -H "Authorization: Bearer ${TOKEN}" \
-    "${SERVICE_URL}/docs")
+    "${SERVICE_URL}/docs" 2>/dev/null) || HTTP_CODE="000"
 
 if [ "${HTTP_CODE}" = "200" ]; then
     log_success "GET /docs -> ${HTTP_CODE}"
@@ -184,9 +189,6 @@ else
     log_info "失敗: ${FAILED}"
 fi
 log_info "=========================================="
-
-# 一時ファイルの削除
-rm -f /tmp/verify_root.json /tmp/verify_health.json /tmp/verify_daily.json
 
 if [ "${FAILED}" -gt 0 ]; then
     log_error "一部のテストが失敗しました。Cloud Runのログを確認してください。"
