@@ -1,9 +1,10 @@
-/* race_idごとの実際の出走頭数を馬番の最大値から算出 */
+/* race_idごとの出走頭数を馬番の最大値から算出 */
 with temp_race_horse_count as (
   select
     race_id
     ,max(horse_number) as num_horses
-  from `{project_id}`.raw.race_results
+  -- race_resultsを参照すると、当日の出走情報の取得が誤っているときに意図しない挙動となるため、horse_resultsを参照して出走頭数を算出する
+  from `{project_id}`.raw.horse_results
   group by race_id
 )
 
