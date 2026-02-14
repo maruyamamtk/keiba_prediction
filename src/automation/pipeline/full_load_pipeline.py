@@ -8,17 +8,22 @@ Issue #58: 過去分全件ロード処理の実装
 Issue #59: 特徴量生成パイプラインのCloud Run統合
 """
 
+from __future__ import annotations
+
 import logging
 import re
 import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import date, datetime
-from typing import List, Optional
+from typing import TYPE_CHECKING, List, Optional
 
 from src.automation.data.jrdb_downloader import JRDBDownloader, create_downloader_from_env
 from src.automation.data.load_to_bq import BigQueryLoader
 from src.automation.data.upload_to_gcs import GCSUploader, create_uploader_from_env
+
+if TYPE_CHECKING:
+    from src.ml.features.feature_pipeline import FeaturePipeline
 
 logger = logging.getLogger(__name__)
 
@@ -94,7 +99,7 @@ class FullLoadPipeline:
         downloader: Optional[JRDBDownloader] = None,
         uploader: Optional[GCSUploader] = None,
         bq_loader: Optional[BigQueryLoader] = None,
-        feature_pipeline=None,
+        feature_pipeline: Optional[FeaturePipeline] = None,
     ):
         self._downloader = downloader
         self._uploader = uploader

@@ -130,11 +130,13 @@ class FeatureGenerateRequest(BaseModel):
     @field_validator("start_date", "end_date")
     @classmethod
     def validate_date_format(cls, v: str) -> str:
-        import re
+        from datetime import datetime
 
-        if not re.match(r"^\d{4}-\d{2}-\d{2}$", v):
+        try:
+            datetime.strptime(v, "%Y-%m-%d")
+        except ValueError:
             raise ValueError(
-                f"日付はYYYY-MM-DD形式で指定してください: '{v}'"
+                f"日付はYYYY-MM-DD形式の有効な日付で指定してください: '{v}'"
             )
         return v
 
