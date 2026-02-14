@@ -1,5 +1,14 @@
+/* race_idごとの実際の出走頭数を馬番の最大値から算出 */
+with temp_race_horse_count as (
+  select
+    race_id
+    ,max(horse_number) as num_horses
+  from `{project_id}`.raw.race_results
+  group by race_id
+)
+
 /* 直接的に馬柱を見て集計できる特徴量 */
-with temp_base_race_entries as (
+,temp_base_race_entries as (
   select
   -- レースに関する情報
     h_r.race_id
@@ -13,7 +22,7 @@ with temp_base_race_entries as (
     ,r_i.direction
     ,r_i.age_condition
     ,r_i.race_class
-    ,r_i.num_horses
+    ,coalesce(t_r_h_c.num_horses, r_i.num_horses) as num_horses
     -- 出走馬に関する情報
     ,h_r.horse_id
     ,h_r.horse_name
@@ -61,7 +70,7 @@ with temp_base_race_entries as (
       else 0
     end as behind_advantage
     ,case
-      when r_i.num_horses < 10 and h_r.running_style = 1 then 1
+      when coalesce(t_r_h_c.num_horses, r_i.num_horses) < 10 and h_r.running_style = 1 then 1
       else 0
     end as small_number_early_advantage
     ,h_r.mid_gap
@@ -82,6 +91,8 @@ with temp_base_race_entries as (
       on h_r.race_id = r_i.race_id
     left join `{project_id}`.raw.horse_master as h_m
       on h_r.horse_id = h_m.horse_id
+    left join temp_race_horse_count as t_r_h_c
+      on h_r.race_id = t_r_h_c.race_id
   where
     r_i.race_date BETWEEN '{start_date}' AND '{end_date}'
 )
@@ -103,11 +114,11 @@ with temp_base_race_entries as (
       else 0
     end as condition_change_flag
     ,r_r_1.finish_position as finish_position_1
-    ,safe_divide(r_r_1.finish_position, r_r_1.num_horses) as finish_position_rate_1 -- 全体に対するゴール位置の割合
+    ,safe_divide(r_r_1.finish_position, coalesce(t_r_h_c_1.num_horses, r_r_1.num_horses)) as finish_position_rate_1 -- 全体に対するゴール位置の割合
     ,r_r_1.win_odds as win_odds_1
     ,r_r_1.win_popularity as win_popularity_1
-    ,safe_divide(r_r_1.win_popularity, r_r_1.num_horses) as popularity_rate_1 -- 全体に対する人気の割合
-    ,safe_divide(r_r_1.win_popularity-r_r_1.finish_position, r_r_1.num_horses) as upside_rate_1 -- 人気に対してどの程度着順が上振れるか(プラスだと上振れ)
+    ,safe_divide(r_r_1.win_popularity, coalesce(t_r_h_c_1.num_horses, r_r_1.num_horses)) as popularity_rate_1 -- 全体に対する人気の割合
+    ,safe_divide(r_r_1.win_popularity-r_r_1.finish_position, coalesce(t_r_h_c_1.num_horses, r_r_1.num_horses)) as upside_rate_1 -- 人気に対してどの程度着順が上振れるか(プラスだと上振れ)
     ,r_r_1.idm as idm_1
     ,r_r_1.improvement_code as improvement_code_1
     ,r_r_1.late_start as late_start_1
@@ -117,11 +128,11 @@ with temp_base_race_entries as (
     ,r_r_2.race_name as race_name_2
     ,round(safe_divide(date_diff(t_b_r_e.race_date, r_r_2.race_date, day), 7))-1 as race_date_diff_2
     ,r_r_2.finish_position as finish_position_2
-    ,safe_divide(r_r_2.finish_position, r_r_2.num_horses) as finish_position_rate_2 -- 全体に対するゴール位置の割合
+    ,safe_divide(r_r_2.finish_position, coalesce(t_r_h_c_2.num_horses, r_r_2.num_horses)) as finish_position_rate_2 -- 全体に対するゴール位置の割合
     ,r_r_2.win_odds as win_odds_2
     ,r_r_2.win_popularity as win_popularity_2
-    ,safe_divide(r_r_2.win_popularity, r_r_2.num_horses) as popularity_rate_2 -- 全体に対する人気の割合
-    ,safe_divide(r_r_2.win_popularity-r_r_2.finish_position, r_r_2.num_horses) as upside_rate_2 -- 人気に対してどの程度着順が上振れるか(プラスだと上振れ)
+    ,safe_divide(r_r_2.win_popularity, coalesce(t_r_h_c_2.num_horses, r_r_2.num_horses)) as popularity_rate_2 -- 全体に対する人気の割合
+    ,safe_divide(r_r_2.win_popularity-r_r_2.finish_position, coalesce(t_r_h_c_2.num_horses, r_r_2.num_horses)) as upside_rate_2 -- 人気に対してどの程度着順が上振れるか(プラスだと上振れ)
     ,r_r_2.idm as idm_2
     ,r_r_2.improvement_code as improvement_code_2
     ,r_r_2.late_start as late_start_2
@@ -130,11 +141,11 @@ with temp_base_race_entries as (
     -- 3走前のレース結果
     ,r_r_3.race_name as race_name_3
     ,r_r_3.finish_position as finish_position_3
-    ,safe_divide(r_r_3.finish_position, r_r_3.num_horses) as finish_position_rate_3 -- 全体に対するゴール位置の割合
+    ,safe_divide(r_r_3.finish_position, coalesce(t_r_h_c_3.num_horses, r_r_3.num_horses)) as finish_position_rate_3 -- 全体に対するゴール位置の割合
     ,r_r_3.win_odds as win_odds_3
     ,r_r_3.win_popularity as win_popularity_3
-    ,safe_divide(r_r_3.win_popularity, r_r_3.num_horses) as popularity_rate_3 -- 全体に対する人気の割合
-    ,safe_divide(r_r_3.win_popularity-r_r_3.finish_position, r_r_3.num_horses) as upside_rate_3 -- 人気に対してどの程度着順が上振れるか(プラスだと上振れ)
+    ,safe_divide(r_r_3.win_popularity, coalesce(t_r_h_c_3.num_horses, r_r_3.num_horses)) as popularity_rate_3 -- 全体に対する人気の割合
+    ,safe_divide(r_r_3.win_popularity-r_r_3.finish_position, coalesce(t_r_h_c_3.num_horses, r_r_3.num_horses)) as upside_rate_3 -- 人気に対してどの程度着順が上振れるか(プラスだと上振れ)
     ,r_r_3.idm as idm_3
     ,r_r_3.improvement_code as improvement_code_3
     ,r_r_3.late_start as late_start_3
@@ -143,11 +154,11 @@ with temp_base_race_entries as (
     -- 4走前のレース結果
     ,r_r_4.race_name as race_name_4
     ,r_r_4.finish_position as finish_position_4
-    ,safe_divide(r_r_4.finish_position, r_r_4.num_horses) as finish_position_rate_4 -- 全体に対するゴール位置の割合
+    ,safe_divide(r_r_4.finish_position, coalesce(t_r_h_c_4.num_horses, r_r_4.num_horses)) as finish_position_rate_4 -- 全体に対するゴール位置の割合
     ,r_r_4.win_odds as win_odds_4
     ,r_r_4.win_popularity as win_popularity_4
-    ,safe_divide(r_r_4.win_popularity, r_r_4.num_horses) as popularity_rate_4 -- 全体に対する人気の割合
-    ,safe_divide(r_r_4.win_popularity-r_r_4.finish_position, r_r_4.num_horses) as upside_rate_4 -- 人気に対してどの程度着順が上振れるか(プラスだと上振れ)
+    ,safe_divide(r_r_4.win_popularity, coalesce(t_r_h_c_4.num_horses, r_r_4.num_horses)) as popularity_rate_4 -- 全体に対する人気の割合
+    ,safe_divide(r_r_4.win_popularity-r_r_4.finish_position, coalesce(t_r_h_c_4.num_horses, r_r_4.num_horses)) as upside_rate_4 -- 人気に対してどの程度着順が上振れるか(プラスだと上振れ)
     ,r_r_4.idm as idm_4
     ,r_r_4.improvement_code as improvement_code_4
     ,r_r_4.late_start as late_start_4
@@ -156,11 +167,11 @@ with temp_base_race_entries as (
     -- 5走前のレース結果
     ,r_r_5.race_name as race_name_5
     ,r_r_5.finish_position as finish_position_5
-    ,safe_divide(r_r_5.finish_position, r_r_5.num_horses) as finish_position_rate_5 -- 全体に対するゴール位置の割合
+    ,safe_divide(r_r_5.finish_position, coalesce(t_r_h_c_5.num_horses, r_r_5.num_horses)) as finish_position_rate_5 -- 全体に対するゴール位置の割合
     ,r_r_5.win_odds as win_odds_5
     ,r_r_5.win_popularity as win_popularity_5
-    ,safe_divide(r_r_5.win_popularity, r_r_5.num_horses) as popularity_rate_5 -- 全体に対する人気の割合
-    ,safe_divide(r_r_5.win_popularity-r_r_5.finish_position, r_r_5.num_horses) as upside_rate_5 -- 人気に対してどの程度着順が上振れるか(プラスだと上振れ)
+    ,safe_divide(r_r_5.win_popularity, coalesce(t_r_h_c_5.num_horses, r_r_5.num_horses)) as popularity_rate_5 -- 全体に対する人気の割合
+    ,safe_divide(r_r_5.win_popularity-r_r_5.finish_position, coalesce(t_r_h_c_5.num_horses, r_r_5.num_horses)) as upside_rate_5 -- 人気に対してどの程度着順が上振れるか(プラスだと上振れ)
     ,r_r_5.idm as idm_5
     ,r_r_5.improvement_code as improvement_code_5
     ,r_r_5.late_start as late_start_5
@@ -239,14 +250,24 @@ with temp_base_race_entries as (
     temp_base_race_entries as t_b_r_e
     left join `{project_id}`.raw.race_results as r_r_1
       on t_b_r_e.prev_race_key_1 = concat(r_r_1.horse_id, format_date('%Y%m%d', r_r_1.race_date))
+    left join temp_race_horse_count as t_r_h_c_1
+      on r_r_1.race_id = t_r_h_c_1.race_id
     left join `{project_id}`.raw.race_results as r_r_2
       on t_b_r_e.prev_race_key_2 = concat(r_r_2.horse_id, format_date('%Y%m%d', r_r_2.race_date))
+    left join temp_race_horse_count as t_r_h_c_2
+      on r_r_2.race_id = t_r_h_c_2.race_id
     left join `{project_id}`.raw.race_results as r_r_3
       on t_b_r_e.prev_race_key_3 = concat(r_r_3.horse_id, format_date('%Y%m%d', r_r_3.race_date))
+    left join temp_race_horse_count as t_r_h_c_3
+      on r_r_3.race_id = t_r_h_c_3.race_id
     left join `{project_id}`.raw.race_results as r_r_4
       on t_b_r_e.prev_race_key_4 = concat(r_r_4.horse_id, format_date('%Y%m%d', r_r_4.race_date))
+    left join temp_race_horse_count as t_r_h_c_4
+      on r_r_4.race_id = t_r_h_c_4.race_id
     left join `{project_id}`.raw.race_results as r_r_5
       on t_b_r_e.prev_race_key_5 = concat(r_r_5.horse_id, format_date('%Y%m%d', r_r_5.race_date))
+    left join temp_race_horse_count as t_r_h_c_5
+      on r_r_5.race_id = t_r_h_c_5.race_id
 )
 
 ,temp_past_race_features2 as (
@@ -363,7 +384,7 @@ with temp_base_race_entries as (
     ,r_i.direction
     ,r_i.age_condition
     ,r_i.race_class
-    ,r_i.num_horses
+    ,coalesce(t_r_h_c.num_horses, r_i.num_horses) as num_horses
     ,h_r.horse_number
     -- 全成績
     ,safe_divide(h_e.jra_win+h_e.jra_place+h_e.jra_show, h_e.jra_win+h_e.jra_place+h_e.jra_show+h_e.jra_out) as top3_finish_rate
@@ -561,6 +582,8 @@ with temp_base_race_entries as (
     left join `{project_id}`.raw.horse_results as h_r
       on h_e.race_id = h_r.race_id
       and h_e.horse_number = h_r.horse_number
+    left join temp_race_horse_count as t_r_h_c
+      on r_i.race_id = t_r_h_c.race_id
   where
     r_i.race_date BETWEEN '{start_date}' AND '{end_date}'
 )
