@@ -178,7 +178,6 @@ gcloud scheduler jobs delete daily-data-pipeline --location=asia-northeast1
 | `deploy_cloud_run.sh` | Cloud Runサービスのデプロイ |
 | `verify_deployment.sh` | デプロイ後の動作確認 |
 | `setup_scheduler.sh` | Cloud Schedulerジョブの作成・更新 |
-| `cleanup_legacy_functions.sh` | 旧Cloud Run Functions (gcs-to-bq) の削除 |
 
 ## サービスアカウント
 
