@@ -43,9 +43,7 @@ class TestPredictPipeline:
             X_train[col] = X_train[col].astype("category")
 
         positions = np.tile(np.arange(1, n_horses + 1), n_races)
-        y_train = np.where(positions == 1, 3,
-                   np.where(positions == 2, 2,
-                    np.where(positions == 3, 1, 0)))
+        y_train = np.where((positions >= 1) & (positions <= 3), 1, 0)
         groups_train = [n_horses] * n_races
 
         # 検証用

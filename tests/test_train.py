@@ -147,9 +147,9 @@ class TestPrepareFeatures:
     def test_basic_preparation(self):
         """特徴量準備が正しく動作すること"""
         df = pd.DataFrame({
-            "race_id": ["r1", "r1", "r1", "r2", "r2"],
+            "race_id": ["r1", "r1", "r1", "r1", "r1"],
             "horse_id": ["h1", "h2", "h3", "h4", "h5"],
-            "finish_position": [1, 2, 3, 1, 2],
+            "finish_position": [1, 2, 3, 4, 5],
             "feature_a": [1.0, 2.0, 3.0, 4.0, 5.0],
             "feature_b": [0.1, 0.2, 0.3, 0.4, 0.5],
             "course_type": ["turf", "dirt", "turf", "dirt", "turf"],
@@ -168,13 +168,15 @@ class TestPrepareFeatures:
         assert "feature_b" in X.columns
         assert X["course_type"].dtype.name == "category"
 
-        # relevanceスコアの確認（整数: 1着=3, 2着=2, 3着=1）
-        assert y[0] == 3  # 1着 → 3
-        assert y[1] == 2  # 2着 → 2
+        # 二値ラベルの確認（3着以内=1, それ以外=0）
+        assert y[0] == 1  # 1着 → 1
+        assert y[1] == 1  # 2着 → 1
         assert y[2] == 1  # 3着 → 1
+        assert y[3] == 0  # 4着 → 0
+        assert y[4] == 0  # 5着 → 0
 
         # グループサイズ
-        assert groups == [3, 2]
+        assert groups == [5]
 
     def test_zero_finish_position(self):
         """着順が0の場合でもエラーにならないこと"""
@@ -186,10 +188,10 @@ class TestPrepareFeatures:
         X, y, groups = prepare_features(
             df, exclude_columns=["race_id", "finish_position"], categorical_columns=[]
         )
-        # 0着 → relevance 0
+        # 0着 → 0（3着以内でない）
         assert y[0] == 0
-        # 1着 → relevance 3
-        assert y[1] == 3
+        # 1着 → 1（3着以内）
+        assert y[1] == 1
 
 
 class TestEvaluatePredictions:
@@ -206,6 +208,7 @@ class TestEvaluatePredictions:
         metrics = evaluate_predictions(y_true_positions, y_pred, groups)
         assert metrics["ndcg@3"] == pytest.approx(1.0)
         assert metrics["recall@3"] == pytest.approx(1.0)
+        assert metrics["auc"] == pytest.approx(1.0)
         assert metrics["num_races"] == 1
 
     def test_worst_prediction(self):
@@ -230,6 +233,8 @@ class TestEvaluatePredictions:
         assert metrics["num_races"] == 2
         # 1レース目: 完璧(NDCG=1.0), 2レース目: 逆(NDCG<1.0)
         assert 0.0 < metrics["ndcg@3"] < 1.0
+        # AUCは0〜1の範囲
+        assert 0.0 <= metrics["auc"] <= 1.0
 
 
 class TestTrainPipeline:
@@ -389,9 +394,11 @@ class TestTrainPipeline:
             assert "metrics" in result
             assert "ndcg@3" in result["metrics"]
             assert "recall@3" in result["metrics"]
+            assert "auc" in result["metrics"]
             assert result["metrics"]["num_races"] > 0
             assert 0.0 <= result["metrics"]["ndcg@3"] <= 1.0
             assert 0.0 <= result["metrics"]["recall@3"] <= 1.0
+            assert 0.0 <= result["metrics"]["auc"] <= 1.0
             assert result["train_rows"] > 0
             assert result["valid_rows"] > 0
             assert result["predict_rows"] > 0

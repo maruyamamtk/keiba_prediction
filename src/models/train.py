@@ -23,6 +23,7 @@ import numpy as np
 import pandas as pd
 import yaml
 from google.cloud import bigquery, storage
+from sklearn.metrics import roc_auc_score
 
 from src.models.lgbm_ranker import LGBMRanker, LGBMRankerConfig
 
@@ -207,16 +208,14 @@ def prepare_features(
 
     Returns:
         (X, y, groups) のタプル
-        y: 着順ベースの整数relevanceスコア（1着=3, 2着=2, 3着=1, 4着以下=0）
+        y: 二値ラベル（3着以内=1, それ以外=0）
     """
     X = build_feature_matrix(df, exclude_columns, categorical_columns)
 
-    # ラベル: 着順を整数のrelevanceスコアに変換
-    # LightGBM lambdarankは整数ラベルが必要
+    # ラベル: 3着以内=1, それ以外=0 の二値ラベル
+    # finish_position=0（出走取消等）は0として扱う
     positions = df["finish_position"].values.astype(int)
-    y = np.where(positions == 1, 3,
-         np.where(positions == 2, 2,
-          np.where(positions == 3, 1, 0)))
+    y = np.where((positions >= 1) & (positions <= 3), 1, 0)
 
     # グループサイズ（各レースの馬数）
     groups = df.groupby("race_id", sort=False).size().tolist()
@@ -279,9 +278,19 @@ def evaluate_predictions(
 
         start = end
 
+    # レース横断でのAUC（二値ラベル: 3着以内=1, それ以外=0）
+    binary_labels = np.where(
+        (y_true_positions >= 1) & (y_true_positions <= 3), 1, 0
+    )
+    if len(np.unique(binary_labels)) >= 2:
+        auc = float(roc_auc_score(binary_labels, y_pred))
+    else:
+        auc = 0.0
+
     return {
         "ndcg@3": float(np.mean(ndcg_scores)) if ndcg_scores else 0.0,
         "recall@3": float(np.mean(recall_scores)) if recall_scores else 0.0,
+        "auc": auc,
         "num_races": len(groups),
     }
 
@@ -526,6 +535,7 @@ def main():
     print(f"\n評価指標:")
     print(f"  NDCG@3:   {result['metrics']['ndcg@3']:.4f}")
     print(f"  Recall@3: {result['metrics']['recall@3']:.4f}")
+    print(f"  AUC:      {result['metrics']['auc']:.4f}")
     print(f"  レース数: {result['metrics']['num_races']}")
     print("=" * 60)
 
