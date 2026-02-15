@@ -1,4 +1,5 @@
 # LightGBM LambdaRank モデル設定
+# ラベル: 二値（3着以内=1, それ以外=0）でランク学習
 model:
   # LightGBMパラメータ
   params:
@@ -62,3 +63,4 @@ evaluation:
   metrics:
     - "ndcg@3"
     - "recall@3"
+    - "auc"
