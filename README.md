@@ -169,12 +169,6 @@ keiba_prediction/
 │           ├── condition_features.py  # 条件適性特徴量
 │           ├── feature_pipeline.py    # 特徴量パイプライン
 │           └── past_performance.py    # 過去走特徴量
-├── legacy/                            # レガシーコード（参照用）
-│   ├── README.md
-│   ├── main.py                        # 旧Flaskエントリーポイント
-│   ├── data_pipeline.py              # 旧パイプライン
-│   ├── cloud_functions/              # 旧Cloud Functions
-│   └── downloader/                   # 旧シェルスクリプト版
 ├── scripts/                           # ユーティリティスクリプト
 │   ├── generate_features.py
 │   ├── reload_gcs_to_bq.py
@@ -182,11 +176,6 @@ keiba_prediction/
 │   ├── setup_gcp.sh
 │   └── sync_to_gcs.sh
 ├── tests/                             # テストコード
-├── notebooks/                         # Jupyter Notebook（EDA）
-│   ├── 01_data_exploration.ipynb
-│   ├── 02_race_analysis.ipynb
-│   ├── 03_horse_analysis.ipynb
-│   └── 04_feature_correlation.ipynb
 ├── config/                            # BigQueryスキーマ定義JSON
 ├── infrastructure/                    # GCPインフラ設定
 │   ├── cloud_run_config.yaml
@@ -255,18 +244,6 @@ keiba_prediction/
 - BigQueryのrawデータから特徴量テーブルを生成
 - モデル学習前の特徴量準備
 - 特徴量の追加・更新
-
-### 4. `legacy/` - レガシーコード
-
-**目的**: 旧アーキテクチャのコード。参照目的で保持しており、新規開発では使用しない。
-
-**含まれるファイル**:
-- `main.py`: 旧Flaskエントリーポイント → FastAPI (`src/automation/api/app.py`) に移行済み
-- `data_pipeline.py`: 旧パイプライン → `src/automation/pipeline/` に移行済み
-- `cloud_functions/`: 旧Cloud Functions → Cloud Run統合パイプラインに移行済み
-- `downloader/`: 旧シェルスクリプト版 → Pythonモジュール (`src/automation/data/jrdb_downloader.py`) に移行済み
-
-**注意**: legacy配下のコードは実行せず、src配下の新しいモジュールを使用してください。
 
 ---
 
