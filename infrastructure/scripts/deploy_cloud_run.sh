@@ -98,11 +98,20 @@ gcloud run deploy "${SERVICE_NAME}" \
     --concurrency=1 \
     --max-instances=1 \
     --no-allow-unauthenticated \
-    --set-env-vars="GCP_PROJECT_ID=${GCP_PROJECT_ID},GCP_REGION=${GCP_REGION},GCS_BUCKET_RAW=${GCS_BUCKET_RAW_FULL},BQ_DATASET_RAW=raw,BQ_DATASET_FEATURES=features,LOG_LEVEL=INFO" \
+    --set-env-vars="GCP_PROJECT_ID=${GCP_PROJECT_ID},GCP_REGION=${GCP_REGION},GCS_BUCKET_RAW=${GCS_BUCKET_RAW:-keiba-raw-data},BQ_DATASET_RAW=raw,BQ_DATASET_FEATURES=features,LOG_LEVEL=INFO" \
     --set-secrets="JRDB_USER=jrdb-user:latest,JRDB_PASSWORD=jrdb-password:latest" \
     --quiet
 
 log_info "デプロイが完了しました"
+
+# サービスアカウントにGCSバケットへのアクセス権限を付与
+log_info "サービスアカウントにGCSバケットへのアクセス権限を付与しています..."
+
+gsutil iam ch \
+    "serviceAccount:${PIPELINE_SA_EMAIL}:roles/storage.objectAdmin" \
+    "gs://${GCS_BUCKET_RAW_FULL}" 2>/dev/null && \
+    log_info "GCSバケット権限を設定しました: gs://${GCS_BUCKET_RAW_FULL}" || \
+    log_warn "GCSバケット権限の設定をスキップしました（バケットが存在しない可能性があります）"
 
 # サービスURLを取得
 SERVICE_URL=$(gcloud run services describe "${SERVICE_NAME}" \

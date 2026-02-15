@@ -613,7 +613,8 @@ def create_loader_from_env() -> Optional[BigQueryLoader]:
         return None
 
     dataset_id = os.environ.get("BQ_DATASET_RAW", DEFAULT_DATASET_ID)
-    bucket_name = os.environ.get("GCS_BUCKET_NAME")
+    bucket_suffix = os.environ.get("GCS_BUCKET_RAW", "keiba-raw-data")
+    bucket_name = f"{project_id}-{bucket_suffix}"
 
     return BigQueryLoader(
         project_id=project_id,

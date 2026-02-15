@@ -422,7 +422,7 @@ class TestCreateLoaderFromEnv:
         env_vars = {
             "GCP_PROJECT_ID": "test-project",
             "BQ_DATASET_RAW": "custom_dataset",
-            "GCS_BUCKET_NAME": "custom-bucket",
+            "GCS_BUCKET_RAW": "custom-raw-data",
         }
         with patch.dict(os.environ, env_vars, clear=True):
             result = create_loader_from_env()
@@ -430,7 +430,7 @@ class TestCreateLoaderFromEnv:
         assert result is not None
         assert result.project_id == "test-project"
         assert result.dataset_id == "custom_dataset"
-        assert result.bucket_name == "custom-bucket"
+        assert result.bucket_name == "test-project-custom-raw-data"
 
 
 class TestBigQueryLoaderMerge:
