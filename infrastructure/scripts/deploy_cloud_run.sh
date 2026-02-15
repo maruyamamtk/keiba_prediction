@@ -107,8 +107,6 @@ log_info "デプロイが完了しました"
 # サービスアカウントにGCSバケットへのアクセス権限を付与
 log_info "サービスアカウントにGCSバケットへのアクセス権限を付与しています..."
 
-GCS_BUCKET_RAW_FULL="${GCP_PROJECT_ID}-${GCS_BUCKET_RAW:-keiba-raw-data}"
-
 gsutil iam ch \
     "serviceAccount:${PIPELINE_SA_EMAIL}:roles/storage.objectAdmin" \
     "gs://${GCS_BUCKET_RAW_FULL}" 2>/dev/null && \
