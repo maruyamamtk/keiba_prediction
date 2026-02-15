@@ -404,3 +404,43 @@ class TestTrainPipeline:
             assert result["predict_rows"] > 0
             assert result["num_features"] > 0
             assert Path(result["model_path"]).exists()
+
+    @patch("src.models.train.fetch_training_data")
+    def test_train_pipeline_with_tuning(self, mock_fetch, mock_config, mock_training_df):
+        """チューニングモードで学習パイプラインが動作すること"""
+        mock_fetch.return_value = mock_training_df
+
+        # tuning設定を追加
+        mock_config["tuning"] = {
+            "n_trials": 2,
+            "timeout": 60,
+            "search_space": {
+                "feature_fraction": {
+                    "type": "float",
+                    "low": 0.5,
+                    "high": 1.0,
+                },
+            },
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = train_pipeline(
+                project_id="test-project",
+                execution_date=datetime.date(2026, 2, 13),
+                config=mock_config,
+                output_dir=tmpdir,
+                skip_gcs_upload=True,
+                tune=True,
+                n_trials=2,
+            )
+
+            assert "metrics" in result
+            assert "tuning" in result
+            assert result["tuning"]["n_trials"] == 2
+            assert 0.0 <= result["tuning"]["best_value"] <= 1.0
+            assert "best_params" in result["tuning"]
+            assert Path(result["model_path"]).exists()
+            # best_params JSONファイルも保存されていること
+            date_str = datetime.date(2026, 2, 13).strftime("%Y%m%d")
+            params_path = Path(tmpdir) / f"best_params_{date_str}.json"
+            assert params_path.exists()
