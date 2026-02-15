@@ -1,0 +1,193 @@
+"""
+推論パイプラインのテスト
+"""
+
+import datetime
+import tempfile
+from pathlib import Path
+from unittest.mock import patch
+
+import numpy as np
+import pandas as pd
+import pytest
+
+from src.models.lgbm_ranker import LGBMRanker, LGBMRankerConfig
+from src.models.predict import (
+    format_predictions,
+    predict_pipeline,
+)
+
+
+class TestPredictPipeline:
+    """predict_pipelineのテスト"""
+
+    @pytest.fixture
+    def trained_model_path(self):
+        """学習済みモデルを一時ファイルに作成"""
+        np.random.seed(42)
+        n_races = 10
+        n_horses = 8
+        n_total = n_races * n_horses
+
+        X_train = pd.DataFrame({
+            "distance": np.random.choice([1200, 1600, 2000], n_total),
+            "num_horses": [n_horses] * n_total,
+            "bracket_number": np.tile(np.arange(1, n_horses + 1), n_races),
+            "horse_number": np.tile(np.arange(1, n_horses + 1), n_races),
+            "weight": 55.0 + np.random.randn(n_total),
+            "course_type": np.random.choice(["turf", "dirt"], n_total),
+            "track_condition": np.random.choice(["good", "soft"], n_total),
+            "feature_a": np.random.randn(n_total),
+            "feature_b": np.random.randn(n_total),
+            "feature_c": np.random.randn(n_total),
+        })
+        for col in ["course_type", "track_condition"]:
+            X_train[col] = X_train[col].astype("category")
+
+        positions = np.tile(np.arange(1, n_horses + 1), n_races)
+        y_train = np.where(positions == 1, 3,
+                   np.where(positions == 2, 2,
+                    np.where(positions == 3, 1, 0)))
+        groups_train = [n_horses] * n_races
+
+        # 検証用
+        X_valid = X_train.copy()
+        y_valid = y_train.copy()
+        groups_valid = groups_train.copy()
+
+        config = LGBMRankerConfig(num_boost_round=10, early_stopping_rounds=5, log_evaluation=0)
+        ranker = LGBMRanker(config=config)
+        ranker.train(X_train, y_train, groups_train, X_valid, y_valid, groups_valid,
+                     categorical_feature=["course_type", "track_condition"])
+
+        tmpdir = tempfile.mkdtemp()
+        model_path = str(Path(tmpdir) / "model.txt")
+        ranker.save(model_path)
+        return model_path
+
+    @pytest.fixture
+    def mock_predict_df(self):
+        """推論対象のモックデータ"""
+        np.random.seed(42)
+        rows = []
+        for day in [14, 15]:
+            for race_num in range(2):
+                race_date = datetime.date(2026, 2, day)
+                race_id = f"race_{race_date.strftime('%Y%m%d')}_{race_num}"
+                for horse_num in range(1, 9):
+                    rows.append({
+                        "race_id": race_id,
+                        "horse_id": f"horse_{horse_num}",
+                        "race_date": race_date,
+                        "target_place": horse_num <= 3,
+                        "finish_position": horse_num,
+                        "venue_code": "01",
+                        "race_number": race_num + 1,
+                        "course_type": "turf" if horse_num % 2 == 0 else "dirt",
+                        "track_condition": "good",
+                        "distance": 1600,
+                        "num_horses": 8,
+                        "bracket_number": (horse_num - 1) // 2 + 1,
+                        "horse_number": horse_num,
+                        "weight": 55.0 + np.random.randn(),
+                        "jockey_id": f"j{horse_num}",
+                        "trainer_id": f"t{horse_num}",
+                        "created_at": None,
+                        "feature_a": np.random.randn(),
+                        "feature_b": np.random.randn(),
+                        "feature_c": np.random.randn(),
+                    })
+        return pd.DataFrame(rows)
+
+    @patch("src.models.predict.fetch_prediction_data")
+    def test_predict_pipeline_basic(self, mock_fetch, trained_model_path, mock_predict_df):
+        """推論パイプラインが正常に動作すること"""
+        mock_fetch.return_value = mock_predict_df
+
+        config = {
+            "data": {
+                "dataset": "features",
+                "table": "training_data",
+                "date_column": "race_date",
+                "exclude_columns": [
+                    "race_id", "horse_id", "race_date",
+                    "target_place", "finish_position",
+                    "venue_code", "jockey_id", "trainer_id",
+                    "created_at", "race_number",
+                ],
+                "categorical_columns": ["course_type", "track_condition"],
+            },
+        }
+
+        result_df = predict_pipeline(
+            project_id="test-project",
+            execution_date=datetime.date(2026, 2, 13),
+            config=config,
+            model_path=trained_model_path,
+        )
+
+        assert len(result_df) > 0
+        assert "pred_score" in result_df.columns
+        assert "pred_rank" in result_df.columns
+        assert "race_id" in result_df.columns
+        assert "horse_number" in result_df.columns
+
+        # 各レース内でpred_rankが1からnum_horsesまで振られていること
+        for race_id, group in result_df.groupby("race_id"):
+            ranks = sorted(group["pred_rank"].tolist())
+            assert ranks[0] == 1
+
+    @patch("src.models.predict.fetch_prediction_data")
+    def test_predict_pipeline_empty_data(self, mock_fetch, trained_model_path):
+        """推論対象データがない場合、空のDataFrameを返すこと"""
+        mock_fetch.return_value = pd.DataFrame()
+
+        config = {
+            "data": {
+                "dataset": "features",
+                "table": "training_data",
+                "date_column": "race_date",
+                "exclude_columns": ["race_id", "horse_id", "race_date",
+                                    "target_place", "finish_position",
+                                    "venue_code", "jockey_id", "trainer_id",
+                                    "created_at", "race_number"],
+                "categorical_columns": [],
+            },
+        }
+
+        result_df = predict_pipeline(
+            project_id="test-project",
+            execution_date=datetime.date(2026, 2, 13),
+            config=config,
+            model_path=trained_model_path,
+        )
+
+        assert len(result_df) == 0
+
+
+class TestFormatPredictions:
+    """format_predictionsのテスト"""
+
+    def test_format_empty(self):
+        """空DataFrameの場合、メッセージが返ること"""
+        result = format_predictions(pd.DataFrame())
+        assert "推論対象データがありません" in result
+
+    def test_format_with_data(self):
+        """データがある場合、整形された文字列が返ること"""
+        df = pd.DataFrame({
+            "race_id": ["r1", "r1", "r1"],
+            "race_date": [datetime.date(2026, 2, 14)] * 3,
+            "horse_id": ["h1", "h2", "h3"],
+            "horse_number": [1, 2, 3],
+            "venue_code": ["01", "01", "01"],
+            "race_number": [1, 1, 1],
+            "pred_score": [0.8, 0.5, 0.3],
+            "pred_rank": [1, 2, 3],
+            "finish_position": [2, 1, 3],
+        })
+
+        result = format_predictions(df)
+        assert "01" in result
+        assert "1R" in result
+        assert "0.8000" in result
