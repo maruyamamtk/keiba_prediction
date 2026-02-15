@@ -119,7 +119,23 @@ python3 -m src.manual.quality_check
 python3 -m src.ml.features.feature_pipeline --start-date 2024-01-01 --end-date 2024-12-31
 ```
 
-### 5. Cloud Runデプロイ（本番環境）
+### 5. モデル学習・推論
+
+```bash
+# モデル学習（GCSアップロードなし）
+python3 -m src.models.train --project-id <PROJECT_ID> --skip-gcs-upload --output-dir ./models
+
+# モデル学習（GCSアップロードあり）
+python3 -m src.models.train --project-id <PROJECT_ID>
+
+# 推論実行
+python3 -m src.models.predict --project-id <PROJECT_ID> --model-path ./models/lgbm_ranker_20260215.txt
+
+# 推論結果をCSV保存
+python3 -m src.models.predict --project-id <PROJECT_ID> --model-path ./models/lgbm_ranker_20260215.txt --output-csv predictions.csv
+```
+
+### 6. Cloud Runデプロイ（本番環境）
 
 ```bash
 # Dockerイメージのビルド・プッシュ
@@ -162,13 +178,17 @@ keiba_prediction/
 │   │   ├── create_tables.py          # BigQueryテーブル作成
 │   │   ├── quality_check.py          # データ品質チェック
 │   │   └── validation_rules.py       # バリデーションルール定義
-│   └── ml/                            # 機械学習
+│   ├── ml/                            # 機械学習（特徴量生成）
+│   │   ├── __init__.py
+│   │   └── features/
+│   │       ├── __init__.py
+│   │       ├── feature_pipeline.py    # 特徴量パイプライン
+│   │       └── feature_query_raw.sql. # 特徴量集計用クエリ
+│   └── models/                        # モデル学習・推論
 │       ├── __init__.py
-│       └── features/
-│           ├── __init__.py
-│           ├── condition_features.py  # 条件適性特徴量
-│           ├── feature_pipeline.py    # 特徴量パイプライン
-│           └── past_performance.py    # 過去走特徴量
+│       ├── lgbm_ranker.py            # LightGBM LambdaRankモデル
+│       ├── train.py                  # 学習パイプライン
+│       └── predict.py                # 推論パイプライン
 ├── scripts/                           # ユーティリティスクリプト
 │   ├── generate_features.py
 │   ├── reload_gcs_to_bq.py
@@ -176,7 +196,8 @@ keiba_prediction/
 │   ├── setup_gcp.sh
 │   └── sync_to_gcs.sh
 ├── tests/                             # テストコード
-├── config/                            # BigQueryスキーマ定義JSON
+├── config/                            # 設定ファイル（BigQueryスキーマ、モデル設定）
+│   └── model_config.yaml             # LightGBMモデル設定
 ├── infrastructure/                    # GCPインフラ設定
 │   ├── cloud_run_config.yaml
 │   └── scripts/
@@ -231,7 +252,7 @@ keiba_prediction/
 - データロード後の品質確認
 - 定期的なデータ検証
 
-### 3. `src/ml/` - 機械学習
+### 3. `src/ml/` - 機械学習（特徴量生成）
 
 **目的**: 機械学習モデルの学習・予測と特徴量エンジニアリング。
 
@@ -244,6 +265,22 @@ keiba_prediction/
 - BigQueryのrawデータから特徴量テーブルを生成
 - モデル学習前の特徴量準備
 - 特徴量の追加・更新
+
+### 4. `src/models/` - モデル学習・推論
+
+**目的**: LightGBM LambdaRankモデルの学習・推論パイプライン。
+
+**含まれるモジュール**:
+- `lgbm_ranker.py`: LightGBM LambdaRankモデルのラッパークラス（学習・予測・保存・読み込み）
+- `train.py`: 学習パイプライン（BigQueryデータ取得 → 時系列分割 → 学習 → 評価 → GCS保存）
+- `predict.py`: 推論パイプライン（モデル読み込み → 今週末レース予測 → 結果整形）
+
+**使用場面**:
+- モデルの学習と評価（Phase 4）
+- 今週末のレース着順予測
+- モデルのGCS保存・読み込み
+
+詳細は [src/models/README.md](./src/models/README.md) を参照してください。
 
 ---
 
@@ -317,9 +354,12 @@ Cloud RunにデプロイされたFastAPIアプリケーションは以下のエ�
 - Secret Managerでの認証情報管理
 - Cloud Loggingとの統合
 
-**Phase 4-5: 未着手**
-- モデル開発（LightGBM ランク学習）
-- 予測パイプライン
+**Phase 4: モデル開発 🔧 進行中**
+- LightGBM ランク学習 (LambdaRank) ✅
+- 時系列分割・推論パイプライン ✅
+- バックテスト ⬜
+
+**Phase 5: 運用システム構築 ⬜ 未着手**
 - Webダッシュボード
 - 通知システム
 
@@ -553,6 +593,7 @@ python -m pytest tests/ --cov=src --cov-report=html
 | [SCHEMA.md](./SCHEMA.md) | JRDBデータスキーマ仕様書（データタイプ、フィールド定義、コードテーブル） |
 | [ML_FEATURE.md](./ML_FEATURE.md) | 特徴量設計（特徴量リスト、Target Encoding、リーク対策） |
 | [infrastructure/README.md](./infrastructure/README.md) | インフラセットアップガイド（GCP、Cloud Run、Docker） |
+| [src/models/README.md](./src/models/README.md) | モデル学習・推論の詳細ドキュメント |
 
 ---
 
@@ -586,10 +627,11 @@ python -m pytest tests/ --cov=src --cov-report=html
 - ⬜ Secret Managerでの認証情報管理
 - ⬜ Cloud Loggingとの統合
 
-### Phase 4: モデル開発 ⬜ 未着手
+### Phase 4: モデル開発 🔧 進行中
 
-- ⬜ LightGBM ランク学習
-- ⬜ 時系列クロスバリデーション
+- ✅ LightGBM ランク学習 (LambdaRank) - Issue #14
+- ✅ 時系列分割（学習・検証・推論） - Issue #14
+- ✅ 推論パイプライン - Issue #14
 - ⬜ バックテスト
 
 ### Phase 5: 運用システム構築 ⬜ 未着手
