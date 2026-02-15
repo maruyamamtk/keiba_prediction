@@ -26,6 +26,7 @@ from google.cloud import bigquery, storage
 from sklearn.metrics import roc_auc_score
 
 from src.models.lgbm_ranker import LGBMRanker, LGBMRankerConfig
+from src.models.tuning import run_tuning, save_best_params
 
 logger = logging.getLogger(__name__)
 
@@ -342,6 +343,9 @@ def train_pipeline(
     config: dict,
     output_dir: Optional[str] = None,
     skip_gcs_upload: bool = False,
+    tune: bool = False,
+    n_trials: Optional[int] = None,
+    tune_timeout: Optional[int] = None,
 ) -> dict:
     """
     学習パイプラインを実行する
@@ -352,6 +356,9 @@ def train_pipeline(
         config: 設定辞書
         output_dir: モデル出力ディレクトリ（Noneの場合は一時ディレクトリ）
         skip_gcs_upload: GCSアップロードをスキップするか
+        tune: ハイパーパラメータ調整を実行するか
+        n_trials: Optuna の trial 数（Noneの場合は config から取得）
+        tune_timeout: チューニングのタイムアウト秒数（Noneの場合は config から取得）
 
     Returns:
         学習結果の辞書
@@ -392,19 +399,49 @@ def train_pipeline(
         categorical_columns=data_config.get("categorical_columns", []),
     )
 
-    # 4. モデル学習
+    categorical_in_features = [
+        c for c in data_config.get("categorical_columns", [])
+        if c in X_train.columns
+    ]
+
+    # 4. ハイパーパラメータ調整（--tune 指定時）
+    tuning_result = None
+    model_params = model_config["params"]
+
+    if tune:
+        # CLI引数でオーバーライド
+        tuning_config = dict(config.get("tuning", {}))
+        if n_trials is not None:
+            tuning_config["n_trials"] = n_trials
+        if tune_timeout is not None:
+            tuning_config["timeout"] = tune_timeout
+
+        config_for_tuning = {
+            "model": model_config,
+            "tuning": tuning_config,
+        }
+
+        tuning_result = run_tuning(
+            X_train=X_train,
+            y_train=y_train,
+            groups_train=groups_train,
+            X_valid=X_valid,
+            y_valid=y_valid,
+            groups_valid=groups_valid,
+            config=config_for_tuning,
+            categorical_feature=categorical_in_features or None,
+        )
+        model_params = tuning_result["best_params"]
+        logger.info(f"Using tuned params: {model_params}")
+
+    # 5. モデル学習（チューニング済みまたはデフォルトパラメータ）
     ranker_config = LGBMRankerConfig(
-        params=model_config["params"],
+        params=model_params,
         num_boost_round=model_config["training"]["num_boost_round"],
         early_stopping_rounds=model_config["training"]["early_stopping_rounds"],
         log_evaluation=model_config["training"]["log_evaluation"],
     )
     ranker = LGBMRanker(config=ranker_config)
-
-    categorical_in_features = [
-        c for c in data_config.get("categorical_columns", [])
-        if c in X_train.columns
-    ]
 
     ranker.train(
         X_train=X_train,
@@ -416,7 +453,7 @@ def train_pipeline(
         categorical_feature=categorical_in_features or None,
     )
 
-    # 5. 検証データで評価
+    # 6. 検証データで評価
     valid_pred = ranker.predict(X_valid)
     metrics = evaluate_predictions(
         y_true_positions=valid_df["finish_position"].values,
@@ -425,7 +462,7 @@ def train_pipeline(
     )
     logger.info(f"Validation metrics: {metrics}")
 
-    # 6. モデル保存
+    # 7. モデル保存
     if output_dir is None:
         output_dir = tempfile.mkdtemp(prefix="keiba_model_")
 
@@ -433,7 +470,14 @@ def train_pipeline(
     model_path = str(Path(output_dir) / f"lgbm_ranker_{date_str}.txt")
     ranker.save(model_path)
 
-    # 7. GCSアップロード
+    # チューニング結果のパラメータも保存
+    if tuning_result is not None:
+        params_path = str(
+            Path(output_dir) / f"best_params_{date_str}.json"
+        )
+        save_best_params(tuning_result["best_params"], params_path)
+
+    # 8. GCSアップロード
     gcs_uri = ""
     if not skip_gcs_upload:
         gcs_uri = upload_model_to_gcs(
@@ -444,7 +488,7 @@ def train_pipeline(
             execution_date=execution_date,
         )
 
-    # 8. 特徴量重要度
+    # 9. 特徴量重要度
     importance = ranker.feature_importance()
     logger.info(f"Top 10 features:\n{importance.head(10).to_string()}")
 
@@ -460,6 +504,14 @@ def train_pipeline(
         "num_features": X_train.shape[1],
         "top_features": importance.head(10).to_dict(orient="records"),
     }
+
+    if tuning_result is not None:
+        result["tuning"] = {
+            "best_value": tuning_result["best_value"],
+            "best_trial_number": tuning_result["best_trial_number"],
+            "n_trials": tuning_result["n_trials"],
+            "best_params": tuning_result["best_params"],
+        }
 
     return result
 
@@ -495,6 +547,23 @@ def main():
         action="store_true",
         help="GCSアップロードをスキップ",
     )
+    parser.add_argument(
+        "--tune",
+        action="store_true",
+        help="Optunaによるハイパーパラメータ調整を実行",
+    )
+    parser.add_argument(
+        "--n-trials",
+        type=int,
+        default=None,
+        help="Optuna の trial 数（デフォルト: config から取得）",
+    )
+    parser.add_argument(
+        "--tune-timeout",
+        type=int,
+        default=None,
+        help="チューニングのタイムアウト秒数（デフォルト: config から取得）",
+    )
     parser.add_argument("--verbose", "-v", action="store_true", help="詳細ログ")
 
     args = parser.parse_args()
@@ -518,6 +587,9 @@ def main():
         config=config,
         output_dir=args.output_dir,
         skip_gcs_upload=args.skip_gcs_upload,
+        tune=args.tune,
+        n_trials=args.n_trials,
+        tune_timeout=args.tune_timeout,
     )
 
     print("\n" + "=" * 60)
@@ -537,6 +609,11 @@ def main():
     print(f"  Recall@3: {result['metrics']['recall@3']:.4f}")
     print(f"  AUC:      {result['metrics']['auc']:.4f}")
     print(f"  レース数: {result['metrics']['num_races']}")
+    if "tuning" in result:
+        print(f"\nチューニング結果:")
+        print(f"  Best AUC (tuning): {result['tuning']['best_value']:.4f}")
+        print(f"  Trial数: {result['tuning']['n_trials']}")
+        print(f"  Best trial: #{result['tuning']['best_trial_number']}")
     print("=" * 60)
 
     return 0

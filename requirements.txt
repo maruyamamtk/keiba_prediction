@@ -10,6 +10,7 @@ numpy==1.26.2
 # Machine Learning
 lightgbm==4.6.0
 scikit-learn==1.3.2
+optuna==4.2.1
 
 # Visualization (for notebooks)
 matplotlib==3.8.2
