@@ -1,0 +1,64 @@
+# LightGBM LambdaRank モデル設定
+model:
+  # LightGBMパラメータ
+  params:
+    objective: "lambdarank"
+    metric: "ndcg"
+    ndcg_eval_at:
+      - 3
+    boosting_type: "gbdt"
+    num_leaves: 31
+    learning_rate: 0.05
+    feature_fraction: 0.8
+    bagging_fraction: 0.8
+    bagging_freq: 5
+    verbose: -1
+    seed: 42
+
+  # 学習設定
+  training:
+    num_boost_round: 1000
+    early_stopping_rounds: 50
+    log_evaluation: 100
+    validation_months: 6
+
+# データ設定
+data:
+  # BigQuery
+  project_id: null  # 環境変数 GCP_PROJECT_ID から取得
+  dataset: "features"
+  table: "training_data"
+
+  # ラベル・グループ
+  label_column: "finish_position"
+  group_column: "race_id"
+  date_column: "race_date"
+
+  # 除外カラム（特徴量として使用しない）
+  exclude_columns:
+    - "race_id"
+    - "horse_id"
+    - "race_date"
+    - "target_place"
+    - "finish_position"
+    - "venue_code"
+    - "jockey_id"
+    - "trainer_id"
+    - "created_at"
+    - "race_number"
+
+  # カテゴリカル特徴量
+  categorical_columns:
+    - "course_type"
+    - "track_condition"
+
+# GCS設定
+gcs:
+  bucket_suffix: "keiba-models"
+  model_prefix: "lgbm_ranker"
+
+# 評価設定
+evaluation:
+  metrics:
+    - "ndcg@3"
+    - "recall@3"
