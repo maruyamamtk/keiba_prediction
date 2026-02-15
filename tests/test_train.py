@@ -47,11 +47,11 @@ class TestComputeWeekBoundaries:
         assert sun == datetime.date(2026, 2, 15)
 
     def test_sunday(self):
-        """日曜日の場合、次の土曜・日曜を返すこと"""
+        """日曜日の場合、前日の土曜・当日の日曜を返すこと"""
         date = datetime.date(2026, 2, 15)  # 日曜日
         sat, sun = compute_week_boundaries(date)
-        assert sat == datetime.date(2026, 2, 21)
-        assert sun == datetime.date(2026, 2, 22)
+        assert sat == datetime.date(2026, 2, 14)
+        assert sun == datetime.date(2026, 2, 15)
 
     def test_wednesday(self):
         """水曜日の場合、同じ週の土曜・日曜を返すこと"""
@@ -64,17 +64,16 @@ class TestComputeWeekBoundaries:
 class TestLoadConfig:
     """load_configのテスト"""
 
-    def test_load_valid_config(self):
+    def test_load_valid_config(self, tmp_path):
         """有効な設定ファイルを読み込めること"""
         config_data = {
             "model": {"params": {"objective": "lambdarank"}},
             "data": {"dataset": "features"},
         }
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
-            yaml.dump(config_data, f)
-            f.flush()
-            config = load_config(f.name)
-            assert config["model"]["params"]["objective"] == "lambdarank"
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(yaml.dump(config_data))
+        config = load_config(str(config_file))
+        assert config["model"]["params"]["objective"] == "lambdarank"
 
     def test_load_nonexistent_config(self):
         """存在しない設定ファイルでエラーになること"""

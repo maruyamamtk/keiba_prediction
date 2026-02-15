@@ -5,6 +5,8 @@ LightGBM LambdaRank モデル
 レースIDをグループ単位として、各馬の相対的な順位を予測する。
 """
 
+from __future__ import annotations
+
 import json
 import logging
 from dataclasses import dataclass, field

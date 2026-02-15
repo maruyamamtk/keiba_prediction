@@ -3,8 +3,6 @@
 """
 
 import datetime
-import tempfile
-from pathlib import Path
 from unittest.mock import patch
 
 import numpy as np
@@ -22,7 +20,7 @@ class TestPredictPipeline:
     """predict_pipelineのテスト"""
 
     @pytest.fixture
-    def trained_model_path(self):
+    def trained_model_path(self, tmp_path):
         """学習済みモデルを一時ファイルに作成"""
         np.random.seed(42)
         n_races = 10
@@ -60,8 +58,7 @@ class TestPredictPipeline:
         ranker.train(X_train, y_train, groups_train, X_valid, y_valid, groups_valid,
                      categorical_feature=["course_type", "track_condition"])
 
-        tmpdir = tempfile.mkdtemp()
-        model_path = str(Path(tmpdir) / "model.txt")
+        model_path = str(tmp_path / "model.txt")
         ranker.save(model_path)
         return model_path
 

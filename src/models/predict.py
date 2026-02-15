@@ -9,6 +9,8 @@ Usage:
     python src/models/predict.py --project-id <PROJECT_ID> --model-path <MODEL_PATH> --execution-date 2026-02-15
 """
 
+from __future__ import annotations
+
 import argparse
 import datetime
 import logging
@@ -24,6 +26,7 @@ from google.cloud import bigquery, storage
 from src.models.lgbm_ranker import LGBMRanker
 from src.models.train import (
     CONFIG_PATH,
+    build_feature_matrix,
     compute_week_boundaries,
     load_config,
 )
@@ -149,16 +152,12 @@ def predict_pipeline(
         logger.warning("推論対象データがありません")
         return pd.DataFrame()
 
-    # 3. 特徴量準備
-    exclude_columns = data_config["exclude_columns"]
-    categorical_columns = data_config.get("categorical_columns", [])
-
-    feature_cols = [c for c in df.columns if c not in exclude_columns]
-    X = df[feature_cols].copy()
-
-    for col in categorical_columns:
-        if col in X.columns:
-            X[col] = X[col].astype("category")
+    # 3. 特徴量準備（train.pyと共通ロジックを使用）
+    X = build_feature_matrix(
+        df,
+        exclude_columns=data_config["exclude_columns"],
+        categorical_columns=data_config.get("categorical_columns", []),
+    )
 
     # 4. 予測
     scores = ranker.predict(X)
@@ -211,7 +210,8 @@ def format_predictions(result_df: pd.DataFrame) -> str:
         lines.append("-" * 30)
 
         for _, row in group.iterrows():
-            finish = row.get("finish_position", "?")
+            finish_raw = row.get("finish_position", None)
+            finish = str(int(finish_raw)) if pd.notna(finish_raw) else "-"
             lines.append(
                 f"{int(row['pred_rank']):>6} "
                 f"{int(row['horse_number']):>4} "

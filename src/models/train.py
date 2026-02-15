@@ -9,6 +9,8 @@ Usage:
     python src/models/train.py --project-id <PROJECT_ID> --execution-date 2026-02-15
 """
 
+from __future__ import annotations
+
 import argparse
 import datetime
 import logging
@@ -38,9 +40,13 @@ def load_config(config_path: Optional[str] = None) -> dict:
         return yaml.safe_load(f)
 
 
-def compute_week_boundaries(execution_date: datetime.date) -> tuple[datetime.date, datetime.date]:
+def compute_week_boundaries(execution_date: datetime.date) -> tuple:
     """
     実行日の週の土曜・日曜を推論対象日として返す
+
+    月〜土に実行: 同じ週の土曜・日曜を返す
+    日曜に実行: 前日の土曜・当日の日曜を返す
+    （例: 2026/2/15(日)に実行 → 2/14(土), 2/15(日)が推論対象）
 
     Args:
         execution_date: 実行日
@@ -49,10 +55,16 @@ def compute_week_boundaries(execution_date: datetime.date) -> tuple[datetime.dat
         (saturday, sunday) のタプル
     """
     weekday = execution_date.weekday()  # 月=0, 日=6
-    # 今週の土曜日を計算
-    days_to_saturday = (5 - weekday) % 7
-    saturday = execution_date + datetime.timedelta(days=days_to_saturday)
-    sunday = saturday + datetime.timedelta(days=1)
+
+    if weekday == 6:  # 日曜日
+        saturday = execution_date - datetime.timedelta(days=1)
+        sunday = execution_date
+    else:
+        # 月〜土: 今週の土曜日を計算
+        days_to_saturday = (5 - weekday) % 7
+        saturday = execution_date + datetime.timedelta(days=days_to_saturday)
+        sunday = saturday + datetime.timedelta(days=1)
+
     return saturday, sunday
 
 
@@ -115,15 +127,20 @@ def split_train_valid_predict(
     # 推論対象以外のデータ
     remaining = df[~predict_mask].copy()
 
-    # 検証期間の境界を計算
+    # 検証期間の境界を計算（datetime.date型で統一）
     valid_end = saturday - datetime.timedelta(days=1)
-    valid_start = valid_end - pd.DateOffset(months=validation_months)
+    # validation_months分前の日付を計算
+    valid_start_ts = pd.Timestamp(valid_end) - pd.DateOffset(months=validation_months)
+    valid_start = valid_start_ts.date()
 
-    valid_mask = (remaining[date_column] >= valid_start.date()) & (
-        remaining[date_column] <= valid_end
+    # race_dateカラムの型に依存しないよう、pd.Timestamp経由で比較
+    remaining_dates = pd.to_datetime(remaining[date_column])
+    valid_mask = (remaining_dates >= pd.Timestamp(valid_start)) & (
+        remaining_dates <= pd.Timestamp(valid_end)
     )
+    train_mask = remaining_dates < pd.Timestamp(valid_start)
     valid_df = remaining[valid_mask].copy()
-    train_df = remaining[~valid_mask & (remaining[date_column] < valid_start.date())].copy()
+    train_df = remaining[train_mask].copy()
 
     logger.info(
         f"Data split: train={len(train_df)}, valid={len(valid_df)}, "
@@ -145,13 +162,43 @@ def split_train_valid_predict(
     return train_df, valid_df, predict_df
 
 
+def build_feature_matrix(
+    df: pd.DataFrame,
+    exclude_columns: list,
+    categorical_columns: list,
+) -> pd.DataFrame:
+    """
+    DataFrameから特徴量行列を構築する（学習・推論共通）
+
+    Args:
+        df: 入力DataFrame
+        exclude_columns: 除外カラムリスト
+        categorical_columns: カテゴリカル特徴量リスト
+
+    Returns:
+        特徴量のDataFrame
+    """
+    feature_cols = [
+        c for c in df.columns
+        if c not in exclude_columns
+    ]
+
+    X = df[feature_cols].copy()
+
+    for col in categorical_columns:
+        if col in X.columns:
+            X[col] = X[col].astype("category")
+
+    return X
+
+
 def prepare_features(
     df: pd.DataFrame,
-    exclude_columns: list[str],
-    categorical_columns: list[str],
-) -> tuple[pd.DataFrame, np.ndarray, list[int]]:
+    exclude_columns: list,
+    categorical_columns: list,
+) -> tuple:
     """
-    DataFrameから特徴量・ラベル・グループを準備する
+    DataFrameから特徴量・ラベル・グループを準備する（学習用）
 
     Args:
         df: 入力DataFrame
@@ -160,24 +207,12 @@ def prepare_features(
 
     Returns:
         (X, y, groups) のタプル
-        y: 着順ベースのrelevanceスコア（高いほど良い）
+        y: 着順ベースの整数relevanceスコア（1着=3, 2着=2, 3着=1, 4着以下=0）
     """
-    # 特徴量カラムの選定
-    feature_cols = [
-        c for c in df.columns
-        if c not in exclude_columns
-    ]
-
-    X = df[feature_cols].copy()
-
-    # カテゴリカル変数をcategory型に変換
-    for col in categorical_columns:
-        if col in X.columns:
-            X[col] = X[col].astype("category")
+    X = build_feature_matrix(df, exclude_columns, categorical_columns)
 
     # ラベル: 着順を整数のrelevanceスコアに変換
     # LightGBM lambdarankは整数ラベルが必要
-    # 1着=3, 2着=2, 3着=1, 4着以下=0
     positions = df["finish_position"].values.astype(int)
     y = np.where(positions == 1, 3,
          np.where(positions == 2, 2,
