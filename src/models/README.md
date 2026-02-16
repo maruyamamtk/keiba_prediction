@@ -9,6 +9,7 @@ LightGBM LambdaRankによる競馬着順予測モデルの学習・推論パイ�
 | `lgbm_ranker.py` | LightGBM LambdaRankモデルクラス |
 | `train.py` | 学習パイプライン |
 | `predict.py` | 推論パイプライン |
+| `tuning.py` | Optunaハイパーパラメータチューニング |
 | `../../config/model_config.yaml` | モデル・学習・データ設定 |
 
 ---
@@ -41,7 +42,7 @@ LightGBM LambdaRankのラッパークラス。レース内の相対的な着順�
 
 | メソッド | 引数 | 説明 |
 |---------|------|------|
-| `train()` | X_train, y_train, groups_train, X_valid, y_valid, groups_valid, categorical_feature | モデルを学習する。y_trainは整数relevanceスコア（1着=3, 2着=2, 3着=1, 4着以下=0） |
+| `train()` | X_train, y_train, groups_train, X_valid, y_valid, groups_valid, categorical_feature | モデルを学習する。y_trainは二値ラベル（3着以内=1, それ以外=0） |
 | `predict()` | X | 予測スコアを返す（高いほど上位予測） |
 | `save()` | path | モデルを.txtファイル + .meta.jsonに保存 |
 | `load()` | path | .txtファイルからモデルを読み込み |
@@ -92,11 +93,11 @@ BigQueryから `features.training_data` を取得し、時系列分割で学習�
 
 `build_feature_matrix` に加え、ラベル生成とグループサイズ計算を行う（学習用）。
 
-ラベル変換ルール:
-| 着順 | relevanceスコア |
-|------|----------------|
-| 1着 | 3 |
-| 2着 | 2 |
+ラベル変換ルール（二値ラベル）:
+| 着順 | ラベル |
+|------|--------|
+| 1着 | 1 |
+| 2着 | 1 |
 | 3着 | 1 |
 | 4着以下 | 0 |
 
@@ -106,6 +107,7 @@ BigQueryから `features.training_data` を取得し、時系列分割で学習�
 
 - **NDCG@3**: 上位3頭のランキング品質
 - **Recall@3**: 実際の3着以内の馬が予測上位3頭に含まれる割合
+- **AUC**: 3着以内予測の二値分類性能（ROC-AUC）
 
 #### `upload_model_to_gcs(project_id, local_path, ...)`
 
@@ -118,12 +120,13 @@ BigQueryから `features.training_data` を取得し、時系列分割で学習�
 
 1. BigQueryからデータ取得
 2. 時系列分割（学習/検証/推論）
-3. 特徴量・ラベル準備
-4. LGBMRankerで学習
-5. 検証データで評価（NDCG@3, Recall@3）
-6. モデルをローカルに保存
-7. GCSにアップロード（オプション）
-8. 特徴量重要度の出力
+3. 特徴量・ラベル準備（二値ラベル: 3着以内=1, それ以外=0）
+4. Optunaチューニング（オプション: `--tune`フラグ）
+5. LGBMRankerで学習
+6. 検証データで評価（NDCG@3, Recall@3, AUC）
+7. モデルをローカルに保存
+8. GCSにアップロード（オプション）
+9. 特徴量重要度の出力
 
 ### CLI使用方法
 
@@ -134,6 +137,12 @@ python3 -m src.models.train --project-id <PROJECT_ID>
 # GCSアップロードなし（ローカルのみ）
 python3 -m src.models.train --project-id <PROJECT_ID> --skip-gcs-upload --output-dir ./models
 
+# Optunaハイパーパラメータチューニング
+python3 -m src.models.train --project-id <PROJECT_ID> --tune --n-trials 50
+
+# チューニング（タイムアウト付き）
+python3 -m src.models.train --project-id <PROJECT_ID> --tune --tune-timeout 3600
+
 # 実行日を指定
 python3 -m src.models.train --project-id <PROJECT_ID> --execution-date 2026-02-15
 
@@ -142,6 +151,55 @@ python3 -m src.models.train --project-id <PROJECT_ID> --config ./my_config.yaml
 
 # 詳細ログ
 python3 -m src.models.train --project-id <PROJECT_ID> -v
+```
+
+---
+
+## tuning.py
+
+Optunaベイズ最適化によるLightGBMハイパーパラメータの自動チューニング。
+
+### 主要関数
+
+#### `create_objective(X_train, y_train, groups_train, X_valid, y_valid, groups_valid, categorical_features, base_params)`
+
+Optunaの目的関数を作成する。検証データのNDCG@3を最大化するパラメータを探索する。
+
+探索対象パラメータ:
+- `num_leaves`: 決定木の葉の数（範囲: 15〜63）
+- `learning_rate`: 学習率（範囲: 0.01〜0.2）
+- `feature_fraction`: 各イテレーションで使用する特徴量の割合（範囲: 0.6〜0.95）
+- `bagging_fraction`: 各イテレーションで使用するデータの割合（範囲: 0.6〜0.95）
+- `min_child_samples`: 葉ノードに必要な最小サンプル数（範囲: 5〜50）
+
+#### `tune_hyperparameters(X_train, y_train, groups_train, X_valid, y_valid, groups_valid, categorical_features, base_params, n_trials, timeout)`
+
+ハイパーパラメータチューニングを実行する。
+
+| 引数 | 説明 |
+|------|------|
+| `X_train`, `y_train`, `groups_train` | 学習データ |
+| `X_valid`, `y_valid`, `groups_valid` | 検証データ |
+| `categorical_features` | カテゴリカル特徴量のリスト |
+| `base_params` | 固定パラメータ（objective, metric等） |
+| `n_trials` | 探索回数（デフォルト: 100） |
+| `timeout` | タイムアウト秒数（デフォルト: None） |
+
+返却値:
+- `best_params`: 最適パラメータ辞書
+- `best_score`: 最高スコア（NDCG@3）
+- `study`: Optunaのstudyオブジェクト
+
+### 使用方法
+
+`train.py` から `--tune` フラグで呼び出される:
+
+```bash
+# 50回の探索でチューニング
+python3 -m src.models.train --project-id <PROJECT_ID> --tune --n-trials 50
+
+# タイムアウト1時間でチューニング
+python3 -m src.models.train --project-id <PROJECT_ID> --tune --tune-timeout 3600
 ```
 
 ---
@@ -214,6 +272,7 @@ python3 -m src.models.predict --project-id <PROJECT_ID> --model-path <MODEL_PATH
 |-----------|------|
 | `model.params` | LightGBMハイパーパラメータ |
 | `model.training` | 学習設定（ブースティング回数、早期停止、検証期間） |
+| `tuning` | Optunaチューニング設定（探索範囲、試行回数、タイムアウト） |
 | `data` | BigQueryテーブル情報、除外カラム、カテゴリカルカラム |
 | `gcs` | GCSバケット・プレフィックス設定 |
 | `evaluation` | 評価指標の設定 |
@@ -233,10 +292,11 @@ python3 -m src.models.predict --project-id <PROJECT_ID> --model-path <MODEL_PATH
 
 ```bash
 # モデル関連の全テストを実行
-python3 -m pytest tests/test_lgbm_ranker.py tests/test_train.py tests/test_predict.py -v
+python3 -m pytest tests/test_lgbm_ranker.py tests/test_train.py tests/test_predict.py tests/test_tuning.py -v
 ```
 
 テストファイル:
 - `tests/test_lgbm_ranker.py`: LGBMRankerの単体テスト（学習・予測・保存・読み込み・エラー系）
 - `tests/test_train.py`: 学習パイプラインのテスト（日付計算・分割・特徴量準備・評価・E2E）
 - `tests/test_predict.py`: 推論パイプラインのテスト（正常系・空データ・結果整形）
+- `tests/test_tuning.py`: Optunaチューニングのテスト（目的関数・パラメータ探索・統合テスト）

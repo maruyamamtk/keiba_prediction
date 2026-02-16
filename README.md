@@ -16,6 +16,7 @@ JRDBデータを活用した機械学習による馬券購入支援システム
 
 - **言語**: Python 3.9+
 - **機械学習**: LightGBM (Learning to Rank)
+- **最適化**: Optuna (ハイパーパラメータチューニング)
 - **クラウド**: GCP (BigQuery, Cloud Storage, Cloud Run, Cloud Scheduler)
 - **API**: FastAPI
 - **テスト**: pytest
@@ -128,6 +129,12 @@ python3 -m src.models.train --project-id <PROJECT_ID> --skip-gcs-upload --output
 # モデル学習（GCSアップロードあり）
 python3 -m src.models.train --project-id <PROJECT_ID>
 
+# Optunaによるハイパーパラメータチューニング
+python3 -m src.models.train --project-id <PROJECT_ID> --tune --n-trials 50
+
+# チューニング（タイムアウト付き）
+python3 -m src.models.train --project-id <PROJECT_ID> --tune --tune-timeout 3600
+
 # 推論実行
 python3 -m src.models.predict --project-id <PROJECT_ID> --model-path ./models/lgbm_ranker_20260215.txt
 
@@ -188,7 +195,8 @@ keiba_prediction/
 │       ├── __init__.py
 │       ├── lgbm_ranker.py            # LightGBM LambdaRankモデル
 │       ├── train.py                  # 学習パイプライン
-│       └── predict.py                # 推論パイプライン
+│       ├── predict.py                # 推論パイプライン
+│       └── tuning.py                 # Optunaハイパーパラメータチューニング
 ├── scripts/                           # ユーティリティスクリプト
 │   ├── generate_features.py
 │   ├── reload_gcs_to_bq.py
@@ -274,9 +282,11 @@ keiba_prediction/
 - `lgbm_ranker.py`: LightGBM LambdaRankモデルのラッパークラス（学習・予測・保存・読み込み）
 - `train.py`: 学習パイプライン（BigQueryデータ取得 → 時系列分割 → 学習 → 評価 → GCS保存）
 - `predict.py`: 推論パイプライン（モデル読み込み → 今週末レース予測 → 結果整形）
+- `tuning.py`: Optunaベイズ最適化によるハイパーパラメータチューニング
 
 **使用場面**:
 - モデルの学習と評価（Phase 4）
+- ハイパーパラメータの自動最適化
 - 今週末のレース着順予測
 - モデルのGCS保存・読み込み
 
@@ -356,6 +366,9 @@ Cloud RunにデプロイされたFastAPIアプリケーションは以下のエ�
 
 **Phase 4: モデル開発 🔧 進行中**
 - LightGBM ランク学習 (LambdaRank) ✅
+- 二値ラベル化（3着以内=1, それ以外=0） ✅ ← Issue #85
+- AUC評価指標の追加 ✅ ← Issue #85
+- Optunaハイパーパラメータチューニング ✅ ← Issue #86
 - 時系列分割・推論パイプライン ✅
 - バックテスト ⬜
 
@@ -630,6 +643,9 @@ python -m pytest tests/ --cov=src --cov-report=html
 ### Phase 4: モデル開発 🔧 進行中
 
 - ✅ LightGBM ランク学習 (LambdaRank) - Issue #14
+- ✅ 二値ラベル化（3着以内=1, それ以外=0） - Issue #85
+- ✅ AUC評価指標の追加 - Issue #85
+- ✅ Optunaハイパーパラメータチューニング - Issue #86
 - ✅ 時系列分割（学習・検証・推論） - Issue #14
 - ✅ 推論パイプライン - Issue #14
 - ⬜ バックテスト
@@ -659,3 +675,4 @@ python -m pytest tests/ --cov=src --cov-report=html
 | 日付 | 変更内容 |
 |------|----------|
 | 2026-02-14 | README.mdとCLAUDE.mdの重複除外。Issue #59（特徴量生成API）とIssue #71（デプロイスクリプト整備）の内容を反映 |
+| 2026-02-16 | Issue #85（二値ラベル化・AUC追加）とIssue #86（Optunaチューニング）の内容を反映 |

@@ -39,10 +39,13 @@
 - 出力: features.training_data（257カラム、466,265行）
 - Cloud Run APIエンドポイント（同期/非同期）
 
-#### Model Training Layer ⬜ 未実装
-- Jupyter Notebook（EDA & モデル開発）
-- LightGBM ランク学習
-- モデルファイルのGCS保存
+#### Model Training Layer ✅ 実装済み
+- LightGBM LambdaRank（ランク学習）
+- 二値ラベル化（3着以内=1, それ以外=0）による複勝券予測
+- Optunaベイズ最適化によるハイパーパラメータチューニング
+- 時系列分割（学習/検証/推論）
+- 評価指標: NDCG@3, Recall@3, AUC
+- モデルファイルのGCS保存・読み込み
 
 #### Prediction & Operation Layer ⬜ 未実装
 - 予測パイプライン
@@ -56,7 +59,7 @@
 #### 2.2.1 Cloud Storage (GCS)
 - `gs://${PROJECT_ID}-keiba-raw-data/`: JRDBダウンロード生データ（実装済み）
 - `gs://${PROJECT_ID}-keiba-processed-data/`: 加工済みデータ（未実装）
-- `gs://${PROJECT_ID}-keiba-models/`: 学習済みモデル（未実装）
+- `gs://${PROJECT_ID}-keiba-models/`: 学習済みモデル（実装済み）
 - `gs://${PROJECT_ID}-keiba-predictions/`: 予測結果（未実装）
 
 #### 2.2.2 BigQuery
@@ -114,24 +117,37 @@ JRDB → GCS → BigQuery → features.training_data の流れでデータを取
 
 ---
 
-## 5. モデル設計 [未実装 - 設計のみ]
+## 5. モデル設計
 
-### 5.1 LightGBM ランク学習
+### 5.1 LightGBM ランク学習 ✅ 実装済み
 
 #### 5.1.1 モデル概要
 - **アルゴリズム**: LightGBM LambdaRank
 - **目的関数**: `lambdarank`
-- **評価指標**: `ndcg@3`
+- **評価指標**: `ndcg@3`, `auc`
 - **グループ単位**: レースID
+- **ラベル形式**: 二値ラベル（3着以内=1, それ以下=0）
 
-#### 5.1.2 実装例
+**重要な設計変更（Issue #85）:**
+従来の4段階relevanceスコア（1着=3, 2着=2, 3着=1, 4着以下=0）から、**二値ラベル（3着以内=1, それ以外=0）**に変更しました。これにより、複勝券予測に特化したモデルとなり、評価にAUC指標を追加しています。
+
+#### 5.1.2 実装済みの内容
+- `src/models/lgbm_ranker.py`: モデルクラス（学習・予測・保存・読み込み）
+- `src/models/train.py`: 学習パイプライン（時系列分割、評価、GCS保存）
+- `src/models/predict.py`: 推論パイプライン（今週末レース予測）
+- `src/models/tuning.py`: Optunaハイパーパラメータチューニング（Issue #86）
+- `config/model_config.yaml`: 設定ファイル（パラメータ、チューニング範囲）
+
+詳細は [src/models/README.md](./src/models/README.md) を参照してください。
+
+#### 5.1.3 実装例
 ```python
 import lightgbm as lgb
 
-# データ準備
+# データ準備（二値ラベル）
 train_data = lgb.Dataset(
     X_train,
-    label=y_train,  # 着順 (1, 2, 3, ...)
+    label=y_train,  # 二値ラベル: 3着以内=1, それ以外=0
     group=groups_train  # 各レースの馬数 [18, 16, 15, ...]
 )
 
@@ -192,8 +208,9 @@ def time_series_split(df, date_col, n_splits=5):
 #### 5.3.1 評価指標
 1. **NDCG@3**: ランキングの質を評価
 2. **Recall@3**: 上位3頭の中に複勝圏内の馬が含まれる割合
-3. **回収率**: 実際の投資に基づく評価
-4. **的中率**: 3着以内予測の精度
+3. **AUC**: 3着以内予測の二値分類性能（ROC-AUC）
+4. **回収率**: 実際の投資に基づく評価
+5. **的中率**: 3着以内予測の精度
 
 #### 5.3.2 評価実装
 ```python
@@ -543,6 +560,7 @@ def send_line_notification(predictions_df):
 | 的中率 | 30%以上 | 週次 |
 | NDCG@3 | 0.7以上 | 月次 |
 | Recall@3 | 0.8以上 | 月次 |
+| AUC | 0.7以上 | 月次 |
 
 ### 12.2 改善サイクル
 
@@ -623,6 +641,7 @@ Cloud Run または Cloud Function のデプロイメント完了を宣言する
 | 2026-01-18 | 1.0.0 | 初版作成 | Claude |
 | 2026-02-10 | 2.0.0 | 実装状況を反映: データパイプライン・特徴量パイプライン完了、ディレクトリ構成・BigQueryスキーマ・実装計画を現状に合わせて全面更新 | Claude |
 | 2026-02-14 | 3.0.0 | README.mdとの重複を除外し、設計仕様書として再構成。実装済み機能の手順詳細はREADME.mdへ移行。Issue #59（特徴量生成API）とIssue #71（デプロイスクリプト整備）の内容を反映 | Claude |
+| 2026-02-17 | 3.1.0 | Issue #85（LambdaRankラベル二値化）・Issue #86（Optunaハイパーパラメータチューニング）の実装を反映。Model Training Layer実装済み、評価指標にAUC追加、KPIにAUC追加 | Claude |
 
 ---
 
