@@ -33,6 +33,11 @@ from src.models.train import (
 
 logger = logging.getLogger(__name__)
 
+VENUE_MAP = {
+    "01": "札幌", "02": "函館", "03": "福島", "04": "新潟", "05": "東京",
+    "06": "中山", "07": "中京", "08": "京都", "09": "阪神", "10": "小倉",
+}
+
 
 def fetch_prediction_data(
     project_id: str,
@@ -113,6 +118,52 @@ def load_model_from_gcs(
     return model_file
 
 
+def _scores_to_place_prob(scores: np.ndarray, n_places: int = 3) -> np.ndarray:
+    """
+    スコアを複勝率に変換する（水充填アルゴリズム）
+
+    softmax確率を元に、各馬の複勝率が0~1(0~100%)に収まり、
+    合計がmin(n_places, 出走頭数)になるよう変換する。
+
+    単純な softmax * n_places では1頭あたりの値が1を超える可能性があるため、
+    上限1.0で超過分を未達馬に再配分する反復アルゴリズムを使用する。
+
+    Args:
+        scores: 各馬の予測スコア配列
+        n_places: 複勝対象着順数（デフォルト3）
+
+    Returns:
+        各馬の複勝率配列（各要素0~1、合計=min(n_places, len(scores))）
+    """
+    n = len(scores)
+    k = float(min(n_places, n))
+
+    # softmax（数値安定性のためmaxを引く）
+    shifted = scores - scores.max()
+    exp_s = np.exp(shifted)
+    p = exp_s / exp_s.sum()
+
+    # 水充填アルゴリズム: k単位を各馬に分配（上限1.0）
+    # 上限超過分を未上限馬にsoftmax確率比で再配分する
+    probs = p * k
+    for _ in range(n):  # 最大n回で必ず収束（毎回少なくとも1頭が確定）
+        mask_over = probs > 1.0
+        if not mask_over.any():
+            break
+        excess = (probs[mask_over] - 1.0).sum()
+        probs[mask_over] = 1.0
+        mask_under = probs < 1.0
+        if not mask_under.any():
+            break
+        p_under_sum = p[mask_under].sum()
+        if p_under_sum < 1e-12:
+            probs[mask_under] += excess / mask_under.sum()
+        else:
+            probs[mask_under] += excess * p[mask_under] / p_under_sum
+
+    return np.clip(probs, 0.0, 1.0)
+
+
 def predict_pipeline(
     project_id: str,
     execution_date: datetime.date,
@@ -163,13 +214,20 @@ def predict_pipeline(
     scores = ranker.predict(X)
 
     # 5. 結果の整形
-    result_df = df[["race_id", "race_date", "horse_id", "horse_number"]].copy()
+    result_df = df[
+        ["race_id", "race_date", "horse_id", "horse_number", "horse_name"]
+    ].copy()
     if "venue_code" in df.columns:
         result_df["venue_code"] = df["venue_code"]
     if "race_number" in df.columns:
         result_df["race_number"] = df["race_number"]
 
     result_df["pred_score"] = scores
+    # レースごとに複勝率を計算（水充填アルゴリズム）
+    # 各馬の複勝率が0~1に収まり、合計がmin(3, 出走頭数)になるよう変換する
+    for race_id, group in result_df.groupby("race_id"):
+        probs = _scores_to_place_prob(group["pred_score"].values, n_places=3)
+        result_df.loc[group.index, "win_place_prob"] = probs
 
     # レース内での予測順位を付与
     result_df["pred_rank"] = result_df.groupby("race_id")["pred_score"].rank(
@@ -201,21 +259,28 @@ def format_predictions(result_df: pd.DataFrame) -> str:
     lines = []
     for race_id, group in result_df.groupby("race_id", sort=False):
         race_date = group["race_date"].iloc[0]
-        venue = group.get("venue_code", pd.Series(["?"])).iloc[0]
+        venue_code = group.get("venue_code", pd.Series(["?"])).iloc[0]
+        venue_name = VENUE_MAP.get(str(venue_code), f"不明({venue_code})")
         race_num = group.get("race_number", pd.Series(["?"])).iloc[0]
-        lines.append(f"\n{'='*50}")
-        lines.append(f"Race: {venue} {race_num}R ({race_date})")
-        lines.append(f"{'='*50}")
-        lines.append(f"{'予測順':>6} {'馬番':>4} {'スコア':>10} {'着順':>6}")
-        lines.append("-" * 30)
+
+        lines.append(f"\n{'='*60}")
+        lines.append(f"Race: {venue_name} {race_num}R ({race_date})")
+        lines.append(f"{'='*60}")
+        lines.append(
+            f"{'予測順':>6} {'馬番':>4} {'馬名':<10} {'スコア':>10} {'複勝率':>8} {'着順':>6}"
+        )
+        lines.append("-" * 55)
 
         for _, row in group.iterrows():
             finish_raw = row.get("finish_position", None)
             finish = str(int(finish_raw)) if pd.notna(finish_raw) else "-"
+            horse_name = str(row.get("horse_name", "") or "")
             lines.append(
                 f"{int(row['pred_rank']):>6} "
                 f"{int(row['horse_number']):>4} "
+                f"{horse_name:<10.10} "
                 f"{row['pred_score']:>10.4f} "
+                f"{row['win_place_prob']:>7.1%} "
                 f"{finish:>6}"
             )
 
