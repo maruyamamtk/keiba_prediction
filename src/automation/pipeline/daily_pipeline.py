@@ -284,8 +284,12 @@ class DailyPipeline:
         """
         Step 3: BigQueryにロード
 
+        GCS上の未ロードファイルをすべてBigQueryにロードする。
+        JRDBファイルはレース開催日（主に土日）で命名されるため、
+        パイプライン実行日ではなくロード履歴による重複スキップで制御する。
+
         Args:
-            target_date: 対象日付
+            target_date: 対象日付（ログ用）
 
         Returns:
             StepResult
@@ -294,18 +298,18 @@ class DailyPipeline:
         start_time = time.time()
 
         try:
-            yymmdd = self.date_to_yymmdd(target_date)
-            logger.info(f"BigQueryロード開始: {yymmdd}")
+            from src.automation.data.load_to_bq import TABLE_MAPPING
 
-            # GCS上の対象ファイルを検索
-            # prefixパターン: csv/ または各データタイプフォルダ
-            csv_files = self.bq_loader.list_csv_files(prefix="")
+            logger.info(f"BigQueryロード開始（未ロードファイル全件）: {target_date}")
 
-            # 対象日付のファイルをフィルタ
-            target_files = [f for f in csv_files if yymmdd in f]
+            # GCS上のサポート対象データタイプのファイルのみを取得
+            supported_types = list(TABLE_MAPPING.keys())
+            csv_files = self.bq_loader.list_csv_files(
+                prefix="", data_types=supported_types
+            )
 
-            if not target_files:
-                logger.info(f"ロード対象ファイルなし: {yymmdd}")
+            if not csv_files:
+                logger.info("ロード対象ファイルなし")
                 return StepResult(
                     step_name=step_name,
                     status="success",
@@ -315,7 +319,7 @@ class DailyPipeline:
 
             # バッチロード実行（重複スキップ有効）
             result = self.bq_loader.load_files_batch(
-                target_files,
+                csv_files,
                 continue_on_error=True,
                 skip_loaded=True,
                 record_history=True,
