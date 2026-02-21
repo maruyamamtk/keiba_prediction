@@ -47,6 +47,8 @@ TABLE_MAPPING = {
     "UKC": "horse_master",
     "KKA": "horse_extended",
     "KAA": "venue_info",
+    "HJB": "payouts",
+    "HJC": "payouts",
 }
 
 # テーブルごとの一意キー (MERGE文で使用)
@@ -57,7 +59,11 @@ TABLE_UNIQUE_KEYS = {
     "horse_master": ["horse_id"],
     "horse_extended": ["race_id", "horse_number"],
     "venue_info": ["venue_id"],
+    "payouts": ["race_id", "bet_type", "rank"],
 }
+
+# パース後に行展開が必要なデータタイプ
+EXPAND_DATA_TYPES = {"HJB", "HJC"}
 
 # ロード履歴テーブル名
 LOAD_HISTORY_TABLE = "load_history"
@@ -451,6 +457,18 @@ class BigQueryLoader:
                 result.error = "パース結果が空"
                 logger.warning(f"ファイルからデータをパースできませんでした: {blob_name}")
                 return result
+
+            # HJB/HJCは1レース分のレコードを複数ペイアウト行に展開する
+            if data_type.upper() in EXPAND_DATA_TYPES:
+                expanded: List[Dict] = []
+                for record in parsed_data:
+                    expanded.extend(JRDBParser.expand_hjb_to_payout_rows(record))
+                parsed_data = expanded
+                if not parsed_data:
+                    result.status = "skipped"
+                    result.error = "HJB展開結果が空"
+                    logger.warning(f"HJBデータの展開結果が空でした: {blob_name}")
+                    return result
 
             # BigQueryにロード
             records_loaded = self._load_to_bigquery(table_name, parsed_data, data_type)
