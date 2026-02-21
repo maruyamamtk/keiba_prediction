@@ -172,3 +172,91 @@ class TestLGBMRanker:
         ranker = LGBMRanker()
         with pytest.raises(RuntimeError, match="モデルが学習されていません"):
             ranker.feature_importance()
+
+    def test_predict_with_categorical_alignment(self, sample_data):
+        """カテゴリカル特徴量を含むデータで予測が正常に動作すること"""
+        X, y, groups = sample_data
+        split = 15 * 10
+        X_train, X_valid = X.iloc[:split], X.iloc[split:]
+        y_train, y_valid = y[:split], y[split:]
+
+        # カテゴリカル特徴量を追加
+        n_train = len(X_train)
+        n_valid = len(X_valid)
+        X_train = X_train.copy()
+        X_valid = X_valid.copy()
+        X_train["cat_feat"] = pd.Categorical(
+            np.random.choice(["A", "B", "C"], n_train)
+        )
+        X_valid["cat_feat"] = pd.Categorical(
+            np.random.choice(["A", "B", "C"], n_valid)
+        )
+
+        config = LGBMRankerConfig(
+            num_boost_round=10, early_stopping_rounds=5, log_evaluation=0
+        )
+        ranker = LGBMRanker(config=config)
+        ranker.train(
+            X_train, y_train, groups[:15],
+            X_valid, y_valid, groups[15:],
+            categorical_feature=["cat_feat"],
+        )
+
+        # 保存→読み込み後にobject型カラムで予測
+        with tempfile.TemporaryDirectory() as tmpdir:
+            model_path = str(Path(tmpdir) / "model.txt")
+            ranker.save(model_path)
+
+            loaded = LGBMRanker()
+            loaded.load(model_path)
+
+            # object型（category未変換）のデータで予測 → エラーにならないこと
+            X_pred = X_valid.copy()
+            X_pred["cat_feat"] = np.random.choice(["A", "B", "C"], n_valid)
+            assert X_pred["cat_feat"].dtype == "object"
+
+            predictions = loaded.predict(X_pred)
+            assert len(predictions) == len(X_pred)
+            assert all(np.isfinite(predictions))
+
+    def test_predict_with_partial_categories(self, sample_data):
+        """予測データのカテゴリ値が学習時の一部でも正常に予測できること"""
+        X, y, groups = sample_data
+        split = 15 * 10
+        X_train, X_valid = X.iloc[:split], X.iloc[split:]
+        y_train, y_valid = y[:split], y[split:]
+
+        n_train = len(X_train)
+        n_valid = len(X_valid)
+        X_train = X_train.copy()
+        X_valid = X_valid.copy()
+        # 学習データは3カテゴリ
+        X_train["cat_feat"] = pd.Categorical(
+            np.random.choice(["A", "B", "C"], n_train)
+        )
+        X_valid["cat_feat"] = pd.Categorical(
+            np.random.choice(["A", "B", "C"], n_valid)
+        )
+
+        config = LGBMRankerConfig(
+            num_boost_round=10, early_stopping_rounds=5, log_evaluation=0
+        )
+        ranker = LGBMRanker(config=config)
+        ranker.train(
+            X_train, y_train, groups[:15],
+            X_valid, y_valid, groups[15:],
+            categorical_feature=["cat_feat"],
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            model_path = str(Path(tmpdir) / "model.txt")
+            ranker.save(model_path)
+
+            loaded = LGBMRanker()
+            loaded.load(model_path)
+
+            # 予測データは1カテゴリのみ（学習時の一部）
+            X_pred = X_valid.copy()
+            X_pred["cat_feat"] = "A"  # object型、1値のみ
+            predictions = loaded.predict(X_pred)
+            assert len(predictions) == len(X_pred)

@@ -134,7 +134,40 @@ class LGBMRanker:
         """
         if self.model is None:
             raise RuntimeError("モデルが学習されていません。train()またはload()を先に実行してください。")
-        return self.model.predict(X)
+
+        X_pred = self._prepare_prediction_data(X)
+        return self.model.predict(X_pred)
+
+    def _prepare_prediction_data(self, X: pd.DataFrame) -> pd.DataFrame:
+        """
+        予測用にDataFrameをモデルの期待に合わせて整形する
+
+        1. モデルの特徴量名でフィルタ（学習後に追加されたカラムを除外）
+        2. object型カラムをcategory型に変換（LightGBMのpandas_categoricalと整合）
+
+        Args:
+            X: 特徴量DataFrame
+
+        Returns:
+            モデル入力用に整形されたDataFrame
+        """
+        model_feature_names = self.feature_names or self.model.feature_name()
+
+        # モデルの特徴量名でフィルタ
+        available = [c for c in model_feature_names if c in X.columns]
+        missing = [c for c in model_feature_names if c not in X.columns]
+        if missing:
+            logger.warning(f"モデルの特徴量がデータに不足: {missing}")
+
+        X_pred = X[available].copy()
+
+        # object型（文字列）カラムをcategory型に変換
+        # LightGBMはpandas_categoricalの数とcategory型カラム数が
+        # 一致しないとエラーになるため、全object型をcategory型に変換する
+        for col in X_pred.select_dtypes(include="object").columns:
+            X_pred[col] = X_pred[col].astype("category")
+
+        return X_pred
 
     def save(self, path: str) -> None:
         """
