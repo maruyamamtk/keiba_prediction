@@ -135,11 +135,19 @@ python3 -m src.models.train --project-id <PROJECT_ID> --tune --n-trials 50
 # チューニング（タイムアウト付き）
 python3 -m src.models.train --project-id <PROJECT_ID> --tune --tune-timeout 3600
 
-# 推論実行
+# 推論実行（今週の土日を自動で対象とする）
 python3 -m src.models.predict --project-id <PROJECT_ID> --model-path ./models/lgbm_ranker_20260215.txt
 
 # 推論結果をCSV保存
 python3 -m src.models.predict --project-id <PROJECT_ID> --model-path ./models/lgbm_ranker_20260215.txt --output-csv predictions.csv
+
+# 特定の1日を指定して推論
+python3 -m src.models.predict --project-id <PROJECT_ID> --model-path ./models/lgbm_ranker_20260215.txt \
+  --target-dates 2026-01-10
+
+# 複数の任意日付を指定して推論
+python3 -m src.models.predict --project-id <PROJECT_ID> --model-path ./models/lgbm_ranker_20260215.txt \
+  --target-dates 2026-01-10 2026-01-11 2026-01-12
 ```
 
 ### 6. Cloud Runデプロイ（本番環境）

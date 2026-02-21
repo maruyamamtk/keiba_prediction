@@ -206,7 +206,7 @@ python3 -m src.models.train --project-id <PROJECT_ID> --tune --tune-timeout 3600
 
 ## predict.py
 
-学習済みモデルを使用して、今週末のレースの着順予測を行う。
+学習済みモデルを使用して、今週末のレースの着順予測を行う。任意の日付を指定することも可能。
 
 ### 主要関数
 
@@ -219,12 +219,22 @@ BigQueryから推論対象日のデータを取得する。
 GCSからモデルファイルをダウンロードする。
 取得元: `gs://{project_id}-keiba-models/lgbm_ranker/{YYYYMMDD}/`
 
-#### `predict_pipeline(project_id, execution_date, config, model_path)`
+#### `predict_pipeline(project_id, execution_date, config, model_path, target_dates=None)`
 
-推論の全ステップを実行する:
+推論の全ステップを実行する。
+
+| 引数 | 型 | デフォルト | 説明 |
+|------|----|-----------|------|
+| `project_id` | str | - | GCPプロジェクトID |
+| `execution_date` | datetime.date | - | 実行日。`target_dates` 未指定時に週の土日を算出する基準日として使用する |
+| `config` | dict | - | 設定辞書 |
+| `model_path` | str | - | モデルファイルパス（ローカル） |
+| `target_dates` | list[datetime.date] \| None | None | 推論対象日のリスト。指定した場合はその日付のみ対象とする。未指定の場合は `execution_date` の週の土曜・日曜を使用する |
+
+実行ステップ:
 
 1. ローカルからモデル読み込み
-2. `compute_week_boundaries` で推論対象日（土日）を計算
+2. `target_dates` が未指定の場合は `compute_week_boundaries` で推論対象日（土日）を計算
 3. BigQueryから対象日のデータを取得
 4. `build_feature_matrix`（train.pyの共通関数）で特徴量準備
 5. 予測スコアの算出
@@ -252,15 +262,25 @@ GCSからモデルファイルをダウンロードする。
 ### CLI使用方法
 
 ```bash
-# 基本実行
+# 基本実行（今週の土日を自動で対象とする）
 python3 -m src.models.predict --project-id <PROJECT_ID> --model-path ./models/lgbm_ranker_20260215.txt
 
-# 実行日を指定
+# 実行日を指定（その週の土日が対象になる）
 python3 -m src.models.predict --project-id <PROJECT_ID> --model-path <MODEL_PATH> --execution-date 2026-02-15
+
+# 特定の1日を指定して推論（--target-dates）
+python3 -m src.models.predict --project-id <PROJECT_ID> --model-path <MODEL_PATH> \
+  --target-dates 2026-01-10
+
+# 複数の任意日付を指定して推論（スペース区切りで複数指定可）
+python3 -m src.models.predict --project-id <PROJECT_ID> --model-path <MODEL_PATH> \
+  --target-dates 2026-01-10 2026-01-11 2026-01-12
 
 # CSV出力
 python3 -m src.models.predict --project-id <PROJECT_ID> --model-path <MODEL_PATH> --output-csv predictions.csv
 ```
+
+> **注意**: `--target-dates` を指定した場合、`--execution-date` は無視されます（推論対象日の決定に使用されません）。ただし `--execution-date` 自体は引数として受け付けます。
 
 ---
 
