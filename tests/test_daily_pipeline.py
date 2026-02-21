@@ -169,17 +169,18 @@ class TestDailyPipelineStepLoadToBq:
     """DailyPipeline._step_load_to_bqのテスト"""
 
     def test_step_load_to_bq_success(self):
-        """BigQueryロード成功"""
+        """BigQueryロード成功: サポート対象データタイプのファイルがすべてロードされる"""
         bq_loader = MagicMock()
+        # list_csv_filesはdata_typesフィルタにより対象ファイルのみ返す
         bq_loader.list_csv_files.return_value = [
             "Baa/BAA240115.csv",
             "Kyf/KYF240115.csv",
-            "Baa/BAA240114.csv",  # 対象外
+            "Baa/BAA240114.csv",
         ]
         batch_result = BatchLoadResult(
-            total_files=2,
+            total_files=3,
             success_count=2,
-            skipped_count=0,
+            skipped_count=1,
             failed_count=0,
             total_records=100,
             results=[],
@@ -194,16 +195,19 @@ class TestDailyPipelineStepLoadToBq:
         assert result.status == "success"
         assert result.details["files"] == 2
         assert result.details["records"] == 100
-        # 正しいファイルのみがロードされていることを確認
-        call_args = bq_loader.load_files_batch.call_args
-        assert "Baa/BAA240115.csv" in call_args[0][0]
-        assert "Kyf/KYF240115.csv" in call_args[0][0]
-        assert "Baa/BAA240114.csv" not in call_args[0][0]
+        # data_typesフィルタが渡されていることを確認
+        call_args = bq_loader.list_csv_files.call_args
+        assert "data_types" in call_args[1]
+        assert "BAA" in call_args[1]["data_types"]
+        # skip_loadedが有効で全ファイルがバッチに渡されることを確認
+        batch_call_args = bq_loader.load_files_batch.call_args
+        assert len(batch_call_args[0][0]) == 3
+        assert batch_call_args[1]["skip_loaded"] is True
 
     def test_step_load_to_bq_no_files(self):
-        """ロード対象ファイルなし"""
+        """ロード対象ファイルなし（サポート対象データタイプのファイルがGCSにない）"""
         bq_loader = MagicMock()
-        bq_loader.list_csv_files.return_value = ["Baa/BAA240114.csv"]
+        bq_loader.list_csv_files.return_value = []
 
         pipeline = DailyPipeline(bq_loader=bq_loader)
         result = pipeline._step_load_to_bq(date(2024, 1, 15))
@@ -211,6 +215,38 @@ class TestDailyPipelineStepLoadToBq:
         assert result.status == "success"
         assert result.details["files"] == 0
         bq_loader.load_files_batch.assert_not_called()
+
+    def test_step_load_to_bq_loads_all_dates(self):
+        """パイプライン実行日と異なる日付のファイルもロードされる"""
+        bq_loader = MagicMock()
+        # 実行日は1/15だが、1/13（土）と1/14（日）のファイルもGCSに存在
+        bq_loader.list_csv_files.return_value = [
+            "Baa/BAA240113.csv",
+            "Baa/BAA240114.csv",
+            "Kyf/KYF240113.csv",
+        ]
+        batch_result = BatchLoadResult(
+            total_files=3,
+            success_count=3,
+            skipped_count=0,
+            failed_count=0,
+            total_records=150,
+            results=[],
+            failed_files=[],
+            duration_seconds=5.0,
+        )
+        bq_loader.load_files_batch.return_value = batch_result
+
+        pipeline = DailyPipeline(bq_loader=bq_loader)
+        # 1/15（月）に実行しても、1/13, 1/14のファイルがロードされる
+        result = pipeline._step_load_to_bq(date(2024, 1, 15))
+
+        assert result.status == "success"
+        assert result.details["files"] == 3
+        assert result.details["records"] == 150
+        # 全3ファイルがバッチに渡される
+        batch_call_args = bq_loader.load_files_batch.call_args
+        assert len(batch_call_args[0][0]) == 3
 
     def test_step_load_to_bq_partial(self):
         """一部ロード失敗"""
