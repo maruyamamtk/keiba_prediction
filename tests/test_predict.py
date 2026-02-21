@@ -12,6 +12,7 @@ import pytest
 from src.models.lgbm_ranker import LGBMRanker, LGBMRankerConfig
 from src.models.predict import (
     format_predictions,
+    fetch_race_results,
     predict_pipeline,
 )
 
@@ -95,10 +96,12 @@ class TestPredictPipeline:
                     })
         return pd.DataFrame(rows)
 
+    @patch("src.models.predict.fetch_race_results")
     @patch("src.models.predict.fetch_prediction_data")
-    def test_predict_pipeline_basic(self, mock_fetch, trained_model_path, mock_predict_df):
+    def test_predict_pipeline_basic(self, mock_fetch, mock_race_results, trained_model_path, mock_predict_df):
         """推論パイプラインが正常に動作すること"""
         mock_fetch.return_value = mock_predict_df
+        mock_race_results.return_value = pd.DataFrame(columns=["race_id", "horse_id", "finish_position"])
 
         config = {
             "data": {
@@ -133,12 +136,14 @@ class TestPredictPipeline:
             ranks = sorted(group["pred_rank"].tolist())
             assert ranks[0] == 1
 
+    @patch("src.models.predict.fetch_race_results")
     @patch("src.models.predict.fetch_prediction_data")
     def test_predict_pipeline_with_target_dates(
-        self, mock_fetch, trained_model_path, mock_predict_df
+        self, mock_fetch, mock_race_results, trained_model_path, mock_predict_df
     ):
         """target_datesを指定した場合、その日付でfetch_prediction_dataが呼ばれること"""
         mock_fetch.return_value = mock_predict_df
+        mock_race_results.return_value = pd.DataFrame(columns=["race_id", "horse_id", "finish_position"])
 
         config = {
             "data": {
@@ -171,12 +176,14 @@ class TestPredictPipeline:
 
         assert len(result_df) > 0
 
+    @patch("src.models.predict.fetch_race_results")
     @patch("src.models.predict.fetch_prediction_data")
     def test_predict_pipeline_default_uses_week_boundaries(
-        self, mock_fetch, trained_model_path, mock_predict_df
+        self, mock_fetch, mock_race_results, trained_model_path, mock_predict_df
     ):
         """target_dates未指定時、execution_dateの週の土日が使われること"""
         mock_fetch.return_value = mock_predict_df
+        mock_race_results.return_value = pd.DataFrame(columns=["race_id", "horse_id", "finish_position"])
 
         config = {
             "data": {
@@ -207,10 +214,12 @@ class TestPredictPipeline:
         assert datetime.date(2026, 2, 14) in passed_dates
         assert datetime.date(2026, 2, 15) in passed_dates
 
+    @patch("src.models.predict.fetch_race_results")
     @patch("src.models.predict.fetch_prediction_data")
-    def test_predict_pipeline_empty_data(self, mock_fetch, trained_model_path):
+    def test_predict_pipeline_empty_data(self, mock_fetch, mock_race_results, trained_model_path):
         """推論対象データがない場合、空のDataFrameを返すこと"""
         mock_fetch.return_value = pd.DataFrame()
+        mock_race_results.return_value = pd.DataFrame(columns=["race_id", "horse_id", "finish_position"])
 
         config = {
             "data": {
@@ -263,3 +272,50 @@ class TestFormatPredictions:
         assert "札幌" in result  # venue_code "01" → "札幌" に変換される
         assert "1R" in result
         assert "0.8000" in result
+
+    def test_format_position_zero_shows_dash(self):
+        """finish_position=0の場合、'-'が表示されること（取消/除外/中止の馬）"""
+        df = pd.DataFrame({
+            "race_id": ["r1", "r1"],
+            "race_date": [datetime.date(2026, 2, 14)] * 2,
+            "horse_id": ["h1", "h2"],
+            "horse_name": ["テスト馬1", "テスト馬2"],
+            "horse_number": [1, 2],
+            "venue_code": ["05", "05"],
+            "race_number": [1, 1],
+            "pred_score": [0.8, 0.5],
+            "win_place_prob": [0.7, 0.5],
+            "pred_rank": [1, 2],
+            "finish_position": [1, 0],  # 2頭目は取消（finish_position=0）
+        })
+
+        result = format_predictions(df)
+        lines = result.split("\n")
+        # 着順カラムの値を取得（各行末尾が着順）
+        horse_lines = [l for l in lines if "テスト馬" in l]
+        assert len(horse_lines) == 2
+        # 1着は "1" が表示される
+        assert horse_lines[0].strip().endswith("1")
+        # 取消馬は "-" が表示される
+        assert horse_lines[1].strip().endswith("-")
+
+    def test_format_position_none_shows_dash(self):
+        """finish_positionがNaNの場合（未来レース）、'-'が表示されること"""
+        df = pd.DataFrame({
+            "race_id": ["r1"],
+            "race_date": [datetime.date(2026, 2, 14)],
+            "horse_id": ["h1"],
+            "horse_name": ["テスト馬1"],
+            "horse_number": [1],
+            "venue_code": ["05"],
+            "race_number": [1],
+            "pred_score": [0.8],
+            "win_place_prob": [0.7],
+            "pred_rank": [1],
+            "finish_position": [float("nan")],  # 未来レースはNaN
+        })
+
+        result = format_predictions(df)
+        horse_lines = [l for l in result.split("\n") if "テスト馬" in l]
+        assert len(horse_lines) == 1
+        assert horse_lines[0].strip().endswith("-")

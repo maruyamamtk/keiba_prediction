@@ -72,6 +72,36 @@ def fetch_prediction_data(
     return df
 
 
+def fetch_race_results(
+    project_id: str,
+    target_dates: list[datetime.date],
+) -> pd.DataFrame:
+    """
+    raw.race_results から対象日の着順データを取得する
+
+    レース終了後の実際の着順確認に使用する。
+    レースが未実施の場合（未来のレース）は空のDataFrameを返す。
+
+    Args:
+        project_id: GCPプロジェクトID
+        target_dates: 対象日のリスト
+
+    Returns:
+        着順データのDataFrame（race_id, horse_id, finish_position）
+    """
+    client = bigquery.Client(project=project_id)
+    dates_str = ", ".join(f"'{d.isoformat()}'" for d in target_dates)
+    query = f"""
+    SELECT race_id, horse_id, finish_position
+    FROM `{project_id}.raw.race_results`
+    WHERE race_date IN ({dates_str})
+    """
+    logger.info(f"Fetching race results for dates: {target_dates}")
+    df = client.query(query).to_dataframe()
+    logger.info(f"Fetched {len(df)} race result rows")
+    return df
+
+
 def load_model_from_gcs(
     project_id: str,
     bucket_suffix: str,
@@ -238,9 +268,18 @@ def predict_pipeline(
         ascending=False, method="min"
     ).astype(int)
 
-    # 着順情報がある場合は実際の順位も付与
-    if "finish_position" in df.columns:
-        result_df["finish_position"] = df["finish_position"]
+    # 着順情報: raw.race_resultsから直接取得する
+    # features.training_dataのfinish_positionは不正な値（0/1等）が格納されている
+    # 場合があるため、信頼性の高いデータソースを使用する
+    race_results_df = fetch_race_results(project_id=project_id, target_dates=target_dates)
+    if len(race_results_df) > 0:
+        result_df = result_df.merge(
+            race_results_df[["race_id", "horse_id", "finish_position"]],
+            on=["race_id", "horse_id"],
+            how="left",
+        )
+    else:
+        result_df["finish_position"] = np.nan
 
     # オッズ情報がある場合
     for odds_col in ["odds_yesterday", "odds_today"]:
@@ -277,7 +316,11 @@ def format_predictions(result_df: pd.DataFrame) -> str:
 
         for _, row in group.iterrows():
             finish_raw = row.get("finish_position", None)
-            finish = str(int(finish_raw)) if pd.notna(finish_raw) else "-"
+            if finish_raw is None or pd.isna(finish_raw):
+                finish = "-"
+            else:
+                pos = int(finish_raw)
+                finish = str(pos) if pos > 0 else "-"
             horse_name = str(row.get("horse_name", "") or "")
             lines.append(
                 f"{int(row['pred_rank']):>6} "
