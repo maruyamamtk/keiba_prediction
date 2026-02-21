@@ -246,6 +246,14 @@ class BigQueryTableCreator:
             },
             {
                 "dataset_id": "raw",
+                "table_id": "payouts",
+                "schema_file": "bq_schema_payouts.json",
+                "partition_field": None,
+                "clustering_fields": ["race_id", "bet_type"],
+                "description": "払戻情報データ (HJB/HJC: 払戻情報)",
+            },
+            {
+                "dataset_id": "raw",
                 "table_id": "load_history",
                 "schema_file": "bq_schema_load_history.json",
                 "partition_field": None,

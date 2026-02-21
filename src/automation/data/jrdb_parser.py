@@ -9,6 +9,7 @@ BigQueryにロード可能な形式に変換します。
 - KYF/KYG/KYH: 競走馬データ
 - SEC: 成績データ
 - KAA/KAB: 開催データ
+- HJB/HJC: 払戻情報データ
 - OZ: オッズデータ
 """
 
@@ -709,8 +710,9 @@ class JRDBParser:
                 # レース脚質 (位置269)
                 race_running_style = line[269:270].strip() if len(line) > 269 and line[269:270].strip() else None
 
-            # === 中間フィールド (位置が複雑なため概算) ===
-            # 複勝オッズ・10時オッズ・コーナー順位など
+            # === 第2版追加フィールド (位置211以降) ===
+            # SEC仕様書 第2版: 確定複勝オッズ下(相対291)・10時単勝(297)・10時複勝(303)
+            # UTF-8文字列における0-based位置: 219, 225, 231
             place_odds = None
             odds_10am_win = None
             odds_10am_place = None
@@ -723,11 +725,13 @@ class JRDBParser:
             jockey_code = None
             trainer_code = None
 
-            # 中間フィールドの抽出を試みる (位置211以降)
-            if len(line) >= 260:
-                # 10時オッズ付近を探す
-                odds_10am_win = JRDBParser.safe_float(line[219:225]) if len(line) > 225 else None
-                odds_10am_place = JRDBParser.safe_float(line[225:231]) if len(line) > 231 else None
+            if len(line) >= 237:
+                # 確定複勝オッズ下 (仕様書 相対291, UTF-8文字位置 219-225)
+                place_odds = JRDBParser.safe_float(line[219:225])
+                # 10時単勝オッズ (仕様書 相対297, UTF-8文字位置 225-231)
+                odds_10am_win = JRDBParser.safe_float(line[225:231])
+                # 10時複勝オッズ (仕様書 相対303, UTF-8文字位置 231-237)
+                odds_10am_place = JRDBParser.safe_float(line[231:237]) if len(line) > 237 else None
 
             return {
                 'race_id': race_key,
@@ -1249,6 +1253,216 @@ class JRDBParser:
             return None
 
     @staticmethod
+    def parse_hjb_line(line: str) -> Optional[Dict]:
+        """
+        HJB/HJC (払戻情報データ) を解析
+
+        1レース分の払戻金情報を馬券種ごとに返す。
+        仕様書: HJC第4a版 (2024.09.29), レコード長 444バイト (HJB は三連単なし 341文字)
+
+        フォーマット (0-based文字位置):
+          0-7  : レースキー
+          8-34 : 単勝払戻 3件×9文字 (馬番2 + 払戻金7)
+          35-79: 複勝払戻 5件×9文字
+          80-106: 枠連払戻 3件×9文字 (枠番2 + 払戻金7)
+          107-142: 馬連払戻 3件×12文字 (馬番4 + 払戻金8)
+          143-226: ワイド払戻 7件×12文字 (馬番4 + 払戻金8)
+          227-298: 馬単払戻 6件×12文字 (馬番4 + 払戻金8)
+          299-340: 三連複払戻 3件×14文字 (馬番6 + 払戻金8) [HJBのみ]
+          341-430: 三連単払戻 6件×15文字 (馬番6 + 払戻金9) [HJCのみ]
+
+        Args:
+            line: 固定長レコード文字列 (UTF-8変換済み)
+
+        Returns:
+            払戻情報の辞書 (単勝・複勝・枠連・馬連・ワイド・馬単・三連複を含む) or None
+        """
+        try:
+            if len(line) < 35:
+                logger.warning(f"HJB line too short: {len(line)} chars")
+                return None
+
+            race_key = line[0:8].strip()
+            race_info = JRDBParser.parse_race_id(race_key)
+
+            def parse_payout_entry(seg: str, horse_bytes: int, payout_bytes: int):
+                """払戻エントリを解析: (馬番, 払戻金額) のタプルを返す。データなしは None"""
+                umaban_str = seg[0:horse_bytes].strip()
+                payout_str = seg[horse_bytes:horse_bytes + payout_bytes].strip()
+                umaban = JRDBParser.safe_int(umaban_str)
+                payout = JRDBParser.safe_int(payout_str)
+                if not umaban or not payout:
+                    return None
+                return (umaban, payout)
+
+            # --- 単勝払戻 (3件×9文字) ---
+            win_payouts = []
+            for i in range(3):
+                seg = line[8 + i * 9: 8 + (i + 1) * 9]
+                entry = parse_payout_entry(seg, 2, 7)
+                if entry:
+                    win_payouts.append(entry)
+
+            # --- 複勝払戻 (5件×9文字) ---
+            place_payouts = []
+            if len(line) >= 80:
+                for i in range(5):
+                    seg = line[35 + i * 9: 35 + (i + 1) * 9]
+                    entry = parse_payout_entry(seg, 2, 7)
+                    if entry:
+                        place_payouts.append(entry)
+
+            # --- 枠連払戻 (3件×9文字) ---
+            wakuren_payouts = []
+            if len(line) >= 107:
+                for i in range(3):
+                    seg = line[80 + i * 9: 80 + (i + 1) * 9]
+                    entry = parse_payout_entry(seg, 2, 7)
+                    if entry:
+                        wakuren_payouts.append(entry)
+
+            # --- 馬連払戻 (3件×12文字) ---
+            umaren_payouts = []
+            if len(line) >= 143:
+                for i in range(3):
+                    seg = line[107 + i * 12: 107 + (i + 1) * 12]
+                    entry = parse_payout_entry(seg, 4, 8)
+                    if entry:
+                        umaren_payouts.append(entry)
+
+            # --- ワイド払戻 (7件×12文字) ---
+            wide_payouts = []
+            if len(line) >= 227:
+                for i in range(7):
+                    seg = line[143 + i * 12: 143 + (i + 1) * 12]
+                    entry = parse_payout_entry(seg, 4, 8)
+                    if entry:
+                        wide_payouts.append(entry)
+
+            # --- 馬単払戻 (6件×12文字) ---
+            umatan_payouts = []
+            if len(line) >= 299:
+                for i in range(6):
+                    seg = line[227 + i * 12: 227 + (i + 1) * 12]
+                    entry = parse_payout_entry(seg, 4, 8)
+                    if entry:
+                        umatan_payouts.append(entry)
+
+            # --- 三連複払戻 (3件×14文字) ---
+            sanrenpuku_payouts = []
+            if len(line) >= 341:
+                for i in range(3):
+                    seg = line[299 + i * 14: 299 + (i + 1) * 14]
+                    entry = parse_payout_entry(seg, 6, 8)
+                    if entry:
+                        sanrenpuku_payouts.append(entry)
+
+            # --- 三連単払戻 (6件×15文字, HJCのみ) ---
+            sanrentan_payouts = []
+            if len(line) >= 431:
+                for i in range(6):
+                    seg = line[341 + i * 15: 341 + (i + 1) * 15]
+                    entry = parse_payout_entry(seg, 6, 9)
+                    if entry:
+                        sanrentan_payouts.append(entry)
+
+            return {
+                'race_id': race_key,
+                'venue_code': race_info['venue_code'],
+                'year': race_info['year'],
+                'race_number': race_info['race_number'],
+                # 単勝: [(馬番, 払戻金額), ...]
+                'win_payouts': win_payouts,
+                # 複勝: [(馬番, 払戻金額), ...]
+                'place_payouts': place_payouts,
+                # 枠連: [(枠番組合せ, 払戻金額), ...]
+                'wakuren_payouts': wakuren_payouts,
+                # 馬連: [(馬番組合せ, 払戻金額), ...]
+                'umaren_payouts': umaren_payouts,
+                # ワイド: [(馬番組合せ, 払戻金額), ...]
+                'wide_payouts': wide_payouts,
+                # 馬単: [(馬番組合せ, 払戻金額), ...]
+                'umatan_payouts': umatan_payouts,
+                # 三連複: [(馬番組合せ, 払戻金額), ...]
+                'sanrenpuku_payouts': sanrenpuku_payouts,
+                # 三連単: [(馬番組合せ, 払戻金額), ...]
+                'sanrentan_payouts': sanrentan_payouts,
+                'created_at': datetime.utcnow().isoformat(),
+                'updated_at': datetime.utcnow().isoformat(),
+            }
+
+        except Exception as e:
+            logger.error(f"Error parsing HJB line: {e}", exc_info=True)
+            return None
+
+    @staticmethod
+    def expand_hjb_to_payout_rows(hjb_record: Dict) -> List[Dict]:
+        """
+        HJBの1レース払戻レコードを、1行1払戻の形式に展開する
+
+        BigQueryのraw.payoutsテーブルに挿入するための形式に変換する。
+
+        Args:
+            hjb_record: parse_hjb_line() の返り値
+
+        Returns:
+            払戻行のリスト (各行がraw.payoutsの1レコードに対応)
+        """
+        rows = []
+        race_id = hjb_record['race_id']
+        created_at = hjb_record['created_at']
+        updated_at = hjb_record['updated_at']
+
+        bet_type_map = {
+            'win': 'win_payouts',
+            'place': 'place_payouts',
+            'wakuren': 'wakuren_payouts',
+            'umaren': 'umaren_payouts',
+            'wide': 'wide_payouts',
+            'umatan': 'umatan_payouts',
+            'sanrenpuku': 'sanrenpuku_payouts',
+            'sanrentan': 'sanrentan_payouts',
+        }
+
+        for bet_type, field_name in bet_type_map.items():
+            payouts = hjb_record.get(field_name, [])
+            for rank, (combo, payout) in enumerate(payouts, start=1):
+                # 馬券種別に応じて組合せ番号を個別の馬番に分割する。
+                # safe_int() で int 変換すると先頭ゼロが失われるため、
+                # 馬券種別ごとに固定桁数でゼロパディングしてから2桁ずつ分割する。
+                if bet_type in ('win', 'place'):
+                    # 単勝・複勝: 1頭 (2桁以下の馬番)
+                    horse_numbers = [combo]
+                elif bet_type == 'wakuren':
+                    # 枠連: 2桁フィールド → 十の位が枠番1, 一の位が枠番2
+                    horse_numbers = [n for n in (combo // 10, combo % 10) if n > 0]
+                elif bet_type in ('umaren', 'wide', 'umatan'):
+                    # 馬連・ワイド・馬単: 4桁 (XX YY) → 馬番XX + 馬番YY
+                    s = f"{combo:04d}"
+                    horse_numbers = [n for n in (int(s[0:2]), int(s[2:4])) if n > 0]
+                elif bet_type in ('sanrenpuku', 'sanrentan'):
+                    # 三連複・三連単: 6桁 (XX YY ZZ) → 馬番XX + 馬番YY + 馬番ZZ
+                    s = f"{combo:06d}"
+                    horse_numbers = [
+                        n for n in (int(s[0:2]), int(s[2:4]), int(s[4:6])) if n > 0
+                    ]
+                else:
+                    horse_numbers = [combo]
+                rows.append({
+                    'race_id': race_id,
+                    'bet_type': bet_type,
+                    'horse_number_1': horse_numbers[0] if len(horse_numbers) > 0 else None,
+                    'horse_number_2': horse_numbers[1] if len(horse_numbers) > 1 else None,
+                    'horse_number_3': horse_numbers[2] if len(horse_numbers) > 2 else None,
+                    'payout_amount': payout,
+                    'rank': rank,
+                    'created_at': created_at,
+                    'updated_at': updated_at,
+                })
+
+        return rows
+
+    @staticmethod
     def parse_file(file_content: str, data_type: str) -> List[Dict]:
         """
         ファイル全体を解析
@@ -1274,6 +1488,8 @@ class JRDBParser:
             'UKC': JRDBParser.parse_ukc_line,
             'KKA': JRDBParser.parse_kka_line,
             'KAA': JRDBParser.parse_kaa_line,
+            'HJB': JRDBParser.parse_hjb_line,
+            'HJC': JRDBParser.parse_hjb_line,
         }
 
         parser_func = parser_map.get(data_type.upper())

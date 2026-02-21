@@ -1,0 +1,56 @@
+[
+  {
+    "name": "race_id",
+    "type": "STRING",
+    "mode": "REQUIRED",
+    "description": "レースID (場コード2+年2+回1+日1+R2)"
+  },
+  {
+    "name": "bet_type",
+    "type": "STRING",
+    "mode": "REQUIRED",
+    "description": "馬券種別 (win/place/wakuren/umaren/wide/umatan/sanrenpuku/sanrentan)"
+  },
+  {
+    "name": "horse_number_1",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "馬番1 (単勝・複勝は着順1位、連系は1頭目)"
+  },
+  {
+    "name": "horse_number_2",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "馬番2 (2連・3連系の2頭目)"
+  },
+  {
+    "name": "horse_number_3",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "馬番3 (3連系の3頭目)"
+  },
+  {
+    "name": "payout_amount",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "払戻金額 (100円あたりの払戻金額、単位: 円)"
+  },
+  {
+    "name": "rank",
+    "type": "INT64",
+    "mode": "NULLABLE",
+    "description": "払戻順位 (1始まり)"
+  },
+  {
+    "name": "created_at",
+    "type": "TIMESTAMP",
+    "mode": "NULLABLE",
+    "description": "レコード作成日時"
+  },
+  {
+    "name": "updated_at",
+    "type": "TIMESTAMP",
+    "mode": "NULLABLE",
+    "description": "レコード更新日時"
+  }
+]

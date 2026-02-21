@@ -10,6 +10,7 @@ import pytest
 from src.automation.data.load_to_bq import (
     BatchLoadResult,
     BigQueryLoader,
+    EXPAND_DATA_TYPES,
     LOAD_HISTORY_TABLE,
     LoadResult,
     create_loader_from_env,
@@ -86,6 +87,12 @@ class TestGetTableName:
     def test_lowercase_input(self):
         """小文字の入力も正しく処理される"""
         assert get_table_name("baa") == "race_info"
+
+    def test_hjb_maps_to_payouts(self):
+        assert get_table_name("HJB") == "payouts"
+
+    def test_hjc_maps_to_payouts(self):
+        assert get_table_name("HJC") == "payouts"
 
     def test_unknown_data_type(self):
         """未知のデータタイプはNoneを返す"""
@@ -757,3 +764,80 @@ class TestLoadFileWithHistory:
                         loader.load_file("BAA260104.csv", record_history=False)
 
         mock_history.assert_not_called()
+
+
+class TestExpandDataTypes:
+    """EXPAND_DATA_TYPESの確認とHJBロード展開処理のテスト"""
+
+    def test_expand_data_types_contains_hjb_hjc(self):
+        """EXPAND_DATA_TYPESにHJBとHJCが含まれる"""
+        assert "HJB" in EXPAND_DATA_TYPES
+        assert "HJC" in EXPAND_DATA_TYPES
+
+    def test_expand_data_types_does_not_contain_sec(self):
+        """SECなど通常タイプはEXPAND_DATA_TYPESに含まれない"""
+        assert "SEC" not in EXPAND_DATA_TYPES
+        assert "BAA" not in EXPAND_DATA_TYPES
+
+    def test_hjb_load_file_expands_payout_rows(self):
+        """HJBファイルのload_fileがexpand_hjb_to_payout_rowsを呼び出し展開する"""
+        loader = BigQueryLoader(project_id="test-project")
+
+        # parse_hjb_line が返す1レース分のレコード
+        hjb_parsed_record = {
+            "race_id": "08251301",
+            "win_payouts": [(3, 170)],
+            "place_payouts": [(3, 110), (9, 110)],
+            "wakuren_payouts": [],
+            "umaren_payouts": [],
+            "wide_payouts": [],
+            "umatan_payouts": [],
+            "sanrenpuku_payouts": [],
+            "sanrentan_payouts": [],
+            "created_at": "2025-01-01T00:00:00",
+            "updated_at": "2025-01-01T00:00:00",
+        }
+        # expand後の期待されるペイアウト行 (win×1 + place×2 = 3行)
+        expanded_rows = [
+            {"race_id": "08251301", "bet_type": "win", "horse_number_1": 3,
+             "horse_number_2": None, "horse_number_3": None, "payout_amount": 170,
+             "rank": 1, "created_at": "2025-01-01T00:00:00", "updated_at": "2025-01-01T00:00:00"},
+            {"race_id": "08251301", "bet_type": "place", "horse_number_1": 3,
+             "horse_number_2": None, "horse_number_3": None, "payout_amount": 110,
+             "rank": 1, "created_at": "2025-01-01T00:00:00", "updated_at": "2025-01-01T00:00:00"},
+            {"race_id": "08251301", "bet_type": "place", "horse_number_1": 9,
+             "horse_number_2": None, "horse_number_3": None, "payout_amount": 110,
+             "rank": 2, "created_at": "2025-01-01T00:00:00", "updated_at": "2025-01-01T00:00:00"},
+        ]
+
+        with patch.object(loader, "_download_file_from_gcs", return_value="data"):
+            with patch.object(loader, "_load_to_bigquery", return_value=3) as mock_load_bq:
+                with patch.object(loader, "_record_load_history"):
+                    with patch("src.automation.data.load_to_bq.JRDBParser") as mock_parser:
+                        mock_parser.parse_file.return_value = [hjb_parsed_record]
+                        mock_parser.expand_hjb_to_payout_rows.return_value = expanded_rows
+
+                        result = loader.load_file("HJB260104.csv")
+
+        assert result.status == "success"
+        assert result.records_processed == 3
+        assert result.table == "raw.payouts"
+        # expand_hjb_to_payout_rows が呼ばれたことを確認
+        mock_parser.expand_hjb_to_payout_rows.assert_called_once_with(hjb_parsed_record)
+        # _load_to_bigquery には展開後のrows が渡された
+        mock_load_bq.assert_called_once_with("payouts", expanded_rows, "HJB")
+
+    def test_hjb_load_file_empty_after_expand_is_skipped(self):
+        """HJB展開結果が空の場合はskippedになる"""
+        loader = BigQueryLoader(project_id="test-project")
+
+        with patch.object(loader, "_download_file_from_gcs", return_value="data"):
+            with patch.object(loader, "_record_load_history"):
+                with patch("src.automation.data.load_to_bq.JRDBParser") as mock_parser:
+                    mock_parser.parse_file.return_value = [{"race_id": "08251301"}]
+                    mock_parser.expand_hjb_to_payout_rows.return_value = []
+
+                    result = loader.load_file("HJB260104.csv")
+
+        assert result.status == "skipped"
+        assert result.error == "HJB展開結果が空"
