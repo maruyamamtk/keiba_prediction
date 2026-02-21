@@ -73,6 +73,7 @@ class TestPredictPipeline:
                     rows.append({
                         "race_id": race_id,
                         "horse_id": f"horse_{horse_num}",
+                        "horse_name": f"テスト馬{horse_num}",
                         "race_date": race_date,
                         "target_place": horse_num <= 3,
                         "finish_position": horse_num,
@@ -133,6 +134,80 @@ class TestPredictPipeline:
             assert ranks[0] == 1
 
     @patch("src.models.predict.fetch_prediction_data")
+    def test_predict_pipeline_with_target_dates(
+        self, mock_fetch, trained_model_path, mock_predict_df
+    ):
+        """target_datesを指定した場合、その日付でfetch_prediction_dataが呼ばれること"""
+        mock_fetch.return_value = mock_predict_df
+
+        config = {
+            "data": {
+                "dataset": "features",
+                "table": "training_data",
+                "date_column": "race_date",
+                "exclude_columns": [
+                    "race_id", "horse_id", "race_date",
+                    "target_place", "finish_position",
+                    "venue_code", "jockey_id", "trainer_id",
+                    "created_at", "race_number",
+                ],
+                "categorical_columns": ["course_type", "track_condition"],
+            },
+        }
+
+        target_dates = [datetime.date(2026, 1, 10), datetime.date(2026, 1, 12)]
+
+        result_df = predict_pipeline(
+            project_id="test-project",
+            execution_date=datetime.date(2026, 2, 13),
+            config=config,
+            model_path=trained_model_path,
+            target_dates=target_dates,
+        )
+
+        # fetch_prediction_dataに指定した日付が渡されること
+        call_args = mock_fetch.call_args
+        assert call_args.kwargs["target_dates"] == target_dates
+
+        assert len(result_df) > 0
+
+    @patch("src.models.predict.fetch_prediction_data")
+    def test_predict_pipeline_default_uses_week_boundaries(
+        self, mock_fetch, trained_model_path, mock_predict_df
+    ):
+        """target_dates未指定時、execution_dateの週の土日が使われること"""
+        mock_fetch.return_value = mock_predict_df
+
+        config = {
+            "data": {
+                "dataset": "features",
+                "table": "training_data",
+                "date_column": "race_date",
+                "exclude_columns": [
+                    "race_id", "horse_id", "race_date",
+                    "target_place", "finish_position",
+                    "venue_code", "jockey_id", "trainer_id",
+                    "created_at", "race_number",
+                ],
+                "categorical_columns": ["course_type", "track_condition"],
+            },
+        }
+
+        # 2026-02-13（金曜日）→ 同じ週の土曜2/14, 日曜2/15
+        execution_date = datetime.date(2026, 2, 13)
+        result_df = predict_pipeline(
+            project_id="test-project",
+            execution_date=execution_date,
+            config=config,
+            model_path=trained_model_path,
+        )
+
+        call_args = mock_fetch.call_args
+        passed_dates = call_args.kwargs["target_dates"]
+        assert datetime.date(2026, 2, 14) in passed_dates
+        assert datetime.date(2026, 2, 15) in passed_dates
+
+    @patch("src.models.predict.fetch_prediction_data")
     def test_predict_pipeline_empty_data(self, mock_fetch, trained_model_path):
         """推論対象データがない場合、空のDataFrameを返すこと"""
         mock_fetch.return_value = pd.DataFrame()
@@ -174,15 +249,17 @@ class TestFormatPredictions:
             "race_id": ["r1", "r1", "r1"],
             "race_date": [datetime.date(2026, 2, 14)] * 3,
             "horse_id": ["h1", "h2", "h3"],
+            "horse_name": ["テスト馬1", "テスト馬2", "テスト馬3"],
             "horse_number": [1, 2, 3],
             "venue_code": ["01", "01", "01"],
             "race_number": [1, 1, 1],
             "pred_score": [0.8, 0.5, 0.3],
+            "win_place_prob": [0.7, 0.5, 0.3],
             "pred_rank": [1, 2, 3],
             "finish_position": [2, 1, 3],
         })
 
         result = format_predictions(df)
-        assert "01" in result
+        assert "札幌" in result  # venue_code "01" → "札幌" に変換される
         assert "1R" in result
         assert "0.8000" in result

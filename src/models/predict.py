@@ -169,15 +169,18 @@ def predict_pipeline(
     execution_date: datetime.date,
     config: dict,
     model_path: str,
+    target_dates: Optional[list[datetime.date]] = None,
 ) -> pd.DataFrame:
     """
     推論パイプラインを実行する
 
     Args:
         project_id: GCPプロジェクトID
-        execution_date: 実行日
+        execution_date: 実行日（target_dates未指定時に週の土日を算出する基準日）
         config: 設定辞書
         model_path: モデルファイルパス
+        target_dates: 推論対象日のリスト。指定した場合はその日付のみ対象とする。
+                      未指定の場合は execution_date の週の土曜・日曜を使用する。
 
     Returns:
         予測結果のDataFrame
@@ -188,9 +191,10 @@ def predict_pipeline(
     ranker = LGBMRanker()
     ranker.load(model_path)
 
-    # 2. 推論対象データの取得
-    saturday, sunday = compute_week_boundaries(execution_date)
-    target_dates = [saturday, sunday]
+    # 2. 推論対象日の決定
+    if target_dates is None:
+        saturday, sunday = compute_week_boundaries(execution_date)
+        target_dates = [saturday, sunday]
 
     df = fetch_prediction_data(
         project_id=project_id,
@@ -309,6 +313,18 @@ def main():
         help="実行日 (YYYY-MM-DD, デフォルト: 今日)",
     )
     parser.add_argument(
+        "--target-dates",
+        nargs="+",
+        default=None,
+        metavar="YYYY-MM-DD",
+        help=(
+            "推論対象日 (YYYY-MM-DD 形式, 複数指定可). "
+            "指定した場合はその日付のみ対象とする。"
+            "未指定の場合は --execution-date の週の土曜・日曜を使用する。"
+            " 例: --target-dates 2026-02-14 2026-02-15"
+        ),
+    )
+    parser.add_argument(
         "--config",
         default=None,
         help="設定ファイルパス",
@@ -335,11 +351,22 @@ def main():
     config = load_config(args.config)
     execution_date = datetime.date.fromisoformat(args.execution_date)
 
+    parsed_target_dates = None
+    if args.target_dates:
+        try:
+            parsed_target_dates = [
+                datetime.date.fromisoformat(d) for d in args.target_dates
+            ]
+        except ValueError as e:
+            logger.error(f"--target-dates のフォーマットが不正です: {e}")
+            return 1
+
     result_df = predict_pipeline(
         project_id=args.project_id,
         execution_date=execution_date,
         config=config,
         model_path=args.model_path,
+        target_dates=parsed_target_dates,
     )
 
     # 結果表示
