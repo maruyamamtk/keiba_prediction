@@ -47,6 +47,13 @@
 - 評価指標: NDCG@3, Recall@3, AUC
 - モデルファイルのGCS保存・読み込み
 
+#### Backtest Layer ✅ 実装済み
+- Fractional Kelly基準による賭け金計算
+- 期待回収率フィルタ（win_place_prob × odds > threshold）
+- 評価指標: 回収率・的中率・最大ドローダウン・シャープレシオ
+- BigQuery（features.training_data, raw.race_results, raw.payouts）からの期間指定データ取得
+- 結果のCSV保存・BigQuery保存・グラフ出力
+
 #### Prediction & Operation Layer ⬜ 未実装
 - 予測パイプライン
 - Webダッシュボード（Streamlit）
@@ -244,12 +251,22 @@ def evaluate_model(y_true, y_pred, groups):
 
 ---
 
-## 6. バックテスト設計 [未実装 - 設計のみ]
+## 6. バックテスト設計 ✅ 実装済み
 
 ### 6.1 バックテスト概要
 - **目的**: 過去データで実際の投資をシミュレーション
 - **期間**: 最低6ヶ月以上
 - **評価**: 回収率、的中率、最大ドローダウン
+
+### 6.0 実装済みファイル
+- `src/backtest/__init__.py`: モジュール初期化
+- `src/backtest/simulator.py`: Kelly基準・BacktestSimulatorクラス
+- `src/backtest/metrics.py`: 評価指標（回収率・的中率・最大ドローダウン・シャープレシオ）
+- `scripts/run_backtest.py`: CLIバックテスト実行スクリプト
+- `tests/test_backtest_simulator.py`: シミュレーターテスト（24件）
+- `tests/test_backtest_metrics.py`: 指標テスト（24件）
+
+**実行手順は [README.md](./README.md#6-バックテスト) を参照してください。**
 
 ### 6.2 投資戦略
 
@@ -642,6 +659,7 @@ Cloud Run または Cloud Function のデプロイメント完了を宣言する
 | 2026-02-10 | 2.0.0 | 実装状況を反映: データパイプライン・特徴量パイプライン完了、ディレクトリ構成・BigQueryスキーマ・実装計画を現状に合わせて全面更新 | Claude |
 | 2026-02-14 | 3.0.0 | README.mdとの重複を除外し、設計仕様書として再構成。実装済み機能の手順詳細はREADME.mdへ移行。Issue #59（特徴量生成API）とIssue #71（デプロイスクリプト整備）の内容を反映 | Claude |
 | 2026-02-17 | 3.1.0 | Issue #85（LambdaRankラベル二値化）・Issue #86（Optunaハイパーパラメータチューニング）の実装を反映。Model Training Layer実装済み、評価指標にAUC追加、KPIにAUC追加 | Claude |
+| 2026-02-22 | 3.2.0 | Issue #17（バックテストシミュレーター）の実装を反映。Backtest Layer実装済みに更新、セクション6を実装済みに変更、実装ファイル一覧を追記 | Claude |
 
 ---
 

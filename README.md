@@ -150,7 +150,46 @@ python3 -m src.models.predict --project-id <PROJECT_ID> --model-path ./models/lg
   --target-dates 2026-01-10 2026-01-11 2026-01-12
 ```
 
-### 6. Cloud Runデプロイ（本番環境）
+### 6. バックテスト
+
+```bash
+# 基本的なバックテスト実行
+python scripts/run_backtest.py \
+    --project-id <PROJECT_ID> \
+    --model-path src/models/lgbm_ranker_20260217.txt \
+    --start-date 2023-01-01 \
+    --end-date 2023-12-31
+
+# オプション付き（Kelly係数・閾値・出力先を指定）
+python scripts/run_backtest.py \
+    --project-id <PROJECT_ID> \
+    --model-path src/models/lgbm_ranker_20260217.txt \
+    --start-date 2023-01-01 \
+    --end-date 2023-12-31 \
+    --initial-capital 100000 \
+    --kelly-fraction 0.25 \
+    --threshold 1.2 \
+    --output-csv results/backtest_2023.csv \
+    --output-chart results/capital_curve.png \
+    --save-to-bq
+```
+
+**主なオプション:**
+
+| オプション | デフォルト | 説明 |
+|-----------|-----------|------|
+| `--project-id` | 必須 | GCPプロジェクトID |
+| `--model-path` | 必須 | モデルファイルパス |
+| `--start-date` | 必須 | バックテスト開始日 (YYYY-MM-DD) |
+| `--end-date` | 必須 | バックテスト終了日 (YYYY-MM-DD) |
+| `--initial-capital` | 100000 | 初期資金（円） |
+| `--kelly-fraction` | 0.25 | Fractional Kellyの係数 |
+| `--threshold` | 1.2 | 期待回収率フィルタ閾値 |
+| `--output-csv` | なし | 結果CSV保存先パス |
+| `--output-chart` | なし | 資金推移グラフ保存先パス |
+| `--save-to-bq` | False | BigQuery保存フラグ |
+
+### 7. Cloud Runデプロイ（本番環境）
 
 ```bash
 # Dockerイメージのビルド・プッシュ
@@ -199,15 +238,20 @@ keiba_prediction/
 │   │       ├── __init__.py
 │   │       ├── feature_pipeline.py    # 特徴量パイプライン
 │   │       └── feature_query_raw.sql. # 特徴量集計用クエリ
-│   └── models/                        # モデル学習・推論
+│   ├── models/                        # モデル学習・推論
+│   │   ├── __init__.py
+│   │   ├── lgbm_ranker.py            # LightGBM LambdaRankモデル
+│   │   ├── train.py                  # 学習パイプライン
+│   │   ├── predict.py                # 推論パイプライン
+│   │   └── tuning.py                 # Optunaハイパーパラメータチューニング
+│   └── backtest/                      # バックテストシミュレーター
 │       ├── __init__.py
-│       ├── lgbm_ranker.py            # LightGBM LambdaRankモデル
-│       ├── train.py                  # 学習パイプライン
-│       ├── predict.py                # 推論パイプライン
-│       └── tuning.py                 # Optunaハイパーパラメータチューニング
+│       ├── simulator.py              # Kelly基準・BacktestSimulatorクラス
+│       └── metrics.py                # 評価指標（回収率・的中率・ドローダウン・シャープレシオ）
 ├── scripts/                           # ユーティリティスクリプト
 │   ├── generate_features.py
 │   ├── reload_gcs_to_bq.py
+│   ├── run_backtest.py               # CLIバックテスト実行スクリプト
 │   ├── setup_bigquery.sh
 │   ├── setup_gcp.sh
 │   └── sync_to_gcs.sh
@@ -299,6 +343,24 @@ keiba_prediction/
 - モデルのGCS保存・読み込み
 
 詳細は [src/models/README.md](./src/models/README.md) を参照してください。
+
+### 5. `src/backtest/` - バックテストシミュレーター
+
+**目的**: 過去データを用いた投資シミュレーションにより、モデルの実用性を検証する。
+
+**含まれるモジュール**:
+- `simulator.py`: Kelly基準による賭け金計算、BacktestSimulatorクラス（BigQueryデータ取得 → 予測 → 投資判断 → 損益計算）
+- `metrics.py`: バックテスト評価指標（回収率・的中率・最大ドローダウン・シャープレシオ）
+
+**使用場面**:
+- モデル学習後の実用性評価（回収率シミュレーション）
+- 投資戦略パラメータ（Kelly係数・期待回収率閾値）の調整
+- `scripts/run_backtest.py` からCLI実行
+
+**投資ロジック**:
+- 期待回収率フィルタ: `win_place_prob × odds > threshold`（デフォルト1.2）
+- 賭け金: Fractional Kelly（デフォルト25%）+ 1レースあたり最大5%上限
+- 払戻: `raw.payouts` の実際の払戻金額を優先使用、なければオッズで推定
 
 ---
 
@@ -575,7 +637,10 @@ ORDER BY loaded_at DESC;
 
 ### predictions/backtestsデータセット
 
-テーブルのみ作成済み。Phase 4-5で実装予定。
+| テーブル | 説明 | 状態 |
+|---------|------|------|
+| `predictions.prediction_results` | 推論結果 | テーブルのみ作成済み（Phase 5で実装予定） |
+| `backtests.backtest_results` | バックテスト結果 | 実装済み（`--save-to-bq` オプションで保存） |
 
 ---
 
@@ -648,7 +713,7 @@ python -m pytest tests/ --cov=src --cov-report=html
 - ⬜ Secret Managerでの認証情報管理
 - ⬜ Cloud Loggingとの統合
 
-### Phase 4: モデル開発 🔧 進行中
+### Phase 4: モデル開発 ✅ 完了
 
 - ✅ LightGBM ランク学習 (LambdaRank) - Issue #14
 - ✅ 二値ラベル化（3着以内=1, それ以外=0） - Issue #85
@@ -656,7 +721,7 @@ python -m pytest tests/ --cov=src --cov-report=html
 - ✅ Optunaハイパーパラメータチューニング - Issue #86
 - ✅ 時系列分割（学習・検証・推論） - Issue #14
 - ✅ 推論パイプライン - Issue #14
-- ⬜ バックテスト
+- ✅ バックテストシミュレーター（Kelly基準・回収率評価） - Issue #17
 
 ### Phase 5: 運用システム構築 ⬜ 未着手
 
@@ -684,3 +749,4 @@ python -m pytest tests/ --cov=src --cov-report=html
 |------|----------|
 | 2026-02-14 | README.mdとCLAUDE.mdの重複除外。Issue #59（特徴量生成API）とIssue #71（デプロイスクリプト整備）の内容を反映 |
 | 2026-02-16 | Issue #85（二値ラベル化・AUC追加）とIssue #86（Optunaチューニング）の内容を反映 |
+| 2026-02-22 | Issue #17（バックテストシミュレーター）の実装を反映。src/backtest/追加、scripts/run_backtest.py追加、Phase 4完了に更新 |
