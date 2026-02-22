@@ -46,7 +46,6 @@ from src.backtest.simulator import BacktestSimulator
 from src.models.lgbm_ranker import LGBMRanker
 from src.models.predict import _scores_to_place_prob
 from src.models.train import (
-    CONFIG_PATH,
     build_feature_matrix,
     load_config,
 )
