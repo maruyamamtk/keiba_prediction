@@ -121,6 +121,51 @@ def fetch_historical_results(
     return df
 
 
+def fetch_place_odds(
+    project_id: str,
+    race_ids: list[str],
+) -> pd.DataFrame:
+    """
+    複勝オッズを raw.odds から取得する
+
+    各 (race_id, horse_id) ごとに最新タイムスタンプのオッズを1行に集約する。
+    raw.odds にデータがない場合は空 DataFrame を返す。
+
+    Args:
+        project_id: GCP プロジェクト ID
+        race_ids: オッズを取得するレース ID のリスト
+
+    Returns:
+        複勝オッズ DataFrame (race_id, horse_id, horse_number, place_odds)
+    """
+    if not race_ids:
+        return pd.DataFrame()
+
+    client = bigquery.Client(project=project_id)
+    ids_str = ", ".join(f"'{r}'" for r in race_ids)
+    query = f"""
+    SELECT race_id, horse_id, horse_number, odds_value AS place_odds
+    FROM (
+        SELECT race_id, horse_id, horse_number, odds_value,
+               ROW_NUMBER() OVER (
+                   PARTITION BY race_id, horse_id
+                   ORDER BY odds_timestamp DESC
+               ) AS rn
+        FROM `{project_id}.raw.odds`
+        WHERE odds_type = 'place'
+          AND race_id IN ({ids_str})
+    )
+    WHERE rn = 1
+    """
+    try:
+        df = client.query(query).to_dataframe()
+        logger.info(f"Fetched {len(df)} place odds rows from raw.odds")
+        return df
+    except Exception as e:
+        logger.warning(f"raw.odds からのオッズ取得に失敗しました: {e}")
+        return pd.DataFrame()
+
+
 def fetch_place_payouts(
     project_id: str,
     start_date: datetime.date,
@@ -221,11 +266,6 @@ def generate_predictions(
         )
     else:
         result_df["finish_position"] = np.nan
-
-    # オッズカラムの付与
-    for odds_col in ["odds_yesterday", "odds_today"]:
-        if odds_col in features_df.columns:
-            result_df[odds_col] = features_df[odds_col].values
 
     return result_df.sort_values(
         ["race_date", "race_id", "horse_number"]
@@ -368,7 +408,7 @@ def run_backtest_pipeline(
     kelly_fraction: float = 0.25,
     expected_return_threshold: float = 1.2,
     max_bet_ratio: float = 0.05,
-    odds_column: str = "odds_yesterday",
+    odds_column: str = "place_odds",
     output_csv: str | None = None,
     save_bq: bool = False,
     output_chart: str | None = None,
@@ -430,7 +470,44 @@ def run_backtest_pipeline(
         config=config,
     )
 
-    # 3. シミュレーション実行
+    # 3. オッズの取得とマージ
+    # まず raw.odds（事前オッズ）から取得を試みる。
+    # データがない場合は raw.payouts の払戻額/100 を代替として使用する
+    # （払戻額はレース後確定値のため、厳密なバックテストでは前者が望ましい）
+    race_ids = predictions_df["race_id"].unique().tolist()
+    odds_df = fetch_place_odds(project_id=project_id, race_ids=race_ids)
+
+    if len(odds_df) > 0:
+        predictions_df = predictions_df.merge(
+            odds_df[["race_id", "horse_id", "place_odds"]],
+            on=["race_id", "horse_id"],
+            how="left",
+        )
+        logger.info("raw.odds の複勝オッズを place_odds としてマージしました")
+    elif len(payouts_df) > 0:
+        logger.warning(
+            "raw.odds にオッズデータがありません。"
+            "raw.payouts の payout_amount/100 を place_odds の代替として使用します。"
+            "（レース後確定値のため、期待回収率フィルタに軽微な先読みバイアスが生じます）"
+        )
+        place_df = payouts_df[payouts_df["bet_type"] == "place"][
+            ["race_id", "horse_number_1", "payout_amount"]
+        ].copy()
+        place_df = place_df.rename(columns={"horse_number_1": "horse_number"})
+        place_df["place_odds"] = place_df["payout_amount"] / 100.0
+        predictions_df = predictions_df.merge(
+            place_df[["race_id", "horse_number", "place_odds"]],
+            on=["race_id", "horse_number"],
+            how="left",
+        )
+    else:
+        logger.error(
+            "オッズデータが取得できませんでした。"
+            "raw.odds・raw.payouts いずれも空です。バックテストを中断します。"
+        )
+        return pd.DataFrame(), {}
+
+    # 4. シミュレーション実行
     simulator = BacktestSimulator(
         initial_capital=initial_capital,
         kelly_fraction=kelly_fraction,
@@ -443,10 +520,10 @@ def run_backtest_pipeline(
         payouts_df=payouts_df if len(payouts_df) > 0 else None,
     )
 
-    # 4. 評価指標計算
+    # 5. 評価指標計算
     metrics = compute_metrics(history_df, initial_capital)
 
-    # 5. 結果保存
+    # 6. 結果保存
     if output_csv and len(history_df) > 0:
         Path(output_csv).parent.mkdir(parents=True, exist_ok=True)
         history_df.to_csv(output_csv, index=False)
@@ -530,8 +607,8 @@ def main() -> int:
     )
     parser.add_argument(
         "--odds-column",
-        default="odds_yesterday",
-        help="オッズとして使用するカラム名",
+        default="place_odds",
+        help="オッズとして使用するカラム名 (パイプラインが place_odds を自動生成)",
     )
     parser.add_argument(
         "--output-csv",
