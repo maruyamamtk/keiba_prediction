@@ -671,6 +671,10 @@ def main() -> int:
         output_chart=args.output_chart,
     )
 
+    if not metrics:
+        logger.error("バックテストが中断されたため、評価指標を表示できません。")
+        return 1
+
     print_metrics(metrics, args.initial_capital)
 
     return 0
