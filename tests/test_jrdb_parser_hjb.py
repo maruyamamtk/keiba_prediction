@@ -59,6 +59,46 @@ def _build_hjb_line(
     return body
 
 
+class TestParseRaceIdHex:
+    """parse_race_id() の16進数フィールド対応テスト"""
+
+    def test_day_decimal(self):
+        """日フィールドが通常の数字(1-9)の場合は正常にパースされる"""
+        result = JRDBParser.parse_race_id("08251301")
+        assert result["day"] == 3
+
+    def test_day_hex_a(self):
+        """日フィールドが 'a' (=10) のレースキーを正しくパースする"""
+        result = JRDBParser.parse_race_id("08251a01")
+        assert result["day"] == 10
+
+    def test_day_hex_b(self):
+        """日フィールドが 'b' (=11) のレースキーを正しくパースする（実際のバグケース）"""
+        result = JRDBParser.parse_race_id("08221b01")
+        assert result["day"] == 11
+
+    def test_day_hex_c(self):
+        """日フィールドが 'c' (=12) のレースキーを正しくパースする"""
+        result = JRDBParser.parse_race_id("08221c01")
+        assert result["day"] == 12
+
+    def test_kai_hex_a(self):
+        """回フィールドが 'a' (=10) の場合も正しくパースされる"""
+        result = JRDBParser.parse_race_id("0822a101")
+        assert result["kai"] == 10
+
+    def test_hjb_line_with_hex_day_parses_successfully(self):
+        """16進数の日フィールドを含むHJB行全体が正常にパースされる（Issue #95）"""
+        line = _build_hjb_line(
+            race_key="08221b01",  # day='b'=11
+            win=[("03", "0000170")],
+        )
+        result = JRDBParser.parse_hjb_line(line)
+        assert result is not None
+        assert result["race_id"] == "08221b01"
+        assert len(result["win_payouts"]) == 1
+
+
 class TestParseHjbLine:
     """parse_hjb_line() のテスト"""
 

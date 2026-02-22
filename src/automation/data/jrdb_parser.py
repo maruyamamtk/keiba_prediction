@@ -67,8 +67,9 @@ class JRDBParser:
 
         venue_code = race_key[0:2]
         year = int(race_key[2:4])
-        kai = int(race_key[4:5])
-        day = int(race_key[5:6])
+        # 回・日は9を超える場合にJRDBが16進数表記 (a=10, b=11, ...) を使用する
+        kai = int(race_key[4:5], 16)
+        day = int(race_key[5:6], 16)
         race_num = int(race_key[6:8])
 
         # 2000年以降の年を補完
