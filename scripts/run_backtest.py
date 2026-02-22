@@ -484,26 +484,13 @@ def run_backtest_pipeline(
             how="left",
         )
         logger.info("raw.odds の複勝オッズを place_odds としてマージしました")
-    elif len(payouts_df) > 0:
-        logger.warning(
-            "raw.odds にオッズデータがありません。"
-            "raw.payouts の payout_amount/100 を place_odds の代替として使用します。"
-            "（レース後確定値のため、期待回収率フィルタに軽微な先読みバイアスが生じます）"
-        )
-        place_df = payouts_df[payouts_df["bet_type"] == "place"][
-            ["race_id", "horse_number_1", "payout_amount"]
-        ].copy()
-        place_df = place_df.rename(columns={"horse_number_1": "horse_number"})
-        place_df["place_odds"] = place_df["payout_amount"] / 100.0
-        predictions_df = predictions_df.merge(
-            place_df[["race_id", "horse_number", "place_odds"]],
-            on=["race_id", "horse_number"],
-            how="left",
-        )
     else:
         logger.error(
-            "オッズデータが取得できませんでした。"
-            "raw.odds・raw.payouts いずれも空です。バックテストを中断します。"
+            "raw.odds に複勝オッズデータがありません。バックテストを中断します。\n"
+            "※ raw.payouts（払戻データ）は3着以内の馬のデータしか持たないため、\n"
+            "  オッズ代替として使用すると「3着以内の馬しか賭け対象にならない」という\n"
+            "  先読みバイアスが生じ、的中率が不当に100%になります。\n"
+            "  バックテストには raw.odds（レース前のオッズ）が必須です。"
         )
         return pd.DataFrame(), {}
 
