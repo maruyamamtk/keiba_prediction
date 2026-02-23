@@ -22,6 +22,30 @@ from src.backtest.simulator import fractional_kelly
 logger = logging.getLogger(__name__)
 
 
+def _calc_bet_amount(
+    capital: float,
+    kf: float,
+    max_bet_ratio: float,
+    min_bet_amount: float,
+) -> float:
+    """
+    賭け金を計算する共通ヘルパー（100円単位切り捨て・上限適用）
+
+    Args:
+        capital: 現在の資金 (円)
+        kf: Fractional Kelly の賭け金比率
+        max_bet_ratio: 1レースあたりの最大賭け金比率
+        min_bet_amount: 最低賭け金 (円)
+
+    Returns:
+        賭け金 (円)
+    """
+    bet_amount = capital * kf
+    bet_amount = min(bet_amount, capital * max_bet_ratio)
+    bet_amount = np.floor(bet_amount / 100.0) * 100.0
+    return max(min_bet_amount, bet_amount)
+
+
 @dataclass
 class RacePattern:
     """
@@ -150,10 +174,7 @@ def select_bets_one_dominant(
         return []
 
     # 賭け金計算（100円単位切り捨て・上限チェック）
-    bet_amount = capital * kf
-    bet_amount = min(bet_amount, capital * max_bet_ratio)
-    bet_amount = np.floor(bet_amount / 100.0) * 100.0
-    bet_amount = max(min_bet_amount, bet_amount)
+    bet_amount = _calc_bet_amount(capital, kf, max_bet_ratio, min_bet_amount)
 
     if bet_amount > capital:
         logger.debug(f"突出型: 賭け金 {bet_amount:.0f}円 が残高 {capital:.0f}円 を超過 → スキップ")
@@ -221,10 +242,7 @@ def select_bets_competitive(
             continue
 
         # 賭け金計算（100円単位切り捨て・上限チェック）
-        bet_amount = capital * kf
-        bet_amount = min(bet_amount, capital * max_bet_ratio)
-        bet_amount = np.floor(bet_amount / 100.0) * 100.0
-        bet_amount = max(min_bet_amount, bet_amount)
+        bet_amount = _calc_bet_amount(capital, kf, max_bet_ratio, min_bet_amount)
 
         if bet_amount > capital:
             logger.debug(
@@ -291,10 +309,7 @@ def select_bets_standard(
             continue
 
         # 賭け金計算（100円単位切り捨て・上限チェック）
-        bet_amount = capital * kf
-        bet_amount = min(bet_amount, capital * max_bet_ratio)
-        bet_amount = np.floor(bet_amount / 100.0) * 100.0
-        bet_amount = max(min_bet_amount, bet_amount)
+        bet_amount = _calc_bet_amount(capital, kf, max_bet_ratio, min_bet_amount)
 
         if bet_amount > capital:
             logger.debug(
@@ -321,6 +336,7 @@ def select_bets_for_race(
     p1: float = 0.2,
     p2: float = 0.15,
     expected_return_threshold: float = 1.2,
+    competitive_threshold_offset: float = 0.2,
     kelly_fraction: float = 0.25,
     max_bet_ratio: float = 0.05,
     min_bet_amount: float = 100.0,
@@ -333,7 +349,7 @@ def select_bets_for_race(
 
     パターンと戦略の対応:
       - one_dominant: select_bets_one_dominant（単複一点買い）
-      - competitive:  select_bets_competitive（複勝複数買い、閾値=1.0）
+      - competitive:  select_bets_competitive（複勝複数買い、閾値を低め設定）
       - standard:     select_bets_standard（期待回収率フィルタ）
 
     Args:
@@ -343,6 +359,9 @@ def select_bets_for_race(
         p1: 突出型の判定閾値（top1 と top2 の複勝率差）
         p2: 拮抗型の判定閾値（top1 と top3 の複勝率差）
         expected_return_threshold: 標準型・拮抗型の期待回収率閾値
+        competitive_threshold_offset: 拮抗型で期待回収率閾値を下げる幅
+            `max(1.0, expected_return_threshold - competitive_threshold_offset)` が
+            拮抗型の実際の閾値となる（デフォルト: 0.2）
         kelly_fraction: Fractional Kelly の係数
         max_bet_ratio: 1レースあたりの最大賭け金比率
         min_bet_amount: 最低賭け金 (円)
@@ -396,7 +415,7 @@ def select_bets_for_race(
         )
     elif race_pattern.pattern == "competitive":
         # 拮抗型は期待回収率閾値を低めに設定（標準型の閾値より下げる）
-        competitive_threshold = max(1.0, expected_return_threshold - 0.2)
+        competitive_threshold = max(1.0, expected_return_threshold - competitive_threshold_offset)
         bets = select_bets_competitive(
             race_df=valid_df,
             capital=capital,

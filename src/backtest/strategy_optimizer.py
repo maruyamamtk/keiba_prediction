@@ -143,12 +143,12 @@ class StrategyOptimizer:
         for race_id, race_group in df.groupby("race_id", sort=False):
             race_date = race_group["race_date"].iloc[0]
 
-            # 着順の完全性チェック（有効な着順 ≥ 4 がなければスキップ）
+            # 着順の完全性チェック（有効な着順データが1件もなければスキップ）
             if "finish_position" in race_group.columns:
                 valid_finish = pd.to_numeric(
                     race_group["finish_position"], errors="coerce"
                 )
-                if (valid_finish >= 4).sum() == 0:
+                if valid_finish.isna().all():
                     continue
 
             # NaN オッズを除外
@@ -398,6 +398,30 @@ class StrategyOptimizer:
             f"最良パラメータ ({metric}={getattr(best, metric):.4f}): {best.params}"
         )
         return best
+
+    def filter_by_goals(
+        self,
+        results: list[OptimizationResult],
+        min_recovery_rate: float = 100.0,
+        max_max_drawdown: float = 30.0,
+    ) -> list[OptimizationResult]:
+        """
+        回収率・最大ドローダウンの目標を達成するパラメータ設定のみを返す
+
+        Args:
+            results: run_grid_search の戻り値
+            min_recovery_rate: 回収率の下限 (%) デフォルト: 100.0
+            max_max_drawdown: 最大ドローダウンの上限 (%) デフォルト: 30.0
+
+        Returns:
+            条件を満たす OptimizationResult のリスト（回収率降順）
+        """
+        filtered = [
+            r for r in results
+            if r.recovery_rate >= min_recovery_rate
+            and r.max_drawdown <= max_max_drawdown
+        ]
+        return sorted(filtered, key=lambda r: r.recovery_rate, reverse=True)
 
     def summary_by_pattern(
         self, results: list[OptimizationResult]
