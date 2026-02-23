@@ -8,8 +8,8 @@
   {
     "name": "horse_id",
     "type": "STRING",
-    "mode": "REQUIRED",
-    "description": "馬ID"
+    "mode": "NULLABLE",
+    "description": "馬ID (OZファイル由来の場合は NULL)"
   },
   {
     "name": "odds_type",
