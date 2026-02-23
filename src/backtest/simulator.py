@@ -198,13 +198,13 @@ class BacktestSimulator:
             race_label = f"{race_date} {venue_name} {race_num_str}"
 
             # レース着順の完全性チェック:
-            # 有効な着順（1以上の整数）を持つ馬が1頭もいない場合は
+            # 有効な着順（4以上の整数）を持つ馬が1頭もいない場合は
             # 着順データが集計できていないレースとしてスキップする
             if "finish_position" in race_df.columns:
                 valid_finish = pd.to_numeric(
                     race_df["finish_position"], errors="coerce"
                 )
-                if (valid_finish >= 1).sum() == 0:
+                if (valid_finish >= 4).sum() == 0:
                     logger.info(
                         f"[スキップ] {race_label}"
                         " | 有効な着順データがないためシミュレーション対象外"
