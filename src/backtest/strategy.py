@@ -17,7 +17,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from src.backtest.simulator import fractional_kelly
+from .simulator import fractional_kelly
 
 logger = logging.getLogger(__name__)
 

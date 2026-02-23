@@ -20,8 +20,8 @@ from itertools import product
 import numpy as np
 import pandas as pd
 
-from src.backtest.metrics import compute_metrics
-from src.backtest.strategy import RacePattern, select_bets_for_race
+from .metrics import compute_metrics
+from .strategy import RacePattern, select_bets_for_race
 
 logger = logging.getLogger(__name__)
 

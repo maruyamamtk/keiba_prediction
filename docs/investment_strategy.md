@@ -299,7 +299,213 @@ Kelly値 = (p × (odds - 1) - (1 - p)) / (odds - 1)
 
 ---
 
-## 9. 関連ファイル
+## 9. 実行方法
+
+### 9.1 前提条件
+
+```bash
+# 依存ライブラリのインストール
+pip3 install -r requirements.txt
+
+# プロジェクトルートから実行すること（モジュールのインポートに必要）
+cd /path/to/keiba_prediction
+```
+
+> **注意:** `strategy.py` / `strategy_optimizer.py` はインポートして使うライブラリモジュールです。
+> `python3 src/backtest/strategy.py` や `python3 -m src.backtest.strategy` のように直接実行しても何も起きません。
+> 以下のように Python スクリプトやインタラクティブシェルからインポートして使用してください。
+
+環境変数:
+
+| 変数名 | 必須 | 説明 |
+|--------|------|------|
+| `GCP_PROJECT_ID` | グリッドサーチ時 | GCP プロジェクト ID |
+| `GOOGLE_APPLICATION_CREDENTIALS` | グリッドサーチ時 | GCP 認証キーのパス |
+
+---
+
+### 9.2 投資戦略を単体で実行する（`strategy.py`）
+
+**1レースの賭け選定を確認したい場合:**
+
+```python
+import pandas as pd
+from src.backtest.strategy import select_bets_for_race
+
+# レースデータを用意（必須カラム: horse_id, horse_number, win_place_prob, odds）
+race_df = pd.DataFrame({
+    "horse_id":       ["horse_01", "horse_02", "horse_03", "horse_04", "horse_05"],
+    "horse_number":   [1, 2, 3, 4, 5],
+    "win_place_prob": [0.45, 0.20, 0.15, 0.12, 0.08],  # MLモデルの予測複勝率
+    "odds":           [2.3, 5.1, 8.0, 12.0, 20.0],     # 複勝オッズ
+})
+
+bets, pattern = select_bets_for_race(
+    race_df=race_df,
+    capital=100_000.0,
+    p1=0.2,                          # 突出型判定閾値（デフォルト）
+    p2=0.15,                         # 拮抗型判定閾値（デフォルト）
+    expected_return_threshold=1.2,   # 期待回収率閾値
+    kelly_fraction=0.25,
+    max_bet_ratio=0.05,
+)
+
+print(f"レースパターン: {pattern.pattern}")
+print(f"  top1={pattern.top1_prob:.3f}, top2={pattern.top2_prob:.3f}, top3={pattern.top3_prob:.3f}")
+for bet in bets:
+    print(f"  馬番{bet['horse_number']}: ¥{bet['bet_amount']:,.0f} (オッズ {bet['odds']:.1f})")
+```
+
+**出力例（突出型の場合）:**
+
+```
+レースパターン: one_dominant
+  top1=0.450, top2=0.200, top3=0.150
+  馬番1: ¥2,300 (オッズ 2.3)
+```
+
+---
+
+### 9.3 パラメータ最適化を実行する（`strategy_optimizer.py`）
+
+#### ステップ 1: `predictions_df` を用意する
+
+オプティマイザーには、モデルの予測結果と実際の着順が揃った DataFrame が必要です。
+
+**方法 A: 既存バックテスト CSV から読み込む**
+
+```python
+import pandas as pd
+
+# run_backtest.py の --output-csv で生成した CSV を読み込む
+# ※ この CSV には is_hit・finish_position が含まれているが、
+#    オプティマイザーは predictions_df（未フィルタの全馬データ）が必要
+# → 最初に run_backtest.py でデータを生成し、中間データを保存するか、
+#    以下の 方法 B を使用してください
+```
+
+**方法 B: BigQuery から直接取得する**
+
+```python
+import datetime
+from scripts.run_backtest import (
+    fetch_historical_features,
+    fetch_historical_results,
+    fetch_place_odds,
+    fetch_place_payouts,
+    generate_predictions,
+)
+from src.models.train import load_config
+
+project_id = "your-gcp-project-id"
+start_date = datetime.date(2023, 1, 1)
+end_date   = datetime.date(2023, 12, 31)
+model_path = "models/lgbm_ranker.pkl"  # ローカルのモデルパス
+
+config = load_config()
+
+# 特徴量・着順データ取得
+features_df = fetch_historical_features(project_id, "features", "training_data", start_date, end_date)
+results_df  = fetch_historical_results(project_id, start_date, end_date)
+payouts_df  = fetch_place_payouts(project_id, start_date, end_date)
+
+# 予測生成
+predictions_df = generate_predictions(features_df, results_df, model_path, config)
+
+# オッズをマージ
+race_ids = predictions_df["race_id"].unique().tolist()
+odds_df  = fetch_place_odds(project_id, race_ids)
+predictions_df = predictions_df.merge(
+    odds_df[["race_id", "horse_number", "place_odds"]],
+    on=["race_id", "horse_number"],
+    how="left",
+)
+```
+
+#### ステップ 2: グリッドサーチを実行する
+
+```python
+from src.backtest.strategy_optimizer import StrategyOptimizer
+
+optimizer = StrategyOptimizer(
+    predictions_df=predictions_df,
+    payouts_df=payouts_df,
+    initial_capital=100_000.0,
+)
+
+# デフォルト範囲でグリッドサーチ（450 パラメータ組み合わせ）
+results = optimizer.run_grid_search()
+
+# 探索範囲を絞って実行（高速化）
+results = optimizer.run_grid_search(
+    p1_range=[0.15, 0.2, 0.25],
+    p2_range=[0.1, 0.15],
+    threshold_range=[1.1, 1.2, 1.3],
+    kelly_range=[0.25],
+    max_bet_ratio_range=[0.05],
+)
+```
+
+#### ステップ 3: 結果を分析する
+
+```python
+# 1. 回収率が最も高いパラメータを取得
+best = optimizer.best_params(results, metric="recovery_rate")
+print(f"最良パラメータ: {best.params}")
+print(f"  回収率:             {best.recovery_rate:.1f}%")
+print(f"  的中率:             {best.hit_rate:.1f}%")
+print(f"  最大ドローダウン:   {best.max_drawdown:.1f}%")
+print(f"  シャープレシオ:     {best.sharpe_ratio:.3f}")
+print(f"  総賭け数:           {best.total_bets:,d}")
+
+# 2. 目標条件（回収率 100%以上 かつ 最大DD 30%以下）を達成するパラメータのみ抽出
+goal_results = optimizer.filter_by_goals(
+    results,
+    min_recovery_rate=100.0,
+    max_max_drawdown=30.0,
+)
+print(f"\n目標達成パラメータ数: {len(goal_results)} / {len(results)} 件")
+for r in goal_results[:5]:  # 上位5件を表示
+    print(f"  回収率={r.recovery_rate:.1f}% DD={r.max_drawdown:.1f}% params={r.params}")
+
+# 3. パターン別成績サマリー
+summary = optimizer.summary_by_pattern(results)
+print("\nパターン別成績（全グリッドサーチ平均）:")
+print(summary.to_string())
+```
+
+**出力例:**
+
+```
+パターン別成績（全グリッドサーチ平均）:
+              avg_recovery_rate  max_recovery_rate  min_recovery_rate  avg_hit_rate  total_bets
+pattern
+one_dominant              98.2              115.3               82.1          34.2      12500
+competitive               95.8              108.7               78.4          32.1       8300
+standard                  94.1              112.1               75.6          31.8       6200
+```
+
+---
+
+### 9.4 テストの実行
+
+```bash
+# 投資戦略モジュールのテストのみ実行
+python3 -m pytest tests/test_backtest_strategy.py -v
+
+# オプティマイザーのテストのみ実行
+python3 -m pytest tests/test_backtest_strategy_optimizer.py -v
+
+# バックテスト関連テストを全て実行
+python3 -m pytest tests/test_backtest_*.py -v
+
+# プロジェクト全体のテストを実行
+python3 -m pytest -q
+```
+
+---
+
+## 10. 関連ファイル
 
 | ファイル | 役割 |
 |---------|------|
@@ -311,8 +517,9 @@ Kelly値 = (p × (odds - 1) - (1 - p)) / (odds - 1)
 
 ---
 
-## 変更履歴
+## 11. 変更履歴
 
 | 日付 | バージョン | 変更内容 |
 |------|-----------|----------|
 | 2026-02-23 | 1.0.0 | Issue #18 実装に伴い初版作成 |
+| 2026-02-24 | 1.1.0 | セクション 9「実行方法」を追加（単体実行・グリッドサーチ・テスト手順） |
