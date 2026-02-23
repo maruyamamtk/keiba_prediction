@@ -15,6 +15,7 @@ from src.automation.data.load_to_bq import (
     LoadResult,
     create_loader_from_env,
     extract_data_type,
+    extract_file_date,
     get_table_name,
 )
 
@@ -93,6 +94,9 @@ class TestGetTableName:
 
     def test_hjc_maps_to_payouts(self):
         assert get_table_name("HJC") == "payouts"
+
+    def test_oz_maps_to_odds(self):
+        assert get_table_name("OZ") == "odds"
 
     def test_unknown_data_type(self):
         """未知のデータタイプはNoneを返す"""
@@ -766,6 +770,28 @@ class TestLoadFileWithHistory:
         mock_history.assert_not_called()
 
 
+class TestExtractFileDate:
+    """extract_file_date 関数のテスト"""
+
+    def test_oz_filename_returns_correct_date(self):
+        """OZ ファイル名から日付が正しく抽出される (2000年以降)"""
+        assert extract_file_date("OZ241231.csv") == "2024-12-31"
+
+    def test_oz_filename_2016(self):
+        assert extract_file_date("OZ160101.csv") == "2016-01-01"
+
+    def test_oz_with_directory_path(self):
+        """GCS パスを含む場合も正しく抽出される"""
+        assert extract_file_date("OZ/OZ241231.csv") == "2024-12-31"
+
+    def test_baa_filename_returns_correct_date(self):
+        assert extract_file_date("BAA260104.csv") == "2026-01-04"
+
+    def test_invalid_filename_returns_none(self):
+        assert extract_file_date("invalid.csv") is None
+        assert extract_file_date("OZ12345.csv") is None
+
+
 class TestExpandDataTypes:
     """EXPAND_DATA_TYPESの確認とHJBロード展開処理のテスト"""
 
@@ -773,6 +799,10 @@ class TestExpandDataTypes:
         """EXPAND_DATA_TYPESにHJBとHJCが含まれる"""
         assert "HJB" in EXPAND_DATA_TYPES
         assert "HJC" in EXPAND_DATA_TYPES
+
+    def test_expand_data_types_contains_oz(self):
+        """EXPAND_DATA_TYPES に OZ が含まれる"""
+        assert "OZ" in EXPAND_DATA_TYPES
 
     def test_expand_data_types_does_not_contain_sec(self):
         """SECなど通常タイプはEXPAND_DATA_TYPESに含まれない"""

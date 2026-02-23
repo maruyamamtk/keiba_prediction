@@ -38,12 +38,12 @@ def _make_predictions(n_horses: int = 4) -> pd.DataFrame:
 
 
 def _make_odds_df(n_horses: int = 4, odds_val: float = 2.5) -> pd.DataFrame:
-    """テスト用の複勝オッズ DataFrame を生成する"""
+    """テスト用の複勝オッズ DataFrame を生成する。
+    OZ ファイルには horse_id が含まれないため horse_number をキーとする。"""
     rows = []
     for i in range(1, n_horses + 1):
         rows.append({
             "race_id": "race_001",
-            "horse_id": f"horse_{i:03d}",
             "horse_number": i,
             "place_odds": odds_val,
         })

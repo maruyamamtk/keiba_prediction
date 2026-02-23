@@ -49,6 +49,7 @@ TABLE_MAPPING = {
     "KAA": "venue_info",
     "HJB": "payouts",
     "HJC": "payouts",
+    "OZ": "odds",
 }
 
 # テーブルごとの一意キー (MERGE文で使用)
@@ -60,10 +61,11 @@ TABLE_UNIQUE_KEYS = {
     "horse_extended": ["race_id", "horse_number"],
     "venue_info": ["venue_id"],
     "payouts": ["race_id", "bet_type", "rank"],
+    "odds": ["race_id", "horse_number", "odds_type"],
 }
 
 # パース後に行展開が必要なデータタイプ
-EXPAND_DATA_TYPES = {"HJB", "HJC"}
+EXPAND_DATA_TYPES = {"HJB", "HJC", "OZ"}
 
 # ロード履歴テーブル名
 LOAD_HISTORY_TABLE = "load_history"
@@ -123,6 +125,33 @@ def get_table_name(data_type: str) -> Optional[str]:
         テーブル名 or None
     """
     return TABLE_MAPPING.get(data_type.upper())
+
+
+def extract_file_date(filename: str) -> Optional[str]:
+    """
+    ファイル名から日付文字列 (YYYY-MM-DD) を抽出する
+
+    ファイル名の形式: <TYPE><YYMMDD>.csv (例: OZ241231.csv → 2024-12-31)
+
+    Args:
+        filename: ファイル名またはGCSパス
+
+    Returns:
+        ISO形式の日付文字列 (YYYY-MM-DD) or None
+    """
+    basename = os.path.basename(filename)
+    match = re.match(r"^[A-Z]{2,3}(\d{6})\.csv$", basename, re.IGNORECASE)
+    if not match:
+        return None
+    yymmdd = match.group(1)
+    try:
+        year = int(yymmdd[0:2])
+        month = int(yymmdd[2:4])
+        day = int(yymmdd[4:6])
+        year += 2000 if year <= 50 else 1900
+        return f"{year:04d}-{month:02d}-{day:02d}"
+    except ValueError:
+        return None
 
 
 class BigQueryLoader:
@@ -458,16 +487,25 @@ class BigQueryLoader:
                 logger.warning(f"ファイルからデータをパースできませんでした: {blob_name}")
                 return result
 
-            # HJB/HJCは1レース分のレコードを複数ペイアウト行に展開する
+            # HJB/HJC/OZ は1レコードを複数行に展開する
             if data_type.upper() in EXPAND_DATA_TYPES:
                 expanded: List[Dict] = []
-                for record in parsed_data:
-                    expanded.extend(JRDBParser.expand_hjb_to_payout_rows(record))
+                if data_type.upper() in {"HJB", "HJC"}:
+                    for record in parsed_data:
+                        expanded.extend(JRDBParser.expand_hjb_to_payout_rows(record))
+                    empty_label = "HJB"
+                elif data_type.upper() == "OZ":
+                    file_date = extract_file_date(blob_name)
+                    for record in parsed_data:
+                        expanded.extend(JRDBParser.expand_oz_to_odds_rows(record, file_date))
+                    empty_label = "OZ"
+                else:
+                    empty_label = data_type.upper()
                 parsed_data = expanded
                 if not parsed_data:
                     result.status = "skipped"
-                    result.error = "HJB展開結果が空"
-                    logger.warning(f"HJBデータの展開結果が空でした: {blob_name}")
+                    result.error = f"{empty_label}展開結果が空"
+                    logger.warning(f"{empty_label}データの展開結果が空でした: {blob_name}")
                     return result
 
             # BigQueryにロード
