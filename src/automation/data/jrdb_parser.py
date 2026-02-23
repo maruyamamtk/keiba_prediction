@@ -1464,6 +1464,111 @@ class JRDBParser:
         return rows
 
     @staticmethod
+    def parse_oz_line(line: str) -> Optional[Dict]:
+        """
+        OZ（基準オッズ）の1行をパースし、win/place オッズを格納した辞書を返す。
+
+        1行 = 1レース分（最大18頭）のオッズ。
+        仕様書: OZ第4版, レコード長 957バイト
+
+        フォーマット (0-based 文字位置, 全て ASCII 数値文字):
+          0-7   : レースキー (8文字)
+          8-9   : 登録頭数 (2文字)
+          10-99 : 単勝オッズ 18頭分 (5文字×18, 形式: ###.# 例: "046.6")
+          100-189: 複勝オッズ 18頭分 (5文字×18, 形式: ###.# 例: "008.5")
+          190-954: 馬連オッズ 153通り (5文字×153) ← スコープ外
+
+        Args:
+            line: 固定長レコード文字列 (UTF-8変換済み)
+
+        Returns:
+            {race_id, registered_count, win_odds_list, place_odds_list, created_at}
+            or None
+        """
+        try:
+            if len(line) < 100:
+                logger.warning(f"OZ line too short: {len(line)} chars")
+                return None
+
+            race_key = line[0:8].strip()
+            if not race_key:
+                return None
+
+            race_info = JRDBParser.parse_race_id(race_key)
+            registered_count = JRDBParser.safe_int(line[8:10], default=18)
+
+            # 単勝オッズ (18頭分: 各5文字)
+            win_odds_list: list = []
+            for i in range(18):
+                start = 10 + i * 5
+                end = start + 5
+                val = JRDBParser.safe_float(line[start:end]) if end <= len(line) else None
+                win_odds_list.append(val)
+
+            # 複勝オッズ (18頭分: 各5文字)
+            place_odds_list: list = []
+            if len(line) >= 190:
+                for i in range(18):
+                    start = 100 + i * 5
+                    end = start + 5
+                    val = JRDBParser.safe_float(line[start:end]) if end <= len(line) else None
+                    place_odds_list.append(val)
+
+            return {
+                'race_id': race_key,
+                'registered_count': registered_count,
+                'win_odds_list': win_odds_list,
+                'place_odds_list': place_odds_list,
+                'created_at': datetime.utcnow().isoformat(),
+            }
+
+        except Exception as e:
+            logger.error(f"Error parsing OZ line: {e}", exc_info=True)
+            return None
+
+    @staticmethod
+    def expand_oz_to_odds_rows(oz_record: Dict, file_date: Optional[str] = None) -> List[Dict]:
+        """
+        OZの1レースレコードを raw.odds スキーマの行リストに展開する。
+
+        1レースレコードから馬番×馬券種の組み合わせ分の行を生成する。
+        odds_value が None または 0 以下の馬はスキップする。
+
+        Args:
+            oz_record: parse_oz_line() の返り値
+            file_date: ファイル名から抽出した日付文字列 (YYYY-MM-DD)
+                       指定時は "{file_date}T19:00:00+00:00" を odds_timestamp に使用する
+
+        Returns:
+            raw.odds テーブルの行リスト
+        """
+        rows = []
+        race_id = oz_record['race_id']
+        created_at = oz_record['created_at']
+
+        # odds_timestamp: ファイル配信日時 (金/土の19:00 UTC+0 を代表値として使用)
+        odds_timestamp = f"{file_date}T19:00:00+00:00" if file_date else created_at
+
+        for odds_type, odds_list in [
+            ('win', oz_record.get('win_odds_list', [])),
+            ('place', oz_record.get('place_odds_list', [])),
+        ]:
+            for horse_number, odds_value in enumerate(odds_list, start=1):
+                if odds_value is None or odds_value <= 0:
+                    continue
+                rows.append({
+                    'race_id': race_id,
+                    'horse_id': None,
+                    'horse_number': horse_number,
+                    'odds_type': odds_type,
+                    'odds_value': odds_value,
+                    'odds_timestamp': odds_timestamp,
+                    'created_at': created_at,
+                })
+
+        return rows
+
+    @staticmethod
     def parse_file(file_content: str, data_type: str) -> List[Dict]:
         """
         ファイル全体を解析
@@ -1491,6 +1596,7 @@ class JRDBParser:
             'KAA': JRDBParser.parse_kaa_line,
             'HJB': JRDBParser.parse_hjb_line,
             'HJC': JRDBParser.parse_hjb_line,
+            'OZ': JRDBParser.parse_oz_line,
         }
 
         parser_func = parser_map.get(data_type.upper())

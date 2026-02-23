@@ -128,7 +128,8 @@ def fetch_place_odds(
     """
     複勝オッズを raw.odds から取得する
 
-    各 (race_id, horse_id) ごとに最新タイムスタンプのオッズを1行に集約する。
+    各 (race_id, horse_number) ごとに最新タイムスタンプのオッズを1行に集約する。
+    OZ ファイルには horse_id が含まれないため horse_number をキーとして使用する。
     raw.odds にデータがない場合は空 DataFrame を返す。
 
     Args:
@@ -136,7 +137,7 @@ def fetch_place_odds(
         race_ids: オッズを取得するレース ID のリスト
 
     Returns:
-        複勝オッズ DataFrame (race_id, horse_id, horse_number, place_odds)
+        複勝オッズ DataFrame (race_id, horse_number, place_odds)
     """
     if not race_ids:
         return pd.DataFrame()
@@ -144,11 +145,11 @@ def fetch_place_odds(
     client = bigquery.Client(project=project_id)
     ids_str = ", ".join(f"'{r}'" for r in race_ids)
     query = f"""
-    SELECT race_id, horse_id, horse_number, odds_value AS place_odds
+    SELECT race_id, horse_number, odds_value AS place_odds
     FROM (
-        SELECT race_id, horse_id, horse_number, odds_value,
+        SELECT race_id, horse_number, odds_value,
                ROW_NUMBER() OVER (
-                   PARTITION BY race_id, horse_id
+                   PARTITION BY race_id, horse_number
                    ORDER BY odds_timestamp DESC
                ) AS rn
         FROM `{project_id}.raw.odds`
@@ -479,8 +480,8 @@ def run_backtest_pipeline(
 
     if len(odds_df) > 0:
         predictions_df = predictions_df.merge(
-            odds_df[["race_id", "horse_id", "place_odds"]],
-            on=["race_id", "horse_id"],
+            odds_df[["race_id", "horse_number", "place_odds"]],
+            on=["race_id", "horse_number"],
             how="left",
         )
         logger.info("raw.odds の複勝オッズを place_odds としてマージしました")
