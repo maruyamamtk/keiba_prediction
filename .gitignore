@@ -54,6 +54,12 @@ ENV/
 downloaded_files/
 reports
 
+# Backtest results
+results/
+
+# Model files
+src/models/*.txt
+
 # Nested git repository
 # downloader/
 
