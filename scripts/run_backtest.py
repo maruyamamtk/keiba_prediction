@@ -247,7 +247,7 @@ def generate_predictions(
         ["race_id", "race_date", "horse_id", "horse_number"]
     ].copy()
 
-    for col in ["venue_code", "race_number"]:
+    for col in ["venue_code", "race_number", "horse_name"]:
         if col in features_df.columns:
             result_df[col] = features_df[col]
 
@@ -410,6 +410,7 @@ def run_backtest_pipeline(
     expected_return_threshold: float = 1.2,
     max_bet_ratio: float = 0.05,
     odds_column: str = "place_odds",
+    show_race_summary: bool = True,
     output_csv: str | None = None,
     save_bq: bool = False,
     output_chart: str | None = None,
@@ -429,6 +430,7 @@ def run_backtest_pipeline(
         expected_return_threshold: 期待回収率フィルタ閾値
         max_bet_ratio: 1レースあたり最大賭け金比率
         odds_column: オッズカラム名
+        show_race_summary: True のときレース単位のサマリーログを出力する
         output_csv: CSV 出力パス (None でスキップ)
         save_bq: BigQuery 保存フラグ
         output_chart: グラフ出力パス (None でスキップ)
@@ -502,6 +504,7 @@ def run_backtest_pipeline(
         expected_return_threshold=expected_return_threshold,
         max_bet_ratio=max_bet_ratio,
         odds_column=odds_column,
+        show_race_summary=show_race_summary,
     )
     history_df = simulator.run(
         predictions_df=predictions_df,
@@ -616,6 +619,11 @@ def main() -> int:
         help="資金推移グラフの PNG 出力パス",
     )
     parser.add_argument(
+        "--no-race-summary",
+        action="store_true",
+        help="レース単位のサマリーログを非表示にする",
+    )
+    parser.add_argument(
         "--config",
         default=None,
         help="設定ファイルパス",
@@ -667,6 +675,7 @@ def main() -> int:
         expected_return_threshold=args.expected_return_threshold,
         max_bet_ratio=args.max_bet_ratio,
         odds_column=args.odds_column,
+        show_race_summary=not args.no_race_summary,
         output_csv=args.output_csv,
         save_bq=args.save_to_bq,
         output_chart=args.output_chart,
