@@ -175,26 +175,42 @@ class TestOddsMergeInPipeline:
         assert "place_odds" in merged.columns, "place_odds カラムが付与されていない"
         assert (merged["place_odds"] == 3.0).all()
 
-    def test_fallback_to_payouts_when_odds_empty(self):
-        """raw.odds が空の場合、raw.payouts から place_odds が計算される"""
+    def test_aborts_when_odds_empty_even_if_payouts_exist(self):
+        """
+        raw.odds が空の場合、raw.payouts があってもパイプラインを中断する。
+
+        payouts は3着以内の馬のデータしか持たないため、place_odds 代替として
+        使用すると NaN スキップにより的中率が不当に 100% になるバグが生じる。
+        そのため payouts フォールバックは廃止し、raw.odds なしでは中断とする。
+        """
         preds = _make_predictions(n_horses=3)
         payouts_df = _make_payouts_df(n_horses=3, payout=280)
-        captured = []
+        config = {
+            "data": {
+                "dataset": "features",
+                "table": "training_data",
+                "exclude_columns": [],
+                "categorical_columns": [],
+            }
+        }
 
-        self._run_with_mocks(
-            features_df=preds,
-            results_df=pd.DataFrame(),
-            payouts_df=payouts_df,
-            odds_df=pd.DataFrame(),   # empty → fallback
-            captured_predictions=captured,
-        )
+        with (
+            patch("scripts.run_backtest.fetch_historical_features", return_value=preds),
+            patch("scripts.run_backtest.fetch_historical_results", return_value=pd.DataFrame()),
+            patch("scripts.run_backtest.fetch_place_payouts", return_value=payouts_df),
+            patch("scripts.run_backtest.fetch_place_odds", return_value=pd.DataFrame()),
+            patch("scripts.run_backtest.generate_predictions", return_value=preds.copy()),
+        ):
+            history_df, metrics = rb.run_backtest_pipeline(
+                project_id="test",
+                model_path="dummy.txt",
+                start_date=datetime.date(2025, 1, 1),
+                end_date=datetime.date(2025, 12, 31),
+                config=config,
+            )
 
-        assert len(captured) == 1
-        merged = captured[0]
-        assert "place_odds" in merged.columns
-        # payout_amount=280 → place_odds=2.8
-        non_null = merged["place_odds"].dropna()
-        assert (non_null == 2.8).all()
+        assert len(history_df) == 0
+        assert metrics == {}
 
     def test_pipeline_aborts_when_both_empty(self):
         """raw.odds・raw.payouts 両方空の場合はパイプラインが空結果を返す"""

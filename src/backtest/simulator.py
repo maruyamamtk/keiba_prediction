@@ -163,6 +163,7 @@ class BacktestSimulator:
 
         for race_id, race_df in df.groupby("race_id", sort=False):
             race_date = race_df["race_date"].iloc[0]
+            race_records: list[BetRecord] = []
 
             for idx, row in race_df.iterrows():
                 odds = row["_odds"]
@@ -213,7 +214,7 @@ class BacktestSimulator:
                 profit = return_amount - bet_amount
                 capital += profit
 
-                records.append(BetRecord(
+                record = BetRecord(
                     race_id=str(race_id),
                     race_date=race_date,
                     horse_id=str(row["horse_id"]),
@@ -229,7 +230,32 @@ class BacktestSimulator:
                     return_amount=return_amount,
                     profit=profit,
                     capital_after=capital,
-                ))
+                )
+                race_records.append(record)
+                records.append(record)
+
+                # 馬単位のログ
+                hit_mark = "◎" if is_hit else "×"
+                finish_str = f"{finish_position}着" if finish_position is not None else "不明"
+                logger.info(
+                    f"  {hit_mark} {race_id} 馬番{horse_number:2d}"
+                    f" | 複勝率:{win_place_prob:.3f} オッズ:{odds:.1f}"
+                    f" | 賭け:{bet_amount:,.0f}円 → 払戻:{return_amount:,.0f}円"
+                    f" | 損益:{profit:+,.0f}円 [{finish_str}]"
+                )
+
+            # レース単位のサマリーログ
+            if race_records:
+                race_bets = sum(r.bet_amount for r in race_records)
+                race_returns = sum(r.return_amount for r in race_records)
+                race_profit = race_returns - race_bets
+                n_hits = sum(1 for r in race_records if r.is_hit)
+                logger.info(
+                    f"[レースサマリー] {race_id} ({race_date})"
+                    f" | {len(race_records)}頭購入 {n_hits}頭的中"
+                    f" | 賭け計:{race_bets:,.0f}円 払戻計:{race_returns:,.0f}円"
+                    f" | レース損益:{race_profit:+,.0f}円 残高:{capital:,.0f}円"
+                )
 
         if not records:
             logger.warning("賭け対象となるレコードが見つかりませんでした")
