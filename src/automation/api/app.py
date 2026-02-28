@@ -5,12 +5,15 @@ Cloud Run用HTTPエンドポイントを提供する。
 - 日次パイプライン: Cloud Schedulerからトリガー
 - 全件ロード: 手動トリガー（初回セットアップ/データ補完）
 - 特徴量生成: 手動トリガーまたはパイプライン統合
+- 予測実行: 翌日レース予測 + BigQuery保存
 
 Issue #57: 日次パイプラインの実装
 Issue #58: 過去分全件ロード処理の実装
 Issue #59: 特徴量生成パイプラインのCloud Run統合
+Issue #20: 日次予測パイプラインの実装
 """
 
+import datetime
 import logging
 import os
 import uuid
@@ -150,6 +153,60 @@ class FeatureGenerateResponse(BaseModel):
     deleted_rows: int = Field(default=0, description="削除した行数")
     inserted_rows: int = Field(default=0, description="挿入した行数")
     elapsed_time: float = Field(default=0.0, description="処理時間（秒）")
+    error_message: Optional[str] = Field(default=None, description="エラーメッセージ")
+
+
+class PredictDailyRequest(BaseModel):
+    """翌日予測リクエスト"""
+
+    model_path: str = Field(
+        description="モデルファイルパス（ローカル）",
+        json_schema_extra={"example": "/models/lgbm_ranker.txt"},
+    )
+    save_to_bq: bool = Field(
+        default=True,
+        description="予測結果をBigQueryに保存するか",
+    )
+
+
+class PredictOnDemandRequest(BaseModel):
+    """任意日付予測リクエスト"""
+
+    model_path: str = Field(
+        description="モデルファイルパス（ローカル）",
+        json_schema_extra={"example": "/models/lgbm_ranker.txt"},
+    )
+    target_dates: list[str] = Field(
+        description="予測対象日（YYYY-MM-DD形式、複数指定可）",
+        json_schema_extra={"example": ["2026-02-14", "2026-02-15"]},
+    )
+    save_to_bq: bool = Field(
+        default=True,
+        description="予測結果をBigQueryに保存するか",
+    )
+
+    @field_validator("target_dates")
+    @classmethod
+    def validate_target_dates(cls, v: list[str]) -> list[str]:
+        for d in v:
+            try:
+                datetime.date.fromisoformat(d)
+            except ValueError:
+                raise ValueError(
+                    f"日付はYYYY-MM-DD形式の有効な日付で指定してください: '{d}'"
+                )
+        return v
+
+
+class PredictResponse(BaseModel):
+    """予測レスポンス"""
+
+    status: str = Field(description="処理ステータス (success/failed)")
+    target_dates: list[str] = Field(description="予測対象日のリスト")
+    num_races: int = Field(default=0, description="予測したレース数")
+    num_horses: int = Field(default=0, description="予測した頭数")
+    saved_to_bq: bool = Field(default=False, description="BigQueryに保存されたか")
+    saved_rows: int = Field(default=0, description="BigQueryに保存した行数")
     error_message: Optional[str] = Field(default=None, description="エラーメッセージ")
 
 
@@ -473,6 +530,156 @@ async def generate_features_async(
         "end_date": request.end_date,
         "message": "特徴量生成をバックグラウンドで実行中",
     }
+
+
+def _run_predict(
+    model_path: str,
+    target_dates: list[datetime.date],
+    save_to_bq: bool,
+    project_id: str,
+) -> dict:
+    """
+    予測パイプラインを実行して結果を返す内部関数
+
+    Args:
+        model_path: モデルファイルパス
+        target_dates: 予測対象日のリスト
+        save_to_bq: BigQueryに保存するか
+        project_id: GCPプロジェクトID
+
+    Returns:
+        予測結果の辞書（num_races, num_horses, saved_to_bq, saved_rows）
+    """
+    from src.models.predict import predict_pipeline, save_predictions_to_bq
+    from src.models.train import load_config
+
+    config = load_config()
+    result_df = predict_pipeline(
+        project_id=project_id,
+        execution_date=datetime.date.today(),
+        config=config,
+        model_path=model_path,
+        target_dates=target_dates,
+    )
+
+    num_races = int(result_df["race_id"].nunique()) if len(result_df) > 0 else 0
+    num_horses = len(result_df)
+    saved_to_bq = False
+    saved_rows = 0
+
+    if save_to_bq and len(result_df) > 0:
+        saved_rows = save_predictions_to_bq(
+            result_df=result_df,
+            project_id=project_id,
+        )
+        saved_to_bq = True
+
+    return {
+        "num_races": num_races,
+        "num_horses": num_horses,
+        "saved_to_bq": saved_to_bq,
+        "saved_rows": saved_rows,
+    }
+
+
+@app.post("/api/v1/predict/daily", response_model=PredictResponse)
+async def predict_daily(request: PredictDailyRequest):
+    """
+    翌日レースの予測を実行してBigQueryに保存する
+
+    実行日の翌日（土日）のレースを予測対象とする。
+    Cloud Schedulerから前日PM 9:00に呼び出されることを想定。
+
+    Args:
+        request: リクエストボディ
+
+    Returns:
+        予測結果
+    """
+    logger.info(f"日次予測リクエスト受信: model_path={request.model_path}")
+
+    project_id = os.environ.get("GCP_PROJECT_ID")
+    if not project_id:
+        raise HTTPException(status_code=500, detail="GCP_PROJECT_IDが未設定です")
+
+    try:
+        from src.models.train import compute_week_boundaries
+
+        # 翌日を基準に今週の土日を算出
+        tomorrow = datetime.date.today() + datetime.timedelta(days=1)
+        saturday, sunday = compute_week_boundaries(tomorrow)
+        target_dates = [saturday, sunday]
+
+        result = _run_predict(
+            model_path=request.model_path,
+            target_dates=target_dates,
+            save_to_bq=request.save_to_bq,
+            project_id=project_id,
+        )
+
+        logger.info(
+            f"日次予測完了: {result['num_races']}レース, {result['num_horses']}頭, "
+            f"saved={result['saved_to_bq']}"
+        )
+        return PredictResponse(
+            status="success",
+            target_dates=[d.isoformat() for d in target_dates],
+            **result,
+        )
+
+    except Exception as e:
+        logger.error(f"日次予測エラー: {e}")
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@app.post("/api/v1/predict/on-demand", response_model=PredictResponse)
+async def predict_on_demand(request: PredictOnDemandRequest):
+    """
+    任意日付を指定してレース予測を実行し、BigQueryに保存する
+
+    指定した日付のレースを予測対象とする。
+    手動実行やバックテスト用途での利用を想定。
+
+    Args:
+        request: リクエストボディ
+
+    Returns:
+        予測結果
+    """
+    logger.info(
+        f"オンデマンド予測リクエスト受信: "
+        f"target_dates={request.target_dates}, model_path={request.model_path}"
+    )
+
+    project_id = os.environ.get("GCP_PROJECT_ID")
+    if not project_id:
+        raise HTTPException(status_code=500, detail="GCP_PROJECT_IDが未設定です")
+
+    try:
+        target_dates = [
+            datetime.date.fromisoformat(d) for d in request.target_dates
+        ]
+
+        result = _run_predict(
+            model_path=request.model_path,
+            target_dates=target_dates,
+            save_to_bq=request.save_to_bq,
+            project_id=project_id,
+        )
+
+        logger.info(
+            f"オンデマンド予測完了: {result['num_races']}レース, {result['num_horses']}頭, "
+            f"saved={result['saved_to_bq']}"
+        )
+        return PredictResponse(
+            status="success",
+            target_dates=request.target_dates,
+            **result,
+        )
+
+    except Exception as e:
+        logger.error(f"オンデマンド予測エラー: {e}")
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 def create_app() -> FastAPI:
