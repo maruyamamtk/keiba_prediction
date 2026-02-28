@@ -128,6 +128,9 @@ def compute_metrics(
     """
     from sklearn.metrics import roc_auc_score
 
+    # finish_positionがNAの行（競走除外・中止馬など）を除外
+    df = df[df["finish_position"].notna()].copy()
+
     feature_cols = [c for c in df.columns if c not in exclude_columns]
     X = df[feature_cols].copy()
     for col in categorical_columns:
@@ -236,6 +239,8 @@ def plot_monthly_metrics(
 
     for month in months:
         monthly = df[df["year_month"] == month]
+        # finish_positionがNAの行（競走除外・中止馬など）を除外
+        monthly = monthly[monthly["finish_position"].notna()].copy()
         if len(monthly) < 10:
             continue
 
