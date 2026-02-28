@@ -365,7 +365,10 @@ def save_predictions_to_bq(
 
     try:
         # 一時テーブルを作成してデータをロード（スキーマはautodetect）
-        client.create_table(bigquery.Table(temp_table_ref))
+        # 1時間後に自動削除される有効期限を設定し、プロセス強制終了時の残留を防ぐ
+        _temp_table_obj = bigquery.Table(temp_table_ref)
+        _temp_table_obj.expires = datetime.datetime.utcnow() + datetime.timedelta(hours=1)
+        client.create_table(_temp_table_obj)
         logger.debug(f"一時テーブルを作成しました: {temp_table_ref}")
 
         try:

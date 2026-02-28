@@ -11,7 +11,7 @@ import sys
 import logging
 import argparse
 from typing import List, Optional
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from dotenv import load_dotenv
 from google.cloud import storage, bigquery
@@ -115,7 +115,9 @@ def load_file_to_bigquery(
         target_table = bq_client.get_table(table_ref)
         schema = target_table.schema
 
+        # 1時間後に自動削除される有効期限を設定し、プロセス強制終了時の残留を防ぐ
         temp_table = bigquery.Table(temp_table_ref, schema=schema)
+        temp_table.expires = datetime.utcnow() + timedelta(hours=1)
         temp_table = bq_client.create_table(temp_table)
 
         try:
