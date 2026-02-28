@@ -56,6 +56,8 @@
 | POST | `/api/v1/load/full/sync` | 全件ロード（同期、テスト用） |
 | POST | `/api/v1/features/generate` | 特徴量生成（同期） |
 | POST | `/api/v1/features/generate/async` | 特徴量生成（非同期） |
+| POST | `/api/v1/predict/daily` | 翌日レース予測 + BQ保存（Cloud Scheduler用） |
+| POST | `/api/v1/predict/on-demand` | 任意日付レース予測 + BQ保存（手動実行用） |
 | GET | `/docs` | OpenAPI (Swagger UI) ドキュメント |
 
 ## セットアップ手順
@@ -111,9 +113,11 @@ GCP_PROJECT_ID=your-project-id
 このスクリプトは以下の環境変数を自動的にCloud Runに設定します：
 - `GCP_PROJECT_ID`: プロジェクトID
 - `GCP_REGION`: リージョン
-- `GCS_BUCKET_RAW`: GCSバケット名（フルパス）
+- `GCS_BUCKET_RAW`: rawデータ用バケット名
+- `GCS_BUCKET_MODELS`: モデル用バケット名
 - `BQ_DATASET_RAW`: rawデータセット名
 - `BQ_DATASET_FEATURES`: 特徴量データセット名
+- `BQ_DATASET_PREDICTIONS`: 予測結果データセット名
 - Secret Managerからの認証情報 (`JRDB_USER`, `JRDB_PASSWORD`)
 
 ### 6. デプロイ後の動作確認
@@ -211,15 +215,17 @@ Cloud Runサービスに設定される環境変数：
 | `GCP_PROJECT_ID` | GCPプロジェクトID | - |
 | `GCP_REGION` | GCPリージョン | `asia-northeast1` |
 | `GCS_BUCKET_RAW` | rawデータ用バケット | `${PROJECT_ID}-keiba-raw-data` |
+| `GCS_BUCKET_MODELS` | モデル保存用バケット | `${PROJECT_ID}-keiba-models` |
 | `BQ_DATASET_RAW` | rawデータセット | `raw` |
 | `BQ_DATASET_FEATURES` | 特徴量データセット | `features` |
+| `BQ_DATASET_PREDICTIONS` | 予測結果データセット | `predictions` |
 | `LOG_LEVEL` | ログレベル | `INFO` |
 
 ## Cloud Run設定
 
 | 項目 | 値 | 説明 |
 |------|-----|------|
-| メモリ | 2Gi | JRDBデータの処理に十分な量 |
+| メモリ | 4Gi | JRDBデータ処理 + LightGBM予測処理に対応 |
 | CPU | 2 | 並列処理対応 |
 | タイムアウト | 900秒 | 全件ロード等の長時間処理対応 |
 | 同時実行数 | 1 | パイプラインは逐次処理 |

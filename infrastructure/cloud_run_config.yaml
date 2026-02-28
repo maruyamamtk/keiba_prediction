@@ -12,9 +12,10 @@ platform: managed
 region: asia-northeast1
 
 # リソース設定
-memory: 2Gi
+# 予測処理（LightGBM + BigQuery取得）を考慮して 4Gi に増設
+memory: 4Gi
 cpu: 2
-timeout: 900  # 15分
+timeout: 900  # 15分（予測処理の長時間実行に対応）
 
 # 同時実行設定
 concurrency: 1  # パイプラインは1リクエストずつ処理
@@ -32,7 +33,9 @@ set-env-vars:
   GCP_REGION: asia-northeast1
   BQ_DATASET_RAW: raw
   BQ_DATASET_FEATURES: features
+  BQ_DATASET_PREDICTIONS: predictions
   LOG_LEVEL: INFO
+  # GCS_BUCKET_RAW, GCS_BUCKET_MODELS, GCP_PROJECT_ID はデプロイ時に --set-env-vars で指定
 
 # Secret Managerからの環境変数
 # フォーマット: ENV_VAR=SECRET_NAME:VERSION
