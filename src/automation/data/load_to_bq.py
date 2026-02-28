@@ -19,7 +19,7 @@ import re
 import sys
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Set
 
 from google.cloud import bigquery, storage
@@ -373,8 +373,9 @@ class BigQueryLoader:
                 )
             schema = target_table.schema
 
-            # 一時テーブルを作成
+            # 一時テーブルを作成（1時間後に自動削除される有効期限を設定）
             temp_table = bigquery.Table(temp_table_ref, schema=schema)
+            temp_table.expires = datetime.utcnow() + timedelta(hours=1)
             temp_table = self.bq_client.create_table(temp_table)
             logger.debug(f"一時テーブルを作成しました: {temp_table_ref}")
 
