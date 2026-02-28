@@ -160,8 +160,8 @@ class PredictDailyRequest(BaseModel):
     """翌日予測リクエスト"""
 
     model_path: str = Field(
-        description="モデルファイルパス（ローカル）",
-        json_schema_extra={"example": "/models/lgbm_ranker.txt"},
+        description="モデルファイルパス（ローカルパスまたは gs:// URI）",
+        json_schema_extra={"example": "gs://my-project-keiba-models/models/20260101/lgbm_ranker.txt"},
     )
     save_to_bq: bool = Field(
         default=True,
@@ -173,8 +173,8 @@ class PredictOnDemandRequest(BaseModel):
     """任意日付予測リクエスト"""
 
     model_path: str = Field(
-        description="モデルファイルパス（ローカル）",
-        json_schema_extra={"example": "/models/lgbm_ranker.txt"},
+        description="モデルファイルパス（ローカルパスまたは gs:// URI）",
+        json_schema_extra={"example": "gs://my-project-keiba-models/models/20260101/lgbm_ranker.txt"},
     )
     target_dates: list[str] = Field(
         description="予測対象日（YYYY-MM-DD形式、複数指定可）",
@@ -532,6 +532,44 @@ async def generate_features_async(
     }
 
 
+def _resolve_model_path(model_path: str, project_id: str) -> tuple[str, Optional[str]]:
+    """
+    モデルファイルパスを解決する
+
+    GCS URI（gs://...）の場合はローカルの一時ディレクトリにダウンロードし、
+    ローカルパスを返す。ローカルパスの場合はそのまま返す。
+
+    Args:
+        model_path: モデルファイルパス（ローカルパスまたは gs:// URI）
+        project_id: GCPプロジェクトID
+
+    Returns:
+        (ローカルパス, 一時ディレクトリパス) のタプル。
+        ローカルパスの場合は一時ディレクトリは None。
+    """
+    if not model_path.startswith("gs://"):
+        return model_path, None
+
+    import tempfile
+    from google.cloud import storage as gcs
+
+    # gs://bucket-name/path/to/model.txt を解析
+    gcs_path = model_path[len("gs://"):]
+    bucket_name, blob_name = gcs_path.split("/", 1)
+
+    tmpdir = tempfile.mkdtemp(prefix="keiba_model_")
+    local_file = os.path.join(tmpdir, os.path.basename(blob_name))
+
+    logger.info(f"GCSからモデルをダウンロード: {model_path} -> {local_file}")
+    client = gcs.Client(project=project_id)
+    bucket = client.bucket(bucket_name)
+    blob = bucket.blob(blob_name)
+    blob.download_to_filename(local_file)
+    logger.info("モデルのダウンロード完了")
+
+    return local_file, tmpdir
+
+
 def _run_predict(
     model_path: str,
     target_dates: list[datetime.date],
@@ -542,7 +580,7 @@ def _run_predict(
     予測パイプラインを実行して結果を返す内部関数
 
     Args:
-        model_path: モデルファイルパス
+        model_path: モデルファイルパス（ローカルパスまたは gs:// URI）
         target_dates: 予測対象日のリスト
         save_to_bq: BigQueryに保存するか
         project_id: GCPプロジェクトID
@@ -550,36 +588,47 @@ def _run_predict(
     Returns:
         予測結果の辞書（num_races, num_horses, saved_to_bq, saved_rows）
     """
+    import shutil
+
     from src.models.predict import predict_pipeline, save_predictions_to_bq
     from src.models.train import load_config
 
-    config = load_config()
-    result_df = predict_pipeline(
-        project_id=project_id,
-        execution_date=datetime.date.today(),
-        config=config,
-        model_path=model_path,
-        target_dates=target_dates,
-    )
+    # GCS URI の場合はダウンロードしてローカルパスに変換
+    local_model_path, tmpdir = _resolve_model_path(model_path, project_id)
 
-    num_races = int(result_df["race_id"].nunique()) if len(result_df) > 0 else 0
-    num_horses = len(result_df)
-    saved_to_bq = False
-    saved_rows = 0
-
-    if save_to_bq and len(result_df) > 0:
-        saved_rows = save_predictions_to_bq(
-            result_df=result_df,
+    try:
+        config = load_config()
+        result_df = predict_pipeline(
             project_id=project_id,
+            execution_date=datetime.date.today(),
+            config=config,
+            model_path=local_model_path,
+            target_dates=target_dates,
         )
-        saved_to_bq = True
 
-    return {
-        "num_races": num_races,
-        "num_horses": num_horses,
-        "saved_to_bq": saved_to_bq,
-        "saved_rows": saved_rows,
-    }
+        num_races = int(result_df["race_id"].nunique()) if len(result_df) > 0 else 0
+        num_horses = len(result_df)
+        bq_saved = False
+        saved_rows = 0
+
+        if save_to_bq and len(result_df) > 0:
+            saved_rows = save_predictions_to_bq(
+                result_df=result_df,
+                project_id=project_id,
+            )
+            bq_saved = True
+
+        return {
+            "num_races": num_races,
+            "num_horses": num_horses,
+            "saved_to_bq": bq_saved,
+            "saved_rows": saved_rows,
+        }
+    finally:
+        # GCS からダウンロードした一時ファイルを削除
+        if tmpdir is not None:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+            logger.info(f"一時ディレクトリを削除しました: {tmpdir}")
 
 
 @app.post("/api/v1/predict/daily", response_model=PredictResponse)

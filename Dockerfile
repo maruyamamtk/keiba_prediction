@@ -8,10 +8,12 @@ WORKDIR /app
 # - curl: ヘルスチェック用およびJRDBダウンロード用
 # - lhasa: lzhファイルの展開用（lhaコマンドを提供）
 # - p7zip-full: lzh展開のフォールバック用
+# - libgomp1: LightGBM の OpenMP 並列処理に必要
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     lhasa \
     p7zip-full \
+    libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
 # 依存パッケージをインストール

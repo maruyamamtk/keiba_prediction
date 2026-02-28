@@ -63,6 +63,7 @@ PIPELINE_SA_EMAIL="${PIPELINE_SA_NAME}@${GCP_PROJECT_ID}.iam.gserviceaccount.com
 
 # GCSバケット名（プロジェクトIDをプレフィックスとして使用）
 GCS_BUCKET_RAW_FULL="${GCP_PROJECT_ID}-${GCS_BUCKET_RAW:-keiba-raw-data}"
+GCS_BUCKET_MODELS_FULL="${GCP_PROJECT_ID}-${GCS_BUCKET_MODELS:-keiba-models}"
 
 log_info "=========================================="
 log_info "Cloud Runサービスをデプロイします"
@@ -72,7 +73,8 @@ log_info "リージョン: ${GCP_REGION}"
 log_info "サービス名: ${SERVICE_NAME}"
 log_info "イメージ: ${IMAGE_URI}"
 log_info "サービスアカウント: ${PIPELINE_SA_EMAIL}"
-log_info "GCSバケット: ${GCS_BUCKET_RAW_FULL}"
+log_info "GCSバケット(raw): ${GCS_BUCKET_RAW_FULL}"
+log_info "GCSバケット(models): ${GCS_BUCKET_MODELS_FULL}"
 log_info "=========================================="
 
 # イメージの存在確認
@@ -92,13 +94,13 @@ gcloud run deploy "${SERVICE_NAME}" \
     --platform=managed \
     --region="${GCP_REGION}" \
     --service-account="${PIPELINE_SA_EMAIL}" \
-    --memory=2Gi \
+    --memory=4Gi \
     --cpu=2 \
     --timeout=900 \
     --concurrency=1 \
     --max-instances=1 \
     --no-allow-unauthenticated \
-    --set-env-vars="GCP_PROJECT_ID=${GCP_PROJECT_ID},GCP_REGION=${GCP_REGION},GCS_BUCKET_RAW=${GCS_BUCKET_RAW:-keiba-raw-data},BQ_DATASET_RAW=raw,BQ_DATASET_FEATURES=features,LOG_LEVEL=INFO" \
+    --set-env-vars="GCP_PROJECT_ID=${GCP_PROJECT_ID},GCP_REGION=${GCP_REGION},GCS_BUCKET_RAW=${GCS_BUCKET_RAW:-keiba-raw-data},GCS_BUCKET_MODELS=${GCS_BUCKET_MODELS:-keiba-models},BQ_DATASET_RAW=raw,BQ_DATASET_FEATURES=features,BQ_DATASET_PREDICTIONS=predictions,LOG_LEVEL=INFO" \
     --set-secrets="JRDB_USER=jrdb-user:latest,JRDB_PASSWORD=jrdb-password:latest" \
     --quiet
 
@@ -113,6 +115,13 @@ gsutil iam ch \
     log_info "GCSバケット権限を設定しました: gs://${GCS_BUCKET_RAW_FULL}" || \
     log_warn "GCSバケット権限の設定をスキップしました（バケットが存在しない可能性があります）"
 
+# モデルバケットへのアクセス権限を付与（読み取りのみ）
+gsutil iam ch \
+    "serviceAccount:${PIPELINE_SA_EMAIL}:roles/storage.objectViewer" \
+    "gs://${GCS_BUCKET_MODELS_FULL}" 2>/dev/null && \
+    log_info "モデルバケット権限を設定しました: gs://${GCS_BUCKET_MODELS_FULL}" || \
+    log_warn "モデルバケット権限の設定をスキップしました（バケットが存在しない可能性があります）"
+
 # サービスURLを取得
 SERVICE_URL=$(gcloud run services describe "${SERVICE_NAME}" \
     --region="${GCP_REGION}" \
@@ -126,7 +135,8 @@ log_info ""
 log_info "次のステップ:"
 log_info "  1. デプロイ後の動作確認:"
 log_info "     ./infrastructure/scripts/verify_deployment.sh"
-log_info "  2. Cloud Schedulerジョブのエンドポイント更新 (Issue #60):"
-log_info "     旧: POST /daily-load"
-log_info "     新: POST /api/v1/load/daily/async"
+log_info "  2. 予測エンドポイントのテスト (任意日付指定):"
+log_info "     POST /api/v1/predict/on-demand"
+log_info "  3. 日次予測スケジューラーの設定:"
+log_info "     POST /api/v1/predict/daily (前日PM 9:00 に実行)"
 log_info ""
