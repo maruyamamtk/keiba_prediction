@@ -136,9 +136,9 @@ def compute_metrics(
     for col in categorical_columns:
         if col in X.columns:
             X[col] = X[col].astype("category")
-    # object型をcategory型に変換
-    for col in X.select_dtypes(include="object").columns:
-        X[col] = X[col].astype("category")
+    # 残存するobject列を除外する（学習時と同様の処理）
+    # object列をcategoryに変換するとモデルのcategorical_featureと不一致になるため
+    X = X.select_dtypes(exclude="object")
 
     positions = df["finish_position"].values.astype(int)
     y_binary = np.where((positions >= 1) & (positions <= 3), 1, 0)
@@ -249,8 +249,8 @@ def plot_monthly_metrics(
         for col in categorical_columns:
             if col in X.columns:
                 X[col] = X[col].astype("category")
-        for col in X.select_dtypes(include="object").columns:
-            X[col] = X[col].astype("category")
+        # 残存するobject列を除外する（学習時と同様の処理）
+        X = X.select_dtypes(exclude="object")
 
         positions = monthly["finish_position"].values.astype(int)
         y_binary = np.where((positions >= 1) & (positions <= 3), 1, 0)
