@@ -151,20 +151,31 @@ class TestFullLoadStepDownload:
 
         assert result.status == "success"
         assert result.details["downloaded"] == 80
-        downloader.download_all_from_date.assert_called_once_with("200101")
+        downloader.download_all_from_date.assert_called_once_with("200101", None)
 
     def test_download_default_start_date(self):
         """start_dateがNoneの場合デフォルト"""
         downloader = MagicMock()
-        download_result = DownloadResult(
-            total_files=0, downloaded_files=0, skipped_files=0, failed_files=0
-        )
         downloader.download_all_from_date.return_value = {}
 
         pipeline = FullLoadPipeline(downloader=downloader)
         pipeline._step_download(None, None)
 
-        downloader.download_all_from_date.assert_called_once_with("200101")
+        downloader.download_all_from_date.assert_called_once_with("200101", None)
+
+    def test_download_with_end_date(self):
+        """end_date が download_all_from_date に渡されること"""
+        downloader = MagicMock()
+        download_result = DownloadResult(
+            total_files=5, downloaded_files=5, skipped_files=0, failed_files=0
+        )
+        downloader.download_all_from_date.return_value = {"BAA": download_result}
+
+        pipeline = FullLoadPipeline(downloader=downloader)
+        result = pipeline._step_download(date(2024, 1, 1), date(2024, 6, 30))
+
+        assert result.status == "success"
+        downloader.download_all_from_date.assert_called_once_with("240101", "240630")
 
     def test_download_error(self):
         """ダウンロードエラー"""
@@ -208,6 +219,7 @@ class TestFullLoadStepLoadToBq:
     def test_load_all_files(self):
         """全ファイルロード"""
         bq_loader = MagicMock()
+        bq_loader.check_tables_exist.return_value = {}
         bq_loader.list_csv_files.return_value = [
             "Baa/BAA240101.csv",
             "Baa/BAA240115.csv",
@@ -610,3 +622,76 @@ class TestFullLoadAPI:
         assert response.status_code == 500
         data = response.json()
         assert data["status"] == "failed"
+
+
+class TestFullLoadPipelineMainDateOption:
+    """main() の --date オプションと当日デフォルトのテスト"""
+
+    @patch("src.automation.pipeline.full_load_pipeline.FullLoadPipeline")
+    def test_main_with_date_option(self, MockPipeline):
+        """--date 指定時は start_date=end_date=指定日になること"""
+        import sys
+        from src.automation.pipeline.full_load_pipeline import main
+
+        mock_pipeline = MockPipeline.return_value
+        mock_pipeline.run.return_value = FullLoadResult(
+            status="success", job_id="x", start_date="2026-02-28", end_date="2026-02-28"
+        )
+
+        with patch.object(sys, "argv", ["prog", "--date", "2026-02-28"]):
+            with pytest.raises(SystemExit) as exc:
+                main()
+            assert exc.value.code == 0
+
+        mock_pipeline.run.assert_called_once_with("2026-02-28", "2026-02-28")
+
+    @patch("src.automation.pipeline.full_load_pipeline.FullLoadPipeline")
+    def test_main_default_uses_today(self, MockPipeline):
+        """引数省略時は当日が start_date/end_date に設定されること"""
+        import sys
+        from datetime import date as date_cls
+        from src.automation.pipeline.full_load_pipeline import main
+
+        today = date_cls.today().strftime("%Y-%m-%d")
+        mock_pipeline = MockPipeline.return_value
+        mock_pipeline.run.return_value = FullLoadResult(
+            status="success", job_id="x", start_date=today, end_date=today
+        )
+
+        with patch.object(sys, "argv", ["prog"]):
+            with pytest.raises(SystemExit) as exc:
+                main()
+            assert exc.value.code == 0
+
+        mock_pipeline.run.assert_called_once_with(today, today)
+
+    @patch("src.automation.pipeline.full_load_pipeline.FullLoadPipeline")
+    def test_main_date_and_start_date_error(self, MockPipeline):
+        """--date と --start-date の同時指定はエラーになること"""
+        import sys
+        from src.automation.pipeline.full_load_pipeline import main
+
+        with patch.object(sys, "argv", ["prog", "--date", "2026-02-28", "--start-date", "2026-02-01"]):
+            with pytest.raises(SystemExit) as exc:
+                main()
+            # parser.error() は exit code 2 で終了する
+            assert exc.value.code == 2
+
+    @patch("src.automation.pipeline.full_load_pipeline.FullLoadPipeline")
+    def test_main_start_end_date_option(self, MockPipeline):
+        """--start-date/--end-date 指定時は期間指定になること"""
+        import sys
+        from src.automation.pipeline.full_load_pipeline import main
+
+        mock_pipeline = MockPipeline.return_value
+        mock_pipeline.run.return_value = FullLoadResult(
+            status="success", job_id="x",
+            start_date="2024-01-01", end_date="2024-12-31"
+        )
+
+        with patch.object(sys, "argv", ["prog", "--start-date", "2024-01-01", "--end-date", "2024-12-31"]):
+            with pytest.raises(SystemExit) as exc:
+                main()
+            assert exc.value.code == 0
+
+        mock_pipeline.run.assert_called_once_with("2024-01-01", "2024-12-31")
