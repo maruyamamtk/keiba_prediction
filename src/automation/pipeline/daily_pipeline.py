@@ -302,6 +302,15 @@ class DailyPipeline:
 
             logger.info(f"BigQueryロード開始（未ロードファイル全件）: {target_date}")
 
+            # BQテーブルの存在確認（未作成テーブルがある場合は警告ログを出す）
+            table_exists = self.bq_loader.check_tables_exist()
+            missing_tables = [t for t, exists in table_exists.items() if not exists]
+            if missing_tables:
+                logger.error(
+                    f"BQテーブルが未作成のため、以下のデータはロードされません: {missing_tables}。"
+                    f"scripts/setup_bigquery.sh を実行してテーブルを作成してください。"
+                )
+
             # GCS上のサポート対象データタイプのファイルのみを取得
             supported_types = list(TABLE_MAPPING.keys())
             csv_files = self.bq_loader.list_csv_files(

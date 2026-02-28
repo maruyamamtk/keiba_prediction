@@ -282,9 +282,24 @@ class FullLoadPipeline:
         start_time = time.time()
 
         try:
+            from src.automation.data.load_to_bq import TABLE_MAPPING
+
             logger.info("BigQuery全件ロード開始")
 
-            csv_files = self.bq_loader.list_csv_files(prefix="")
+            # BQテーブルの存在確認（未作成テーブルがある場合は警告ログを出す）
+            table_exists = self.bq_loader.check_tables_exist()
+            missing_tables = [t for t, exists in table_exists.items() if not exists]
+            if missing_tables:
+                logger.error(
+                    f"BQテーブルが未作成のため、以下のデータはロードされません: {missing_tables}。"
+                    f"scripts/setup_bigquery.sh を実行してテーブルを作成してください。"
+                )
+
+            # サポート対象データタイプのファイルのみを取得（daily_pipelineと同様）
+            supported_types = list(TABLE_MAPPING.keys())
+            csv_files = self.bq_loader.list_csv_files(
+                prefix="", data_types=supported_types
+            )
 
             # 日付範囲でフィルタ
             if start_date or end_date:
