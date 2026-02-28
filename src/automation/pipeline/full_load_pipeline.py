@@ -191,10 +191,13 @@ class FullLoadPipeline:
 
         try:
             # start_dateが指定されていない場合はデフォルト（2020年）
-            yymmdd = self.date_to_yymmdd(start_date) if start_date else "200101"
-            logger.info(f"全件ダウンロード開始: {yymmdd}〜")
+            start_yymmdd = self.date_to_yymmdd(start_date) if start_date else "200101"
+            end_yymmdd = self.date_to_yymmdd(end_date) if end_date else None
+            logger.info(
+                f"全件ダウンロード開始: {start_yymmdd}〜{end_yymmdd or '最新'}"
+            )
 
-            results = self.downloader.download_all_from_date(yymmdd)
+            results = self.downloader.download_all_from_date(start_yymmdd, end_yymmdd)
 
             total_downloaded = sum(r.downloaded_files for r in results.values())
             total_skipped = sum(r.skipped_files for r in results.values())
@@ -600,16 +603,22 @@ def main():
 
     parser = argparse.ArgumentParser(description="過去分全件ロードパイプライン")
     parser.add_argument(
+        "--date",
+        type=str,
+        default=None,
+        help="対象日付（YYYY-MM-DD形式、省略時は当日のみ取得）",
+    )
+    parser.add_argument(
         "--start-date",
         type=str,
         default=None,
-        help="開始日付（YYYY-MM-DD形式、省略時は全期間）",
+        help="開始日付（YYYY-MM-DD形式）",
     )
     parser.add_argument(
         "--end-date",
         type=str,
         default=None,
-        help="終了日付（YYYY-MM-DD形式、省略時は全期間）",
+        help="終了日付（YYYY-MM-DD形式）",
     )
     parser.add_argument(
         "--json",
@@ -618,12 +627,30 @@ def main():
     )
     args = parser.parse_args()
 
+    # --date と --start-date/--end-date の同時指定はエラー
+    if args.date and (args.start_date or args.end_date):
+        parser.error("--date と --start-date/--end-date は同時に指定できません")
+
+    if args.date:
+        # --date 指定: その日のみ
+        start_date = args.date
+        end_date = args.date
+    elif args.start_date or args.end_date:
+        # 期間指定: 従来の挙動
+        start_date = args.start_date
+        end_date = args.end_date
+    else:
+        # 全引数省略: 当日のみ
+        today = date.today().strftime("%Y-%m-%d")
+        start_date = today
+        end_date = today
+
     load_dotenv()
 
     pipeline = FullLoadPipeline()
 
     try:
-        result = pipeline.run(args.start_date, args.end_date)
+        result = pipeline.run(start_date, end_date)
 
         if args.json:
             print(json.dumps(result.to_dict(), indent=2, ensure_ascii=False))

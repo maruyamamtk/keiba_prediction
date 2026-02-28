@@ -174,6 +174,61 @@ class TestJRDBDownloaderDownload:
             mock_urlretrieve.assert_called_once()
 
 
+class TestDownloadFromDateWithEndDate:
+    """download_from_date の end_date フィルタのテスト"""
+
+    @patch("urllib.request.urlretrieve")
+    @patch.object(JRDBDownloader, "get_available_dates")
+    def test_download_from_date_with_end_date(self, mock_get_dates, mock_urlretrieve):
+        """end_date が指定された場合、その日以降のファイルがスキップされること"""
+        mock_get_dates.return_value = ["240101", "240601", "240701", "241201"]
+
+        def fake_download(url, path):
+            Path(path).write_bytes("テスト".encode("cp932"))
+
+        mock_urlretrieve.side_effect = fake_download
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            downloader = JRDBDownloader("user", "pass", Path(tmpdir))
+            result = downloader.download_from_date("CSA", "240101", "240630")
+
+        # 240701 と 241201 はダウンロードされない（end_date=240630 を超えている）
+        assert result.total_files == 2  # 240101, 240601 のみ
+
+    @patch.object(JRDBDownloader, "download_from_date")
+    @patch.object(JRDBDownloader, "get_available_datatypes")
+    def test_download_all_from_date_with_end_date(self, mock_get_types, mock_dl_from_date):
+        """end_date が download_from_date に渡されること"""
+        mock_get_types.return_value = ["BAA", "KYF"]
+        mock_dl_from_date.return_value = DownloadResult(0, 0, 0, 0)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            downloader = JRDBDownloader("user", "pass", Path(tmpdir))
+            downloader.download_all_from_date("240101", "240630")
+
+        assert mock_dl_from_date.call_count == 2
+        for call in mock_dl_from_date.call_args_list:
+            assert call.args[1] == "240101"
+            assert call.args[2] == "240630"
+
+    @patch("urllib.request.urlretrieve")
+    @patch.object(JRDBDownloader, "get_available_dates")
+    def test_download_from_date_without_end_date(self, mock_get_dates, mock_urlretrieve):
+        """end_date 未指定の場合は上限なしで全件ダウンロード"""
+        mock_get_dates.return_value = ["240101", "241201"]
+
+        def fake_download(url, path):
+            Path(path).write_bytes("テスト".encode("cp932"))
+
+        mock_urlretrieve.side_effect = fake_download
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            downloader = JRDBDownloader("user", "pass", Path(tmpdir))
+            result = downloader.download_from_date("CSA", "240101")
+
+        assert result.total_files == 2
+
+
 class TestDownloadResult:
     """DownloadResultのテスト"""
 
