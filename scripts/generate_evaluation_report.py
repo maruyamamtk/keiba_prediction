@@ -88,6 +88,8 @@ def load_model_from_gcs(gcs_uri: str, project_id: str) -> tuple[lgb.Booster, dic
             meta_blob.download_to_filename(str(meta_local))
             meta = json.loads(meta_local.read_text())
 
+        # LightGBMのBoosterは内部でモデルをメモリに保持するため、
+        # tmpdir削除後もboosterは有効に使用できる
         booster = lgb.Booster(model_file=str(model_local))
 
     return booster, meta
@@ -200,7 +202,7 @@ def plot_feature_importance(
     df_imp = df_imp.sort_values("importance", ascending=False).head(top_n)
 
     fig, ax = plt.subplots(figsize=(10, 8))
-    bars = ax.barh(df_imp["feature"][::-1], df_imp["importance"][::-1], color="#4C72B0")
+    ax.barh(df_imp["feature"][::-1], df_imp["importance"][::-1], color="#4C72B0")
     ax.set_xlabel("Importance (Gain)", fontsize=12)
     ax.set_title(f"Feature Importance TOP {top_n}", fontsize=14)
     ax.xaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"{x:,.0f}"))
