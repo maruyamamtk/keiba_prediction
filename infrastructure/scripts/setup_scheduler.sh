@@ -2,8 +2,12 @@
 #
 # Cloud Schedulerジョブセットアップスクリプト
 #
-# Cloud Runサービス keiba-pipeline の日次データパイプラインを
-# 毎日AM 6:00 JSTに自動実行するCloud Schedulerジョブを作成する。
+# Cloud Runサービス keiba-pipeline の日次パイプラインを自動実行する
+# Cloud Schedulerジョブを作成する。
+#
+# 作成されるジョブ:
+#   1. daily-data-pipeline  AM 6:00 JST  データロード
+#   2. race-day-predict     AM 8:00 JST  翌日レース予測 (Issue #20完了後に有効)
 #
 # 使用方法:
 #   ./infrastructure/scripts/setup_scheduler.sh
@@ -60,8 +64,12 @@ fi
 GCP_REGION="${GCP_REGION:-asia-northeast1}"
 PIPELINE_SA_NAME="${PIPELINE_SA_NAME:-keiba-pipeline-sa}"
 SERVICE_NAME="keiba-pipeline"
-JOB_NAME="daily-data-pipeline"
-SCHEDULE="0 6 * * *"
+# データロードジョブ
+LOAD_JOB_NAME="daily-data-pipeline"
+LOAD_SCHEDULE="0 6 * * *"
+# 予測ジョブ
+PREDICT_JOB_NAME="race-day-predict"
+PREDICT_SCHEDULE="0 8 * * *"
 TIME_ZONE="Asia/Tokyo"
 
 # サービスアカウントのメールアドレス
@@ -72,8 +80,9 @@ log_info "Cloud Schedulerジョブをセットアップします"
 log_info "=========================================="
 log_info "プロジェクトID: ${GCP_PROJECT_ID}"
 log_info "リージョン: ${GCP_REGION}"
-log_info "ジョブ名: ${JOB_NAME}"
-log_info "スケジュール: ${SCHEDULE} (${TIME_ZONE})"
+log_info "データロードジョブ: ${LOAD_JOB_NAME} (${LOAD_SCHEDULE})"
+log_info "予測ジョブ: ${PREDICT_JOB_NAME} (${PREDICT_SCHEDULE})"
+log_info "タイムゾーン: ${TIME_ZONE}"
 log_info "サービスアカウント: ${PIPELINE_SA_EMAIL}"
 log_info "=========================================="
 
@@ -95,9 +104,12 @@ fi
 
 log_info "サービスURL: ${SERVICE_URL}"
 
-# ターゲットURL（非同期エンドポイント）
-TARGET_URI="${SERVICE_URL}/api/v1/load/daily/async"
-log_info "ターゲットURI: ${TARGET_URI}"
+# ターゲットURL（データロード: 非同期エンドポイント）
+LOAD_TARGET_URI="${SERVICE_URL}/api/v1/load/daily/async"
+log_info "データロードURI: ${LOAD_TARGET_URI}"
+# ターゲットURL（予測: 日次予測エンドポイント）
+PREDICT_TARGET_URI="${SERVICE_URL}/api/v1/predict/daily"
+log_info "予測URI: ${PREDICT_TARGET_URI}"
 
 # ========================================
 # 2. Cloud Scheduler APIの有効化確認
@@ -131,51 +143,75 @@ log_info "権限設定が完了しました"
 # ========================================
 # 4. Cloud Schedulerジョブの作成/更新
 # ========================================
+
+# ジョブ作成/更新の共通関数
+create_or_update_job() {
+    local job_name="$1"
+    local schedule="$2"
+    local uri="$3"
+    local deadline="${4:-900s}"
+
+    if gcloud scheduler jobs describe "${job_name}" \
+        --location="${GCP_REGION}" > /dev/null 2>&1; then
+        log_info "既存のジョブ ${job_name} を更新します..."
+
+        gcloud scheduler jobs update http "${job_name}" \
+            --location="${GCP_REGION}" \
+            --schedule="${schedule}" \
+            --time-zone="${TIME_ZONE}" \
+            --uri="${uri}" \
+            --http-method=POST \
+            --update-headers="Content-Type=application/json" \
+            --message-body='{}' \
+            --oidc-service-account-email="${PIPELINE_SA_EMAIL}" \
+            --oidc-token-audience="${SERVICE_URL}" \
+            --attempt-deadline="${deadline}" \
+            --max-retry-attempts=3 \
+            --min-backoff=5s \
+            --max-backoff=300s \
+            --quiet
+
+        log_info "ジョブを更新しました: ${job_name}"
+    else
+        log_info "新しいジョブ ${job_name} を作成します..."
+
+        gcloud scheduler jobs create http "${job_name}" \
+            --location="${GCP_REGION}" \
+            --schedule="${schedule}" \
+            --time-zone="${TIME_ZONE}" \
+            --uri="${uri}" \
+            --http-method=POST \
+            --headers="Content-Type=application/json" \
+            --message-body='{}' \
+            --oidc-service-account-email="${PIPELINE_SA_EMAIL}" \
+            --oidc-token-audience="${SERVICE_URL}" \
+            --attempt-deadline="${deadline}" \
+            --max-retry-attempts=3 \
+            --min-backoff=5s \
+            --max-backoff=300s \
+            --quiet
+
+        log_info "ジョブを作成しました: ${job_name}"
+    fi
+}
+
 log_info "Cloud Schedulerジョブを設定しています..."
 
-# 既存ジョブの確認
-if gcloud scheduler jobs describe "${JOB_NAME}" \
-    --location="${GCP_REGION}" > /dev/null 2>&1; then
-    log_info "既存のジョブ ${JOB_NAME} を更新します..."
+# 4-1. データロードジョブ（daily-data-pipeline）
+log_info "--- データロードジョブの設定 ---"
+create_or_update_job \
+    "${LOAD_JOB_NAME}" \
+    "${LOAD_SCHEDULE}" \
+    "${LOAD_TARGET_URI}" \
+    "900s"
 
-    gcloud scheduler jobs update http "${JOB_NAME}" \
-        --location="${GCP_REGION}" \
-        --schedule="${SCHEDULE}" \
-        --time-zone="${TIME_ZONE}" \
-        --uri="${TARGET_URI}" \
-        --http-method=POST \
-        --update-headers="Content-Type=application/json" \
-        --message-body='{}' \
-        --oidc-service-account-email="${PIPELINE_SA_EMAIL}" \
-        --oidc-token-audience="${SERVICE_URL}" \
-        --attempt-deadline=900s \
-        --max-retry-attempts=3 \
-        --min-backoff=5s \
-        --max-backoff=300s \
-        --quiet
-
-    log_info "ジョブを更新しました"
-else
-    log_info "新しいジョブ ${JOB_NAME} を作成します..."
-
-    gcloud scheduler jobs create http "${JOB_NAME}" \
-        --location="${GCP_REGION}" \
-        --schedule="${SCHEDULE}" \
-        --time-zone="${TIME_ZONE}" \
-        --uri="${TARGET_URI}" \
-        --http-method=POST \
-        --headers="Content-Type=application/json" \
-        --message-body='{}' \
-        --oidc-service-account-email="${PIPELINE_SA_EMAIL}" \
-        --oidc-token-audience="${SERVICE_URL}" \
-        --attempt-deadline=900s \
-        --max-retry-attempts=3 \
-        --min-backoff=5s \
-        --max-backoff=300s \
-        --quiet
-
-    log_info "ジョブを作成しました"
-fi
+# 4-2. 予測ジョブ（race-day-predict）
+log_info "--- 予測ジョブの設定 ---"
+create_or_update_job \
+    "${PREDICT_JOB_NAME}" \
+    "${PREDICT_SCHEDULE}" \
+    "${PREDICT_TARGET_URI}" \
+    "900s"
 
 # ========================================
 # 5. ジョブの確認
@@ -185,22 +221,94 @@ log_info "=========================================="
 log_info "セットアップ完了"
 log_info "=========================================="
 log_info ""
-log_info "ジョブ情報:"
+log_info "ジョブ一覧:"
 
-gcloud scheduler jobs describe "${JOB_NAME}" \
+gcloud scheduler jobs list \
     --location="${GCP_REGION}" \
     --format="table(name,schedule,timeZone,state,httpTarget.uri)"
 
 log_info ""
-log_info "手動実行でテストする場合:"
-log_info "  gcloud scheduler jobs run ${JOB_NAME} --location=${GCP_REGION}"
+log_info "=== 操作コマンド ==="
 log_info ""
-log_info "ジョブの実行履歴を確認する場合:"
-log_info "  gcloud logging read 'resource.type=\"cloud_scheduler_job\" AND resource.labels.job_id=\"${JOB_NAME}\"' --limit=10"
+log_info "【データロードジョブ (${LOAD_JOB_NAME})】"
+log_info "  手動実行:    gcloud scheduler jobs run ${LOAD_JOB_NAME} --location=${GCP_REGION}"
+log_info "  一時停止:    gcloud scheduler jobs pause ${LOAD_JOB_NAME} --location=${GCP_REGION}"
+log_info "  再開:        gcloud scheduler jobs resume ${LOAD_JOB_NAME} --location=${GCP_REGION}"
+log_info "  実行履歴:    gcloud logging read 'resource.type=\"cloud_scheduler_job\" AND resource.labels.job_id=\"${LOAD_JOB_NAME}\"' --limit=10"
 log_info ""
-log_info "ジョブを一時停止する場合:"
-log_info "  gcloud scheduler jobs pause ${JOB_NAME} --location=${GCP_REGION}"
+log_info "【予測ジョブ (${PREDICT_JOB_NAME})】"
+log_info "  手動実行:    gcloud scheduler jobs run ${PREDICT_JOB_NAME} --location=${GCP_REGION}"
+log_info "  一時停止:    gcloud scheduler jobs pause ${PREDICT_JOB_NAME} --location=${GCP_REGION}"
+log_info "  再開:        gcloud scheduler jobs resume ${PREDICT_JOB_NAME} --location=${GCP_REGION}"
+log_info "  実行履歴:    gcloud logging read 'resource.type=\"cloud_scheduler_job\" AND resource.labels.job_id=\"${PREDICT_JOB_NAME}\"' --limit=10"
 log_info ""
-log_info "ジョブを再開する場合:"
-log_info "  gcloud scheduler jobs resume ${JOB_NAME} --location=${GCP_REGION}"
+log_info "注意: 以下のジョブは依存Issueの完了後に追加予定です:"
+log_info "  race-day-strategy (AM 8:30) - Issue #105 完了後"
+log_info "  race-day-notify   (AM 9:00) - Issue #25  完了後"
+log_info ""
+
+# ========================================
+# 6. 失敗時アラートの設定
+# ========================================
+log_info "--- 失敗時アラートの設定 ---"
+log_info "Cloud MonitoringによるCloud Schedulerジョブ失敗アラートを設定します..."
+
+# Monitoring APIの有効化確認
+if ! gcloud services list --enabled --filter="name:monitoring.googleapis.com" --format="value(name)" 2>/dev/null | grep -q "monitoring"; then
+    log_info "Cloud Monitoring APIを有効化しています..."
+    gcloud services enable monitoring.googleapis.com --quiet
+fi
+
+# ログベースアラートポリシー用JSONを一時ファイルに作成
+ALERT_POLICY_FILE=$(mktemp /tmp/scheduler_alert_policy_XXXXXX.json)
+
+cat > "${ALERT_POLICY_FILE}" << EOF
+{
+  "displayName": "Cloud Scheduler ジョブ失敗アラート (keiba-pipeline)",
+  "conditions": [
+    {
+      "displayName": "Cloud Scheduler ジョブ失敗",
+      "conditionMatchedLog": {
+        "filter": "resource.type=\"cloud_scheduler_job\" severity=ERROR logName=\"projects/${GCP_PROJECT_ID}/logs/cloudscheduler.googleapis.com%2Fexecutions\""
+      }
+    }
+  ],
+  "alertStrategy": {
+    "notificationRateLimit": {
+      "period": "3600s"
+    }
+  },
+  "combiner": "OR",
+  "enabled": true
+}
+EOF
+
+# アラートポリシーの作成/更新
+ALERT_POLICY_NAME="keiba-scheduler-failure-alert"
+EXISTING_POLICY=$(gcloud monitoring policies list \
+    --filter="displayName=\"Cloud Scheduler ジョブ失敗アラート (keiba-pipeline)\"" \
+    --format="value(name)" 2>/dev/null | head -1)
+
+if [ -n "${EXISTING_POLICY}" ]; then
+    log_info "既存のアラートポリシーが見つかりました（更新はスキップ）: ${EXISTING_POLICY}"
+else
+    if gcloud monitoring policies create --policy-from-file="${ALERT_POLICY_FILE}" --quiet 2>/dev/null; then
+        log_info "アラートポリシーを作成しました"
+    else
+        log_warn "アラートポリシーの作成に失敗しました"
+        log_warn "手動での設定手順:"
+        log_warn "  1. GCPコンソール > Monitoring > Alerting を開く"
+        log_warn "  2. 「アラートポリシーの作成」をクリック"
+        log_warn "  3. ログフィルタ: resource.type=\"cloud_scheduler_job\" severity=ERROR"
+        log_warn "  4. 通知チャンネルを設定（メール等）"
+    fi
+fi
+
+# 一時ファイルの削除
+rm -f "${ALERT_POLICY_FILE}"
+
+log_info ""
+log_info "アラート設定の確認:"
+log_info "  GCPコンソール > Monitoring > Alerting で確認できます"
+log_info "  通知チャンネル（メール等）は別途コンソールから設定してください"
 log_info ""

@@ -85,8 +85,9 @@ APIエンドポイントの詳細は [README.md](./README.md#apiエンドポイ�
 
 #### 2.2.4 Cloud Scheduler
 - `daily-data-load`: 毎日AM 6:00 データロード（設定手順は実装済み、ジョブ作成は要実施）
-- `pre-race-prediction`: レース前日 PM 9:00 予測実行（未実装）
-- `race-day-prediction`: レース当日 AM 8:00 予測更新（未実装）
+- `race-day-predict`: 当日AM 8:00 推論実行（未実装）
+- `race-day-strategy`: 当日AM 8:30 投資戦略策定（未実装）
+- `race-day-notify`: 当日AM 9:00 LINE通知（未実装）
 
 ---
 
