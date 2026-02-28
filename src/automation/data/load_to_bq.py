@@ -360,9 +360,17 @@ class BigQueryLoader:
             f"{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
         )
 
+        from google.api_core.exceptions import NotFound
+
         try:
             # ターゲットテーブルのスキーマを取得
-            target_table = self.bq_client.get_table(table_ref)
+            try:
+                target_table = self.bq_client.get_table(table_ref)
+            except NotFound:
+                raise GoogleCloudError(
+                    f"テーブルが存在しません: {table_ref}。"
+                    f"scripts/setup_bigquery.sh を実行してテーブルを作成してください。"
+                )
             schema = target_table.schema
 
             # 一時テーブルを作成
@@ -375,7 +383,10 @@ class BigQueryLoader:
                 errors = self.bq_client.insert_rows_json(temp_table, rows)
                 if errors:
                     error_msgs = [str(e) for e in errors[:5]]
-                    logger.error(f"BigQuery insert エラー: {error_msgs}")
+                    logger.error(
+                        f"BigQuery Streaming Insert エラー (テーブル: {table_id}, "
+                        f"データタイプ: {data_type}): {error_msgs}"
+                    )
                     raise GoogleCloudError(f"Insert errors: {error_msgs}")
 
                 logger.debug(f"一時テーブルに {len(rows)} 行を挿入しました")
@@ -425,7 +436,9 @@ class BigQueryLoader:
             return len(rows)
 
         except GoogleCloudError as e:
-            logger.error(f"BigQuery ロードエラー: {e}")
+            logger.error(
+                f"BigQuery ロードエラー (テーブル: {table_id}, データタイプ: {data_type}): {e}"
+            )
             raise
 
     def load_file(
@@ -520,7 +533,11 @@ class BigQueryLoader:
             )
 
         except Exception as e:
-            logger.error(f"ファイル処理エラー: {blob_name} - {e}")
+            logger.error(
+                f"ファイル処理エラー: {blob_name} "
+                f"(データタイプ: {data_type}, テーブル: {table_name}) - {e}",
+                exc_info=True,
+            )
             result.error = str(e)
 
         finally:
@@ -649,6 +666,41 @@ class BigQueryLoader:
 
         logger.info(f"GCSから {len(csv_files)} 個のCSVファイルを検出しました")
         return csv_files
+
+    def check_tables_exist(self) -> Dict[str, bool]:
+        """
+        TABLE_MAPPINGで定義されたBigQueryテーブルの存在を確認
+
+        Returns:
+            テーブル名と存在可否のDict
+        """
+        from google.api_core.exceptions import NotFound
+
+        target_tables = set(TABLE_MAPPING.values())
+        results = {}
+
+        for table_name in sorted(target_tables):
+            table_ref = f"{self.project_id}.{self.dataset_id}.{table_name}"
+            try:
+                self.bq_client.get_table(table_ref)
+                results[table_name] = True
+            except NotFound:
+                results[table_name] = False
+                logger.warning(
+                    f"テーブルが存在しません: {table_ref}。"
+                    f"scripts/setup_bigquery.sh を実行してテーブルを作成してください。"
+                )
+
+        missing = [t for t, exists in results.items() if not exists]
+        if missing:
+            logger.error(
+                f"以下のテーブルが未作成です: {missing}。"
+                f"scripts/setup_bigquery.sh を実行してください。"
+            )
+        else:
+            logger.info("全テーブルの存在を確認しました")
+
+        return results
 
 
 def create_loader_from_env() -> Optional[BigQueryLoader]:
