@@ -14,6 +14,7 @@ from src.models.predict import (
     format_predictions,
     fetch_race_results,
     predict_pipeline,
+    save_predictions_to_bq,
 )
 
 
@@ -319,3 +320,109 @@ class TestFormatPredictions:
         horse_lines = [l for l in result.split("\n") if "テスト馬" in l]
         assert len(horse_lines) == 1
         assert horse_lines[0].strip().endswith("-")
+
+
+class TestSavePredictionsToBQ:
+    """save_predictions_to_bqのテスト"""
+
+    @pytest.fixture
+    def sample_result_df(self):
+        """予測結果のサンプルDataFrame"""
+        return pd.DataFrame({
+            "race_id": ["race_20260214_01", "race_20260214_01", "race_20260214_01"],
+            "race_date": [datetime.date(2026, 2, 14)] * 3,
+            "horse_id": ["h1", "h2", "h3"],
+            "horse_number": [1, 2, 3],
+            "horse_name": ["テスト馬1", "テスト馬2", "テスト馬3"],
+            "venue_code": ["05", "05", "05"],
+            "race_number": [1, 1, 1],
+            "win_place_prob": [0.7, 0.5, 0.3],
+            "pred_score": [0.8, 0.5, 0.2],
+            "pred_rank": [1, 2, 3],
+        })
+
+    @pytest.fixture
+    def mock_bq_client(self):
+        """BigQueryクライアントのモック"""
+        mock_job = type("Job", (), {"result": lambda self: None})()
+        mock_query_job = type("QueryJob", (), {"result": lambda self: None})()
+
+        with patch("src.models.predict.bigquery.Client") as mock_client_cls:
+            with patch("src.models.predict.bigquery.Table") as mock_table_cls:
+                with patch("src.models.predict.bigquery.LoadJobConfig"):
+                    mock_client = mock_client_cls.return_value
+                    mock_client.create_table.return_value = mock_table_cls.return_value
+                    mock_client.load_table_from_dataframe.return_value = mock_job
+                    mock_client.query.return_value = mock_query_job
+                    mock_client.delete_table.return_value = None
+                    yield mock_client
+
+    def test_save_predictions_success(self, sample_result_df, mock_bq_client):
+        """正常にBigQuery保存が呼び出されること"""
+        saved_rows = save_predictions_to_bq(
+            result_df=sample_result_df,
+            project_id="test-project",
+        )
+
+        assert saved_rows == len(sample_result_df)
+        mock_bq_client.create_table.assert_called_once()
+        mock_bq_client.load_table_from_dataframe.assert_called_once()
+        mock_bq_client.query.assert_called_once()
+        # MERGE文が正しいキーを含んでいること
+        merge_query = mock_bq_client.query.call_args[0][0]
+        assert "race_id" in merge_query
+        assert "horse_id" in merge_query
+        assert "MERGE" in merge_query
+
+    def test_save_predictions_empty_df(self):
+        """空DataFrameは0行を返すこと（BigQuery呼び出しなし）"""
+        with patch("src.models.predict.bigquery.Client") as mock_client_cls:
+            saved_rows = save_predictions_to_bq(
+                result_df=pd.DataFrame(),
+                project_id="test-project",
+            )
+        assert saved_rows == 0
+        mock_client_cls.assert_not_called()
+
+    def test_save_predictions_missing_required_columns(self):
+        """必須カラムが不足している場合はValueErrorが発生すること"""
+        df = pd.DataFrame({"race_id": ["r1"], "horse_id": ["h1"]})
+        # win_place_prob と pred_score が欠けている
+        with pytest.raises(ValueError, match="必須カラムが不足しています"):
+            save_predictions_to_bq(result_df=df, project_id="test-project")
+
+    def test_save_predictions_with_place_odds(self, sample_result_df, mock_bq_client):
+        """place_oddsカラムがある場合も保存DataFrame内にplace_oddsが含まれること"""
+        df_with_odds = sample_result_df.copy()
+        df_with_odds["place_odds"] = [3.2, 5.1, 8.4]
+
+        saved_rows = save_predictions_to_bq(
+            result_df=df_with_odds,
+            project_id="test-project",
+        )
+
+        assert saved_rows == len(df_with_odds)
+        # load_table_from_dataframeに渡されたDataFrameにplace_oddsが含まれること
+        call_args = mock_bq_client.load_table_from_dataframe.call_args
+        saved_df = call_args[0][0]
+        assert "place_odds" in saved_df.columns
+
+    def test_save_predictions_temp_table_cleanup_on_error(self, sample_result_df):
+        """エラー発生時でも一時テーブルが削除されること"""
+        with patch("src.models.predict.bigquery.Client") as mock_client_cls:
+            with patch("src.models.predict.bigquery.Table"):
+                with patch("src.models.predict.bigquery.LoadJobConfig"):
+                    mock_client = mock_client_cls.return_value
+                    mock_client.create_table.return_value = mock_client_cls.return_value
+                    # load_table_from_dataframe でエラーを発生させる
+                    mock_client.load_table_from_dataframe.side_effect = Exception("BQ Error")
+                    mock_client.delete_table.return_value = None
+
+                    with pytest.raises(Exception, match="BQ Error"):
+                        save_predictions_to_bq(
+                            result_df=sample_result_df,
+                            project_id="test-project",
+                        )
+
+        # delete_tableが呼ばれたことを確認（finallyブロック）
+        mock_client.delete_table.assert_called_once()

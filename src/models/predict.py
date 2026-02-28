@@ -7,6 +7,7 @@ LightGBM LambdaRank 推論スクリプト
 Usage:
     python src/models/predict.py --project-id <PROJECT_ID> --model-path <MODEL_PATH>
     python src/models/predict.py --project-id <PROJECT_ID> --model-path <MODEL_PATH> --execution-date 2026-02-15
+    python src/models/predict.py --project-id <PROJECT_ID> --model-path <MODEL_PATH> --save-to-bq
 """
 
 from __future__ import annotations
@@ -294,6 +295,126 @@ def predict_pipeline(
     return result_df
 
 
+def save_predictions_to_bq(
+    result_df: pd.DataFrame,
+    project_id: str,
+    dataset: str = "predictions",
+    table: str = "race_predictions",
+) -> int:
+    """
+    予測結果をBigQueryのpredictions.race_predictionsテーブルにUPSERTする
+
+    保存するカラム: race_id, race_date, horse_id, horse_number, horse_name,
+                   venue_code, race_number, win_place_prob, pred_score,
+                   place_odds, created_at
+
+    一意キー: (race_id, horse_id) の組み合わせでUPSERT（MERGE）を実行する。
+
+    Args:
+        result_df: 予測結果のDataFrame（predict_pipelineの出力）
+        project_id: GCPプロジェクトID
+        dataset: 保存先データセット名（デフォルト: "predictions"）
+        table: 保存先テーブル名（デフォルト: "race_predictions"）
+
+    Returns:
+        保存した行数
+
+    Raises:
+        ValueError: 必須カラムが不足している場合
+    """
+    if len(result_df) == 0:
+        logger.warning("保存するデータがありません")
+        return 0
+
+    required_columns = ["race_id", "horse_id", "win_place_prob", "pred_score"]
+    missing = [c for c in required_columns if c not in result_df.columns]
+    if missing:
+        raise ValueError(f"必須カラムが不足しています: {missing}")
+
+    # 保存対象カラムを選択（存在するもののみ）
+    save_columns = [
+        "race_id", "race_date", "horse_id", "horse_number", "horse_name",
+        "venue_code", "race_number", "win_place_prob", "pred_score",
+    ]
+    # place_oddsカラムがあれば含める
+    for col in ["place_odds", "odds_yesterday", "odds_today"]:
+        if col in result_df.columns:
+            save_columns.append(col)
+            break
+
+    available_columns = [c for c in save_columns if c in result_df.columns]
+    save_df = result_df[available_columns].copy()
+
+    # created_atを追加
+    save_df["created_at"] = pd.Timestamp.now(tz="UTC")
+
+    # 型の整合
+    if "horse_number" in save_df.columns:
+        save_df["horse_number"] = save_df["horse_number"].astype("Int64")
+    if "race_number" in save_df.columns:
+        save_df["race_number"] = save_df["race_number"].astype("Int64")
+
+    client = bigquery.Client(project=project_id)
+    table_ref = f"{project_id}.{dataset}.{table}"
+    temp_table_ref = (
+        f"{project_id}.{dataset}._temp_{table}_"
+        f"{pd.Timestamp.now(tz='UTC').strftime('%Y%m%d%H%M%S')}"
+    )
+
+    logger.info(f"BigQuery保存開始: {table_ref} ({len(save_df)}行)")
+
+    try:
+        # 一時テーブルを作成してデータをロード（スキーマはautodetect）
+        client.create_table(bigquery.Table(temp_table_ref))
+        logger.debug(f"一時テーブルを作成しました: {temp_table_ref}")
+
+        try:
+            job_config = bigquery.LoadJobConfig(
+                write_disposition="WRITE_APPEND",
+                autodetect=True,
+            )
+            job = client.load_table_from_dataframe(save_df, temp_table_ref, job_config=job_config)
+            job.result()
+            logger.debug(f"一時テーブルに {len(save_df)} 行をロードしました")
+
+            # MERGE文を構築（一意キー: race_id + horse_id）
+            unique_keys = ["race_id", "horse_id"]
+            columns = list(save_df.columns)
+            join_conditions = " AND ".join(
+                [f"T.{key} = S.{key}" for key in unique_keys]
+            )
+            update_columns = [col for col in columns if col not in unique_keys]
+            update_set = ", ".join([f"T.{col} = S.{col}" for col in update_columns])
+            insert_columns = ", ".join(columns)
+            insert_values = ", ".join([f"S.{col}" for col in columns])
+
+            merge_query = f"""
+            MERGE `{table_ref}` T
+            USING `{temp_table_ref}` S
+            ON {join_conditions}
+            WHEN MATCHED THEN
+                UPDATE SET {update_set}
+            WHEN NOT MATCHED THEN
+                INSERT ({insert_columns})
+                VALUES ({insert_values})
+            """
+
+            logger.debug("MERGEクエリを実行中...")
+            query_job = client.query(merge_query)
+            query_job.result()
+            logger.info(f"BigQuery保存完了: {len(save_df)}行を {table_ref} にUPSERTしました")
+
+        finally:
+            client.delete_table(temp_table_ref, not_found_ok=True)
+            logger.debug(f"一時テーブルを削除しました: {temp_table_ref}")
+
+        return len(save_df)
+
+    except Exception as e:
+        logger.error(f"BigQuery保存エラー: {e}")
+        raise
+
+
 def format_predictions(result_df: pd.DataFrame) -> str:
     """予測結果を見やすい文字列に整形する"""
     if len(result_df) == 0:
@@ -378,6 +499,12 @@ def main():
         help="結果をCSV出力するパス",
     )
     parser.add_argument("--verbose", "-v", action="store_true", help="詳細ログ")
+    parser.add_argument(
+        "--save-to-bq",
+        action="store_true",
+        default=False,
+        help="予測結果をBigQuery（predictions.race_predictions）に保存する",
+    )
 
     args = parser.parse_args()
 
@@ -419,6 +546,14 @@ def main():
     if args.output_csv and len(result_df) > 0:
         result_df.to_csv(args.output_csv, index=False)
         print(f"\n結果をCSVに保存しました: {args.output_csv}")
+
+    # BigQuery保存
+    if args.save_to_bq and len(result_df) > 0:
+        saved_rows = save_predictions_to_bq(
+            result_df=result_df,
+            project_id=args.project_id,
+        )
+        print(f"\n{saved_rows}行をBigQuery（predictions.race_predictions）に保存しました")
 
     # サマリー
     if len(result_df) > 0:
