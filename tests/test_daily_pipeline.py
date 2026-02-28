@@ -84,7 +84,8 @@ class TestDailyPipelineStepDownload:
         assert result.details["downloaded"] == 5
         assert result.details["skipped"] == 3
         assert result.details["failed"] == 0
-        downloader.download_all_from_date.assert_called_once_with("240115")
+        # 7日前 (2024-01-15 - 7日 = 2024-01-08) が渡されること
+        downloader.download_all_from_date.assert_called_once_with("240108")
 
     def test_step_download_partial(self):
         """一部ダウンロード失敗"""
@@ -113,6 +114,40 @@ class TestDailyPipelineStepDownload:
 
         assert result.status == "failed"
         assert "接続エラー" in result.error_message
+
+    def test_step_download_uses_lookback(self):
+        """ルックバック7日が適用されること: target_date - 7日 が download_all_from_date に渡される"""
+        downloader = MagicMock()
+        download_result = DownloadResult(
+            total_files=0,
+            downloaded_files=0,
+            skipped_files=0,
+            failed_files=0,
+        )
+        downloader.download_all_from_date.return_value = {"BAA": download_result}
+
+        pipeline = DailyPipeline(downloader=downloader)
+        pipeline._step_download(date(2024, 1, 15))  # 240115
+
+        # 7日前 = 240108 が渡されること
+        downloader.download_all_from_date.assert_called_once_with("240108")
+
+    def test_step_download_lookback_crosses_month_boundary(self):
+        """月をまたぐルックバックが正しく計算される: 2024-03-05 - 7日 = 2024-02-27"""
+        downloader = MagicMock()
+        download_result = DownloadResult(
+            total_files=0,
+            downloaded_files=0,
+            skipped_files=0,
+            failed_files=0,
+        )
+        downloader.download_all_from_date.return_value = {"BAA": download_result}
+
+        pipeline = DailyPipeline(downloader=downloader)
+        pipeline._step_download(date(2024, 3, 5))  # 240305
+
+        # 7日前 = 240227 が渡されること
+        downloader.download_all_from_date.assert_called_once_with("240227")
 
 
 class TestDailyPipelineStepUpload:

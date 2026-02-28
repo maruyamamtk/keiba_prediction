@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, List, Optional
 
@@ -193,11 +193,16 @@ class DailyPipeline:
         start_time = time.time()
 
         try:
-            yymmdd = self.date_to_yymmdd(target_date)
-            logger.info(f"ダウンロード開始: {yymmdd}")
+            DOWNLOAD_LOOKBACK_DAYS = 7
+            lookback_date = target_date - timedelta(days=DOWNLOAD_LOOKBACK_DAYS)
+            start_yymmdd = self.date_to_yymmdd(lookback_date)
+            logger.info(
+                f"ダウンロード開始: {start_yymmdd}〜 "
+                f"（{DOWNLOAD_LOOKBACK_DAYS}日間ルックバック、対象日: {self.date_to_yymmdd(target_date)}）"
+            )
 
-            # 全データタイプをダウンロード
-            results = self.downloader.download_all_from_date(yymmdd)
+            # 全データタイプをダウンロード（7日前から最新まで）
+            results = self.downloader.download_all_from_date(start_yymmdd)
 
             # 結果集計
             total_downloaded = sum(r.downloaded_files for r in results.values())
