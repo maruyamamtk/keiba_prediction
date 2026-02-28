@@ -7,7 +7,7 @@
 #
 # 作成されるジョブ:
 #   1. daily-data-pipeline  AM 6:00 JST  データロード
-#   2. race-day-predict     AM 8:00 JST  翌日レース予測 (Issue #20完了後に有効)
+#   2. race-day-predict     AM 8:00 JST  翌日レース予測
 #
 # 使用方法:
 #   ./infrastructure/scripts/setup_scheduler.sh
@@ -206,12 +206,13 @@ create_or_update_job \
     "900s"
 
 # 4-2. 予測ジョブ（race-day-predict）
+# attempt-deadline は Cloud Run タイムアウト(900s)より短く設定し競合を回避
 log_info "--- 予測ジョブの設定 ---"
 create_or_update_job \
     "${PREDICT_JOB_NAME}" \
     "${PREDICT_SCHEDULE}" \
     "${PREDICT_TARGET_URI}" \
-    "900s"
+    "800s"
 
 # ========================================
 # 5. ジョブの確認
@@ -269,7 +270,7 @@ cat > "${ALERT_POLICY_FILE}" << EOF
     {
       "displayName": "Cloud Scheduler ジョブ失敗",
       "conditionMatchedLog": {
-        "filter": "resource.type=\"cloud_scheduler_job\" severity=ERROR logName=\"projects/${GCP_PROJECT_ID}/logs/cloudscheduler.googleapis.com%2Fexecutions\""
+        "filter": "resource.type=\"cloud_scheduler_job\" AND severity=ERROR"
       }
     }
   ],
@@ -284,7 +285,6 @@ cat > "${ALERT_POLICY_FILE}" << EOF
 EOF
 
 # アラートポリシーの作成/更新
-ALERT_POLICY_NAME="keiba-scheduler-failure-alert"
 EXISTING_POLICY=$(gcloud monitoring policies list \
     --filter="displayName=\"Cloud Scheduler ジョブ失敗アラート (keiba-pipeline)\"" \
     --format="value(name)" 2>/dev/null | head -1)
