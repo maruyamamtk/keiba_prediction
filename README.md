@@ -136,7 +136,11 @@ python3 -m src.models.train --project-id <PROJECT_ID> --tune --n-trials 50
 python3 -m src.models.train --project-id <PROJECT_ID> --tune --tune-timeout 3600
 
 # 推論実行（今週の土日を自動で対象とする）
+# --model-path にはローカルパスまたは gs:// URI を指定可能
 python3 -m src.models.predict --project-id <PROJECT_ID> --model-path ./models/lgbm_ranker_20260215.txt
+
+# GCS上のモデルを直接指定（自動ダウンロードされる）
+python3 -m src.models.predict --project-id <PROJECT_ID> --model-path gs://<PROJECT_ID>-keiba-models/lgbm_ranker_20260215.txt
 
 # 推論結果をCSV保存
 python3 -m src.models.predict --project-id <PROJECT_ID> --model-path ./models/lgbm_ranker_20260215.txt --output-csv predictions.csv
@@ -379,6 +383,8 @@ Cloud RunにデプロイされたFastAPIアプリケーションは以下のエ�
 | POST | `/api/v1/load/full/sync` | 全件ロード（同期、テスト用） |
 | POST | `/api/v1/features/generate` | 特徴量生成（同期） |
 | POST | `/api/v1/features/generate/async` | 特徴量生成（非同期） |
+| POST | `/api/v1/predict/daily` | 翌日レース予測 + BQ保存（Cloud Scheduler用） |
+| POST | `/api/v1/predict/on-demand` | 任意日付レース予測 + BQ保存（手動実行用） |
 
 ---
 
@@ -750,3 +756,4 @@ python -m pytest tests/ --cov=src --cov-report=html
 | 2026-02-14 | README.mdとCLAUDE.mdの重複除外。Issue #59（特徴量生成API）とIssue #71（デプロイスクリプト整備）の内容を反映 |
 | 2026-02-16 | Issue #85（二値ラベル化・AUC追加）とIssue #86（Optunaチューニング）の内容を反映 |
 | 2026-02-22 | Issue #17（バックテストシミュレーター）の実装を反映。src/backtest/追加、scripts/run_backtest.py追加、Phase 4完了に更新 |
+| 2026-03-01 | Issue #21（Cloud Runデプロイ設定）の実装を反映。予測エンドポイント2件をAPIエンドポイント一覧に追記、--model-pathへのgs://URI指定対応を追記 |
