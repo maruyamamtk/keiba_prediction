@@ -219,6 +219,7 @@ class TestFullLoadStepLoadToBq:
     def test_load_all_files(self):
         """全ファイルロード"""
         bq_loader = MagicMock()
+        bq_loader.check_tables_exist.return_value = {}
         bq_loader.list_csv_files.return_value = [
             "Baa/BAA240101.csv",
             "Baa/BAA240115.csv",

@@ -213,6 +213,24 @@ class TestDownloadFromDateWithEndDate:
 
     @patch("urllib.request.urlretrieve")
     @patch.object(JRDBDownloader, "get_available_dates")
+    def test_download_from_date_end_date_boundary_included(self, mock_get_dates, mock_urlretrieve):
+        """end_date 当日のファイルはダウンロード対象に含まれること（境界値）"""
+        mock_get_dates.return_value = ["240101", "240601", "240630", "240701"]
+
+        def fake_download(url, path):
+            Path(path).write_bytes("テスト".encode("cp932"))
+
+        mock_urlretrieve.side_effect = fake_download
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            downloader = JRDBDownloader("user", "pass", Path(tmpdir))
+            result = downloader.download_from_date("CSA", "240101", "240630")
+
+        # 240630（end_date 当日）は含まれる、240701 は除外される
+        assert result.total_files == 3  # 240101, 240601, 240630
+
+    @patch("urllib.request.urlretrieve")
+    @patch.object(JRDBDownloader, "get_available_dates")
     def test_download_from_date_without_end_date(self, mock_get_dates, mock_urlretrieve):
         """end_date 未指定の場合は上限なしで全件ダウンロード"""
         mock_get_dates.return_value = ["240101", "241201"]
@@ -227,6 +245,16 @@ class TestDownloadFromDateWithEndDate:
             result = downloader.download_from_date("CSA", "240101")
 
         assert result.total_files == 2
+
+    @patch.object(JRDBDownloader, "get_available_dates")
+    def test_download_from_date_start_after_end_raises(self, mock_get_dates):
+        """start_date > end_date の場合は ValueError が発生すること"""
+        mock_get_dates.return_value = []
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            downloader = JRDBDownloader("user", "pass", Path(tmpdir))
+            with pytest.raises(ValueError, match="start_date"):
+                downloader.download_from_date("CSA", "241231", "240101")
 
 
 class TestDownloadResult:

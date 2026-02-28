@@ -329,6 +329,11 @@ class JRDBDownloader:
         Returns:
             ダウンロード結果
         """
+        if end_date and start_date > end_date:
+            raise ValueError(
+                f"start_date ({start_date}) が end_date ({end_date}) より後の日付です"
+            )
+
         logger.info(f"利用可能な日付を取得中: {datatype}")
         available_dates = self.get_available_dates(datatype)
 
@@ -475,6 +480,12 @@ def main():
         help="開始日付（yymmdd形式、例: 240101）",
     )
     parser.add_argument(
+        "--end-date",
+        type=str,
+        default=None,
+        help="終了日付（yymmdd形式、例: 241231）。省略時は上限なし",
+    )
+    parser.add_argument(
         "--datatype",
         type=str,
         default=None,
@@ -501,14 +512,16 @@ def main():
 
     try:
         if args.datatype:
-            result = downloader.download_from_date(args.datatype.upper(), args.start_date)
+            result = downloader.download_from_date(
+                args.datatype.upper(), args.start_date, args.end_date
+            )
             print(f"\n結果: {args.datatype}")
             print(f"  総ファイル数: {result.total_files}")
             print(f"  ダウンロード: {result.downloaded_files}")
             print(f"  スキップ: {result.skipped_files}")
             print(f"  失敗: {result.failed_files}")
         else:
-            results = downloader.download_all_from_date(args.start_date)
+            results = downloader.download_all_from_date(args.start_date, args.end_date)
             print("\n=== 結果サマリー ===")
             total = DownloadResult(0, 0, 0, 0)
             for datatype, result in results.items():
