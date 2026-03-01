@@ -3,6 +3,7 @@ load_to_bq モジュールのユニットテスト
 """
 
 import os
+from datetime import datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -354,6 +355,31 @@ class TestBigQueryLoaderListFiles:
         assert "KYF260104.csv" in result
         assert "SEC260104.csv" not in result
 
+    @patch("google.cloud.storage.Client")
+    def test_list_csv_files_populates_blob_updated_cache(self, mock_storage_client):
+        """list_csv_files()実行後に_blob_updated_cacheにGCS更新タイムスタンプが設定される"""
+        from datetime import timezone
+
+        loader = BigQueryLoader(project_id="test-project")
+        gcs_updated = datetime(2026, 3, 1, 19, 0, 0, tzinfo=timezone.utc)
+
+        mock_blob = MagicMock()
+        mock_blob.name = "BAA260301.csv"
+        mock_blob.updated = gcs_updated
+
+        mock_bucket = MagicMock()
+        mock_bucket.list_blobs.return_value = [mock_blob]
+
+        mock_client = MagicMock()
+        mock_client.bucket.return_value = mock_bucket
+        mock_storage_client.return_value = mock_client
+
+        loader.list_csv_files()
+
+        # キャッシュにGCS更新日時が格納されていること
+        assert "BAA260301.csv" in loader._blob_updated_cache
+        assert loader._blob_updated_cache["BAA260301.csv"] == gcs_updated
+
 
 class TestBigQueryLoaderBatchLoad:
     """BigQueryLoaderのload_files_batchメソッドテスト"""
@@ -518,17 +544,25 @@ class TestGetLoadedFiles:
 
     @patch("google.cloud.bigquery.Client")
     def test_get_loaded_files_success(self, mock_bq_client):
-        """ロード済みファイル一覧を取得する"""
+        """ロード済みファイルの最終ロード日時を Dict で取得する"""
+        from datetime import timezone
+
         loader = BigQueryLoader(project_id="test-project")
 
         mock_client = MagicMock()
         mock_bq_client.return_value = mock_client
 
-        # クエリ結果をモック
+        # クエリ結果をモック (file_name と loaded_at を返す)
+        loaded_at_1 = datetime(2026, 3, 1, 6, 0, 0, tzinfo=timezone.utc)
+        loaded_at_2 = datetime(2026, 3, 1, 7, 0, 0, tzinfo=timezone.utc)
+
         mock_row1 = MagicMock()
         mock_row1.file_name = "BAA260104.csv"
+        mock_row1.loaded_at = loaded_at_1
+
         mock_row2 = MagicMock()
         mock_row2.file_name = "KYF260104.csv"
+        mock_row2.loaded_at = loaded_at_2
 
         mock_query_job = MagicMock()
         mock_query_job.result.return_value = [mock_row1, mock_row2]
@@ -536,16 +570,46 @@ class TestGetLoadedFiles:
 
         result = loader._get_loaded_files()
 
-        assert result == {"BAA260104.csv", "KYF260104.csv"}
+        assert isinstance(result, dict)
+        assert set(result.keys()) == {"BAA260104.csv", "KYF260104.csv"}
+        assert result["BAA260104.csv"] == loaded_at_1
+        assert result["KYF260104.csv"] == loaded_at_2
         mock_client.query.assert_called_once()
-        # クエリが正しいテーブルを参照していることを確認
+        # クエリが正しいテーブルを参照し、GROUP BY / MAX を使っていることを確認
         query_call = mock_client.query.call_args[0][0]
         assert LOAD_HISTORY_TABLE in query_call
         assert "status = 'success'" in query_call
+        assert "MAX(loaded_at)" in query_call
+        assert "GROUP BY file_name" in query_call
+
+    @patch("google.cloud.bigquery.Client")
+    def test_get_loaded_files_naive_datetime_becomes_utc_aware(self, mock_bq_client):
+        """loaded_at が timezone-naive の場合も UTC-aware に変換される"""
+        from datetime import timezone
+
+        loader = BigQueryLoader(project_id="test-project")
+
+        mock_client = MagicMock()
+        mock_bq_client.return_value = mock_client
+
+        # naive datetime (tzinfo なし)
+        naive_dt = datetime(2026, 3, 1, 6, 0, 0)
+
+        mock_row = MagicMock()
+        mock_row.file_name = "BAA260104.csv"
+        mock_row.loaded_at = naive_dt
+
+        mock_query_job = MagicMock()
+        mock_query_job.result.return_value = [mock_row]
+        mock_client.query.return_value = mock_query_job
+
+        result = loader._get_loaded_files()
+
+        assert result["BAA260104.csv"].tzinfo == timezone.utc
 
     @patch("google.cloud.bigquery.Client")
     def test_get_loaded_files_table_not_found(self, mock_bq_client):
-        """テーブルが存在しない場合は空のセットを返す"""
+        """テーブルが存在しない場合は空のDictを返す"""
         loader = BigQueryLoader(project_id="test-project")
 
         mock_client = MagicMock()
@@ -556,7 +620,7 @@ class TestGetLoadedFiles:
 
         result = loader._get_loaded_files()
 
-        assert result == set()
+        assert result == {}
 
     @patch("google.cloud.bigquery.Client")
     def test_get_loaded_files_other_error(self, mock_bq_client):
@@ -631,8 +695,13 @@ class TestIsFileAlreadyLoaded:
 
     def test_file_is_loaded(self):
         """ファイルがロード済みの場合Trueを返す"""
+        from datetime import timezone
+
         loader = BigQueryLoader(project_id="test-project")
-        loaded_files = {"BAA260104.csv", "KYF260104.csv"}
+        loaded_files = {
+            "BAA260104.csv": datetime(2026, 3, 1, tzinfo=timezone.utc),
+            "KYF260104.csv": datetime(2026, 3, 1, tzinfo=timezone.utc),
+        }
 
         result = loader._is_file_already_loaded("BAA260104.csv", loaded_files)
 
@@ -640,8 +709,13 @@ class TestIsFileAlreadyLoaded:
 
     def test_file_is_not_loaded(self):
         """ファイルが未ロードの場合Falseを返す"""
+        from datetime import timezone
+
         loader = BigQueryLoader(project_id="test-project")
-        loaded_files = {"BAA260104.csv", "KYF260104.csv"}
+        loaded_files = {
+            "BAA260104.csv": datetime(2026, 3, 1, tzinfo=timezone.utc),
+            "KYF260104.csv": datetime(2026, 3, 1, tzinfo=timezone.utc),
+        }
 
         result = loader._is_file_already_loaded("SEC260104.csv", loaded_files)
 
@@ -651,13 +725,90 @@ class TestIsFileAlreadyLoaded:
 class TestLoadFilesWithSkip:
     """重複スキップ機能を含むload_files_batchメソッドのテスト"""
 
-    def test_batch_load_with_skip_loaded(self):
-        """skip_loaded=Trueでロード済みファイルをスキップする"""
-        loader = BigQueryLoader(project_id="test-project")
+    def test_batch_load_skip_when_gcs_not_updated(self):
+        """GCS更新日時がloaded_at以前の場合はスキップされる（解決策A）"""
+        from datetime import timezone
 
-        # ロード済みファイルを返すモック
+        loader = BigQueryLoader(project_id="test-project")
+        loaded_at = datetime(2026, 3, 1, 6, 0, 0, tzinfo=timezone.utc)
+        gcs_updated = datetime(2026, 3, 1, 5, 0, 0, tzinfo=timezone.utc)  # GCSが古い
+
+        # ロード済みファイルと GCS タイムスタンプをセット
+        loader._blob_updated_cache["file1.csv"] = gcs_updated
+
         with patch.object(
-            loader, "_get_loaded_files", return_value={"file1.csv", "file2.csv"}
+            loader, "_get_loaded_files", return_value={"file1.csv": loaded_at}
+        ):
+            with patch.object(loader, "load_file") as mock_load:
+                result = loader.load_files_batch(["file1.csv"], skip_loaded=True)
+
+        # GCS が古いのでスキップ
+        assert result.skipped_count == 1
+        assert result.success_count == 0
+        mock_load.assert_not_called()
+
+    def test_batch_load_reload_when_gcs_is_newer(self):
+        """GCS更新日時がloaded_atより新しければ再ロードされる（解決策A）"""
+        from datetime import timezone
+
+        loader = BigQueryLoader(project_id="test-project")
+        loaded_at = datetime(2026, 3, 1, 6, 0, 0, tzinfo=timezone.utc)
+        gcs_updated = datetime(2026, 3, 1, 19, 30, 0, tzinfo=timezone.utc)  # GCSが新しい
+
+        loader._blob_updated_cache["file1.csv"] = gcs_updated
+
+        with patch.object(
+            loader, "_get_loaded_files", return_value={"file1.csv": loaded_at}
+        ):
+            with patch.object(loader, "load_file") as mock_load:
+                mock_load.return_value = LoadResult(
+                    file_name="file1.csv", status="success", records_processed=36
+                )
+                result = loader.load_files_batch(["file1.csv"], skip_loaded=True)
+
+        # GCS が新しいので再ロード
+        assert result.success_count == 1
+        assert result.skipped_count == 0
+        mock_load.assert_called_once_with("file1.csv", record_history=True)
+
+    def test_batch_load_skip_when_no_cache(self):
+        """GCSキャッシュがない場合は保守的にスキップする"""
+        from datetime import timezone
+
+        loader = BigQueryLoader(project_id="test-project")
+        loaded_at = datetime(2026, 3, 1, 6, 0, 0, tzinfo=timezone.utc)
+
+        # _blob_updated_cache にエントリなし
+
+        with patch.object(
+            loader, "_get_loaded_files", return_value={"file1.csv": loaded_at}
+        ):
+            with patch.object(loader, "load_file") as mock_load:
+                result = loader.load_files_batch(["file1.csv"], skip_loaded=True)
+
+        # キャッシュなし → スキップ
+        assert result.skipped_count == 1
+        assert result.success_count == 0
+        mock_load.assert_not_called()
+
+    def test_batch_load_with_skip_loaded(self):
+        """skip_loaded=True でロード済み（GCS更新なし）のファイルはスキップ、未ロードはロード"""
+        from datetime import timezone
+
+        loader = BigQueryLoader(project_id="test-project")
+        loaded_at = datetime(2026, 3, 1, 6, 0, 0, tzinfo=timezone.utc)
+        gcs_updated = datetime(2026, 3, 1, 5, 0, 0, tzinfo=timezone.utc)  # GCSが古い
+
+        loader._blob_updated_cache["file1.csv"] = gcs_updated
+        loader._blob_updated_cache["file2.csv"] = gcs_updated
+
+        with patch.object(
+            loader,
+            "_get_loaded_files",
+            return_value={
+                "file1.csv": loaded_at,
+                "file2.csv": loaded_at,
+            },
         ):
             with patch.object(loader, "load_file") as mock_load:
                 mock_load.return_value = LoadResult(
@@ -703,10 +854,15 @@ class TestLoadFilesWithSkip:
 
     def test_batch_load_skip_reason_in_result(self):
         """スキップされたファイルの理由が結果に含まれる"""
+        from datetime import timezone
+
         loader = BigQueryLoader(project_id="test-project")
+        loaded_at = datetime(2026, 3, 1, 6, 0, 0, tzinfo=timezone.utc)
+        gcs_updated = datetime(2026, 3, 1, 5, 0, 0, tzinfo=timezone.utc)
+        loader._blob_updated_cache["file1.csv"] = gcs_updated
 
         with patch.object(
-            loader, "_get_loaded_files", return_value={"file1.csv"}
+            loader, "_get_loaded_files", return_value={"file1.csv": loaded_at}
         ):
             with patch.object(loader, "load_file"):
                 result = loader.load_files_batch(

@@ -305,6 +305,118 @@ class TestDailyPipelineStepLoadToBq:
         assert result.status == "partial"
         assert result.details["failed"] == 1
 
+    def test_step_load_to_bq_sunday_forces_reload_today_files(self):
+        """日曜日は当日yymmddのファイルのみ skip_loaded=False で強制再ロードされる（解決策B）"""
+        bq_loader = MagicMock()
+        # 2024-01-14（日曜）に実行: 当日ファイル240114 と前日ファイル240113 が存在
+        bq_loader.list_csv_files.return_value = [
+            "Baa/BAA240114.csv",  # 当日
+            "Baa/BAA240113.csv",  # 前日
+            "Kyf/KYF240113.csv",  # 前日
+        ]
+        # 当日バッチと前日バッチの結果を個別に返す
+        today_batch_result = BatchLoadResult(
+            total_files=1,
+            success_count=1,
+            skipped_count=0,
+            failed_count=0,
+            total_records=36,
+            results=[],
+            failed_files=[],
+            duration_seconds=3.0,
+        )
+        other_batch_result = BatchLoadResult(
+            total_files=2,
+            success_count=0,
+            skipped_count=2,
+            failed_count=0,
+            total_records=0,
+            results=[],
+            failed_files=[],
+            duration_seconds=1.0,
+        )
+        bq_loader.load_files_batch.side_effect = [today_batch_result, other_batch_result]
+
+        pipeline = DailyPipeline(bq_loader=bq_loader)
+        result = pipeline._step_load_to_bq(date(2024, 1, 14))  # 日曜日
+
+        assert result.status == "success"
+        # 当日 1 件成功 + 前日 2 件スキップ
+        assert result.details["files"] == 1
+        assert result.details["records"] == 36
+        assert result.details["skipped"] == 2
+
+        # load_files_batch が 2 回呼ばれていること
+        assert bq_loader.load_files_batch.call_count == 2
+
+        # 1回目（当日ファイル）は skip_loaded=False で呼ばれること
+        first_call = bq_loader.load_files_batch.call_args_list[0]
+        assert first_call[0][0] == ["Baa/BAA240114.csv"]
+        assert first_call[1]["skip_loaded"] is False
+
+        # 2回目（前日ファイル）は skip_loaded=True で呼ばれること
+        second_call = bq_loader.load_files_batch.call_args_list[1]
+        assert set(second_call[0][0]) == {"Baa/BAA240113.csv", "Kyf/KYF240113.csv"}
+        assert second_call[1]["skip_loaded"] is True
+
+    def test_step_load_to_bq_sunday_no_today_files(self):
+        """日曜日に当日ファイルがない場合は前日ファイルのみ通常ロード"""
+        bq_loader = MagicMock()
+        # 当日ファイルなし、前日ファイルのみ
+        bq_loader.list_csv_files.return_value = [
+            "Baa/BAA240113.csv",
+        ]
+        other_batch_result = BatchLoadResult(
+            total_files=1,
+            success_count=0,
+            skipped_count=1,
+            failed_count=0,
+            total_records=0,
+            results=[],
+            failed_files=[],
+            duration_seconds=1.0,
+        )
+        bq_loader.load_files_batch.return_value = other_batch_result
+
+        pipeline = DailyPipeline(bq_loader=bq_loader)
+        result = pipeline._step_load_to_bq(date(2024, 1, 14))  # 日曜日
+
+        assert result.status == "success"
+        # 当日ファイルなし → 当日バッチ呼ばれない、前日バッチのみ
+        # load_files_batch は other_files 分のみ呼ばれる
+        assert bq_loader.load_files_batch.call_count == 1
+        call_args = bq_loader.load_files_batch.call_args
+        assert call_args[1]["skip_loaded"] is True
+
+    def test_step_load_to_bq_weekday_uses_skip_loaded(self):
+        """平日（月〜土）は通常のGCSタイムスタンプ比較ロジックが使われる"""
+        bq_loader = MagicMock()
+        bq_loader.list_csv_files.return_value = [
+            "Baa/BAA240115.csv",
+            "Baa/BAA240114.csv",
+        ]
+        batch_result = BatchLoadResult(
+            total_files=2,
+            success_count=1,
+            skipped_count=1,
+            failed_count=0,
+            total_records=18,
+            results=[],
+            failed_files=[],
+            duration_seconds=2.0,
+        )
+        bq_loader.load_files_batch.return_value = batch_result
+
+        pipeline = DailyPipeline(bq_loader=bq_loader)
+        result = pipeline._step_load_to_bq(date(2024, 1, 15))  # 月曜日
+
+        assert result.status == "success"
+        # load_files_batch は 1 回のみ呼ばれ skip_loaded=True
+        assert bq_loader.load_files_batch.call_count == 1
+        call_args = bq_loader.load_files_batch.call_args
+        assert call_args[0][0] == ["Baa/BAA240115.csv", "Baa/BAA240114.csv"]
+        assert call_args[1]["skip_loaded"] is True
+
 
 class TestDailyPipelineRun:
     """DailyPipeline.runのテスト"""

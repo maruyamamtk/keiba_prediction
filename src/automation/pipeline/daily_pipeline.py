@@ -289,12 +289,12 @@ class DailyPipeline:
         """
         Step 3: BigQueryにロード
 
-        GCS上の未ロードファイルをすべてBigQueryにロードする。
-        JRDBファイルはレース開催日（主に土日）で命名されるため、
-        パイプライン実行日ではなくロード履歴による重複スキップで制御する。
+        GCS上のファイルをBigQueryにロードする。
+        スキップ判定はGCS更新タイムスタンプとload_historyのloaded_atを比較して行う。
+        日曜日は当日（yymmdd）のファイルのみ skip_loaded を無視して強制再ロードする。
 
         Args:
-            target_date: 対象日付（ログ用）
+            target_date: 対象日付
 
         Returns:
             StepResult
@@ -303,9 +303,9 @@ class DailyPipeline:
         start_time = time.time()
 
         try:
-            from src.automation.data.load_to_bq import TABLE_MAPPING
+            from src.automation.data.load_to_bq import BatchLoadResult, TABLE_MAPPING
 
-            logger.info(f"BigQueryロード開始（未ロードファイル全件）: {target_date}")
+            logger.info(f"BigQueryロード開始: {target_date}")
 
             # BQテーブルの存在確認（未作成テーブルがある場合は警告ログを出す）
             table_exists = self.bq_loader.check_tables_exist()
@@ -316,7 +316,8 @@ class DailyPipeline:
                     f"scripts/setup_bigquery.sh を実行してテーブルを作成してください。"
                 )
 
-            # GCS上のサポート対象データタイプのファイルのみを取得
+            # GCS上のサポート対象データタイプのファイルを一括取得
+            # （このタイミングで _blob_updated_cache が更新される）
             supported_types = list(TABLE_MAPPING.keys())
             csv_files = self.bq_loader.list_csv_files(
                 prefix="", data_types=supported_types
@@ -331,13 +332,64 @@ class DailyPipeline:
                     details={"files": 0, "records": 0, "skipped": 0},
                 )
 
-            # バッチロード実行（重複スキップ有効）
-            result = self.bq_loader.load_files_batch(
-                csv_files,
-                continue_on_error=True,
-                skip_loaded=True,
-                record_history=True,
-            )
+            # 日曜日は当日ファイルを強制再ロード（解決策B）
+            # JRDBは土曜19:00に全レース分を更新するため、日曜バッチでは当日データを必ず再取得する
+            is_sunday = target_date.weekday() == 6
+            date_str = self.date_to_yymmdd(target_date)
+
+            if is_sunday:
+                logger.info(
+                    f"日曜日のため当日ファイル（{date_str}）を強制再ロードします"
+                )
+                today_files = [f for f in csv_files if date_str in f]
+                other_files = [f for f in csv_files if date_str not in f]
+
+                # 当日ファイルは skip_loaded=False で強制再ロード
+                if today_files:
+                    logger.info(
+                        f"当日ファイル {len(today_files)} 件を強制再ロード: {today_files}"
+                    )
+                    today_batch = self.bq_loader.load_files_batch(
+                        today_files,
+                        continue_on_error=True,
+                        skip_loaded=False,
+                        record_history=True,
+                    )
+                else:
+                    today_batch = BatchLoadResult(total_files=0)
+
+                # 当日以外は通常スキップロジック（GCSタイムスタンプ比較）
+                if other_files:
+                    other_batch = self.bq_loader.load_files_batch(
+                        other_files,
+                        continue_on_error=True,
+                        skip_loaded=True,
+                        record_history=True,
+                    )
+                else:
+                    other_batch = BatchLoadResult(total_files=0)
+
+                # 2バッチの結果を集計
+                result = BatchLoadResult(
+                    total_files=today_batch.total_files + other_batch.total_files,
+                    success_count=today_batch.success_count + other_batch.success_count,
+                    skipped_count=today_batch.skipped_count + other_batch.skipped_count,
+                    failed_count=today_batch.failed_count + other_batch.failed_count,
+                    total_records=today_batch.total_records + other_batch.total_records,
+                    results=today_batch.results + other_batch.results,
+                    failed_files=today_batch.failed_files + other_batch.failed_files,
+                    duration_seconds=(
+                        today_batch.duration_seconds + other_batch.duration_seconds
+                    ),
+                )
+            else:
+                # 通常ロード: GCSタイムスタンプ比較によるスキップ（解決策A）
+                result = self.bq_loader.load_files_batch(
+                    csv_files,
+                    continue_on_error=True,
+                    skip_loaded=True,
+                    record_history=True,
+                )
 
             details = {
                 "files": result.success_count,
