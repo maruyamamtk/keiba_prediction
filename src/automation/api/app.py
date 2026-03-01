@@ -189,6 +189,10 @@ class PredictOnDemandRequest(BaseModel):
         default=True,
         description="予測結果をBigQueryに保存するか",
     )
+    save_to_gcs: bool = Field(
+        default=False,
+        description="予測結果をGCSに保存するか",
+    )
 
     @field_validator("target_dates")
     @classmethod
@@ -608,6 +612,10 @@ def _resolve_model_path(model_path: Optional[str], project_id: str) -> tuple[str
 
     # gs://bucket-name/path/to/model.txt を解析
     gcs_path = model_path[len("gs://"):]
+    if "/" not in gcs_path:
+        raise ValueError(
+            f"不正なGCS URIです（バケット名またはオブジェクトパスが不足しています）: {model_path}"
+        )
     bucket_name, blob_name = gcs_path.split("/", 1)
 
     tmpdir = tempfile.mkdtemp(prefix="keiba_model_")
@@ -783,11 +791,12 @@ async def predict_on_demand(request: PredictOnDemandRequest):
             target_dates=target_dates,
             save_to_bq=request.save_to_bq,
             project_id=project_id,
+            save_to_gcs=request.save_to_gcs,
         )
 
         logger.info(
             f"オンデマンド予測完了: {result['num_races']}レース, {result['num_horses']}頭, "
-            f"saved={result['saved_to_bq']}"
+            f"bq_saved={result['saved_to_bq']}, gcs_saved={result['saved_to_gcs']}"
         )
         return PredictResponse(
             status="success",

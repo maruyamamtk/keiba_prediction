@@ -299,14 +299,14 @@ def save_predictions_to_bq(
     result_df: pd.DataFrame,
     project_id: str,
     dataset: str = "predictions",
-    table: str = "race_predictions",
+    table: str = "daily_predictions",
 ) -> int:
     """
-    予測結果をBigQueryのpredictions.race_predictionsテーブルにUPSERTする
+    予測結果をBigQueryのpredictions.daily_predictionsテーブルにUPSERTする
 
     保存するカラム: race_id, race_date, horse_id, horse_number, horse_name,
                    venue_code, race_number, win_place_prob, pred_score,
-                   place_odds, created_at
+                   rank_in_race, place_odds, created_at
 
     一意キー: (race_id, horse_id) の組み合わせでUPSERT（MERGE）を実行する。
 
@@ -314,7 +314,7 @@ def save_predictions_to_bq(
         result_df: 予測結果のDataFrame（predict_pipelineの出力）
         project_id: GCPプロジェクトID
         dataset: 保存先データセット名（デフォルト: "predictions"）
-        table: 保存先テーブル名（デフォルト: "race_predictions"）
+        table: 保存先テーブル名（デフォルト: "daily_predictions"）
 
     Returns:
         保存した行数
@@ -344,6 +344,10 @@ def save_predictions_to_bq(
 
     available_columns = [c for c in save_columns if c in result_df.columns]
     save_df = result_df[available_columns].copy()
+
+    # pred_rank を rank_in_race としてBQスキーマに合わせてリネーム
+    if "pred_rank" in result_df.columns:
+        save_df["rank_in_race"] = result_df["pred_rank"].astype("Int64")
 
     # created_atを追加
     save_df["created_at"] = pd.Timestamp.now(tz="UTC")
