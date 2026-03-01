@@ -159,13 +159,18 @@ class FeatureGenerateResponse(BaseModel):
 class PredictDailyRequest(BaseModel):
     """翌日予測リクエスト"""
 
-    model_path: str = Field(
-        description="モデルファイルパス（ローカルパスまたは gs:// URI）",
+    model_path: Optional[str] = Field(
+        default=None,
+        description="モデルファイルパス（ローカルパスまたは gs:// URI）。未指定時はGCSから最新モデルを自動取得。",
         json_schema_extra={"example": "gs://my-project-keiba-models/models/20260101/lgbm_ranker.txt"},
     )
     save_to_bq: bool = Field(
         default=True,
         description="予測結果をBigQueryに保存するか",
+    )
+    save_to_gcs: bool = Field(
+        default=True,
+        description="予測結果をGCSに保存するか",
     )
 
 
@@ -207,6 +212,8 @@ class PredictResponse(BaseModel):
     num_horses: int = Field(default=0, description="予測した頭数")
     saved_to_bq: bool = Field(default=False, description="BigQueryに保存されたか")
     saved_rows: int = Field(default=0, description="BigQueryに保存した行数")
+    saved_to_gcs: bool = Field(default=False, description="GCSに保存されたか")
+    gcs_uri: Optional[str] = Field(default=None, description="GCS保存先URI")
     error_message: Optional[str] = Field(default=None, description="エラーメッセージ")
 
 
@@ -532,21 +539,67 @@ async def generate_features_async(
     }
 
 
-def _resolve_model_path(model_path: str, project_id: str) -> tuple[str, Optional[str]]:
+def _get_latest_model_from_gcs(project_id: str, bucket_suffix: str = "keiba-models", prefix: str = "models/") -> str:
+    """
+    GCSから最新のモデルファイルURIを取得する
+
+    gs://{project_id}-{bucket_suffix}/{prefix} 以下のファイルを更新日時で降順ソートし、
+    最新の .txt ファイルの gs:// URIを返す。
+
+    Args:
+        project_id: GCPプロジェクトID
+        bucket_suffix: バケット名のサフィックス
+        prefix: GCS内のプレフィックス
+
+    Returns:
+        最新モデルの gs:// URI
+
+    Raises:
+        FileNotFoundError: モデルファイルが見つからない場合
+    """
+    from google.cloud import storage as gcs
+
+    bucket_name = f"{project_id}-{bucket_suffix}"
+    logger.info(f"GCSから最新モデルを検索: gs://{bucket_name}/{prefix}")
+
+    client = gcs.Client(project=project_id)
+    bucket = client.bucket(bucket_name)
+
+    blobs = list(bucket.list_blobs(prefix=prefix))
+    model_blobs = [b for b in blobs if b.name.endswith(".txt")]
+
+    if not model_blobs:
+        raise FileNotFoundError(
+            f"モデルファイルが見つかりません: gs://{bucket_name}/{prefix}"
+        )
+
+    latest_blob = max(model_blobs, key=lambda b: b.updated)
+    gcs_uri = f"gs://{bucket_name}/{latest_blob.name}"
+    logger.info(f"最新モデルを取得: {gcs_uri} (更新日時: {latest_blob.updated})")
+    return gcs_uri
+
+
+def _resolve_model_path(model_path: Optional[str], project_id: str) -> tuple[str, Optional[str]]:
     """
     モデルファイルパスを解決する
 
-    GCS URI（gs://...）の場合はローカルの一時ディレクトリにダウンロードし、
-    ローカルパスを返す。ローカルパスの場合はそのまま返す。
+    - model_path が None の場合はGCSから最新モデルを自動取得する
+    - GCS URI（gs://...）の場合はローカルの一時ディレクトリにダウンロードし、
+      ローカルパスを返す
+    - ローカルパスの場合はそのまま返す
 
     Args:
-        model_path: モデルファイルパス（ローカルパスまたは gs:// URI）
+        model_path: モデルファイルパス（ローカルパスまたは gs:// URI）。
+                    None の場合はGCSから最新モデルを自動取得。
         project_id: GCPプロジェクトID
 
     Returns:
         (ローカルパス, 一時ディレクトリパス) のタプル。
         ローカルパスの場合は一時ディレクトリは None。
     """
+    if model_path is None:
+        model_path = _get_latest_model_from_gcs(project_id)
+
     if not model_path.startswith("gs://"):
         return model_path, None
 
@@ -571,29 +624,32 @@ def _resolve_model_path(model_path: str, project_id: str) -> tuple[str, Optional
 
 
 def _run_predict(
-    model_path: str,
+    model_path: Optional[str],
     target_dates: list[datetime.date],
     save_to_bq: bool,
     project_id: str,
+    save_to_gcs: bool = False,
 ) -> dict:
     """
     予測パイプラインを実行して結果を返す内部関数
 
     Args:
-        model_path: モデルファイルパス（ローカルパスまたは gs:// URI）
+        model_path: モデルファイルパス（ローカルパスまたは gs:// URI）。
+                    None の場合はGCSから最新モデルを自動取得。
         target_dates: 予測対象日のリスト
         save_to_bq: BigQueryに保存するか
         project_id: GCPプロジェクトID
+        save_to_gcs: GCSに保存するか
 
     Returns:
-        予測結果の辞書（num_races, num_horses, saved_to_bq, saved_rows）
+        予測結果の辞書（num_races, num_horses, saved_to_bq, saved_rows, saved_to_gcs, gcs_uri）
     """
     import shutil
 
-    from src.models.predict import predict_pipeline, save_predictions_to_bq
+    from src.models.predict import predict_pipeline, save_predictions_to_bq, save_predictions_to_gcs
     from src.models.train import load_config
 
-    # GCS URI の場合はダウンロードしてローカルパスに変換
+    # GCS URI の場合はダウンロードしてローカルパスに変換（None の場合は最新モデルを自動取得）
     local_model_path, tmpdir = _resolve_model_path(model_path, project_id)
 
     try:
@@ -610,6 +666,8 @@ def _run_predict(
         num_horses = len(result_df)
         bq_saved = False
         saved_rows = 0
+        gcs_saved = False
+        gcs_uri = None
 
         if save_to_bq and len(result_df) > 0:
             saved_rows = save_predictions_to_bq(
@@ -618,11 +676,21 @@ def _run_predict(
             )
             bq_saved = True
 
+        if save_to_gcs and len(result_df) > 0:
+            gcs_uri = save_predictions_to_gcs(
+                result_df=result_df,
+                project_id=project_id,
+                race_date=target_dates[0] if target_dates else None,
+            )
+            gcs_saved = True
+
         return {
             "num_races": num_races,
             "num_horses": num_horses,
             "saved_to_bq": bq_saved,
             "saved_rows": saved_rows,
+            "saved_to_gcs": gcs_saved,
+            "gcs_uri": gcs_uri,
         }
     finally:
         # GCS からダウンロードした一時ファイルを削除
@@ -664,11 +732,12 @@ async def predict_daily(request: PredictDailyRequest):
             target_dates=target_dates,
             save_to_bq=request.save_to_bq,
             project_id=project_id,
+            save_to_gcs=request.save_to_gcs,
         )
 
         logger.info(
             f"日次予測完了: {result['num_races']}レース, {result['num_horses']}頭, "
-            f"saved={result['saved_to_bq']}"
+            f"bq_saved={result['saved_to_bq']}, gcs_saved={result['saved_to_gcs']}"
         )
         return PredictResponse(
             status="success",

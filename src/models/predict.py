@@ -418,6 +418,52 @@ def save_predictions_to_bq(
         raise
 
 
+def save_predictions_to_gcs(
+    result_df: pd.DataFrame,
+    project_id: str,
+    race_date: Optional[datetime.date] = None,
+    bucket_suffix: str = "keiba-predictions",
+) -> str:
+    """
+    予測結果をGCSにCSVとして保存する
+
+    保存パス: gs://{project_id}-{bucket_suffix}/{YYYY-MM-DD}/predictions.csv
+
+    Args:
+        result_df: 予測結果のDataFrame（predict_pipelineの出力）
+        project_id: GCPプロジェクトID
+        race_date: 保存先のサブディレクトリに使う日付。
+                   未指定時は result_df の race_date の最小値を使用。
+        bucket_suffix: バケット名のサフィックス（デフォルト: "keiba-predictions"）
+
+    Returns:
+        保存先のGCS URI（例: gs://my-project-keiba-predictions/2026-03-01/predictions.csv）
+
+    Raises:
+        ValueError: result_df が空の場合
+    """
+    if len(result_df) == 0:
+        raise ValueError("保存するデータがありません")
+
+    if race_date is None:
+        race_date = pd.to_datetime(result_df["race_date"]).min().date()
+
+    date_str = race_date.strftime("%Y-%m-%d")
+    bucket_name = f"{project_id}-{bucket_suffix}"
+    blob_name = f"{date_str}/predictions.csv"
+
+    client = storage.Client(project=project_id)
+    bucket = client.bucket(bucket_name)
+    blob = bucket.blob(blob_name)
+
+    csv_content = result_df.to_csv(index=False)
+    blob.upload_from_string(csv_content, content_type="text/csv")
+
+    gcs_uri = f"gs://{bucket_name}/{blob_name}"
+    logger.info(f"予測結果をGCSに保存しました: {gcs_uri} ({len(result_df)}行)")
+    return gcs_uri
+
+
 def format_predictions(result_df: pd.DataFrame) -> str:
     """予測結果を見やすい文字列に整形する"""
     if len(result_df) == 0:
