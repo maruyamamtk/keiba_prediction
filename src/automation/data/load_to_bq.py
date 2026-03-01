@@ -636,6 +636,7 @@ class BigQueryLoader:
         self,
         prefix: Optional[str] = None,
         data_types: Optional[List[str]] = None,
+        date_filter: Optional[str] = None,
     ) -> List[str]:
         """
         GCSバケット内のCSVファイルを一覧取得
@@ -643,6 +644,7 @@ class BigQueryLoader:
         Args:
             prefix: GCS上のプレフィックス (オプション)
             data_types: フィルタするデータタイプのリスト (オプション)
+            date_filter: ファイル名の日付文字列 yymmdd 形式 (例: "260301")
 
         Returns:
             ファイルパスのリスト
@@ -662,6 +664,10 @@ class BigQueryLoader:
                     dt.upper() for dt in data_types
                 ]:
                     continue
+
+            # 日付フィルタ（ファイル名に yymmdd が含まれるか）
+            if date_filter and date_filter not in blob.name:
+                continue
 
             csv_files.append(blob.name)
 
@@ -763,6 +769,10 @@ def main():
         help="GCS上のプレフィックス (例: csv/)",
     )
     parser.add_argument(
+        "--date",
+        help="ロード対象日 YYYY-MM-DD 形式 (例: 2026-03-01)。指定するとその日付のファイルのみ対象",
+    )
+    parser.add_argument(
         "--data-types",
         nargs="+",
         help="ロードするデータタイプ (例: BAA KYF SEC)",
@@ -812,6 +822,13 @@ def main():
         bucket_name=args.bucket,
     )
 
+    # --date を yymmdd 形式に変換
+    date_filter = None
+    if args.date:
+        import datetime as _dt
+        d = _dt.date.fromisoformat(args.date)
+        date_filter = d.strftime("%y%m%d")  # "260301"
+
     # ロード対象ファイルを決定
     if args.files:
         files_to_load = args.files
@@ -819,6 +836,7 @@ def main():
         files_to_load = loader.list_csv_files(
             prefix=args.prefix,
             data_types=args.data_types,
+            date_filter=date_filter,
         )
 
     if not files_to_load:
