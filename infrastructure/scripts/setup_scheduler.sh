@@ -299,7 +299,7 @@ else
         log_warn "手動での設定手順:"
         log_warn "  1. GCPコンソール > Monitoring > Alerting を開く"
         log_warn "  2. 「アラートポリシーの作成」をクリック"
-        log_warn "  3. ログフィルタ: resource.type=\"cloud_scheduler_job\" severity=ERROR"
+        log_warn "  3. ログフィルタ: resource.type=\"cloud_scheduler_job\" AND severity=ERROR"
         log_warn "  4. 通知チャンネルを設定（メール等）"
     fi
 fi
