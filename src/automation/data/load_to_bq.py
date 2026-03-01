@@ -19,8 +19,8 @@ import re
 import sys
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Set
+from datetime import datetime, timedelta, timezone
+from typing import Dict, List, Optional
 
 from google.cloud import bigquery, storage
 from google.cloud.exceptions import GoogleCloudError
@@ -177,6 +177,8 @@ class BigQueryLoader:
 
         self._bq_client: Optional[bigquery.Client] = None
         self._storage_client: Optional[storage.Client] = None
+        # GCS blob の更新タイムスタンプキャッシュ (list_csv_files() が設定する)
+        self._blob_updated_cache: Dict[str, Optional[datetime]] = {}
 
     @property
     def bq_client(self) -> bigquery.Client:
@@ -194,35 +196,48 @@ class BigQueryLoader:
             logger.info("Cloud Storageクライアントを初期化しました")
         return self._storage_client
 
-    def _get_loaded_files(self) -> Set[str]:
+    def _get_loaded_files(self) -> Dict[str, datetime]:
         """
-        ロード履歴テーブルから成功したファイル名のセットを取得
+        ロード履歴テーブルから成功したファイルの最終ロード日時を取得
+
+        GCS更新タイムスタンプとの比較に使用するため、
+        ファイルごとに最新の loaded_at を返す。
 
         Returns:
-            ロード済みファイル名のセット
+            {file_name: loaded_at (UTC-aware)} のDict
         """
         table_ref = f"{self.project_id}.{self.dataset_id}.{LOAD_HISTORY_TABLE}"
 
         query = f"""
-        SELECT DISTINCT file_name
+        SELECT file_name, MAX(loaded_at) AS loaded_at
         FROM `{table_ref}`
         WHERE status = 'success'
+        GROUP BY file_name
         """
 
         try:
             query_job = self.bq_client.query(query)
             results = query_job.result()
-            loaded_files = {row.file_name for row in results}
+            loaded_files: Dict[str, datetime] = {}
+            for row in results:
+                loaded_at = row.loaded_at
+                if loaded_at is not None:
+                    # UTC-aware に統一
+                    if loaded_at.tzinfo is None:
+                        loaded_at = loaded_at.replace(tzinfo=timezone.utc)
+                else:
+                    loaded_at = datetime.min.replace(tzinfo=timezone.utc)
+                loaded_files[row.file_name] = loaded_at
             logger.info(f"ロード履歴から {len(loaded_files)} 件の成功ファイルを取得しました")
             return loaded_files
         except Exception as e:
-            # テーブルが存在しない場合は空のセットを返す
+            # テーブルが存在しない場合は空のDictを返す
             if "Not found" in str(e):
                 logger.warning(
                     f"ロード履歴テーブルが見つかりません: {table_ref}. "
                     "スキップ機能は無効になります。"
                 )
-                return set()
+                return {}
             logger.error(f"ロード履歴の取得に失敗しました: {e}")
             raise
 
@@ -275,14 +290,14 @@ class BigQueryLoader:
             logger.warning(f"ロード履歴の記録に失敗しました: {e}")
 
     def _is_file_already_loaded(
-        self, file_name: str, loaded_files: Optional[Set[str]] = None
+        self, file_name: str, loaded_files: Optional[Dict[str, datetime]] = None
     ) -> bool:
         """
         ファイルが既にロード済みかどうかを確認
 
         Args:
             file_name: ファイル名
-            loaded_files: ロード済みファイルのセット (キャッシュ用)
+            loaded_files: {file_name: loaded_at} のDict (キャッシュ用)
 
         Returns:
             ロード済みの場合True
@@ -582,24 +597,55 @@ class BigQueryLoader:
 
         logger.info(f"バッチロード開始: {len(blob_names)} ファイル")
 
-        # 重複スキップが有効な場合、ロード済みファイルを取得
-        loaded_files: Set[str] = set()
+        # 重複スキップが有効な場合、ロード済みファイルと最終ロード日時を取得
+        loaded_files: Dict[str, datetime] = {}
         if skip_loaded:
             loaded_files = self._get_loaded_files()
             logger.info(f"重複スキップ機能: 有効 ({len(loaded_files)} 件のロード済みファイル)")
 
         for i, blob_name in enumerate(blob_names, 1):
-            # 重複スキップ判定
+            # 重複スキップ判定: ロード済み かつ GCS更新なし の場合にスキップ
             if skip_loaded and blob_name in loaded_files:
-                logger.info(f"スキップ ({i}/{len(blob_names)}): {blob_name} (ロード済み)")
-                result = LoadResult(
-                    file_name=blob_name,
-                    status="skipped",
-                    error="既にロード済み",
-                )
-                batch_result.results.append(result)
-                batch_result.skipped_count += 1
-                continue
+                gcs_updated = self._blob_updated_cache.get(blob_name)
+                if gcs_updated is not None:
+                    # GCS更新タイムスタンプと最終ロード日時を比較
+                    if gcs_updated.tzinfo is None:
+                        gcs_updated = gcs_updated.replace(tzinfo=timezone.utc)
+                    loaded_at = loaded_files[blob_name]
+                    if gcs_updated <= loaded_at:
+                        # GCSが古いまま → スキップ
+                        logger.info(
+                            f"スキップ ({i}/{len(blob_names)}): {blob_name} "
+                            f"(ロード済み・GCS更新なし)"
+                        )
+                        result = LoadResult(
+                            file_name=blob_name,
+                            status="skipped",
+                            error="既にロード済み",
+                        )
+                        batch_result.results.append(result)
+                        batch_result.skipped_count += 1
+                        continue
+                    else:
+                        # GCSが新しい → 再ロード
+                        logger.info(
+                            f"GCS更新検出 ({i}/{len(blob_names)}): {blob_name} "
+                            f"を再ロードします "
+                            f"(GCS更新: {gcs_updated}, 最終ロード: {loaded_at})"
+                        )
+                else:
+                    # キャッシュなし（list_csv_files()を経由しない呼び出し）→ 保守的にスキップ
+                    logger.info(
+                        f"スキップ ({i}/{len(blob_names)}): {blob_name} (ロード済み)"
+                    )
+                    result = LoadResult(
+                        file_name=blob_name,
+                        status="skipped",
+                        error="既にロード済み",
+                    )
+                    batch_result.results.append(result)
+                    batch_result.skipped_count += 1
+                    continue
 
             logger.info(f"処理中 ({i}/{len(blob_names)}): {blob_name}")
 
@@ -670,6 +716,11 @@ class BigQueryLoader:
                 continue
 
             csv_files.append(blob.name)
+            # GCS更新タイムスタンプをキャッシュ (load_files_batch() でのスキップ判定に使用)
+            updated = blob.updated
+            if updated is not None and updated.tzinfo is None:
+                updated = updated.replace(tzinfo=timezone.utc)
+            self._blob_updated_cache[blob.name] = updated
 
         logger.info(f"GCSから {len(csv_files)} 個のCSVファイルを検出しました")
         return csv_files
