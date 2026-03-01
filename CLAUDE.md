@@ -140,7 +140,7 @@ JRDB → GCS → BigQuery → features.training_data の流れでデータを取
 - **ラベル形式**: 二値ラベル（3着以内=1, それ以下=0）
 
 **重要な設計変更（Issue #85）:**
-従来の4段階relevanceスコア（1着=3, 2着=2, 3着=1, 4着以下=0）から、**二値ラベル（3着以内=1, それ以外=0）**に変更しました。これにより、複勝券予測に特化したモデルとなり、評価にAUC指標を追加しています。
+**二値ラベル（3着以内=1, それ以外=0）**を採用。これにより、複勝券予測に特化したモデルとなり、評価にAUC指標を追加しています。
 
 #### 5.1.2 実装済みの内容
 - `src/models/lgbm_ranker.py`: モデルクラス（学習・予測・保存・読み込み）
@@ -151,118 +151,22 @@ JRDB → GCS → BigQuery → features.training_data の流れでデータを取
 
 詳細は [src/models/README.md](./src/models/README.md) を参照してください。
 
-#### 5.1.3 実装例
-```python
-import lightgbm as lgb
-
-# データ準備（二値ラベル）
-train_data = lgb.Dataset(
-    X_train,
-    label=y_train,  # 二値ラベル: 3着以内=1, それ以外=0
-    group=groups_train  # 各レースの馬数 [18, 16, 15, ...]
-)
-
-# パラメータ
-params = {
-    'objective': 'lambdarank',
-    'metric': 'ndcg',
-    'ndcg_eval_at': [3],
-    'boosting_type': 'gbdt',
-    'num_leaves': 31,
-    'learning_rate': 0.05,
-    'feature_fraction': 0.8,
-    'bagging_fraction': 0.8,
-    'bagging_freq': 5,
-    'verbose': -1,
-    'seed': 42
-}
-
-# 学習
-model = lgb.train(
-    params,
-    train_data,
-    num_boost_round=1000,
-    valid_sets=[valid_data],
-    callbacks=[lgb.early_stopping(50), lgb.log_evaluation(100)]
-)
-```
-
-### 5.2 時系列クロスバリデーション
-
-#### 5.2.1 分割方法
-```python
-# 例: 月次分割
-# 2019/01-2023/06: 学習用
-# 2023/07-2023/12: 検証用
-# 2024/01-2024/06: テスト用
-
-def time_series_split(df, date_col, n_splits=5):
-    """
-    時系列を考慮したクロスバリデーション分割
-    """
-    df = df.sort_values(date_col)
-    total_months = (df[date_col].max() - df[date_col].min()).days // 30
-    fold_size = total_months // (n_splits + 1)
-
-    for i in range(n_splits):
-        train_end = df[date_col].min() + pd.DateOffset(months=fold_size * (i + 1))
-        valid_end = train_end + pd.DateOffset(months=fold_size)
-
-        train_idx = df[df[date_col] < train_end].index
-        valid_idx = df[(df[date_col] >= train_end) & (df[date_col] < valid_end)].index
-
-        yield train_idx, valid_idx
-```
-
-### 5.3 モデル評価
-
-#### 5.3.1 評価指標
+### 5.2 モデル評価
 1. **NDCG@3**: ランキングの質を評価
 2. **Recall@3**: 上位3頭の中に複勝圏内の馬が含まれる割合
 3. **AUC**: 3着以内予測の二値分類性能（ROC-AUC）
 4. **回収率**: 実際の投資に基づく評価
 5. **的中率**: 3着以内予測の精度
 
-#### 5.3.2 評価実装
-```python
-from sklearn.metrics import ndcg_score
-
-def evaluate_model(y_true, y_pred, groups):
-    """
-    モデル評価関数
-    """
-    results = []
-    start = 0
-
-    for group_size in groups:
-        end = start + group_size
-        race_true = y_true[start:end]
-        race_pred = y_pred[start:end]
-
-        # NDCG@3
-        ndcg = ndcg_score([race_true], [race_pred], k=3)
-
-        # Recall@3
-        top3_pred = np.argsort(race_pred)[-3:]
-        top3_true = np.where(race_true <= 3)[0]
-        recall = len(set(top3_pred) & set(top3_true)) / min(3, len(top3_true))
-
-        results.append({'ndcg@3': ndcg, 'recall@3': recall})
-        start = end
-
-    return pd.DataFrame(results).mean()
-```
-
----
 
 ## 6. バックテスト設計 ✅ 実装済み
 
-### 6.1 バックテスト概要
+### 6.0 バックテスト概要
 - **目的**: 過去データで実際の投資をシミュレーション
 - **期間**: 最低6ヶ月以上
 - **評価**: 回収率、的中率、最大ドローダウン
 
-### 6.0 実装済みファイル
+### 6.1 実装済みファイル
 - `src/backtest/__init__.py`: モジュール初期化
 - `src/backtest/simulator.py`: Kelly基準・BacktestSimulatorクラス
 - `src/backtest/metrics.py`: 評価指標（回収率・的中率・最大ドローダウン・シャープレシオ）
@@ -298,73 +202,6 @@ def fractional_kelly(win_prob, odds, fraction=0.25):
 2. **期待値フィルタ**: 期待回収率 = 予測確率 × オッズ > 1.2 の馬のみ
 3. **賭け金配分**: Fractional Kelly (25%)
 4. **1レースあたり上限**: 総資金の5%まで
-
-### 6.3 バックテスト実装
-
-```python
-def backtest(predictions_df, initial_capital=100000):
-    """
-    バックテスト実行
-    """
-    capital = initial_capital
-    history = []
-
-    for race_id in predictions_df['race_id'].unique():
-        race_data = predictions_df[predictions_df['race_id'] == race_id]
-
-        # 投資対象の馬を選定
-        race_data['expected_return'] = race_data['pred_prob'] * race_data['odds']
-        bet_horses = race_data[race_data['expected_return'] > 1.2].copy()
-
-        if len(bet_horses) == 0:
-            continue
-
-        # 賭け金配分
-        for idx, row in bet_horses.iterrows():
-            kelly_frac = fractional_kelly(row['pred_prob'], row['odds'])
-            bet_amount = min(capital * kelly_frac, capital * 0.05)
-
-            # 結果判定
-            if row['finish_position'] <= 3:  # 複勝的中
-                payout = bet_amount * row['place_odds']
-                capital += (payout - bet_amount)
-                result = 'win'
-            else:
-                capital -= bet_amount
-                result = 'lose'
-
-            history.append({
-                'race_id': race_id,
-                'horse_id': row['horse_id'],
-                'bet_amount': bet_amount,
-                'result': result,
-                'capital': capital
-            })
-
-    return pd.DataFrame(history)
-```
-
-### 6.4 バックテスト評価指標
-
-```python
-def backtest_metrics(history_df, initial_capital):
-    """
-    バックテスト評価指標計算
-    """
-    total_bet = history_df['bet_amount'].sum()
-    total_return = history_df[history_df['result'] == 'win']['bet_amount'].sum()
-
-    metrics = {
-        'recovery_rate': (total_return / total_bet) * 100,
-        'hit_rate': (len(history_df[history_df['result'] == 'win']) / len(history_df)) * 100,
-        'final_capital': history_df['capital'].iloc[-1],
-        'profit': history_df['capital'].iloc[-1] - initial_capital,
-        'max_drawdown': calculate_max_drawdown(history_df['capital']),
-        'sharpe_ratio': calculate_sharpe_ratio(history_df)
-    }
-
-    return metrics
-```
 
 ---
 
@@ -608,19 +445,6 @@ def send_line_notification(predictions_df):
 ---
 
 ---
-
-## 付録: 削除済みセクション
-
-以下のセクションは削除され、README.mdに統合されました。
-
-- データパイプライン詳細（実行手順）
-- BigQueryテーブル詳細（カラム定義）
-- 特徴量パイプライン実行手順
-- Cloud Run APIエンドポイント一覧
-- 実装計画の詳細
-- ディレクトリ構成
-- 環境変数一覧
-
 ## 実装時の注意事項
 ### 環境情報
 - 開発環境: Apple Silicon Mac (Dockerビルド時は必ず `--platform linux/amd64` を指定)
