@@ -54,10 +54,13 @@
 - BigQuery（features.training_data, raw.race_results, raw.payouts）からの期間指定データ取得
 - 結果のCSV保存・BigQuery保存・グラフ出力
 
-#### Prediction & Operation Layer ⬜ 未実装
-- 予測パイプライン
-- Webダッシュボード（Streamlit）
-- 通知システム（メール/LINE）
+#### Prediction & Operation Layer 🔧 一部実装済み
+- 日次予測パイプライン（Cloud Schedulerからの自動推論・BQ/GCS保存） ✅ Issue #117
+  - `POST /api/v1/predict/daily`: `model_path` 未指定時はGCSから最新モデルを自動取得
+  - `predictions.daily_predictions` テーブルへのUPSERT保存
+  - GCS保存（`gs://{project}-keiba-predictions/{date}/predictions.csv`）
+- Webダッシュボード（Streamlit） ⬜ 未実装
+- 通知システム（メール/LINE） ⬜ 未実装
 
 詳細なアーキテクチャ図と実行手順は [README.md](./README.md) を参照してください。
 
@@ -67,13 +70,13 @@
 - `gs://${PROJECT_ID}-keiba-raw-data/`: JRDBダウンロード生データ（実装済み）
 - `gs://${PROJECT_ID}-keiba-processed-data/`: 加工済みデータ（未実装）
 - `gs://${PROJECT_ID}-keiba-models/`: 学習済みモデル（実装済み）
-- `gs://${PROJECT_ID}-keiba-predictions/`: 予測結果（未実装）
+- `gs://${PROJECT_ID}-keiba-predictions/`: 予測結果（実装済み・Issue #117）
 
 #### 2.2.2 BigQuery
 - `raw`: 生データテーブル（実装済み）
 - `features`: 特徴量テーブル（実装済み）
-- `predictions`: 予測結果テーブル（テーブルのみ作成済み）
-- `backtests`: バックテスト結果テーブル（テーブルのみ作成済み）
+- `predictions`: 予測結果テーブル（実装済み・Issue #117）。`predictions.daily_predictions` で日次予測を保存。
+- `backtests`: バックテスト結果テーブル（実装済み）
 
 詳細なテーブル構成は [README.md](./README.md#bigqueryテーブル構成) を参照してください。
 
@@ -85,7 +88,7 @@ APIエンドポイントの詳細は [README.md](./README.md#apiエンドポイ�
 
 #### 2.2.4 Cloud Scheduler
 - `daily-data-load`: 毎日AM 6:00 データロード（設定手順は実装済み、ジョブ作成は要実施）
-- `race-day-predict`: 当日AM 8:00 推論実行（未実装）
+- `race-day-predict`: 当日AM 8:00 推論実行（APIエンドポイント実装済み・Issue #117。Schedulerジョブ作成は要実施）
 - `race-day-strategy`: 当日AM 8:30 投資戦略策定（未実装）
 - `race-day-notify`: 当日AM 9:00 LINE通知（未実装）
 
@@ -661,6 +664,7 @@ Cloud Run または Cloud Function のデプロイメント完了を宣言する
 | 2026-02-14 | 3.0.0 | README.mdとの重複を除外し、設計仕様書として再構成。実装済み機能の手順詳細はREADME.mdへ移行。Issue #59（特徴量生成API）とIssue #71（デプロイスクリプト整備）の内容を反映 | Claude |
 | 2026-02-17 | 3.1.0 | Issue #85（LambdaRankラベル二値化）・Issue #86（Optunaハイパーパラメータチューニング）の実装を反映。Model Training Layer実装済み、評価指標にAUC追加、KPIにAUC追加 | Claude |
 | 2026-02-22 | 3.2.0 | Issue #17（バックテストシミュレーター）の実装を反映。Backtest Layer実装済みに更新、セクション6を実装済みに変更、実装ファイル一覧を追記 | Claude |
+| 2026-03-01 | 3.3.0 | Issue #116（ロード履歴スキップロジック改善）・Issue #117（日次予測パイプライン完成）の実装を反映。Prediction & Operation Layer一部実装済みに更新、predictionsバケット/データセット実装済みに更新、race-day-predictのAPI実装済みに更新 | Claude |
 
 ---
 

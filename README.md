@@ -253,6 +253,7 @@ keiba_prediction/
 │       ├── simulator.py              # Kelly基準・BacktestSimulatorクラス
 │       └── metrics.py                # 評価指標（回収率・的中率・ドローダウン・シャープレシオ）
 ├── scripts/                           # ユーティリティスクリプト
+│   ├── create_predictions_table.py   # predictions.daily_predictionsテーブル作成
 │   ├── generate_features.py
 │   ├── reload_gcs_to_bq.py
 │   ├── run_backtest.py               # CLIバックテスト実行スクリプト
@@ -383,8 +384,8 @@ Cloud RunにデプロイされたFastAPIアプリケーションは以下のエ�
 | POST | `/api/v1/load/full/sync` | 全件ロード（同期、テスト用） |
 | POST | `/api/v1/features/generate` | 特徴量生成（同期） |
 | POST | `/api/v1/features/generate/async` | 特徴量生成（非同期） |
-| POST | `/api/v1/predict/daily` | 翌日レース予測 + BQ保存（Cloud Scheduler用） |
-| POST | `/api/v1/predict/on-demand` | 任意日付レース予測 + BQ保存（手動実行用） |
+| POST | `/api/v1/predict/daily` | 翌日レース予測 + BQ/GCS保存（Cloud Scheduler用）。`model_path` 未指定時はGCSから最新モデルを自動取得。 |
+| POST | `/api/v1/predict/on-demand` | 任意日付レース予測 + BQ/GCS保存（手動実行用） |
 
 ---
 
@@ -421,6 +422,7 @@ Cloud RunにデプロイされたFastAPIアプリケーションは以下のエ�
 - GCSアップロード（MD5重複チェック）
 - BigQueryロード（MERGE処理、ロード履歴管理）
 - データ品質チェック
+- ロード履歴スキップロジック改善（GCS更新タイムスタンプ比較による強制再ロード） ← Issue #116
 
 **Phase 2: 特徴量エンジニアリング ✅ 完了**
 - SQL駆動型特徴量パイプライン（257カラム、5段階CTE）
@@ -440,17 +442,21 @@ Cloud RunにデプロイされたFastAPIアプリケーションは以下のエ�
 - Secret Managerでの認証情報管理
 - Cloud Loggingとの統合
 
-**Phase 4: モデル開発 🔧 進行中**
+**Phase 4: モデル開発 ✅ 完了**
 - LightGBM ランク学習 (LambdaRank) ✅
 - 二値ラベル化（3着以内=1, それ以外=0） ✅ ← Issue #85
 - AUC評価指標の追加 ✅ ← Issue #85
 - Optunaハイパーパラメータチューニング ✅ ← Issue #86
 - 時系列分割・推論パイプライン ✅
-- バックテスト ⬜
+- バックテストシミュレーター（Kelly基準・回収率評価） ✅ ← Issue #17
 
-**Phase 5: 運用システム構築 ⬜ 未着手**
-- Webダッシュボード
-- 通知システム
+**Phase 5: 運用システム構築 🔧 一部実装済み**
+- ✅ 日次予測パイプライン（Cloud Schedulerからの自動推論・BQ/GCS保存） - Issue #117
+  - `POST /api/v1/predict/daily`: `model_path` 未指定時はGCSから最新モデルを自動取得
+  - `predictions.daily_predictions` テーブルへのUPSERT保存
+  - GCS保存（`gs://{project}-keiba-predictions/{date}/predictions.csv`）
+- ⬜ Webダッシュボード
+- ⬜ 通知システム
 
 ### 実行方法
 
@@ -550,6 +556,42 @@ curl -X POST http://localhost:8080/api/v1/features/generate/async \
   -d '{"start_date": "2024-01-01", "end_date": "2024-12-31"}'
 ```
 
+**日次予測（Cloud Scheduler用）**
+
+`model_path` を省略すると GCS から最新モデルを自動取得します。
+Cloud Scheduler は空のボディ `{}` を送信するため、明示的な指定は不要です。
+
+```bash
+# model_path 省略（最新モデルを自動取得）
+curl -X POST http://localhost:8080/api/v1/predict/daily \
+  -H "Content-Type: application/json" \
+  -d '{}'
+
+# model_path を明示的に指定する場合
+curl -X POST http://localhost:8080/api/v1/predict/daily \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model_path": "gs://my-project-keiba-models/models/20260201/lgbm_ranker.txt",
+    "save_to_bq": true,
+    "save_to_gcs": true
+  }'
+```
+
+**レスポンス例（日次予測）**
+
+```json
+{
+  "status": "success",
+  "target_dates": ["2026-03-07", "2026-03-08"],
+  "num_races": 24,
+  "num_horses": 384,
+  "saved_to_bq": true,
+  "saved_rows": 384,
+  "saved_to_gcs": true,
+  "gcs_uri": "gs://my-project-keiba-predictions/2026-03-07/predictions.csv"
+}
+```
+
 **ヘルスチェック**
 
 ```bash
@@ -641,11 +683,41 @@ ORDER BY loaded_at DESC;
 
 特徴量の詳細は [ML_FEATURE.md](./ML_FEATURE.md) を参照してください。
 
-### predictions/backtestsデータセット
+### predictionsデータセット
 
 | テーブル | 説明 | 状態 |
 |---------|------|------|
-| `predictions.prediction_results` | 推論結果 | テーブルのみ作成済み（Phase 5で実装予定） |
+| `predictions.daily_predictions` | 日次予測結果 | 実装済み（Issue #117） |
+
+#### daily_predictions テーブルスキーマ
+
+| カラム | 型 | 説明 |
+|--------|-----|------|
+| `race_date` | DATE | レース日（パーティションキー） |
+| `race_id` | STRING | レースID |
+| `horse_id` | STRING | 馬ID |
+| `horse_number` | INTEGER | 馬番 |
+| `horse_name` | STRING | 馬名 |
+| `venue_code` | STRING | 場所コード（クラスタリングキー） |
+| `race_number` | INTEGER | レース番号（クラスタリングキー） |
+| `win_place_prob` | FLOAT64 | 複勝予測確率（0〜1） |
+| `pred_score` | FLOAT64 | モデル出力値 |
+| `place_odds` | FLOAT64 | 複勝オッズ |
+| `rank_in_race` | INTEGER | レース内予測順位 |
+| `created_at` | TIMESTAMP | レコード作成日時 |
+| `model_version` | STRING | 使用モデルのバージョン/パス |
+
+テーブル作成コマンド:
+
+```bash
+python3 scripts/create_predictions_table.py
+# GCP_PROJECT_IDを環境変数から読み込む。または --project-id で明示指定も可能。
+```
+
+### backtestsデータセット
+
+| テーブル | 説明 | 状態 |
+|---------|------|------|
 | `backtests.backtest_results` | バックテスト結果 | 実装済み（`--save-to-bq` オプションで保存） |
 
 ---
@@ -729,9 +801,12 @@ python -m pytest tests/ --cov=src --cov-report=html
 - ✅ 推論パイプライン - Issue #14
 - ✅ バックテストシミュレーター（Kelly基準・回収率評価） - Issue #17
 
-### Phase 5: 運用システム構築 ⬜ 未着手
+### Phase 5: 運用システム構築 🔧 一部実装済み
 
-- ⬜ 予測パイプライン
+- ✅ 日次予測パイプライン（Cloud Schedulerからの自動推論・BQ/GCS保存） - Issue #117
+  - `POST /api/v1/predict/daily`: `model_path` 未指定時GCSから最新モデルを自動取得
+  - `predictions.daily_predictions` テーブルへのUPSERT保存
+  - GCS保存（`gs://{project}-keiba-predictions/{date}/predictions.csv`）
 - ⬜ Webダッシュボード
 - ⬜ 通知システム
 
@@ -757,3 +832,4 @@ python -m pytest tests/ --cov=src --cov-report=html
 | 2026-02-16 | Issue #85（二値ラベル化・AUC追加）とIssue #86（Optunaチューニング）の内容を反映 |
 | 2026-02-22 | Issue #17（バックテストシミュレーター）の実装を反映。src/backtest/追加、scripts/run_backtest.py追加、Phase 4完了に更新 |
 | 2026-03-01 | Issue #21（Cloud Runデプロイ設定）の実装を反映。予測エンドポイント2件をAPIエンドポイント一覧に追記、--model-pathへのgs://URI指定対応を追記 |
+| 2026-03-01 | Issue #116（ロード履歴スキップロジック改善）・Issue #117（日次予測パイプライン完成）の実装を反映。predictions.daily_predictionsテーブル追加、POST /api/v1/predict/dailyのmodel_pathをOptional化、Phase 5を一部実装済みに更新 |
