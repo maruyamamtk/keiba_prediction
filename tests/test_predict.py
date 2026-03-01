@@ -15,6 +15,7 @@ from src.models.predict import (
     fetch_race_results,
     predict_pipeline,
     save_predictions_to_bq,
+    save_predictions_to_gcs,
 )
 
 
@@ -426,3 +427,81 @@ class TestSavePredictionsToBQ:
 
         # delete_tableが呼ばれたことを確認（finallyブロック）
         mock_client.delete_table.assert_called_once()
+
+
+class TestSavePredictionsToGCS:
+    """save_predictions_to_gcsのテスト"""
+
+    @pytest.fixture
+    def sample_result_df(self):
+        """予測結果のサンプルDataFrame"""
+        return pd.DataFrame({
+            "race_id": ["race_20260301_01", "race_20260301_01", "race_20260301_01"],
+            "race_date": [datetime.date(2026, 3, 1)] * 3,
+            "horse_id": ["h1", "h2", "h3"],
+            "horse_number": [1, 2, 3],
+            "horse_name": ["テスト馬1", "テスト馬2", "テスト馬3"],
+            "venue_code": ["05", "05", "05"],
+            "race_number": [1, 1, 1],
+            "win_place_prob": [0.7, 0.5, 0.3],
+            "pred_score": [0.8, 0.5, 0.2],
+            "pred_rank": [1, 2, 3],
+        })
+
+    def test_save_to_gcs_success(self, sample_result_df):
+        """正常にGCS保存が呼び出されること"""
+        with patch("src.models.predict.storage.Client") as mock_client_cls:
+            mock_blob = mock_client_cls.return_value.bucket.return_value.blob.return_value
+            mock_blob.upload_from_string.return_value = None
+
+            gcs_uri = save_predictions_to_gcs(
+                result_df=sample_result_df,
+                project_id="test-project",
+                race_date=datetime.date(2026, 3, 1),
+            )
+
+        assert gcs_uri == "gs://test-project-keiba-predictions/2026-03-01/predictions.csv"
+        mock_blob.upload_from_string.assert_called_once()
+        # CSVとして保存されていること
+        call_args = mock_blob.upload_from_string.call_args
+        assert call_args.kwargs.get("content_type") == "text/csv" or call_args[1].get("content_type") == "text/csv"
+
+    def test_save_to_gcs_empty_df_raises(self):
+        """空DataFrameはValueErrorが発生すること"""
+        with pytest.raises(ValueError, match="保存するデータがありません"):
+            save_predictions_to_gcs(
+                result_df=pd.DataFrame(),
+                project_id="test-project",
+            )
+
+    def test_save_to_gcs_auto_date(self, sample_result_df):
+        """race_date未指定時はDataFrameの最小日付が使われること"""
+        with patch("src.models.predict.storage.Client") as mock_client_cls:
+            mock_blob = mock_client_cls.return_value.bucket.return_value.blob.return_value
+            mock_blob.upload_from_string.return_value = None
+
+            gcs_uri = save_predictions_to_gcs(
+                result_df=sample_result_df,
+                project_id="test-project",
+            )
+
+        # race_dateの最小値 2026-03-01 がパスに使われること
+        assert "2026-03-01" in gcs_uri
+
+    def test_save_to_gcs_correct_bucket_path(self, sample_result_df):
+        """バケット名が正しく生成されること"""
+        with patch("src.models.predict.storage.Client") as mock_client_cls:
+            mock_client = mock_client_cls.return_value
+            mock_blob = mock_client.bucket.return_value.blob.return_value
+            mock_blob.upload_from_string.return_value = None
+
+            save_predictions_to_gcs(
+                result_df=sample_result_df,
+                project_id="my-project",
+                race_date=datetime.date(2026, 3, 1),
+            )
+
+        # バケット名が {project_id}-keiba-predictions であること
+        mock_client.bucket.assert_called_with("my-project-keiba-predictions")
+        # blobパスが {date}/predictions.csv であること
+        mock_client.bucket.return_value.blob.assert_called_with("2026-03-01/predictions.csv")
