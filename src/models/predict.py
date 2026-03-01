@@ -556,7 +556,7 @@ def main():
         "--save-to-bq",
         action="store_true",
         default=False,
-        help="予測結果をBigQuery（predictions.race_predictions）に保存する",
+        help="予測結果をBigQuery（predictions.daily_predictions）に保存する",
     )
 
     args = parser.parse_args()
@@ -606,7 +606,7 @@ def main():
             result_df=result_df,
             project_id=args.project_id,
         )
-        print(f"\n{saved_rows}行をBigQuery（predictions.race_predictions）に保存しました")
+        print(f"\n{saved_rows}行をBigQuery（predictions.daily_predictions）に保存しました")
 
     # サマリー
     if len(result_df) > 0:
