@@ -370,18 +370,7 @@ class DailyPipeline:
                     other_batch = BatchLoadResult(total_files=0)
 
                 # 2バッチの結果を集計
-                result = BatchLoadResult(
-                    total_files=today_batch.total_files + other_batch.total_files,
-                    success_count=today_batch.success_count + other_batch.success_count,
-                    skipped_count=today_batch.skipped_count + other_batch.skipped_count,
-                    failed_count=today_batch.failed_count + other_batch.failed_count,
-                    total_records=today_batch.total_records + other_batch.total_records,
-                    results=today_batch.results + other_batch.results,
-                    failed_files=today_batch.failed_files + other_batch.failed_files,
-                    duration_seconds=(
-                        today_batch.duration_seconds + other_batch.duration_seconds
-                    ),
-                )
+                result = today_batch.merge(other_batch)
             else:
                 # 通常ロード: GCSタイムスタンプ比較によるスキップ（解決策A）
                 result = self.bq_loader.load_files_batch(
