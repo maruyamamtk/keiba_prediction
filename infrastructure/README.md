@@ -134,7 +134,7 @@ GCP_PROJECT_ID=your-project-id
 
 ### 7. Cloud Schedulerの設定
 
-日次データ取得を自動化するCloud Schedulerジョブを設定します：
+日次パイプラインを自動実行するCloud Schedulerジョブを設定します：
 
 ```bash
 ./infrastructure/scripts/setup_scheduler.sh
@@ -144,32 +144,58 @@ GCP_PROJECT_ID=your-project-id
 - Cloud Scheduler APIの有効化確認
 - サービスアカウントへのCloud Run Invoker権限付与
 - Cloud Schedulerジョブの作成（既存なら更新）
+- 失敗時アラートポリシーの設定（Cloud Monitoring）
 
 #### ジョブ設定
 
-| 項目 | 値 |
-|------|-----|
-| ジョブ名 | `daily-data-pipeline` |
-| スケジュール | `0 6 * * *`（毎日AM 6:00 JST） |
-| ターゲット | `POST /api/v1/load/daily/async` |
-| 認証 | OIDCトークン（`keiba-pipeline-sa`） |
-| タイムアウト | 900秒（15分） |
-| リトライ | 最大3回、バックオフ5秒〜300秒 |
+| ジョブ名 | スケジュール | ターゲット | 用途 |
+|---------|------------|----------|------|
+| `daily-data-pipeline` | `0 6 * * *`（AM 6:00 JST） | `POST /api/v1/load/daily/async` | 日次データロード |
+| `race-day-predict` | `0 8 * * *`（AM 8:00 JST） | `POST /api/v1/predict/daily` | 翌日レース予測 |
+
+**全ジョブ共通設定:**
+- 認証: OIDCトークン（`keiba-pipeline-sa`）
+- タイムアウト: 900秒（15分）
+- リトライ: 最大3回、バックオフ5秒〜300秒
+
+**未実装ジョブ（依存Issueの完了後に追加予定）:**
+- `race-day-strategy`（AM 8:30）: Issue #105 完了後
+- `race-day-notify`（AM 9:00）: Issue #25 完了後
 
 #### ジョブの操作
 
 ```bash
-# 手動で即時実行（テスト用）
+# 【データロードジョブ】
+# 手動実行（テスト用）
 gcloud scheduler jobs run daily-data-pipeline --location=asia-northeast1
 
-# ジョブの一時停止
+# 一時停止
 gcloud scheduler jobs pause daily-data-pipeline --location=asia-northeast1
 
-# ジョブの再開
+# 再開
 gcloud scheduler jobs resume daily-data-pipeline --location=asia-northeast1
 
-# ジョブの削除
-gcloud scheduler jobs delete daily-data-pipeline --location=asia-northeast1
+# 【予測ジョブ】
+# 手動実行（テスト用）
+gcloud scheduler jobs run race-day-predict --location=asia-northeast1
+
+# 一時停止
+gcloud scheduler jobs pause race-day-predict --location=asia-northeast1
+
+# 再開
+gcloud scheduler jobs resume race-day-predict --location=asia-northeast1
+
+# 【共通】実行履歴の確認
+gcloud logging read 'resource.type="cloud_scheduler_job"' --limit=10
+```
+
+#### 失敗時アラート設定
+
+`setup_scheduler.sh` がCloud Monitoringのログベースアラートポリシーを自動作成します。
+アラートの通知チャンネル（メール等）はGCPコンソールから別途設定してください：
+
+```
+GCPコンソール > Monitoring > Alerting > 「Cloud Scheduler ジョブ失敗アラート (keiba-pipeline)」
 ```
 
 ## スクリプト一覧
