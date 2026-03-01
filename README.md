@@ -210,6 +210,225 @@ python scripts/run_backtest.py \
 
 ---
 
+## スクリプト一覧
+
+`scripts/` フォルダには、データ分析・運用・インフラ整備向けの CLIスクリプトが含まれています。
+各スクリプトは `python scripts/<ファイル名> --help` で詳細なオプションを確認できます。
+
+---
+
+### `scripts/run_backtest.py` — バックテスト実行
+
+学習済みモデルを使って指定期間の投資シミュレーションを行います。
+Kelly基準による賭け金計算・期待回収率フィルタを適用し、回収率・的中率・最大ドローダウン等を評価します。
+
+```bash
+# 基本的なバックテスト実行
+python scripts/run_backtest.py \
+    --project-id <PROJECT_ID> \
+    --model-path src/models/lgbm_ranker_20260217.txt \
+    --start-date 2023-01-01 \
+    --end-date 2023-12-31
+
+# 詳細オプション指定
+python scripts/run_backtest.py \
+    --project-id <PROJECT_ID> \
+    --model-path src/models/lgbm_ranker_20260217.txt \
+    --start-date 2023-01-01 \
+    --end-date 2023-12-31 \
+    --initial-capital 100000 \
+    --kelly-fraction 0.25 \
+    --threshold 1.2 \
+    --output-csv results/backtest_2023.csv \
+    --output-chart results/capital_curve.png \
+    --save-to-bq
+```
+
+| オプション | デフォルト | 説明 |
+|-----------|-----------|------|
+| `--project-id` | 必須 | GCPプロジェクトID |
+| `--model-path` | 必須 | モデルファイルパス（ローカル） |
+| `--start-date` | 必須 | バックテスト開始日 (YYYY-MM-DD) |
+| `--end-date` | 必須 | バックテスト終了日 (YYYY-MM-DD) |
+| `--initial-capital` | 100000 | 初期資金（円） |
+| `--kelly-fraction` | 0.25 | Fractional Kellyの係数 |
+| `--threshold` | 1.2 | 期待回収率フィルタ閾値 |
+| `--max-bet-ratio` | 0.05 | 1レースあたり最大賭け金比率 |
+| `--output-csv` | なし | 賭け記録CSV保存先パス |
+| `--output-chart` | なし | 資金推移グラフ保存先パス |
+| `--save-to-bq` | False | `backtests.backtest_results` への保存フラグ |
+
+---
+
+### `scripts/generate_evaluation_report.py` — モデル評価レポート生成
+
+学習済みモデルを読み込み、NDCG@3・Recall@3・AUC などの評価指標と特徴量重要度グラフを含む
+Markdownレポートを `docs/model_evaluation_report.md` に出力します。
+
+```bash
+# ローカルモデルを使用
+python scripts/generate_evaluation_report.py \
+    --model-path src/models/lgbm_ranker_20260217.txt \
+    --project-id <PROJECT_ID>
+
+# GCS上のモデルを使用
+python scripts/generate_evaluation_report.py \
+    --gcs-model-path gs://<PROJECT_ID>-keiba-models/lgbm_ranker/20260217/lgbm_ranker_20260217.txt \
+    --project-id <PROJECT_ID>
+
+# BigQueryへの接続なしでローカルCSVを使用
+python scripts/generate_evaluation_report.py \
+    --model-path src/models/lgbm_ranker_20260217.txt \
+    --local-data-path /path/to/training_data.csv
+```
+
+| オプション | デフォルト | 説明 |
+|-----------|-----------|------|
+| `--model-path` | なし | ローカルモデルファイルパス (.txt) |
+| `--gcs-model-path` | なし | GCSモデルURI (gs://...) |
+| `--project-id` | 環境変数 | GCPプロジェクトID |
+| `--local-data-path` | なし | ローカルCSVデータパス（BQ接続をスキップ） |
+| `--output-report` | `docs/model_evaluation_report.md` | 出力レポートパス |
+| `--validation-months` | 6 | 検証期間（月数） |
+| `--test-months` | 0 | テスト期間（月数、0=スキップ） |
+| `--top-n-features` | 20 | 特徴量重要度表示数 |
+| `--skip-monthly-plot` | False | 月次推移グラフの生成をスキップ |
+
+---
+
+### `scripts/generate_features.py` — 特徴量生成
+
+指定期間のレースに対して特徴量パイプラインを実行し、`features.training_data` テーブルに保存します。
+並列処理・バッチ処理に対応し、エラー時のリトライも行います。
+
+```bash
+# 1ヶ月分の特徴量を生成
+python scripts/generate_features.py \
+    --start-date 2024-01-01 \
+    --end-date 2024-01-31
+
+# 並列処理ワーカー数を指定（大量データ向け）
+python scripts/generate_features.py \
+    --start-date 2024-01-01 \
+    --end-date 2024-12-31 \
+    --max-workers 8
+
+# ドライラン（処理対象レース数の確認のみ）
+python scripts/generate_features.py \
+    --start-date 2024-01-01 \
+    --end-date 2024-01-31 \
+    --dry-run
+```
+
+| オプション | デフォルト | 説明 |
+|-----------|-----------|------|
+| `--start-date` | 必須 | 開始日 (YYYY-MM-DD) |
+| `--end-date` | 必須 | 終了日 (YYYY-MM-DD) |
+| `--project-id` | 環境変数 | GCPプロジェクトID |
+| `--max-workers` | 4 | 並列処理のワーカー数 |
+| `--batch-size` | 100 | BigQueryへの一括保存レース数 |
+| `--no-parallel` | False | 並列処理を無効化（デバッグ用） |
+| `--max-retries` | 3 | エラー時の最大リトライ回数 |
+| `--dry-run` | False | 処理対象確認のみ（保存しない） |
+| `--log-file` | なし | ログファイルパス |
+
+---
+
+### `scripts/diagnose_bq_load.py` — BQロード状態診断
+
+BigQueryテーブルの存在確認・レコード数、GCSファイル数、`raw.load_history` のロード成否を一括診断します。
+データロードが正常に行われているか確認するときに使います。
+
+```bash
+# 基本診断
+python3 scripts/diagnose_bq_load.py
+
+# 失敗ファイルのエラー詳細も表示
+python3 scripts/diagnose_bq_load.py --show-errors
+
+# 特定テーブルのみ診断
+python3 scripts/diagnose_bq_load.py --table race_results --show-errors
+```
+
+| オプション | デフォルト | 説明 |
+|-----------|-----------|------|
+| `--project-id` | 環境変数 | GCPプロジェクトID |
+| `--show-errors` | False | 失敗ファイルの詳細エラーを表示 |
+| `--table` | なし | 診断対象テーブルを1つに限定 |
+
+---
+
+### `scripts/reload_gcs_to_bq.py` — GCSから BigQuery へ再ロード
+
+GCS上の既存ファイルを指定データタイプでフィルタしてBigQueryに再ロードします。
+Cloud Functionはオブジェクト作成時にのみトリガーされるため、既存ファイルの手動ロードに使います。
+
+```bash
+# SEC（レース結果）を全件再ロード
+python scripts/reload_gcs_to_bq.py \
+    --data-type SEC \
+    --prefix Sec/
+
+# ドライラン（対象ファイルの確認のみ）
+python scripts/reload_gcs_to_bq.py \
+    --data-type BAA \
+    --prefix Baa/ \
+    --dry-run
+
+# 処理件数を制限して試す
+python scripts/reload_gcs_to_bq.py \
+    --data-type KYF \
+    --prefix Kyf/ \
+    --limit 10
+```
+
+| オプション | デフォルト | 説明 |
+|-----------|-----------|------|
+| `--data-type` | 必須 | データタイプ (BAA, SEC, KYF, UKC 等) |
+| `--prefix` | `""` | GCS上のプレフィックス (例: `Sec/`) |
+| `--project-id` | 環境変数 | GCPプロジェクトID |
+| `--limit` | 0 (無制限) | 処理ファイル数上限 |
+| `--dry-run` | False | 対象ファイル一覧の表示のみ |
+
+---
+
+### `scripts/create_predictions_table.py` — 予測テーブル作成
+
+`predictions` データセットと `daily_predictions` テーブルを BigQuery に作成します。
+日次予測パイプライン（`POST /api/v1/predict/daily`）の実行前に一度だけ実行が必要です。
+
+```bash
+python scripts/create_predictions_table.py
+
+# プロジェクトIDを明示する場合
+python scripts/create_predictions_table.py --project-id <PROJECT_ID>
+```
+
+| オプション | デフォルト | 説明 |
+|-----------|-----------|------|
+| `--project-id` | 環境変数 | GCPプロジェクトID |
+
+---
+
+### `scripts/alter_odds_horse_id_nullable.py` — oddsテーブルスキーマ修正
+
+`raw.odds` テーブルの `horse_id` カラムを `REQUIRED` から `NULLABLE` に変更します。
+OZ（基準オッズ）ファイルには `horse_id` が含まれないため、初回セットアップ時に一度だけ実行します。
+
+```bash
+python3 scripts/alter_odds_horse_id_nullable.py
+
+# プロジェクトIDを明示する場合
+python3 scripts/alter_odds_horse_id_nullable.py --project-id <PROJECT_ID>
+```
+
+| オプション | デフォルト | 説明 |
+|-----------|-----------|------|
+| `--project-id` | 環境変数 | GCPプロジェクトID |
+| `--dataset` | `raw` | 対象データセット名 |
+
+---
+
 ## プロジェクト構成
 
 ```
