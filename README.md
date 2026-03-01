@@ -294,8 +294,8 @@ keiba_prediction/
 - `data/jrdb_parser.py`: JRDBデータの解析とパース
 - `data/upload_to_gcs.py`: ローカルファイルをGCSにアップロード
 - `data/load_to_bq.py`: GCSからBigQueryへのロード（MERGE処理、重複スキップ）
-- `pipeline/daily_pipeline.py`: ダウンロード→アップロード→ロードの統合処理
-- `pipeline/full_load_pipeline.py`: 過去分全件ロード
+- `pipeline/daily_pipeline.py`: 「その日に追加されたデータのダウンロード→GCS→BigQueryへの格納→特徴量生成」を行う
+- `pipeline/full_load_pipeline.py`: 「指定期間のデータをJRDBからダウンロード→GCS→BigQuery→特徴量生成」を一括実行する
 - `api/app.py`: FastAPI HTTPエンドポイント（Cloud Run用）
 
 **使用場面**:
@@ -437,10 +437,6 @@ Cloud RunにデプロイされたFastAPIアプリケーションは以下のエ�
 - Docker化とCloud Runデプロイスクリプト ← Issue #71で整備
 - デプロイ検証スクリプト ← Issue #71で追加
 - Cloud Schedulerセットアップスクリプト ← Issue #60で追加
-
-**Phase 3: 未実装**
-- Secret Managerでの認証情報管理
-- Cloud Loggingとの統合
 
 **Phase 4: モデル開発 ✅ 完了**
 - LightGBM ランク学習 (LambdaRank) ✅
@@ -661,20 +657,6 @@ gcloud scheduler jobs run daily-data-pipeline --location=asia-northeast1
 | duration_seconds | 処理時間(秒) |
 | file_size_bytes | ファイルサイズ(バイト) |
 
-履歴の確認:
-```sql
--- 最近のロード履歴を確認
-SELECT * FROM `raw.load_history`
-ORDER BY loaded_at DESC
-LIMIT 100;
-
--- 失敗したファイルを確認
-SELECT file_name, error_message, loaded_at
-FROM `raw.load_history`
-WHERE status = 'failed'
-ORDER BY loaded_at DESC;
-```
-
 ### featuresデータセット
 
 | テーブル | 説明 | カラム数 | 行数 |
@@ -788,8 +770,6 @@ python -m pytest tests/ --cov=src --cov-report=html
 - ✅ Docker化とCloud Runデプロイスクリプト - Issue #71
 - ✅ デプロイ検証スクリプト - Issue #71
 - ✅ Cloud Schedulerセットアップスクリプト - Issue #60
-- ⬜ Secret Managerでの認証情報管理
-- ⬜ Cloud Loggingとの統合
 
 ### Phase 4: モデル開発 ✅ 完了
 
