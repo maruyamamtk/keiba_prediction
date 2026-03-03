@@ -131,14 +131,15 @@ def compute_metrics(
     # finish_positionがNAの行（競走除外・中止馬など）を除外
     df = df[df["finish_position"].notna()].copy()
 
-    feature_cols = [c for c in df.columns if c not in exclude_columns]
+    # モデルが学習時に使用した特徴量名を取得し、対応する列のみを選択する
+    # select_dtypes(exclude="object") は学習時に行われておらず、
+    # BigQueryからのデータでは数値列がobject型で読み込まれることがあるため使用しない
+    model_feature_names = booster.feature_name()
+    feature_cols = [c for c in model_feature_names if c in df.columns]
     X = df[feature_cols].copy()
     for col in categorical_columns:
         if col in X.columns:
             X[col] = X[col].astype("category")
-    # 残存するobject列を除外する（学習時と同様の処理）
-    # object列をcategoryに変換するとモデルのcategorical_featureと不一致になるため
-    X = X.select_dtypes(exclude="object")
 
     positions = df["finish_position"].values.astype(int)
     y_binary = np.where((positions >= 1) & (positions <= 3), 1, 0)
@@ -244,13 +245,12 @@ def plot_monthly_metrics(
         if len(monthly) < 10:
             continue
 
-        feature_cols = [c for c in monthly.columns if c not in exclude_columns and c != "year_month"]
+        model_feature_names = booster.feature_name()
+        feature_cols = [c for c in model_feature_names if c in monthly.columns]
         X = monthly[feature_cols].copy()
         for col in categorical_columns:
             if col in X.columns:
                 X[col] = X[col].astype("category")
-        # 残存するobject列を除外する（学習時と同様の処理）
-        X = X.select_dtypes(exclude="object")
 
         positions = monthly["finish_position"].values.astype(int)
         y_binary = np.where((positions >= 1) & (positions <= 3), 1, 0)
