@@ -162,7 +162,7 @@ class PredictDailyRequest(BaseModel):
     model_path: Optional[str] = Field(
         default=None,
         description="モデルファイルパス（ローカルパスまたは gs:// URI）。未指定時はGCSから最新モデルを自動取得。",
-        json_schema_extra={"example": "gs://my-project-keiba-models/models/20260101/lgbm_ranker.txt"},
+        json_schema_extra={"example": "gs://my-project-keiba-models/lgbm_ranker/20260101/lgbm_ranker_20260101.txt"},
     )
     save_to_bq: bool = Field(
         default=True,
@@ -179,7 +179,7 @@ class PredictOnDemandRequest(BaseModel):
 
     model_path: str = Field(
         description="モデルファイルパス（ローカルパスまたは gs:// URI）",
-        json_schema_extra={"example": "gs://my-project-keiba-models/models/20260101/lgbm_ranker.txt"},
+        json_schema_extra={"example": "gs://my-project-keiba-models/lgbm_ranker/20260101/lgbm_ranker_20260101.txt"},
     )
     target_dates: list[str] = Field(
         description="予測対象日（YYYY-MM-DD形式、複数指定可）",
@@ -543,17 +543,20 @@ async def generate_features_async(
     }
 
 
-def _get_latest_model_from_gcs(project_id: str, bucket_suffix: str = "keiba-models", prefix: str = "models/") -> str:
+def _get_latest_model_from_gcs(project_id: str, bucket_suffix: str = "keiba-models", prefix: str = "lgbm_ranker/") -> str:
     """
     GCSから最新のモデルファイルURIを取得する
 
-    gs://{project_id}-{bucket_suffix}/{prefix} 以下のファイルを更新日時で降順ソートし、
-    最新の .txt ファイルの gs:// URIを返す。
+    gs://{project_id}-{bucket_suffix}/{prefix} 以下のファイルを日付フォルダ名で降順ソートし、
+    最新の日付フォルダにある .txt ファイルの gs:// URIを返す。
+
+    GCS上のパス形式: {prefix}{date}/{model_name}.txt
+    例: lgbm_ranker/20260217/lgbm_ranker_20260217.txt
 
     Args:
         project_id: GCPプロジェクトID
         bucket_suffix: バケット名のサフィックス
-        prefix: GCS内のプレフィックス
+        prefix: GCS内のプレフィックス（例: "lgbm_ranker/"）
 
     Returns:
         最新モデルの gs:// URI
@@ -577,9 +580,10 @@ def _get_latest_model_from_gcs(project_id: str, bucket_suffix: str = "keiba-mode
             f"モデルファイルが見つかりません: gs://{bucket_name}/{prefix}"
         )
 
-    latest_blob = max(model_blobs, key=lambda b: b.updated)
+    # パス名の辞書順降順でソート（日付フォルダ名 YYYYMMDD が新しいものが優先される）
+    latest_blob = max(model_blobs, key=lambda b: b.name)
     gcs_uri = f"gs://{bucket_name}/{latest_blob.name}"
-    logger.info(f"最新モデルを取得: {gcs_uri} (更新日時: {latest_blob.updated})")
+    logger.info(f"最新モデルを取得: {gcs_uri}")
     return gcs_uri
 
 
