@@ -580,8 +580,9 @@ def _get_latest_model_from_gcs(project_id: str, bucket_suffix: str = "keiba-mode
             f"モデルファイルが見つかりません: gs://{bucket_name}/{prefix}"
         )
 
-    # パス名の辞書順降順でソート（日付フォルダ名 YYYYMMDD が新しいものが優先される）
-    latest_blob = max(model_blobs, key=lambda b: b.name)
+    # 日付フォルダ名（YYYYMMDD）を明示的に抽出して降順ソート
+    # パス形式: {prefix}{date}/{model_name}.txt 例: lgbm_ranker/20260217/lgbm_ranker_20260217.txt
+    latest_blob = max(model_blobs, key=lambda b: b.name.split("/")[-2])
     gcs_uri = f"gs://{bucket_name}/{latest_blob.name}"
     logger.info(f"最新モデルを取得: {gcs_uri}")
     return gcs_uri
