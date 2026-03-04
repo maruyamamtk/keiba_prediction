@@ -51,13 +51,21 @@ REPORT_PATH = REPORT_DIR / "model_evaluation_report.md"
 # ---------------------------------------------------------------------------
 
 def fetch_training_data_bq(project_id: str, dataset: str = "features", table: str = "training_data") -> pd.DataFrame:
-    """BigQueryからtraining_dataを取得する"""
+    """BigQueryからtraining_dataを取得する。
+
+    features.training_data の finish_position は常にNULLのため、
+    raw.race_results から finish_position を LEFT JOIN して取得する。
+    """
     from google.cloud import bigquery
     client = bigquery.Client(project=project_id)
     query = f"""
-    SELECT *
-    FROM `{project_id}.{dataset}.{table}`
-    ORDER BY race_date, race_id, horse_number
+    SELECT
+      t.* EXCEPT(finish_position),
+      r.finish_position
+    FROM `{project_id}.{dataset}.{table}` t
+    LEFT JOIN `{project_id}.raw.race_results` r
+      ON t.race_id = r.race_id AND t.horse_number = r.horse_number
+    ORDER BY t.race_date, t.race_id, t.horse_number
     """
     logger.info(f"Fetching data from {project_id}.{dataset}.{table}...")
     df = client.query(query).to_dataframe()
@@ -114,6 +122,37 @@ def load_model_local(model_path: str) -> tuple[lgb.Booster, dict]:
 # 評価計算
 # ---------------------------------------------------------------------------
 
+def _build_feature_matrix(booster: lgb.Booster, df: pd.DataFrame) -> pd.DataFrame:
+    """
+    モデルの特徴量情報を使って予測用の特徴量行列を構築する。
+
+    Booster.predict() に渡す DataFrame は、学習時のカテゴリカル特徴量と
+    pandas_categorical が一致している必要があるため、モデルファイルから
+    categorical_feature インデックスと pandas_categorical を取得して
+    正確にエンコードする。
+    """
+    import re
+
+    feature_names = booster.feature_name()
+    feature_cols = [c for c in feature_names if c in df.columns]
+    X = df[feature_cols].copy()
+
+    # モデルのカテゴリカル特徴量インデックスを取得
+    model_str = booster.model_to_string()
+    match = re.search(r'\[categorical_feature: ([\d,]+)\]', model_str)
+    if match and booster.pandas_categorical:
+        cat_indices = [int(i) for i in match.group(1).split(',')]
+        pandas_cat = booster.pandas_categorical
+        for i, cat_idx in enumerate(cat_indices):
+            if i >= len(pandas_cat):
+                break
+            col_name = feature_names[cat_idx]
+            if col_name in X.columns:
+                X[col_name] = pd.Categorical(X[col_name], categories=pandas_cat[i])
+
+    return X
+
+
 def compute_metrics(
     booster: lgb.Booster,
     df: pd.DataFrame,
@@ -131,15 +170,7 @@ def compute_metrics(
     # finish_positionがNAの行（競走除外・中止馬など）を除外
     df = df[df["finish_position"].notna()].copy()
 
-    # モデルが学習時に使用した特徴量名を取得し、対応する列のみを選択する
-    # select_dtypes(exclude="object") は学習時に行われておらず、
-    # BigQueryからのデータでは数値列がobject型で読み込まれることがあるため使用しない
-    model_feature_names = booster.feature_name()
-    feature_cols = [c for c in model_feature_names if c in df.columns]
-    X = df[feature_cols].copy()
-    for col in categorical_columns:
-        if col in X.columns:
-            X[col] = X[col].astype("category")
+    X = _build_feature_matrix(booster, df)
 
     positions = df["finish_position"].values.astype(int)
     y_binary = np.where((positions >= 1) & (positions <= 3), 1, 0)
@@ -245,12 +276,7 @@ def plot_monthly_metrics(
         if len(monthly) < 10:
             continue
 
-        model_feature_names = booster.feature_name()
-        feature_cols = [c for c in model_feature_names if c in monthly.columns]
-        X = monthly[feature_cols].copy()
-        for col in categorical_columns:
-            if col in X.columns:
-                X[col] = X[col].astype("category")
+        X = _build_feature_matrix(booster, monthly)
 
         positions = monthly["finish_position"].values.astype(int)
         y_binary = np.where((positions >= 1) & (positions <= 3), 1, 0)
