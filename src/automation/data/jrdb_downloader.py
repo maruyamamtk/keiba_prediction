@@ -14,6 +14,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -137,6 +138,12 @@ class JRDBDownloader:
         try:
             response = urllib.request.urlopen(url, timeout=30)
             html = response.read().decode("utf-8", errors="ignore")
+        except urllib.error.HTTPError as e:
+            if e.code == 403:
+                logger.warning(f"{url} へのアクセスが禁止されています（403 Forbidden）。このデータタイプは利用できません。")
+            else:
+                logger.error(f"{url}の取得に失敗: {e}")
+            return []
         except Exception as e:
             logger.error(f"{url}の取得に失敗: {e}")
             return []
