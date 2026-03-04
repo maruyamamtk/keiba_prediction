@@ -86,4 +86,7 @@ service-account-key.json
 # GCP local config
 .gcloud/
 .config/gcloud/
+
+# other documents
 HANGOVER.md
+docs/figures
