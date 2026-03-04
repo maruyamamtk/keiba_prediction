@@ -14,6 +14,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import http
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -139,7 +140,7 @@ class JRDBDownloader:
             response = urllib.request.urlopen(url, timeout=30)
             html = response.read().decode("utf-8", errors="ignore")
         except urllib.error.HTTPError as e:
-            if e.code == 403:
+            if e.code == http.HTTPStatus.FORBIDDEN:
                 logger.warning(f"{url} へのアクセスが禁止されています（403 Forbidden）。このデータタイプは利用できません。")
             else:
                 logger.error(f"{url}の取得に失敗: {e}")
@@ -180,6 +181,12 @@ class JRDBDownloader:
             logger.info(f"ダウンロード中: {filename}")
             urllib.request.urlretrieve(url, str(output_path))
             return output_path
+        except urllib.error.HTTPError as e:
+            if e.code == http.HTTPStatus.FORBIDDEN:
+                logger.warning(f"ダウンロード失敗 {filename}: アクセスが禁止されています（403 Forbidden）。")
+            else:
+                logger.error(f"ダウンロード失敗 {filename}: {e}")
+            return None
         except Exception as e:
             logger.error(f"ダウンロード失敗 {filename}: {e}")
             return None
