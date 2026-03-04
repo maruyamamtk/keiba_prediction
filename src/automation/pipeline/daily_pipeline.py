@@ -318,9 +318,10 @@ class DailyPipeline:
 
             # GCS上のサポート対象データタイプのファイルを一括取得
             # （このタイミングで _blob_updated_cache が更新される）
+            # 日次パイプラインは直近7日間（当日含む）のみを対象とする
             supported_types = list(TABLE_MAPPING.keys())
             csv_files = self.bq_loader.list_csv_files(
-                prefix="", data_types=supported_types
+                prefix="", data_types=supported_types, within_days=7
             )
 
             if not csv_files:
