@@ -722,6 +722,12 @@ class BigQueryLoader:
             if not blob.name.lower().endswith(".csv"):
                 continue
 
+            # 日付範囲フィルタ（直近N日間）: 早期除外で後続の重い処理を削減
+            if date_cutoff is not None:
+                file_date = extract_file_date(blob.name)
+                if file_date is None or file_date < date_cutoff:
+                    continue
+
             # データタイプフィルタ
             if data_types:
                 data_type = extract_data_type(blob.name)
@@ -733,12 +739,6 @@ class BigQueryLoader:
             # 日付フィルタ（ファイル名に yymmdd が含まれるか）
             if date_filter and date_filter not in blob.name:
                 continue
-
-            # 日付範囲フィルタ（直近N日間）
-            if date_cutoff is not None:
-                file_date = extract_file_date(blob.name)
-                if file_date is None or file_date < date_cutoff:
-                    continue
 
             csv_files.append(blob.name)
             # GCS更新タイムスタンプをキャッシュ (load_files_batch() でのスキップ判定に使用)
