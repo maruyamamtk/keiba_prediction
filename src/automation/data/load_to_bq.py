@@ -692,6 +692,7 @@ class BigQueryLoader:
         prefix: Optional[str] = None,
         data_types: Optional[List[str]] = None,
         date_filter: Optional[str] = None,
+        within_days: Optional[int] = None,
     ) -> List[str]:
         """
         GCSバケット内のCSVファイルを一覧取得
@@ -700,12 +701,21 @@ class BigQueryLoader:
             prefix: GCS上のプレフィックス (オプション)
             data_types: フィルタするデータタイプのリスト (オプション)
             date_filter: ファイル名の日付文字列 yymmdd 形式 (例: "260301")
+            within_days: 実行日当日を含む直近N日分のみを対象とする (オプション)
+                例: within_days=7 の場合、実行日-6日〜実行日（当日）のファイルのみ対象
 
         Returns:
             ファイルパスのリスト
         """
         bucket = self.storage_client.bucket(self.bucket_name)
         blobs = bucket.list_blobs(prefix=prefix)
+
+        # 日付範囲フィルタの基準日を事前計算
+        date_cutoff: Optional[str] = None
+        if within_days is not None:
+            cutoff = datetime.now().date() - timedelta(days=within_days - 1)
+            date_cutoff = cutoff.strftime("%Y-%m-%d")
+            logger.info(f"日付範囲フィルタ: {date_cutoff} 以降のファイルのみ対象 (直近{within_days}日間)")
 
         csv_files = []
         for blob in blobs:
@@ -723,6 +733,12 @@ class BigQueryLoader:
             # 日付フィルタ（ファイル名に yymmdd が含まれるか）
             if date_filter and date_filter not in blob.name:
                 continue
+
+            # 日付範囲フィルタ（直近N日間）
+            if date_cutoff is not None:
+                file_date = extract_file_date(blob.name)
+                if file_date is None or file_date < date_cutoff:
+                    continue
 
             csv_files.append(blob.name)
             # GCS更新タイムスタンプをキャッシュ (load_files_batch() でのスキップ判定に使用)

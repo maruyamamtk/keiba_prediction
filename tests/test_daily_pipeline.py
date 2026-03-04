@@ -230,10 +230,11 @@ class TestDailyPipelineStepLoadToBq:
         assert result.status == "success"
         assert result.details["files"] == 2
         assert result.details["records"] == 100
-        # data_typesフィルタが渡されていることを確認
+        # data_typesフィルタと within_days=7 が渡されていることを確認
         call_args = bq_loader.list_csv_files.call_args
         assert "data_types" in call_args[1]
         assert "BAA" in call_args[1]["data_types"]
+        assert call_args[1].get("within_days") == 7
         # skip_loadedが有効で全ファイルがバッチに渡されることを確認
         batch_call_args = bq_loader.load_files_batch.call_args
         assert len(batch_call_args[0][0]) == 3

@@ -3,7 +3,7 @@ load_to_bq モジュールのユニットテスト
 """
 
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -379,6 +379,68 @@ class TestBigQueryLoaderListFiles:
         # キャッシュにGCS更新日時が格納されていること
         assert "BAA260301.csv" in loader._blob_updated_cache
         assert loader._blob_updated_cache["BAA260301.csv"] == gcs_updated
+
+    @patch("google.cloud.storage.Client")
+    def test_list_csv_files_within_days_filters_old_files(self, mock_storage_client):
+        """within_days 指定時、カットオフ日より古いファイルが除外される"""
+        from datetime import date, timedelta
+        from unittest.mock import patch as mock_patch
+
+        loader = BigQueryLoader(project_id="test-project")
+
+        today = date(2026, 3, 5)
+        # 当日・6日前（境界値）は対象、7日前は除外
+        names = [
+            "Baa/BAA260305.csv",  # 当日 → 対象
+            "Baa/BAA260227.csv",  # 6日前 → 対象（境界値）
+            "Baa/BAA260226.csv",  # 7日前 → 除外
+            "Baa/BAA201017.csv",  # 2020年 → 除外
+        ]
+        mock_blobs = []
+        for name in names:
+            b = MagicMock()
+            b.name = name
+            b.updated = datetime(2026, 3, 5, 0, 0, 0, tzinfo=timezone.utc)
+            mock_blobs.append(b)
+
+        mock_bucket = MagicMock()
+        mock_bucket.list_blobs.return_value = mock_blobs
+        mock_client = MagicMock()
+        mock_client.bucket.return_value = mock_bucket
+        mock_storage_client.return_value = mock_client
+
+        with mock_patch("src.automation.data.load_to_bq.datetime") as mock_dt:
+            mock_dt.now.return_value.date.return_value = today
+            result = loader.list_csv_files(within_days=7)
+
+        assert "Baa/BAA260305.csv" in result   # 当日
+        assert "Baa/BAA260227.csv" in result   # 境界値（含む）
+        assert "Baa/BAA260226.csv" not in result  # 境界外（除外）
+        assert "Baa/BAA201017.csv" not in result  # 古いファイル（除外）
+
+    @patch("google.cloud.storage.Client")
+    def test_list_csv_files_within_days_none_returns_all(self, mock_storage_client):
+        """within_days=None（デフォルト）の場合、日付フィルタなしで全件返す"""
+        loader = BigQueryLoader(project_id="test-project")
+
+        names = ["Baa/BAA260305.csv", "Baa/BAA201017.csv"]
+        mock_blobs = []
+        for name in names:
+            b = MagicMock()
+            b.name = name
+            b.updated = datetime(2026, 3, 5, 0, 0, 0, tzinfo=timezone.utc)
+            mock_blobs.append(b)
+
+        mock_bucket = MagicMock()
+        mock_bucket.list_blobs.return_value = mock_blobs
+        mock_client = MagicMock()
+        mock_client.bucket.return_value = mock_bucket
+        mock_storage_client.return_value = mock_client
+
+        result = loader.list_csv_files()  # within_days 未指定
+
+        assert "Baa/BAA260305.csv" in result
+        assert "Baa/BAA201017.csv" in result
 
 
 class TestBigQueryLoaderBatchLoad:
