@@ -567,9 +567,20 @@ def main():
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
 
-    if not args.project_id:
-        logger.error("GCP_PROJECT_IDが設定されていません")
+    project_id = args.project_id
+    if not project_id:
+        try:
+            import google.auth
+            _, project_id = google.auth.default()
+        except Exception:
+            pass
+    if not project_id:
+        logger.error(
+            "GCPプロジェクトIDを特定できません。"
+            "--project-id オプションまたは GCP_PROJECT_ID 環境変数を設定してください。"
+        )
         return 1
+    logger.info(f"使用するGCPプロジェクトID: {project_id}")
 
     config = load_config(args.config)
     execution_date = datetime.date.fromisoformat(args.execution_date)
@@ -585,7 +596,7 @@ def main():
             return 1
 
     result_df = predict_pipeline(
-        project_id=args.project_id,
+        project_id=project_id,
         execution_date=execution_date,
         config=config,
         model_path=args.model_path,
@@ -604,7 +615,7 @@ def main():
     if args.save_to_bq and len(result_df) > 0:
         saved_rows = save_predictions_to_bq(
             result_df=result_df,
-            project_id=args.project_id,
+            project_id=project_id,
         )
         print(f"\n{saved_rows}行をBigQuery（predictions.daily_predictions）に保存しました")
 
