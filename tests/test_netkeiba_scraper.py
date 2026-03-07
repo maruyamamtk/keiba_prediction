@@ -129,25 +129,38 @@ def _make_odds_html(
     win_rows: list[tuple[int, float]],
     place_rows: list[tuple[int, float, float]],
 ) -> str:
-    """単複オッズテーブルを含むHTMLを生成する（netkeibaのDOM構造を模倣）"""
+    """単複オッズテーブルを含むHTMLを生成する（netkeibaの実際のDOM構造を模倣）
+
+    実際の構造:
+      <div id="odds_tan_block">
+        <table class="RaceOdds_HorseList_Table">
+          <tr><th>枠</th><th>馬番</th><th>印</th><th>選択</th><th>馬名</th><th>オッズ</th></tr>
+          <tr><td>枠番</td><td>馬番</td><td></td><td></td><td>馬名</td><td>オッズ</td></tr>
+        </table>
+      </div>
+    複勝オッズ区切り: "1.3 - 1.8" （スペース+ハイフン）
+    """
+    header = "<tr><th>枠</th><th>馬番</th><th>印</th><th>選択</th><th>馬名</th><th>オッズ</th></tr>"
     win_rows_html = "".join(
-        f"<tr><td>{h}</td><td>馬名{h}</td><td>{o}</td></tr>"
+        f"<tr><td>1</td><td>{h}</td><td></td><td></td><td>馬名{h}</td><td>{o}</td></tr>"
         for h, o in win_rows
     )
     place_rows_html = "".join(
-        f"<tr><td>{h}</td><td>馬名{h}</td><td>{lo}〜{hi}</td></tr>"
+        f"<tr><td>1</td><td>{h}</td><td></td><td></td><td>馬名{h}</td><td>{lo} - {hi}</td></tr>"
         for h, lo, hi in place_rows
     )
     return (
         "<html><body>"
-        '<table id="odds_tan_block">'
-        "<thead><tr><th>馬番</th><th>馬名</th><th>単勝オッズ</th></tr></thead>"
+        '<div id="odds_tan_block">'
+        '<table class="RaceOdds_HorseList_Table">'
+        f"<thead>{header}</thead>"
         f"<tbody>{win_rows_html}</tbody>"
-        "</table>"
-        '<table id="odds_fuku_block">'
-        "<thead><tr><th>馬番</th><th>馬名</th><th>複勝オッズ</th></tr></thead>"
+        "</table></div>"
+        '<div id="odds_fuku_block">'
+        '<table class="RaceOdds_HorseList_Table">'
+        f"<thead>{header}</thead>"
         f"<tbody>{place_rows_html}</tbody>"
-        "</table>"
+        "</table></div>"
         "</body></html>"
     )
 
@@ -211,10 +224,11 @@ class TestParseWinPlaceOddsHtml:
         """複勝テーブルがない場合でも単勝は取得できる"""
         html = (
             "<html><body>"
-            '<table id="odds_tan_block">'
-            "<thead><tr><th>馬番</th><th>馬名</th><th>単勝オッズ</th></tr></thead>"
-            "<tbody><tr><td>1</td><td>馬名1</td><td>2.5</td></tr></tbody>"
-            "</table>"
+            '<div id="odds_tan_block">'
+            '<table class="RaceOdds_HorseList_Table">'
+            "<thead><tr><th>枠</th><th>馬番</th><th>印</th><th>選択</th><th>馬名</th><th>オッズ</th></tr></thead>"
+            "<tbody><tr><td>1</td><td>1</td><td></td><td></td><td>馬名1</td><td>2.5</td></tr></tbody>"
+            "</table></div>"
             "</body></html>"
         )
         df = _parse_win_place_odds_html(html)

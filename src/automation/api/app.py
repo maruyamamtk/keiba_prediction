@@ -13,6 +13,7 @@ Issue #59: 特徴量生成パイプラインのCloud Run統合
 Issue #20: 日次予測パイプラインの実装
 """
 
+import asyncio
 import datetime
 import logging
 import os
@@ -877,7 +878,10 @@ async def scrape_odds(request: OddsScrapeRequest):
     try:
         from src.automation.data.netkeiba_scraper import save_odds_to_bq, scrape_today_odds
 
-        odds_df = scrape_today_odds(
+        # Playwright Sync API は asyncio ループ内で直接呼び出せないため
+        # スレッドプールで実行する
+        odds_df = await asyncio.to_thread(
+            scrape_today_odds,
             date=execution_date,
             project_id=project_id,
         )
@@ -895,7 +899,7 @@ async def scrape_odds(request: OddsScrapeRequest):
         races_scraped = int(odds_df["race_id"].nunique())
         horses_scraped = len(odds_df)
 
-        saved_rows = save_odds_to_bq(odds_df, project_id=project_id)
+        saved_rows = await asyncio.to_thread(save_odds_to_bq, odds_df, project_id=project_id)
 
         logger.info(
             f"オッズスクレイプ完了: {races_scraped}レース, {horses_scraped}頭, "
