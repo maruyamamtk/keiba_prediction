@@ -284,7 +284,7 @@ def get_today_race_list(date: datetime.date, sleep_sec: float = 1.0) -> list[dic
         browser = p.chromium.launch(headless=True)
         try:
             page = browser.new_page()
-            page.goto(url, wait_until="networkidle", timeout=30_000)
+            page.goto(url, wait_until="load", timeout=60_000)
             if sleep_sec > 0:
                 time.sleep(sleep_sec)
             html = page.content()
@@ -336,7 +336,7 @@ def get_win_place_odds(
         browser = p.chromium.launch(headless=True)
         try:
             page = browser.new_page()
-            page.goto(url, wait_until="networkidle", timeout=30_000)
+            page.goto(url, wait_until="load", timeout=60_000)
 
             # JavaScriptによるオッズテーブルの描画を待つ
             try:
