@@ -196,13 +196,15 @@ class DailyPipeline:
             DOWNLOAD_LOOKBACK_DAYS = 7
             lookback_date = target_date - timedelta(days=DOWNLOAD_LOOKBACK_DAYS)
             start_yymmdd = self.date_to_yymmdd(lookback_date)
+            # 翌日分（翌日のレースデータ）までダウンロード
+            end_yymmdd = self.date_to_yymmdd(target_date + timedelta(days=1))
             logger.info(
-                f"ダウンロード開始: {start_yymmdd}〜 "
+                f"ダウンロード開始: {start_yymmdd}〜{end_yymmdd} "
                 f"（{DOWNLOAD_LOOKBACK_DAYS}日間ルックバック、対象日: {self.date_to_yymmdd(target_date)}）"
             )
 
-            # 全データタイプをダウンロード（7日前から最新まで）
-            results = self.downloader.download_all_from_date(start_yymmdd)
+            # 全データタイプをダウンロード（7日前から翌日まで）
+            results = self.downloader.download_all_from_date(start_yymmdd, end_yymmdd)
 
             # 結果集計
             total_downloaded = sum(r.downloaded_files for r in results.values())
@@ -425,11 +427,13 @@ class DailyPipeline:
 
         try:
             date_str = target_date.strftime("%Y-%m-%d")
-            logger.info(f"特徴量生成開始: {date_str}")
+            # 翌日分の特徴量まで生成（予測パイプラインが当日+翌日を対象とするため）
+            next_date_str = (target_date + timedelta(days=1)).strftime("%Y-%m-%d")
+            logger.info(f"特徴量生成開始: {date_str} 〜 {next_date_str}")
 
             result = self.feature_pipeline.run(
                 start_date=date_str,
-                end_date=date_str,
+                end_date=next_date_str,
             )
 
             details = {

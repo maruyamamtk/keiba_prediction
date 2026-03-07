@@ -84,8 +84,8 @@ class TestDailyPipelineStepDownload:
         assert result.details["downloaded"] == 5
         assert result.details["skipped"] == 3
         assert result.details["failed"] == 0
-        # 7日前 (2024-01-15 - 7日 = 2024-01-08) が渡されること
-        downloader.download_all_from_date.assert_called_once_with("240108")
+        # 7日前 (2024-01-15 - 7日 = 2024-01-08) が start_date, 翌日 (240116) が end_date として渡されること
+        downloader.download_all_from_date.assert_called_once_with("240108", "240116")
 
     def test_step_download_partial(self):
         """一部ダウンロード失敗"""
@@ -129,8 +129,8 @@ class TestDailyPipelineStepDownload:
         pipeline = DailyPipeline(downloader=downloader)
         pipeline._step_download(date(2024, 1, 15))  # 240115
 
-        # 7日前 = 240108 が渡されること
-        downloader.download_all_from_date.assert_called_once_with("240108")
+        # start_date=240108 (7日前), end_date=240116 (翌日) が渡されること
+        downloader.download_all_from_date.assert_called_once_with("240108", "240116")
 
     def test_step_download_lookback_crosses_month_boundary(self):
         """月をまたぐルックバックが正しく計算される: 2024-03-05 - 7日 = 2024-02-27"""
@@ -146,8 +146,8 @@ class TestDailyPipelineStepDownload:
         pipeline = DailyPipeline(downloader=downloader)
         pipeline._step_download(date(2024, 3, 5))  # 240305
 
-        # 7日前 = 240227 が渡されること
-        downloader.download_all_from_date.assert_called_once_with("240227")
+        # start_date=240227 (7日前), end_date=240306 (翌日) が渡されること
+        downloader.download_all_from_date.assert_called_once_with("240227", "240306")
 
 
 class TestDailyPipelineStepUpload:
@@ -486,7 +486,7 @@ class TestDailyPipelineRun:
         assert len(result.steps) == 4
         downloader.cleanup.assert_called_once()
         feature_pipeline.run.assert_called_once_with(
-            start_date="2024-01-15", end_date="2024-01-15"
+            start_date="2024-01-15", end_date="2024-01-16"
         )
 
     def test_run_download_failure(self):
@@ -533,7 +533,7 @@ class TestDailyPipelineStepGenerateFeatures:
         assert result.details["inserted_rows"] == 50
         assert result.details["deleted_rows"] == 10
         feature_pipeline.run.assert_called_once_with(
-            start_date="2024-01-15", end_date="2024-01-15"
+            start_date="2024-01-15", end_date="2024-01-16"
         )
 
     def test_step_generate_features_error(self):
