@@ -9,16 +9,33 @@ WORKDIR /app
 # - lhasa: lzhファイルの展開用（lhaコマンドを提供）
 # - p7zip-full: lzh展開のフォールバック用
 # - libgomp1: LightGBM の OpenMP 並列処理に必要
+# - Playwright/Chromium依存パッケージ（netkeibaスクレイピング用）
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     lhasa \
     p7zip-full \
     libgomp1 \
+    libnss3 \
+    libnspr4 \
+    libatk1.0-0 \
+    libatk-bridge2.0-0 \
+    libcups2 \
+    libdrm2 \
+    libxkbcommon0 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxfixes3 \
+    libxrandr2 \
+    libgbm1 \
+    libasound2 \
     && rm -rf /var/lib/apt/lists/*
 
 # 依存パッケージをインストール
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+
+# Playwright Chromiumブラウザのインストール（netkeibaスクレイピング用）
+RUN playwright install chromium
 
 # アプリケーションコードをコピー
 COPY src/ ./src/
