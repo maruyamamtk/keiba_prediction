@@ -193,7 +193,80 @@ python scripts/run_backtest.py \
 | `--output-chart` | なし | 資金推移グラフ保存先パス |
 | `--save-to-bq` | False | BigQuery保存フラグ |
 
-### 7. Cloud Runデプロイ（本番環境）
+### 7. 投資戦略策定
+
+#### A. パラメータ最適化（手動、初回および月次実行）
+
+グリッドサーチで最適な投資パラメータを探索し、`config/strategy_config.yaml` に保存する。
+**この手順を一度実行するだけで、以降の日次自動実行（手順B）が正しいパラメータで動作する。**
+
+```bash
+# パラメータ最適化を実行（strategy_config.yamlを更新）
+python3 scripts/run_strategy_optimization.py \
+    --project-id <PROJECT_ID> \
+    --model-path gs://<PROJECT_ID>-keiba-models/lgbm_ranker/20260301/model.txt \
+    --start-date 2024-01-01 \
+    --end-date 2024-12-31
+
+# 詳細オプション指定
+python3 scripts/run_strategy_optimization.py \
+    --project-id <PROJECT_ID> \
+    --model-path gs://<PROJECT_ID>-keiba-models/lgbm_ranker/20260301/model.txt \
+    --start-date 2024-01-01 \
+    --end-date 2024-12-31 \
+    --metric recovery_rate \
+    --output-csv results/optimization_2024.csv \
+    --top-n 10
+```
+
+**主なオプション:**
+
+| オプション | デフォルト | 説明 |
+|-----------|-----------|------|
+| `--project-id` | 必須 | GCPプロジェクトID |
+| `--model-path` | 必須 | モデルファイルパス（ローカルまたは gs://） |
+| `--start-date` | 必須 | 最適化期間開始日 (YYYY-MM-DD) |
+| `--end-date` | 必須 | 最適化期間終了日 (YYYY-MM-DD) |
+| `--metric` | recovery_rate | 最適化指標（recovery_rate / hit_rate / sharpe_ratio / max_drawdown） |
+| `--initial-capital` | 100000 | 初期資金（円） |
+| `--output-csv` | なし | 全グリッドサーチ結果のCSV保存先 |
+| `--top-n` | 10 | 上位N件を表示 |
+
+#### B. 日次投資戦略策定（手動確認用 / Cloud Schedulerで自動実行）
+
+`config/strategy_config.yaml` のパラメータを読み込んで投資判断を実行する。
+`POST /api/v1/strategy/daily` から毎朝 AM 9:00 に Cloud Scheduler で自動実行されるが、
+スクリプトを手動実行して内容を確認することもできる。
+
+```bash
+# 当日分の投資戦略を実行（BQ保存あり）
+python3 scripts/run_strategy.py --project-id <PROJECT_ID>
+
+# 特定日を指定
+python3 scripts/run_strategy.py --project-id <PROJECT_ID> --target-date 2026-03-07
+
+# BQ保存をスキップして結果を確認のみ（dry-run）
+python3 scripts/run_strategy.py --project-id <PROJECT_ID> --dry-run
+```
+
+**主なオプション:**
+
+| オプション | デフォルト | 説明 |
+|-----------|-----------|------|
+| `--project-id` | 必須 | GCPプロジェクトID |
+| `--target-date` | 当日 | 対象日（YYYY-MM-DD） |
+| `--dry-run` | False | BQ保存をスキップして結果表示のみ |
+| `--initial-capital` | 100000 | 初期資金（円） |
+
+> **前提条件**: `predictions.daily_predictions`（予測）と `predictions.daily_odds`（オッズ）に当日データが存在すること。
+
+**investment_decisions テーブル作成（初回のみ）:**
+
+```bash
+python3 scripts/create_investment_decisions_table.py --project-id <PROJECT_ID>
+```
+
+### 8. Cloud Runデプロイ（本番環境）
 
 ```bash
 # Dockerイメージのビルド・プッシュ
@@ -475,11 +548,14 @@ keiba_prediction/
 │       ├── strategy.py               # 投資戦略（Kelly基準・期待回収率フィルタ）
 │       └── strategy_optimizer.py     # 戦略パラメータ最適化
 ├── scripts/                           # ユーティリティスクリプト
+│   ├── create_daily_odds_combo_table.py  # predictions.daily_odds_comboテーブル作成
 │   ├── create_daily_odds_table.py    # predictions.daily_oddsテーブル作成
 │   ├── create_predictions_table.py   # predictions.daily_predictionsテーブル作成
 │   ├── generate_features.py
 │   ├── reload_gcs_to_bq.py
 │   ├── run_backtest.py               # CLIバックテスト実行スクリプト
+│   ├── run_strategy.py               # 日次投資戦略策定スクリプト（手動確認用）
+│   ├── run_strategy_optimization.py  # 投資パラメータ最適化スクリプト（手動実行）
 │   ├── setup_bigquery.sh
 │   ├── setup_gcp.sh
 │   └── sync_to_gcs.sh
@@ -609,7 +685,8 @@ Cloud RunにデプロイされたFastAPIアプリケーションは以下のエ�
 | POST | `/api/v1/features/generate/async` | 特徴量生成（非同期） |
 | POST | `/api/v1/predict/daily` | 翌日レース予測 + BQ/GCS保存（Cloud Scheduler用）。`model_path` 未指定時はGCSから最新モデルを自動取得。 |
 | POST | `/api/v1/predict/on-demand` | 任意日付レース予測 + BQ/GCS保存（手動実行用） |
-| POST | `/api/v1/odds/scrape` | netkeibaから当日オッズを取得し `predictions.daily_odds` にUPSERT保存 |
+| POST | `/api/v1/odds/scrape` | netkeibaから当日オッズを取得し `predictions.daily_odds` にUPSERT保存。`include_combo=true` で組み合わせ馬券オッズも取得し `predictions.daily_odds_combo` に保存。 |
+| POST | `/api/v1/strategy/daily` | 当日の投資戦略を策定し `predictions.investment_decisions` にUPSERT保存。`config/strategy_config.yaml` のパラメータを使用。 |
 
 ---
 
@@ -895,6 +972,8 @@ gcloud scheduler jobs run daily-data-pipeline --location=asia-northeast1
 |---------|------|------|
 | `predictions.daily_predictions` | 日次予測結果 | 実装済み（Issue #117） |
 | `predictions.daily_odds` | netkeibaリアルタイム単複オッズ | 実装済み（Issue #131） |
+| `predictions.daily_odds_combo` | netkeibaリアルタイム組み合わせ馬券オッズ | 実装済み（Issue #134） |
+| `predictions.investment_decisions` | 日次投資判断結果 | 実装済み（Issue #105） |
 
 #### daily_predictions テーブルスキーマ
 
@@ -938,6 +1017,44 @@ python3 scripts/create_predictions_table.py
 ```bash
 python3 scripts/create_daily_odds_table.py --project-id <PROJECT_ID>
 ```
+
+#### daily_odds_combo テーブルスキーマ
+
+| カラム名 | 型 | 説明 |
+|---------|-----|------|
+| `race_id` | STRING | JRDB形式のレースID（パーティション連携） |
+| `race_date` | DATE | 開催日（パーティションキー） |
+| `ticket_type` | STRING | 馬券種（umaren / umatan / wide / sanrenpuku） |
+| `horse_number_1` | INTEGER | 馬番1（小さい方） |
+| `horse_number_2` | INTEGER | 馬番2 |
+| `horse_number_3` | INTEGER | 馬番3（三連複のみ、それ以外はNULL） |
+| `odds` | FLOAT64 | オッズ |
+| `scraped_at` | TIMESTAMP | netkeibaからスクレイプした日時（UTC） |
+
+テーブル作成コマンド:
+
+```bash
+python3 scripts/create_daily_odds_combo_table.py --project-id <PROJECT_ID>
+```
+
+#### investment_decisions テーブルスキーマ
+
+| カラム名 | 型 | 説明 |
+|---------|-----|------|
+| `race_id` | STRING | JRDB形式のレースID |
+| `race_date` | DATE | 開催日 |
+| `horse_id` | STRING | 馬ID |
+| `horse_number` | INTEGER | 馬番 |
+| `horse_name` | STRING | 馬名 |
+| `venue_code` | STRING | 競馬場コード |
+| `race_number` | INTEGER | レース番号 |
+| `race_pattern` | STRING | レースパターン（one_dominant / competitive / standard） |
+| `bet_type` | STRING | 馬券種（place など） |
+| `bet_amount` | FLOAT64 | 賭け金（円） |
+| `win_place_prob` | FLOAT64 | 複勝予測確率 |
+| `place_odds` | FLOAT64 | 複勝オッズ |
+| `expected_return` | FLOAT64 | 期待回収率（prob × odds） |
+| `created_at` | TIMESTAMP | 作成日時（UTC） |
 
 ### backtestsデータセット
 
@@ -1034,6 +1151,13 @@ python -m pytest tests/ --cov=src --cov-report=html
   - `POST /api/v1/odds/scrape`: netkeibaから当日全レースの単複オッズを取得
   - `predictions.daily_odds` テーブルへのUPSERT保存（race_id + horse_numberキー）
   - Playwright (Chromium) によるJS描画ページ対応
+- ✅ netkeibaスクレイパー拡張（組み合わせ馬券オッズ） - Issue #134
+  - `POST /api/v1/odds/scrape` の `include_combo=true`: 馬連・馬単・ワイド・三連複オッズ取得
+  - `predictions.daily_odds_combo` テーブルへのUPSERT保存
+- ✅ 日次投資戦略策定 - Issue #105
+  - `POST /api/v1/strategy/daily`: 予測×オッズからKelly基準で投資判断を実行
+  - `predictions.investment_decisions` テーブルへのUPSERT保存
+  - `config/strategy_config.yaml` でパラメータ管理（`run_strategy_optimization.py` で最適化）
 - ⬜ Webダッシュボード
 - ⬜ 通知システム（LINE Messaging API）
 
