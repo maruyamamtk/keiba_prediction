@@ -115,10 +115,10 @@ def _parse_win_place_odds_html(html: str) -> pd.DataFrame:
     単複オッズページ（type=b1）のHTMLから単勝・複勝オッズを抽出する（テスト可能な純粋関数）
 
     netkeibaの単複オッズテーブル構造:
-      - 単勝テーブル: id="odds_tan_block"
-      - 複勝テーブル: id="odds_fuku_block"
-      各行: <td>馬番</td> <td>馬名</td> <td>オッズ</td>
-      複勝オッズは「1.3〜1.8」形式
+      - 単勝: <div id="odds_tan_block"> 内の <table>
+      - 複勝: <div id="odds_fuku_block"> 内の <table>
+      各行: <td>枠</td> <td>馬番</td> <td>印</td> <td>選択</td> <td>馬名</td> <td>オッズ</td>
+      複勝オッズは「1.3 - 1.8」形式（スペース+ハイフン）または「1.3〜1.8」形式
 
     Args:
         html: 単複オッズページのHTML文字列
@@ -132,8 +132,9 @@ def _parse_win_place_odds_html(html: str) -> pd.DataFrame:
     win_odds_map: dict[int, float] = {}
     place_odds_map: dict[int, tuple[float, float]] = {}
 
-    # 単勝テーブル: id="odds_tan_block"
-    win_table = soup.find("table", {"id": "odds_tan_block"})
+    # 単勝テーブル: id="odds_tan_block" は <div> であり、その中の <table> を取得する
+    win_div = soup.find("div", {"id": "odds_tan_block"})
+    win_table = win_div.find("table") if win_div else None
     if win_table:
         for row in win_table.find_all("tr")[1:]:  # ヘッダー行をスキップ
             cells = row.find_all("td")
@@ -143,8 +144,9 @@ def _parse_win_place_odds_html(html: str) -> pd.DataFrame:
             if horse_num is not None and odds is not None:
                 win_odds_map[horse_num] = odds
 
-    # 複勝テーブル: id="odds_fuku_block"
-    place_table = soup.find("table", {"id": "odds_fuku_block"})
+    # 複勝テーブル: id="odds_fuku_block" は <div> であり、その中の <table> を取得する
+    place_div = soup.find("div", {"id": "odds_fuku_block"})
+    place_table = place_div.find("table") if place_div else None
     if place_table:
         for row in place_table.find_all("tr")[1:]:  # ヘッダー行をスキップ
             cells = row.find_all("td")
@@ -180,7 +182,8 @@ def _extract_win_odds_cells(
         (horse_number, odds) または (None, None)
     """
     try:
-        horse_num = int(cells[0].get_text(strip=True))
+        # テーブル列: 枠, 馬番, 印, 選択, 馬名, オッズ → cells[1] が馬番
+        horse_num = int(cells[1].get_text(strip=True))
         if not (1 <= horse_num <= 18):
             return None, None
         # 最後のセルがオッズ
@@ -203,12 +206,18 @@ def _extract_place_odds_cells(
         (horse_number, min_odds, max_odds) または (None, None, None)
     """
     try:
-        horse_num = int(cells[0].get_text(strip=True))
+        # テーブル列: 枠, 馬番, 印, 選択, 馬名, オッズ → cells[1] が馬番
+        horse_num = int(cells[1].get_text(strip=True))
         if not (1 <= horse_num <= 18):
             return None, None, None
         odds_text = cells[-1].get_text(strip=True).replace(",", "")
+        # netkeibaの複勝オッズ区切り文字: "〜" または " - " の両方に対応
         if "〜" in odds_text:
             parts = odds_text.split("〜")
+            min_odds = float(parts[0].strip())
+            max_odds = float(parts[1].strip())
+        elif " - " in odds_text:
+            parts = odds_text.split(" - ")
             min_odds = float(parts[0].strip())
             max_odds = float(parts[1].strip())
         else:
