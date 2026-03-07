@@ -823,6 +823,10 @@ class OddsScrapeRequest(BaseModel):
         description="対象日付（YYYY-MM-DD形式、省略時は当日）",
         json_schema_extra={"example": "2026-03-07"},
     )
+    include_combo: bool = Field(
+        default=False,
+        description="組み合わせ馬券（馬連・馬単・ワイド・三連複）オッズも取得してdaily_odds_comboに保存するか",
+    )
 
     @field_validator("execution_date")
     @classmethod
@@ -845,7 +849,50 @@ class OddsScrapeResponse(BaseModel):
     execution_date: str = Field(description="対象日付")
     races_scraped: int = Field(default=0, description="オッズを取得できたレース数")
     horses_scraped: int = Field(default=0, description="取得した馬数（行数）")
-    saved_rows: int = Field(default=0, description="BigQueryに保存した行数")
+    saved_rows: int = Field(default=0, description="BigQueryに保存した行数（単複）")
+    combo_rows_saved: int = Field(default=0, description="BigQueryに保存した行数（組み合わせ馬券）")
+    error_message: Optional[str] = Field(default=None, description="エラーメッセージ")
+
+
+class StrategyDailyRequest(BaseModel):
+    """日次投資戦略リクエスト"""
+
+    execution_date: Optional[str] = Field(
+        default=None,
+        description="対象日付（YYYY-MM-DD形式、省略時は当日）",
+        json_schema_extra={"example": "2026-03-07"},
+    )
+    dry_run: bool = Field(
+        default=False,
+        description="Trueの場合BQ保存をスキップして結果のみ返す",
+    )
+    initial_capital: float = Field(
+        default=100_000.0,
+        description="初期資金（Kelly計算用、単位:円）",
+    )
+
+    @field_validator("execution_date")
+    @classmethod
+    def validate_date_format(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        try:
+            datetime.date.fromisoformat(v)
+            return v
+        except ValueError:
+            raise ValueError(
+                f"日付はYYYY-MM-DD形式の有効な日付で指定してください: '{v}'"
+            )
+
+
+class StrategyDailyResponse(BaseModel):
+    """日次投資戦略レスポンス"""
+
+    status: str = Field(description="処理ステータス (success/failed)")
+    execution_date: str = Field(description="対象日付")
+    decisions_count: int = Field(default=0, description="投資判断件数")
+    total_bet_amount: float = Field(default=0.0, description="総賭け金（円）")
+    dry_run: bool = Field(default=False, description="ドライランモードか")
     error_message: Optional[str] = Field(default=None, description="エラーメッセージ")
 
 
@@ -876,7 +923,11 @@ async def scrape_odds(request: OddsScrapeRequest):
         raise HTTPException(status_code=500, detail="GCP_PROJECT_IDが未設定です")
 
     try:
-        from src.automation.data.netkeiba_scraper import save_odds_to_bq, scrape_today_odds
+        from src.automation.data.netkeiba_scraper import (
+            save_odds_to_bq,
+            scrape_today_combo_odds,
+            scrape_today_odds,
+        )
 
         # Playwright Sync API は asyncio ループ内で直接呼び出せないため
         # スレッドプールで実行する
@@ -886,35 +937,105 @@ async def scrape_odds(request: OddsScrapeRequest):
             project_id=project_id,
         )
 
-        if odds_df.empty:
-            logger.warning(f"オッズを取得できませんでした: {execution_date_str}")
-            return OddsScrapeResponse(
-                status="success",
-                execution_date=execution_date_str,
-                races_scraped=0,
-                horses_scraped=0,
-                saved_rows=0,
+        races_scraped = 0
+        horses_scraped = 0
+        saved_rows = 0
+
+        if not odds_df.empty:
+            races_scraped = int(odds_df["race_id"].nunique())
+            horses_scraped = len(odds_df)
+            saved_rows = await asyncio.to_thread(save_odds_to_bq, odds_df, project_id=project_id)
+            logger.info(
+                f"単複オッズスクレイプ完了: {races_scraped}レース, {horses_scraped}頭, "
+                f"saved={saved_rows}行"
             )
+        else:
+            logger.warning(f"単複オッズを取得できませんでした: {execution_date_str}")
 
-        races_scraped = int(odds_df["race_id"].nunique())
-        horses_scraped = len(odds_df)
+        combo_rows_saved = 0
+        if request.include_combo:
+            combo_rows_saved = await asyncio.to_thread(
+                scrape_today_combo_odds,
+                date=execution_date,
+                project_id=project_id,
+            )
+            logger.info(f"組み合わせオッズ保存: {combo_rows_saved}行")
 
-        saved_rows = await asyncio.to_thread(save_odds_to_bq, odds_df, project_id=project_id)
-
-        logger.info(
-            f"オッズスクレイプ完了: {races_scraped}レース, {horses_scraped}頭, "
-            f"saved={saved_rows}行"
-        )
         return OddsScrapeResponse(
             status="success",
             execution_date=execution_date_str,
             races_scraped=races_scraped,
             horses_scraped=horses_scraped,
             saved_rows=saved_rows,
+            combo_rows_saved=combo_rows_saved,
         )
 
     except Exception as e:
         logger.error(f"オッズスクレイプエラー: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@app.post("/api/v1/strategy/daily", response_model=StrategyDailyResponse)
+async def run_strategy_daily(request: StrategyDailyRequest):
+    """
+    日次投資戦略を策定してBigQueryに保存する
+
+    config/strategy_config.yaml のパラメータを読み込み、当日の予測結果と
+    リアルタイムオッズを JOIN して投資判断を実行する。
+    Cloud Schedulerから毎朝AM 9:00に呼び出されることを想定。
+
+    前提条件:
+      - predictions.daily_predictions に当日の予測データが存在すること
+      - predictions.daily_odds に当日のオッズデータが存在すること
+      - config/strategy_config.yaml にパラメータが設定されていること
+        （scripts/run_strategy_optimization.py を一度実行すること）
+
+    Args:
+        request: リクエストボディ
+
+    Returns:
+        投資判断結果
+    """
+    execution_date_str = request.execution_date or date.today().isoformat()
+    execution_date = datetime.date.fromisoformat(execution_date_str)
+
+    logger.info(
+        f"日次投資戦略リクエスト受信: execution_date={execution_date_str}, "
+        f"dry_run={request.dry_run}"
+    )
+
+    project_id = os.environ.get("GCP_PROJECT_ID")
+    if not project_id:
+        raise HTTPException(status_code=500, detail="GCP_PROJECT_IDが未設定です")
+
+    try:
+        from scripts.run_strategy import run_daily_strategy
+
+        decisions = await asyncio.to_thread(
+            run_daily_strategy,
+            project_id=project_id,
+            target_date=execution_date,
+            dry_run=request.dry_run,
+            initial_capital=request.initial_capital,
+        )
+
+        total_bet = sum(d["bet_amount"] for d in decisions) if decisions else 0.0
+        logger.info(
+            f"日次投資戦略完了: {len(decisions)}件, 総賭け金={total_bet:,.0f}円"
+        )
+        return StrategyDailyResponse(
+            status="success",
+            execution_date=execution_date_str,
+            decisions_count=len(decisions),
+            total_bet_amount=total_bet,
+            dry_run=request.dry_run,
+        )
+
+    except FileNotFoundError as e:
+        logger.error(f"設定ファイルが見つかりません: {e}")
+        raise HTTPException(status_code=500, detail=str(e)) from e
+    except Exception as e:
+        logger.error(f"日次投資戦略エラー: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 

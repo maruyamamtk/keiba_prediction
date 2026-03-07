@@ -1,0 +1,39 @@
+# 投資戦略パラメータ設定
+#
+# このファイルは scripts/run_strategy_optimization.py を実行することで更新されます。
+# 更新後は scripts/run_strategy.py（および POST /api/v1/strategy/daily）が
+# このファイルのパラメータを自動的に読み込んで日次実行します。
+#
+# 手動で更新する場合は以下の説明を参考にしてください。
+#
+# パターン分類パラメータ
+#   p1: 突出型（one_dominant）の判定閾値。
+#       top1_prob - top2_prob > p1 の場合に突出型と判定。
+#       小さいほど多くのレースが突出型になる（デフォルト: 0.2）
+#   p2: 拮抗型（competitive）の判定閾値。
+#       top1_prob - top3_prob < p2 の場合に拮抗型と判定。
+#       大きいほど多くのレースが拮抗型になる（デフォルト: 0.15）
+
+# パターン分類閾値
+p1: 0.2
+p2: 0.15
+
+# 期待回収率フィルタ（win_place_prob × odds がこれを超える馬のみ購入）
+expected_return_threshold: 1.2
+
+# Fractional Kelly 係数（0〜1。小さいほど保守的）
+kelly_fraction: 0.25
+
+# 1レースあたりの最大賭け金比率（総資金に対する割合）
+max_bet_ratio: 0.05
+
+# グリッドサーチで最適化した際のメタ情報（run_strategy_optimization.py が書き込む）
+optimization:
+  last_run: null          # 最後に最適化を実行した日時（ISO形式）
+  metric: recovery_rate   # 最適化に使用した評価指標
+  start_date: null        # バックテスト開始日（YYYY-MM-DD）
+  end_date: null          # バックテスト終了日（YYYY-MM-DD）
+  recovery_rate: null     # 最適化時の回収率（%）
+  hit_rate: null          # 最適化時の的中率（%）
+  max_drawdown: null      # 最適化時の最大ドローダウン（%）
+  total_bets: null        # 最適化時の総賭け数

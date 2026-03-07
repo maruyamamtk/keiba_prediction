@@ -24,10 +24,12 @@ import pandas as pd
 import pytest
 
 from src.automation.data.netkeiba_scraper import (
+    _parse_combo_odds_html,
     _parse_race_list_html,
     _parse_win_place_odds_html,
     netkeiba_to_jrdb_race_id,
     parse_netkeiba_race_id,
+    save_combo_odds_to_bq,
     save_odds_to_bq,
     scrape_today_odds,
 )
@@ -234,6 +236,162 @@ class TestParseWinPlaceOddsHtml:
         df = _parse_win_place_odds_html(html)
         assert not df.empty
         assert df.iloc[0]["win_odds"] == pytest.approx(2.5, abs=0.01)
+
+
+# ---------------------------------------------------------------------------
+# _parse_combo_odds_html
+# ---------------------------------------------------------------------------
+
+
+def _make_combo_html(ticket_type: str, combos: list[tuple]) -> str:
+    """組み合わせオッズ span を含むHTMLを生成する
+
+    Args:
+        ticket_type: 'b4'(馬連) / 'b5'(馬単) / 'b7'(ワイド) / 'b6'(三連複)
+        combos: 2頭の場合 [(h1, h2, odds), ...]、3頭の場合 [(h1, h2, h3, odds), ...]
+    """
+    type_code = {"b4": "4", "b5": "5", "b7": "7", "b6": "6"}[ticket_type]
+    is_trio = ticket_type == "b6"
+    spans = ""
+    for combo in combos:
+        if is_trio:
+            h1, h2, h3, o = combo
+            span_id = f"odds-{type_code}-{h1:02d}{h2:02d}{h3:02d}"
+        else:
+            h1, h2, o = combo
+            span_id = f"odds-{type_code}-{h1:02d}{h2:02d}"
+        spans += f'<span id="{span_id}">{o}</span>'
+    return f"<html><body>{spans}</body></html>"
+
+
+class TestParseComboOddsHtml:
+    def test_umaren_b4(self):
+        html = _make_combo_html("b4", [(1, 2, 5.5), (1, 3, 8.0)])
+        df = _parse_combo_odds_html(html, "b4")
+        assert len(df) == 2
+        assert set(df["ticket_type"]) == {"umaren"}
+        row = df[(df["horse_number_1"] == 1) & (df["horse_number_2"] == 2)].iloc[0]
+        assert row["odds"] == pytest.approx(5.5)
+        assert row["horse_number_3"] is None
+
+    def test_umatan_b5(self):
+        html = _make_combo_html("b5", [(1, 2, 6.0)])
+        df = _parse_combo_odds_html(html, "b5")
+        assert len(df) == 1
+        assert df.iloc[0]["ticket_type"] == "umatan"
+
+    def test_wide_b7(self):
+        html = _make_combo_html("b7", [(2, 3, 3.2)])
+        df = _parse_combo_odds_html(html, "b7")
+        assert len(df) == 1
+        assert df.iloc[0]["ticket_type"] == "wide"
+
+    def test_sanrenpuku_b6(self):
+        html = _make_combo_html("b6", [(1, 2, 3, 12.5)])
+        df = _parse_combo_odds_html(html, "b6")
+        assert len(df) == 1
+        assert df.iloc[0]["ticket_type"] == "sanrenpuku"
+        assert df.iloc[0]["horse_number_1"] == 1
+        assert df.iloc[0]["horse_number_2"] == 2
+        assert df.iloc[0]["horse_number_3"] == 3
+        assert df.iloc[0]["odds"] == pytest.approx(12.5)
+
+    def test_empty_html(self):
+        df = _parse_combo_odds_html("<html><body></body></html>", "b4")
+        assert df.empty
+        assert list(df.columns) == [
+            "ticket_type", "horse_number_1", "horse_number_2", "horse_number_3", "odds"
+        ]
+
+    def test_invalid_ticket_type(self):
+        df = _parse_combo_odds_html("<html><body></body></html>", "b9")
+        assert df.empty
+
+    def test_filters_odds_lte_1(self):
+        """オッズが1.0以下の組み合わせは除外される"""
+        html = _make_combo_html("b4", [(1, 2, 1.0), (1, 3, 5.5)])
+        df = _parse_combo_odds_html(html, "b4")
+        assert len(df) == 1
+        assert df.iloc[0]["horse_number_2"] == 3
+
+    def test_skips_non_numeric_odds(self):
+        """数値でないオッズはスキップされる"""
+        type_code = "4"
+        html = (
+            f'<span id="odds-{type_code}-0102">---</span>'
+            f'<span id="odds-{type_code}-0103">5.5</span>'
+        )
+        df = _parse_combo_odds_html(html, "b4")
+        assert len(df) == 1
+        assert df.iloc[0]["odds"] == pytest.approx(5.5)
+
+    def test_comma_in_odds(self):
+        """カンマ区切りのオッズ（例: 1,234.5）を正しくパースできる"""
+        type_code = "4"
+        html = f'<span id="odds-{type_code}-0102">1,234.5</span>'
+        df = _parse_combo_odds_html(html, "b4")
+        assert len(df) == 1
+        assert df.iloc[0]["odds"] == pytest.approx(1234.5)
+
+
+# ---------------------------------------------------------------------------
+# save_combo_odds_to_bq (BQモック)
+# ---------------------------------------------------------------------------
+
+
+class TestSaveComboOddsToBq:
+    def _make_sample_df(self) -> pd.DataFrame:
+        return pd.DataFrame([
+            {
+                "ticket_type": "umaren",
+                "horse_number_1": 1,
+                "horse_number_2": 2,
+                "horse_number_3": None,
+                "odds": 5.5,
+            },
+            {
+                "ticket_type": "sanrenpuku",
+                "horse_number_1": 1,
+                "horse_number_2": 2,
+                "horse_number_3": 3,
+                "odds": 12.5,
+            },
+        ])
+
+    def test_raises_on_empty_df(self):
+        with pytest.raises(ValueError, match="空"):
+            save_combo_odds_to_bq(
+                pd.DataFrame(),
+                race_id="RACE001",
+                race_date=datetime.date(2024, 5, 26),
+                scraped_at=datetime.datetime(2024, 5, 26, 8, 0, 0),
+                project_id="test-project",
+            )
+
+    def test_calls_bq_load_and_merge(self):
+        df = self._make_sample_df()
+        mock_client = MagicMock()
+        mock_load_job = MagicMock()
+        mock_merge_job = MagicMock()
+        mock_client.load_table_from_dataframe.return_value = mock_load_job
+        mock_client.query.return_value = mock_merge_job
+
+        with patch(
+            "src.automation.data.netkeiba_scraper.bigquery.Client",
+            return_value=mock_client,
+        ):
+            result = save_combo_odds_to_bq(
+                df,
+                race_id="RACE001",
+                race_date=datetime.date(2024, 5, 26),
+                scraped_at=datetime.datetime(2024, 5, 26, 8, 0, 0),
+                project_id="test-project",
+            )
+
+        assert result == 2
+        mock_client.load_table_from_dataframe.assert_called_once()
+        mock_load_job.result.assert_called_once()
+        mock_client.query.assert_called()
 
 
 # ---------------------------------------------------------------------------

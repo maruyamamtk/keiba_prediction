@@ -1,18 +1,25 @@
 """
 netkeibaオッズスクレイパー
 
-netkeibaからリアルタイムの単勝・複勝オッズを取得し、
+netkeibaからリアルタイムの単勝・複勝および組み合わせ馬券オッズを取得し、
 JRDB形式のrace_idと紐付けてBigQueryに保存する。
 
 URL構造:
-  https://race.netkeiba.com/odds/index.html?race_id={YYYY}{PP}{NN}{DD}{RR}&type=b1
+  https://race.netkeiba.com/odds/index.html?race_id={YYYY}{PP}{NN}{DD}{RR}&type=b{KIND}
   - YYYY: 開催年
   - PP: 競馬場コード（JRDBのvenue_codeと同一）
   - NN: 回次
   - DD: 日次
   - RR: レース番号
+  - KIND: 1=単複, 4=馬連, 5=馬単, 7=ワイド, 6=三連複
+
+組み合わせ馬券のHTMLパース:
+  2頭組み合わせ（馬連・馬単・ワイド）: <span id="odds-{code}-XXYY">
+  3頭組み合わせ（三連複）: <span id="odds-{code}-XXYYZZ">
+  ここで XX/YY/ZZ は馬番の2桁ゼロ埋め表現
 
 Issue #131: netkeibaリアルタイムオッズスクレイパーの実装
+Issue #134: netkeibaスクレイパー拡張 - 組み合わせ馬券オッズ取得
 """
 
 from __future__ import annotations
@@ -46,6 +53,24 @@ VENUE_CODE_MAP: dict[str, str] = {
 }
 
 _EMPTY_ODDS_COLUMNS = ["horse_number", "win_odds", "place_odds_min", "place_odds_max"]
+
+# 組み合わせ馬券の type コードと BQ 保存用 ticket_type 名の対応
+COMBO_TICKET_TYPES: dict[str, str] = {
+    "b4": "umaren",     # 馬連（2頭・順不同）
+    "b5": "umatan",     # 馬単（2頭・順あり）
+    "b7": "wide",       # ワイド（2頭・順不同）
+    "b6": "sanrenpuku", # 三連複（3頭・順不同）
+}
+
+# b4/b5/b7 の span id における数値コード
+_COMBO_TYPE_CODE: dict[str, str] = {
+    "b4": "4",
+    "b5": "5",
+    "b7": "7",
+    "b6": "6",
+}
+
+_EMPTY_COMBO_COLUMNS = ["ticket_type", "horse_number_1", "horse_number_2", "horse_number_3", "odds"]
 
 
 def parse_netkeiba_race_id(netkeiba_race_id: str) -> dict:
@@ -471,6 +496,304 @@ def scrape_today_odds(
         f"{len(result_df)}頭のオッズを取得"
     )
     return result_df
+
+
+def scrape_today_combo_odds(
+    date: datetime.date,
+    project_id: str,
+    ticket_types: list[str] | None = None,
+    sleep_sec: float = 1.5,
+) -> int:
+    """
+    当日の全レースの組み合わせ馬券オッズを取得してBigQueryに保存する
+
+    処理フロー:
+      1. get_today_race_list() で当日のnetkeibaレースIDを取得
+      2. 各レースの組み合わせオッズを get_combo_odds() で取得
+      3. netkeiba_to_jrdb_race_id() でJRDB race_idに変換
+      4. save_combo_odds_to_bq() で保存
+
+    Args:
+        date: 対象日付
+        project_id: GCPプロジェクトID（BQ照合・保存に使用）
+        ticket_types: 取得する馬券種リスト（例: ['b4', 'b6']）
+                      None の場合は全種（馬連・馬単・ワイド・三連複）を取得
+        sleep_sec: 各レース・各馬券種のリクエスト間隔（秒）
+
+    Returns:
+        BigQueryに保存した合計行数
+    """
+    bq_client = bigquery.Client(project=project_id)
+    scraped_at = datetime.datetime.now(datetime.timezone.utc)
+
+    races = get_today_race_list(date, sleep_sec=sleep_sec)
+    if not races:
+        logger.warning(f"当日のレースが見つかりません: {date}")
+        return 0
+
+    total_saved = 0
+    for race_info in races:
+        netkeiba_race_id = race_info["netkeiba_race_id"]
+        venue_code = race_info["venue_code"]
+        race_number = race_info["race_number"]
+        venue_name = VENUE_CODE_MAP.get(venue_code, venue_code)
+
+        jrdb_race_id = netkeiba_to_jrdb_race_id(
+            race_date=date,
+            venue_code=venue_code,
+            race_number=race_number,
+            bq_client=bq_client,
+            project_id=project_id,
+        )
+        if jrdb_race_id is None:
+            logger.warning(
+                f"JRDB race_id が見つかりません: {venue_name} {race_number}R → スキップ"
+            )
+            continue
+
+        combo_df = get_combo_odds(
+            netkeiba_race_id,
+            ticket_types=ticket_types,
+            sleep_sec=sleep_sec,
+        )
+        if combo_df.empty:
+            logger.warning(f"組み合わせオッズが取得できませんでした: {venue_name} {race_number}R")
+            continue
+
+        try:
+            saved = save_combo_odds_to_bq(
+                df=combo_df,
+                race_id=jrdb_race_id,
+                race_date=date,
+                scraped_at=scraped_at,
+                project_id=project_id,
+            )
+            total_saved += saved
+            logger.info(f"  → {venue_name} {race_number}R 組み合わせオッズ: {saved}件保存")
+        except Exception as e:
+            logger.error(f"BQ保存失敗: {venue_name} {race_number}R, {e}")
+
+    logger.info(f"組み合わせオッズ取得完了: 合計{total_saved}件保存")
+    return total_saved
+
+
+def _parse_combo_odds_html(html: str, ticket_type: str) -> pd.DataFrame:
+    """
+    組み合わせ馬券（馬連・馬単・ワイド・三連複）のオッズページ HTML をパースする
+    （テスト可能な純粋関数）
+
+    HTMLの span ID 形式:
+      2頭組み合わせ: <span id="odds-{code}-XXYY">
+      3頭組み合わせ: <span id="odds-{code}-XXYYZZ">
+
+    Args:
+        html: オッズページのHTML文字列
+        ticket_type: 'b4'(馬連) / 'b5'(馬単) / 'b7'(ワイド) / 'b6'(三連複)
+
+    Returns:
+        DataFrame[ticket_type(str), horse_number_1(int), horse_number_2(int),
+                  horse_number_3(int or None), odds(float)]
+        パース失敗時は空のDataFrameを返す
+    """
+    code = _COMBO_TYPE_CODE.get(ticket_type)
+    if code is None:
+        logger.warning(f"未対応のticket_type: {ticket_type}")
+        return pd.DataFrame(columns=_EMPTY_COMBO_COLUMNS)
+
+    soup = BeautifulSoup(html, "lxml")
+    is_trio = (ticket_type == "b6")
+    # 三連複は6桁、2頭組は4桁
+    pattern = re.compile(rf'^odds-{code}-(\d{{6}})$' if is_trio else rf'^odds-{code}-(\d{{4}})$')
+
+    rows = []
+    for span in soup.find_all("span", id=pattern):
+        match = pattern.match(span["id"])
+        if not match:
+            continue
+        digits = match.group(1)
+        odds_text = span.get_text(strip=True).replace(",", "")
+        try:
+            odds_val = float(odds_text)
+        except ValueError:
+            continue
+        if odds_val <= 1.0:
+            continue
+
+        if is_trio:
+            h1, h2, h3 = int(digits[0:2]), int(digits[2:4]), int(digits[4:6])
+            rows.append({
+                "ticket_type": COMBO_TICKET_TYPES[ticket_type],
+                "horse_number_1": h1,
+                "horse_number_2": h2,
+                "horse_number_3": h3,
+                "odds": odds_val,
+            })
+        else:
+            h1, h2 = int(digits[0:2]), int(digits[2:4])
+            rows.append({
+                "ticket_type": COMBO_TICKET_TYPES[ticket_type],
+                "horse_number_1": h1,
+                "horse_number_2": h2,
+                "horse_number_3": None,
+                "odds": odds_val,
+            })
+
+    if not rows:
+        return pd.DataFrame(columns=_EMPTY_COMBO_COLUMNS)
+
+    return pd.DataFrame(rows)
+
+
+def get_combo_odds(
+    netkeiba_race_id: str,
+    ticket_types: list[str] | None = None,
+    sleep_sec: float = 1.5,
+) -> pd.DataFrame:
+    """
+    指定レースの組み合わせ馬券オッズをnetkeibaから取得する
+
+    Args:
+        netkeiba_race_id: 12桁のnetkeibaレースID
+        ticket_types: 取得する馬券種リスト（例: ['b4', 'b6']）
+                      None の場合は全種（馬連・馬単・ワイド・三連複）を取得
+        sleep_sec: 各ページのリクエスト間隔（秒）
+
+    Returns:
+        DataFrame[ticket_type, horse_number_1, horse_number_2, horse_number_3, odds]
+
+    Raises:
+        ImportError: playwright が未インストールの場合
+    """
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError as e:
+        raise ImportError(
+            "playwright が未インストールです。"
+            "`pip install playwright && playwright install chromium` を実行してください。"
+        ) from e
+
+    if ticket_types is None:
+        ticket_types = list(COMBO_TICKET_TYPES.keys())
+
+    all_dfs: list[pd.DataFrame] = []
+
+    for i, ttype in enumerate(ticket_types):
+        if ttype not in COMBO_TICKET_TYPES:
+            logger.warning(f"未対応の馬券種をスキップ: {ttype}")
+            continue
+
+        url = (
+            f"{NETKEIBA_BASE_URL}/odds/index.html"
+            f"?race_id={netkeiba_race_id}&type={ttype}"
+        )
+        logger.debug(f"組み合わせオッズ取得: {url}")
+
+        if i > 0:
+            time.sleep(sleep_sec)
+
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            try:
+                page = browser.new_page()
+                page.goto(url, wait_until="load", timeout=30_000)
+                time.sleep(sleep_sec)
+                html = page.content()
+            except Exception as e:
+                logger.error(f"オッズページ取得失敗: {ttype} race_id={netkeiba_race_id}, {e}")
+                html = ""
+            finally:
+                browser.close()
+
+        df = _parse_combo_odds_html(html, ttype)
+        if not df.empty:
+            all_dfs.append(df)
+            logger.debug(
+                f"  {COMBO_TICKET_TYPES[ttype]}: {len(df)}件"
+            )
+
+    if not all_dfs:
+        return pd.DataFrame(columns=_EMPTY_COMBO_COLUMNS)
+
+    return pd.concat(all_dfs, ignore_index=True)
+
+
+def save_combo_odds_to_bq(
+    df: pd.DataFrame,
+    race_id: str,
+    race_date: datetime.date,
+    scraped_at: datetime.datetime,
+    project_id: str,
+    dataset: str = "predictions",
+    table: str = "daily_odds_combo",
+) -> int:
+    """
+    組み合わせ馬券オッズ DataFrame を BigQuery に UPSERT 保存する
+
+    Args:
+        df: get_combo_odds() が返す DataFrame
+        race_id: JRDB形式のレースID
+        race_date: 開催日
+        scraped_at: スクレイプ日時（UTC）
+        project_id: GCP プロジェクト ID
+        dataset: データセット名
+        table: テーブル名
+
+    Returns:
+        保存した行数
+
+    Raises:
+        ValueError: df が空の場合
+    """
+    if df.empty:
+        raise ValueError("保存するデータがありません（空のDataFrame）")
+
+    df = df.copy()
+    df["race_id"] = race_id
+    df["race_date"] = race_date
+    df["scraped_at"] = scraped_at
+
+    client = bigquery.Client(project=project_id)
+    table_ref = f"{project_id}.{dataset}.{table}"
+    temp_table = f"{table_ref}_temp_{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}"
+
+    job_config = bigquery.LoadJobConfig(
+        write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
+        schema=[
+            bigquery.SchemaField("race_id", "STRING", mode="REQUIRED"),
+            bigquery.SchemaField("race_date", "DATE", mode="REQUIRED"),
+            bigquery.SchemaField("ticket_type", "STRING", mode="REQUIRED"),
+            bigquery.SchemaField("horse_number_1", "INTEGER", mode="REQUIRED"),
+            bigquery.SchemaField("horse_number_2", "INTEGER", mode="REQUIRED"),
+            bigquery.SchemaField("horse_number_3", "INTEGER"),
+            bigquery.SchemaField("odds", "FLOAT64"),
+            bigquery.SchemaField("scraped_at", "TIMESTAMP", mode="REQUIRED"),
+        ],
+    )
+    client.load_table_from_dataframe(df, temp_table, job_config=job_config).result()
+
+    merge_query = f"""
+    MERGE `{table_ref}` AS target
+    USING `{temp_table}` AS source
+    ON target.race_id = source.race_id
+       AND target.ticket_type = source.ticket_type
+       AND target.horse_number_1 = source.horse_number_1
+       AND target.horse_number_2 = source.horse_number_2
+       AND (target.horse_number_3 = source.horse_number_3
+            OR (target.horse_number_3 IS NULL AND source.horse_number_3 IS NULL))
+    WHEN MATCHED THEN
+      UPDATE SET odds = source.odds, scraped_at = source.scraped_at
+    WHEN NOT MATCHED THEN
+      INSERT (race_id, race_date, ticket_type, horse_number_1, horse_number_2,
+              horse_number_3, odds, scraped_at)
+      VALUES (source.race_id, source.race_date, source.ticket_type,
+              source.horse_number_1, source.horse_number_2,
+              source.horse_number_3, source.odds, source.scraped_at)
+    """
+    client.query(merge_query).result()
+    client.delete_table(temp_table, not_found_ok=True)
+
+    logger.info(f"BQへの保存完了: {len(df)}行 → {table_ref}")
+    return len(df)
 
 
 def save_odds_to_bq(
