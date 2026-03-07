@@ -814,6 +814,106 @@ async def predict_on_demand(request: PredictOnDemandRequest):
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 
+class OddsScrapeRequest(BaseModel):
+    """オッズスクレイプリクエスト"""
+
+    execution_date: Optional[str] = Field(
+        default=None,
+        description="対象日付（YYYY-MM-DD形式、省略時は当日）",
+        json_schema_extra={"example": "2026-03-07"},
+    )
+
+    @field_validator("execution_date")
+    @classmethod
+    def validate_date_format(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        try:
+            datetime.date.fromisoformat(v)
+            return v
+        except ValueError:
+            raise ValueError(
+                f"日付はYYYY-MM-DD形式の有効な日付で指定してください: '{v}'"
+            )
+
+
+class OddsScrapeResponse(BaseModel):
+    """オッズスクレイプレスポンス"""
+
+    status: str = Field(description="処理ステータス (success/failed)")
+    execution_date: str = Field(description="対象日付")
+    races_scraped: int = Field(default=0, description="オッズを取得できたレース数")
+    horses_scraped: int = Field(default=0, description="取得した馬数（行数）")
+    saved_rows: int = Field(default=0, description="BigQueryに保存した行数")
+    error_message: Optional[str] = Field(default=None, description="エラーメッセージ")
+
+
+@app.post("/api/v1/odds/scrape", response_model=OddsScrapeResponse)
+async def scrape_odds(request: OddsScrapeRequest):
+    """
+    netkeibaから当日レースの単勝・複勝オッズをスクレイピングしてBigQueryに保存する
+
+    処理フロー:
+    1. netkeibaのレース一覧ページから当日のレース情報を取得
+    2. 各レースの単複オッズを取得
+    3. JRDB形式のrace_idに変換
+    4. predictions.daily_odds テーブルにUPSERT保存
+
+    Args:
+        request: リクエストボディ
+
+    Returns:
+        スクレイプ結果
+    """
+    execution_date_str = request.execution_date or date.today().isoformat()
+    execution_date = datetime.date.fromisoformat(execution_date_str)
+
+    logger.info(f"オッズスクレイプリクエスト受信: execution_date={execution_date_str}")
+
+    project_id = os.environ.get("GCP_PROJECT_ID")
+    if not project_id:
+        raise HTTPException(status_code=500, detail="GCP_PROJECT_IDが未設定です")
+
+    try:
+        from src.automation.data.netkeiba_scraper import save_odds_to_bq, scrape_today_odds
+
+        odds_df = scrape_today_odds(
+            date=execution_date,
+            project_id=project_id,
+        )
+
+        if odds_df.empty:
+            logger.warning(f"オッズを取得できませんでした: {execution_date_str}")
+            return OddsScrapeResponse(
+                status="success",
+                execution_date=execution_date_str,
+                races_scraped=0,
+                horses_scraped=0,
+                saved_rows=0,
+            )
+
+        races_scraped = int(odds_df["race_id"].nunique())
+        horses_scraped = len(odds_df)
+
+        saved_rows = save_odds_to_bq(odds_df, project_id=project_id)
+
+        logger.info(
+            f"オッズスクレイプ完了: {races_scraped}レース, {horses_scraped}頭, "
+            f"saved={saved_rows}行"
+        )
+        return OddsScrapeResponse(
+            status="success",
+            execution_date=execution_date_str,
+            races_scraped=races_scraped,
+            horses_scraped=horses_scraped,
+            saved_rows=saved_rows,
+        )
+
+    except Exception as e:
+        logger.error(f"オッズスクレイプエラー: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
 def create_app() -> FastAPI:
     """アプリケーションファクトリ"""
     return app
