@@ -59,8 +59,12 @@
   - `POST /api/v1/predict/daily`: `model_path` 未指定時はGCSから最新モデルを自動取得
   - `predictions.daily_predictions` テーブルへのUPSERT保存
   - GCS保存（`gs://{project}-keiba-predictions/{date}/predictions.csv`）
+- netkeibaリアルタイムオッズスクレイパー ✅ Issue #131
+  - `POST /api/v1/odds/scrape`: Playwright (Chromium) で当日全レースの単複オッズ取得
+  - `predictions.daily_odds` テーブルへのUPSERT保存（race_id + horse_numberキー）
+  - `src/automation/data/netkeiba_scraper.py` に実装
 - Webダッシュボード（Streamlit） ⬜ 未実装
-- 通知システム（メール/LINE） ⬜ 未実装
+- 通知システム（LINE Messaging API） ⬜ 未実装 Issue #25
 
 詳細なアーキテクチャ図と実行手順は [README.md](./README.md) を参照してください。
 
@@ -75,7 +79,7 @@
 #### 2.2.2 BigQuery
 - `raw`: 生データテーブル（実装済み）
 - `features`: 特徴量テーブル（実装済み）
-- `predictions`: 予測結果テーブル（実装済み・Issue #117）。`predictions.daily_predictions` で日次予測を保存。
+- `predictions`: 予測結果テーブル（実装済み）。`predictions.daily_predictions` で日次予測を保存、`predictions.daily_odds` でリアルタイムオッズを保存。
 - `backtests`: バックテスト結果テーブル（実装済み）
 
 詳細なテーブル構成は [README.md](./README.md#bigqueryテーブル構成) を参照してください。
@@ -170,6 +174,8 @@ JRDB → GCS → BigQuery → features.training_data の流れでデータを取
 - `src/backtest/__init__.py`: モジュール初期化
 - `src/backtest/simulator.py`: Kelly基準・BacktestSimulatorクラス
 - `src/backtest/metrics.py`: 評価指標（回収率・的中率・最大ドローダウン・シャープレシオ）
+- `src/backtest/strategy.py`: 投資戦略（Kelly基準・期待回収率フィルタ）
+- `src/backtest/strategy_optimizer.py`: 戦略パラメータ最適化
 - `scripts/run_backtest.py`: CLIバックテスト実行スクリプト
 - `tests/test_backtest_simulator.py`: シミュレーターテスト（24件）
 - `tests/test_backtest_metrics.py`: 指標テスト（24件）
@@ -211,16 +217,18 @@ def fractional_kelly(win_prob, odds, fraction=0.25):
 
 日次データパイプライン、Cloud Runデプロイ、APIエンドポイントの詳細は [README.md](./README.md) および [infrastructure/README.md](./infrastructure/README.md) を参照してください。
 
-### 7.2 予測パイプライン設計（未実装）
+### 7.2 予測・オッズ取得パイプライン設計
 
 #### 7.2.1 実行タイミング
-- **前日PM 9:00**: 特徴量生成 → 予測実行 → 通知
-- **当日AM 8:00**: オッズ更新 → 予測再実行 → 通知
+- **当日AM 8:00**: 推論実行 → `predictions.daily_predictions` 保存 ✅ 実装済み
+- **当日AM 8:30**: netkeibaオッズ取得 → `predictions.daily_odds` 保存 ✅ 実装済み
+- **当日AM 9:00**: 投資戦略策定 → LINE通知 ⬜ 未実装
 
 #### 7.2.2 実装方針
 - Cloud Schedulerから Cloud Run HTTPエンドポイントをトリガー
-- 予測結果を `predictions` データセットに保存
-- 期待回収率上位の馬券を抽出し通知
+- 予測結果を `predictions.daily_predictions` に保存（実装済み）
+- リアルタイムオッズを `predictions.daily_odds` に保存（実装済み）
+- 期待回収率上位の馬券を抽出し LINE Messaging API で通知（未実装）
 
 ---
 
@@ -342,34 +350,19 @@ def send_email_notification(predictions_df):
     response = sg.send(message)
 ```
 
-### 9.2 LINE通知
+### 9.2 LINE通知（未実装 - Issue #25）
 
-#### 9.2.1 LINE Notify実装
-```python
-import requests
+LINE Messaging APIを使った双方向Botを実装予定。
 
-def send_line_notification(predictions_df):
-    """
-    予測結果をLINE通知
-    """
-    top_bets = predictions_df.nlargest(3, 'expected_return')
+**機能設計:**
+- **プッシュ通知**: 毎朝AM 9:00 に上位推奨馬券を自動送信
+- **オンデマンド問い合わせ**: ユーザーがLINEでメッセージ送信 → Webhookで受信 → 当日オッズを再取得してリアルタイムで返信
 
-    message = "🏇 本日のおすすめ馬券\n\n"
-
-    for idx, row in top_bets.iterrows():
-        message += f"{row['venue']} {row['race_number']}R\n"
-        message += f"馬名: {row['horse_name']}\n"
-        message += f"予測: {row['pred_prob']:.1%} / オッズ: {row['odds']:.1f}\n"
-        message += f"期待回収率: {row['expected_return']:.2f}\n\n"
-
-    url = "https://notify-api.line.me/api/notify"
-    headers = {
-        "Authorization": f"Bearer {os.environ.get('LINE_NOTIFY_TOKEN')}"
-    }
-    data = {"message": message}
-
-    response = requests.post(url, headers=headers, data=data)
-```
+**実装方針:**
+- LINE Messaging API（Messaging API, not LINE Notify）を使用
+- Webhook受信エンドポイント: `POST /api/v1/line/webhook` をCloud Runに追加
+- `predictions.daily_predictions` と `predictions.daily_odds` を参照し投資戦略を計算
+- `src/backtest/strategy.py` の `select_bets_for_race()` をそのまま流用
 
 ---
 
@@ -489,6 +482,7 @@ Cloud Run または Cloud Function のデプロイメント完了を宣言する
 | 2026-02-17 | 3.1.0 | Issue #85（LambdaRankラベル二値化）・Issue #86（Optunaハイパーパラメータチューニング）の実装を反映。Model Training Layer実装済み、評価指標にAUC追加、KPIにAUC追加 | Claude |
 | 2026-02-22 | 3.2.0 | Issue #17（バックテストシミュレーター）の実装を反映。Backtest Layer実装済みに更新、セクション6を実装済みに変更、実装ファイル一覧を追記 | Claude |
 | 2026-03-01 | 3.3.0 | Issue #116（ロード履歴スキップロジック改善）・Issue #117（日次予測パイプライン完成）の実装を反映。Prediction & Operation Layer一部実装済みに更新、predictionsバケット/データセット実装済みに更新、race-day-predictのAPI実装済みに更新 | Claude |
+| 2026-03-07 | 3.4.0 | Issue #131（netkeibaリアルタイムオッズスクレイパー）の実装を反映。netkeibaスクレイパーLayer追加、predictions.daily_odds追加、section 7.2を実装済みに更新、section 9.2をLINE Messaging API設計に更新、strategy.py/strategy_optimizer.pyをsection 6.1に追記 | Claude |
 
 ---
 

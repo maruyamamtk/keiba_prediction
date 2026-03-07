@@ -445,6 +445,7 @@ keiba_prediction/
 │   │   │   ├── jrdb_downloader.py    # JRDBダウンローダー
 │   │   │   ├── jrdb_parser.py        # JRDBデータパーサー
 │   │   │   ├── load_to_bq.py         # BigQueryロード（MERGE+重複スキップ）
+│   │   │   ├── netkeiba_scraper.py   # netkeibaリアルタイムオッズスクレイパー
 │   │   │   └── upload_to_gcs.py      # GCSアップロード
 │   │   └── pipeline/
 │   │       ├── __init__.py
@@ -470,8 +471,11 @@ keiba_prediction/
 │   └── backtest/                      # バックテストシミュレーター
 │       ├── __init__.py
 │       ├── simulator.py              # Kelly基準・BacktestSimulatorクラス
-│       └── metrics.py                # 評価指標（回収率・的中率・ドローダウン・シャープレシオ）
+│       ├── metrics.py                # 評価指標（回収率・的中率・ドローダウン・シャープレシオ）
+│       ├── strategy.py               # 投資戦略（Kelly基準・期待回収率フィルタ）
+│       └── strategy_optimizer.py     # 戦略パラメータ最適化
 ├── scripts/                           # ユーティリティスクリプト
+│   ├── create_daily_odds_table.py    # predictions.daily_oddsテーブル作成
 │   ├── create_predictions_table.py   # predictions.daily_predictionsテーブル作成
 │   ├── generate_features.py
 │   ├── reload_gcs_to_bq.py
@@ -605,6 +609,7 @@ Cloud RunにデプロイされたFastAPIアプリケーションは以下のエ�
 | POST | `/api/v1/features/generate/async` | 特徴量生成（非同期） |
 | POST | `/api/v1/predict/daily` | 翌日レース予測 + BQ/GCS保存（Cloud Scheduler用）。`model_path` 未指定時はGCSから最新モデルを自動取得。 |
 | POST | `/api/v1/predict/on-demand` | 任意日付レース予測 + BQ/GCS保存（手動実行用） |
+| POST | `/api/v1/odds/scrape` | netkeibaから当日オッズを取得し `predictions.daily_odds` にUPSERT保存 |
 
 ---
 
@@ -889,6 +894,7 @@ gcloud scheduler jobs run daily-data-pipeline --location=asia-northeast1
 | テーブル | 説明 | 状態 |
 |---------|------|------|
 | `predictions.daily_predictions` | 日次予測結果 | 実装済み（Issue #117） |
+| `predictions.daily_odds` | netkeibaリアルタイム単複オッズ | 実装済み（Issue #131） |
 
 #### daily_predictions テーブルスキーマ
 
@@ -913,6 +919,24 @@ gcloud scheduler jobs run daily-data-pipeline --location=asia-northeast1
 ```bash
 python3 scripts/create_predictions_table.py
 # GCP_PROJECT_IDを環境変数から読み込む。または --project-id で明示指定も可能。
+```
+
+#### daily_odds テーブルスキーマ
+
+| カラム | 型 | 説明 |
+|--------|-----|------|
+| `race_id` | STRING | JRDB形式のレースID（クラスタリングキー） |
+| `race_date` | DATE | 開催日（パーティションキー） |
+| `horse_number` | INTEGER | 馬番 |
+| `win_odds` | FLOAT64 | 単勝オッズ |
+| `place_odds_min` | FLOAT64 | 複勝オッズ（下限）。投資戦略では保守的推定としてこちらを使用 |
+| `place_odds_max` | FLOAT64 | 複勝オッズ（上限） |
+| `scraped_at` | TIMESTAMP | netkeibaからスクレイプした日時（UTC） |
+
+テーブル作成コマンド:
+
+```bash
+python3 scripts/create_daily_odds_table.py --project-id <PROJECT_ID>
 ```
 
 ### backtestsデータセット
@@ -1006,8 +1030,12 @@ python -m pytest tests/ --cov=src --cov-report=html
   - `POST /api/v1/predict/daily`: `model_path` 未指定時GCSから最新モデルを自動取得
   - `predictions.daily_predictions` テーブルへのUPSERT保存
   - GCS保存（`gs://{project}-keiba-predictions/{date}/predictions.csv`）
+- ✅ netkeibaリアルタイムオッズスクレイパー - Issue #131
+  - `POST /api/v1/odds/scrape`: netkeibaから当日全レースの単複オッズを取得
+  - `predictions.daily_odds` テーブルへのUPSERT保存（race_id + horse_numberキー）
+  - Playwright (Chromium) によるJS描画ページ対応
 - ⬜ Webダッシュボード
-- ⬜ 通知システム
+- ⬜ 通知システム（LINE Messaging API）
 
 ---
 
@@ -1032,3 +1060,4 @@ python -m pytest tests/ --cov=src --cov-report=html
 | 2026-02-22 | Issue #17（バックテストシミュレーター）の実装を反映。src/backtest/追加、scripts/run_backtest.py追加、Phase 4完了に更新 |
 | 2026-03-01 | Issue #21（Cloud Runデプロイ設定）の実装を反映。予測エンドポイント2件をAPIエンドポイント一覧に追記、--model-pathへのgs://URI指定対応を追記 |
 | 2026-03-01 | Issue #116（ロード履歴スキップロジック改善）・Issue #117（日次予測パイプライン完成）の実装を反映。predictions.daily_predictionsテーブル追加、POST /api/v1/predict/dailyのmodel_pathをOptional化、Phase 5を一部実装済みに更新 |
+| 2026-03-07 | Issue #131（netkeibaリアルタイムオッズスクレイパー）の実装を反映。netkeiba_scraper.py追加、predictions.daily_oddsテーブル追加、POST /api/v1/odds/scrapeエンドポイント追加、strategy.py/strategy_optimizer.pyをプロジェクト構成に追記 |
