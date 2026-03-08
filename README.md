@@ -502,6 +502,94 @@ python3 scripts/alter_odds_horse_id_nullable.py --project-id <PROJECT_ID>
 
 ---
 
+### `scripts/create_raw_combo_odds_table.py` — raw.combo_oddsテーブル作成
+
+JRDBのOW（ワイド）・OT（三連複）・OZ（馬連）コンボ基準オッズを格納する
+`raw.combo_odds` テーブルをBigQueryに作成します。初回セットアップ時に一度だけ実行します。
+
+```bash
+python3 scripts/create_raw_combo_odds_table.py --project-id <PROJECT_ID>
+```
+
+| オプション | デフォルト | 説明 |
+|-----------|-----------|------|
+| `--project-id` | 環境変数 | GCPプロジェクトID |
+
+---
+
+### `scripts/validate_odds_consistency.py` — JRDBとnetkeibaオッズ整合性検証
+
+`raw.combo_odds`（JRDBコンボ基準オッズ）と `predictions.daily_odds_combo`（netkeibaスクレイプ）の
+オッズ一致率を検証します。データ品質確認やモデル評価の参考として使用します。
+
+```bash
+python3 scripts/validate_odds_consistency.py --project-id <PROJECT_ID>
+
+# 期間を指定して検証
+python3 scripts/validate_odds_consistency.py \
+    --project-id <PROJECT_ID> \
+    --start-date 2026-01-01 \
+    --end-date 2026-03-01
+```
+
+| オプション | デフォルト | 説明 |
+|-----------|-----------|------|
+| `--project-id` | 環境変数 | GCPプロジェクトID |
+| `--start-date` | なし | 検証開始日 (YYYY-MM-DD) |
+| `--end-date` | なし | 検証終了日 (YYYY-MM-DD) |
+
+---
+
+### `scripts/scrape_historical_odds.py` — 過去レース一括オッズ取得
+
+netkeibaから指定期間（2016年以降）の全レースの単複・組み合わせ馬券オッズを一括スクレイプして
+BigQueryに保存します。途中で停止しても再実行で続きから再開できます。
+
+JRDB race_id（8文字）を netkeiba race_id（12桁）に直接変換するため、BQ照会不要で高速です。
+
+```bash
+# ドライラン（対象件数と推定時間の確認のみ）
+python3 scripts/scrape_historical_odds.py \
+    --project-id <PROJECT_ID> \
+    --start-date 2016-01-01 \
+    --mode all \
+    --dry-run
+
+# 単複オッズのみ取得（predictions.daily_odds に保存）
+python3 scripts/scrape_historical_odds.py \
+    --project-id <PROJECT_ID> \
+    --start-date 2016-01-01 \
+    --mode win_place
+
+# 組み合わせ馬券オッズのみ取得（predictions.daily_odds_combo に保存）
+python3 scripts/scrape_historical_odds.py \
+    --project-id <PROJECT_ID> \
+    --start-date 2016-01-01 \
+    --mode combo \
+    --ticket-types b4 b7 b6
+
+# バックグラウンド実行（長時間処理）
+nohup python3 scripts/scrape_historical_odds.py \
+    --project-id <PROJECT_ID> \
+    --start-date 2016-01-01 \
+    --mode win_place > /tmp/scrape.log 2>&1 &
+```
+
+| オプション | デフォルト | 説明 |
+|-----------|-----------|------|
+| `--project-id` | 必須 | GCPプロジェクトID |
+| `--start-date` | `2016-01-01` | 取得開始日 (YYYY-MM-DD) |
+| `--end-date` | 本日 | 取得終了日 (YYYY-MM-DD) |
+| `--mode` | `all` | 取得モード（`win_place` / `combo` / `all`） |
+| `--ticket-types` | `b4 b7 b6` | comboモードで取得する馬券種（b4=馬連 b5=馬単 b6=三連複 b7=ワイド） |
+| `--sleep-sec` | `2.0` | ページ間スリープ秒数 |
+| `--batch-size` | `50` | BQへのバッチ保存間隔（レース数） |
+| `--dry-run` | False | 対象件数・推定時間の確認のみ（スクレイプなし） |
+
+> **推定時間**: 単複のみ（約25,000レース）で約28時間、コンボ3種込みで約83時間。長時間処理のため `nohup` や `tmux` での実行を推奨。
+
+---
+
 ## プロジェクト構成
 
 ```
@@ -551,14 +639,17 @@ keiba_prediction/
 │   ├── create_daily_odds_combo_table.py  # predictions.daily_odds_comboテーブル作成
 │   ├── create_daily_odds_table.py    # predictions.daily_oddsテーブル作成
 │   ├── create_predictions_table.py   # predictions.daily_predictionsテーブル作成
+│   ├── create_raw_combo_odds_table.py  # raw.combo_oddsテーブル作成（Issue #140）
 │   ├── generate_features.py
 │   ├── reload_gcs_to_bq.py
 │   ├── run_backtest.py               # CLIバックテスト実行スクリプト
 │   ├── run_strategy.py               # 日次投資戦略策定スクリプト（手動確認用）
 │   ├── run_strategy_optimization.py  # 投資パラメータ最適化スクリプト（手動実行）
+│   ├── scrape_historical_odds.py       # 過去レース一括オッズ取得（netkeibaスクレイプ）
 │   ├── setup_bigquery.sh
 │   ├── setup_gcp.sh
-│   └── sync_to_gcs.sh
+│   ├── sync_to_gcs.sh
+│   └── validate_odds_consistency.py    # JRDBとnetkeibaオッズの整合性検証
 ├── tests/                             # テストコード
 ├── config/                            # 設定ファイル（BigQueryスキーマ、モデル設定）
 │   └── model_config.yaml             # LightGBMモデル設定
@@ -661,10 +752,12 @@ keiba_prediction/
 - 投資戦略パラメータ（Kelly係数・期待回収率閾値）の調整
 - `scripts/run_backtest.py` からCLI実行
 
-**投資ロジック**:
-- 期待回収率フィルタ: `win_place_prob × odds > threshold`（デフォルト1.2）
-- 賭け金: Fractional Kelly（デフォルト25%）+ 1レースあたり最大5%上限
-- 払戻: `raw.payouts` の実際の払戻金額を優先使用、なければオッズで推定
+**投資ロジック（Issue #139 改修後）**:
+- **基本馬券**: 複勝・ワイド・三連複をベースに期待回収率フィルタで選定
+- **パターンA（突出型）**: `top1_prob - top2_prob > p1` の場合、単勝・馬連を追加購入
+- 賭け金配分: **オッズ逆数比率**方式（1レース合計 = capital × max_bet_ratio 固定）
+- コンボオッズ参照: `predictions.daily_odds_combo` → `raw.combo_odds` → `raw.payouts` の順にフォールバック
+- パラメータ管理: `config/strategy_config.yaml`（`run_strategy_optimization.py` でグリッドサーチ25通り最適化）
 
 ---
 
@@ -940,7 +1033,8 @@ gcloud scheduler jobs run daily-data-pipeline --location=asia-northeast1
 | `venue_info` | KAB (開催情報) | 馬場状態・天候 | ~418 |
 | `load_history` | (管理用) | ロード履歴管理 | ~3,350 |
 | `pedigree` | 血統データ | 血統情報 | 0 (未実装) |
-| `odds` | OZ (オッズデータ) | オッズ情報 | 0 (未実装) |
+| `odds` | OZ (基準オッズ) | 単勝・複勝オッズ（JRDBコード表） | 実装済み |
+| `combo_odds` | OW/OT/OZ | JRDBコンボ基準オッズ（ワイド/三連複/馬連） | 実装済み（Issue #140） |
 
 詳細なスキーマは [SCHEMA.md](./SCHEMA.md) を参照してください。
 
@@ -957,6 +1051,27 @@ gcloud scheduler jobs run daily-data-pipeline --location=asia-northeast1
 | error_message | エラーメッセージ (失敗時) |
 | duration_seconds | 処理時間(秒) |
 | file_size_bytes | ファイルサイズ(バイト) |
+
+#### combo_odds テーブルスキーマ
+
+JRDBのOW（ワイド）・OT（三連複）・OZ（馬連）ファイルから展開したコンボ基準オッズ。
+
+| カラム名 | 型 | 説明 |
+|---------|-----|------|
+| `race_id` | STRING | JRDB形式のレースID（クラスタリングキー） |
+| `race_date` | DATE | 開催日（パーティションキー） |
+| `bet_type` | STRING | 馬券種（wide / sanrenpuku / umaren） |
+| `horse_number_1` | INTEGER | 馬番1 |
+| `horse_number_2` | INTEGER | 馬番2 |
+| `horse_number_3` | INTEGER | 馬番3（三連複のみ、それ以外はNULL） |
+| `odds` | FLOAT64 | 基準オッズ（JRDBのZZZ9.9形式） |
+| `loaded_at` | TIMESTAMP | ロード日時（UTC） |
+
+テーブル作成コマンド:
+
+```bash
+python3 scripts/create_raw_combo_odds_table.py --project-id <PROJECT_ID>
+```
 
 ### featuresデータセット
 
@@ -1048,7 +1163,7 @@ python3 scripts/create_daily_odds_combo_table.py --project-id <PROJECT_ID>
 | `horse_name` | STRING | 馬名 |
 | `venue_code` | STRING | 競馬場コード |
 | `race_number` | INTEGER | レース番号 |
-| `race_pattern` | STRING | レースパターン（one_dominant / competitive / standard） |
+| `race_pattern` | STRING | レースパターン（one_dominant / standard） |
 | `bet_type` | STRING | 馬券種（place など） |
 | `bet_amount` | FLOAT64 | 賭け金（円） |
 | `win_place_prob` | FLOAT64 | 複勝予測確率 |
@@ -1158,6 +1273,21 @@ python -m pytest tests/ --cov=src --cov-report=html
   - `POST /api/v1/strategy/daily`: 予測×オッズからKelly基準で投資判断を実行
   - `predictions.investment_decisions` テーブルへのUPSERT保存
   - `config/strategy_config.yaml` でパラメータ管理（`run_strategy_optimization.py` で最適化）
+- ✅ JRDBコンボ基準オッズ取得（raw.combo_odds） - Issue #140
+  - OW（ワイド153通り）・OT（三連複816通り）・OZ（馬連153通り）のJRDB基準オッズを解析
+  - `raw.combo_odds` テーブルにMERGE/UPSERT保存
+  - `scripts/create_raw_combo_odds_table.py` でテーブル作成
+- ✅ 投資戦略を複勝+ワイド+三連複中心に改修（パターンA追加） - Issue #139
+  - 複勝のみ → 複勝+ワイド+三連複をベース馬券に変更
+  - パターンA（突出型）: top1確率が top2 より p1 以上高い場合に単勝+馬連を追加
+  - 賭け金配分: オッズ逆数比率方式（トリガミ防止）
+  - バックテスト `fetch_combo_odds`: predictions.daily_odds_combo → raw.combo_odds → raw.payouts の3段フォールバック
+  - グリッドサーチ: 450通り → 25通りに最適化（p1 × threshold の2次元探索）
+- ✅ 過去レース一括オッズ取得スクリプト - PR #143
+  - `scripts/scrape_historical_odds.py`: 2016年以降の全レース（約25,000レース）を一括スクレイプ
+  - JRDB race_id（8文字）→ netkeiba race_id（12桁）のローカル変換（BQ照会不要）
+  - 既スクレイプ済みレースのスキップによる再開対応
+  - 単複オッズ（predictions.daily_odds）とコンボオッズ（predictions.daily_odds_combo）両対応
 - ⬜ Webダッシュボード
 - ⬜ 通知システム（LINE Messaging API）
 
@@ -1185,3 +1315,4 @@ python -m pytest tests/ --cov=src --cov-report=html
 | 2026-03-01 | Issue #21（Cloud Runデプロイ設定）の実装を反映。予測エンドポイント2件をAPIエンドポイント一覧に追記、--model-pathへのgs://URI指定対応を追記 |
 | 2026-03-01 | Issue #116（ロード履歴スキップロジック改善）・Issue #117（日次予測パイプライン完成）の実装を反映。predictions.daily_predictionsテーブル追加、POST /api/v1/predict/dailyのmodel_pathをOptional化、Phase 5を一部実装済みに更新 |
 | 2026-03-07 | Issue #131（netkeibaリアルタイムオッズスクレイパー）の実装を反映。netkeiba_scraper.py追加、predictions.daily_oddsテーブル追加、POST /api/v1/odds/scrapeエンドポイント追加、strategy.py/strategy_optimizer.pyをプロジェクト構成に追記 |
+| 2026-03-08 | Issue #140（JRDBコンボ基準オッズ raw.combo_odds）・Issue #139（投資戦略複勝+ワイド+三連複改修、パターンA追加）・PR #143（過去レース一括オッズ取得スクリプト）の実装を反映 |
