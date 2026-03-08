@@ -1,10 +1,11 @@
 """
 JRDBParser の OZ（基準オッズ）パーサーのユニットテスト
 
-parse_oz_line() および expand_oz_to_odds_rows() の動作を検証する。
+parse_oz_line() および expand_oz_to_odds_rows(), expand_oz_to_combo_rows() の動作を検証する。
 """
 
 import pytest
+from itertools import combinations
 
 from src.automation.data.jrdb_parser import JRDBParser
 
@@ -259,3 +260,169 @@ class TestParseFileOZ:
         assert len(results) == 2
         race_ids = {r["race_id"] for r in results}
         assert race_ids == {"05261101", "05261102"}
+
+
+# ---------------------------------------------------------------------------
+# OZ 馬連オッズテスト (umaren_odds_list / expand_oz_to_combo_rows)
+# ---------------------------------------------------------------------------
+
+def _build_oz_line_with_umaren(
+    race_key: str = "05261101",
+    registered_count: int = 8,
+    win_odds: list = None,
+    place_odds: list = None,
+    umaren_odds: dict = None,
+) -> str:
+    """
+    馬連オッズを含む OZ 行を構築するヘルパー。
+    umaren_odds: {(h1, h2): odds_value} のdict
+    """
+    win_odds = win_odds or []
+    place_odds = place_odds or []
+
+    def _fmt_odds(odds_list: list) -> str:
+        result = ""
+        for i in range(18):
+            val = odds_list[i] if i < len(odds_list) else None
+            if val is None or val <= 0:
+                result += "     "
+            else:
+                result += f"{val:05.1f}"
+        return result
+
+    # 馬連オッズ部分 (153通り × 5文字)
+    all_pairs = list(combinations(range(1, 19), 2))
+    umaren_part = ""
+    for h1, h2 in all_pairs:
+        val = (umaren_odds or {}).get((h1, h2), 0.0)
+        if val is not None and val > 0:
+            umaren_part += f"{val:05.1f}"
+        else:
+            umaren_part += "     "
+
+    body = (
+        race_key
+        + f"{registered_count:02d}"
+        + _fmt_odds(win_odds)
+        + _fmt_odds(place_odds)
+        + umaren_part
+    )
+    return body
+
+
+class TestOzUmarenParsing:
+    """OZ 馬連オッズ (umaren_odds_list) のテスト"""
+
+    def test_umaren_odds_list_present_when_long_enough(self):
+        """十分な長さの行では umaren_odds_list が返されること"""
+        line = _build_oz_line_with_umaren(umaren_odds={(1, 2): 28.2})
+        result = JRDBParser.parse_oz_line(line)
+        assert result is not None
+        assert "umaren_odds_list" in result
+        assert len(result["umaren_odds_list"]) == 153
+
+    def test_umaren_odds_list_empty_for_short_line(self):
+        """955バイト未満の行では umaren_odds_list が空になること"""
+        # _build_oz_line は馬連部分を "0"×765 で埋めるが、umaren_odds_listは実際には
+        # "0"文字列がsafe_float("00000")=0.0を返す可能性があるため、
+        # 短い行で確認する
+        short_line = "05261101" + "08" + "     " * 18 + "     " * 18  # 190文字未満
+        result = JRDBParser.parse_oz_line(short_line)
+        # 行が短すぎる(<100)場合はNoneが返る
+        # 100以上190未満の場合はumaren_odds_listが空
+        if result is not None:
+            assert result["umaren_odds_list"] == []
+
+    def test_specific_umaren_odds_value(self):
+        """特定の馬連オッズ値が正しくパースされること"""
+        line = _build_oz_line_with_umaren(umaren_odds={(1, 2): 28.2, (3, 5): 150.0})
+        result = JRDBParser.parse_oz_line(line)
+        assert result is not None
+        found_12 = [(h1, h2, v) for h1, h2, v in result["umaren_odds_list"] if h1 == 1 and h2 == 2]
+        assert len(found_12) == 1
+        assert abs(found_12[0][2] - 28.2) < 0.05
+
+    def test_combination_order(self):
+        """組み合わせ順が (1,2), (1,3), ..., (17,18) であること"""
+        line = _build_oz_line_with_umaren()
+        result = JRDBParser.parse_oz_line(line)
+        assert result is not None
+        pairs = [(h1, h2) for h1, h2, _ in result["umaren_odds_list"]]
+        expected = list(combinations(range(1, 19), 2))
+        assert pairs == expected
+
+
+class TestExpandOzToComboRows:
+    """expand_oz_to_combo_rows() の動作テスト"""
+
+    def _make_oz_record_with_umaren(self, race_id="05261101", umaren_odds_dict=None):
+        """テスト用 OZ レコードを作成するヘルパー"""
+        all_pairs = list(combinations(range(1, 19), 2))
+        umaren_list = []
+        for h1, h2 in all_pairs:
+            val = (umaren_odds_dict or {}).get((h1, h2), None)
+            umaren_list.append((h1, h2, val))
+        return {
+            "race_id": race_id,
+            "registered_count": 8,
+            "win_odds_list": [None] * 18,
+            "place_odds_list": [None] * 18,
+            "umaren_odds_list": umaren_list,
+            "created_at": "2024-12-31T10:00:00",
+        }
+
+    def test_basic_expansion(self):
+        """馬連オッズが正しく展開されること"""
+        record = self._make_oz_record_with_umaren(umaren_odds_dict={(1, 2): 28.2, (3, 5): 150.0})
+        rows = JRDBParser.expand_oz_to_combo_rows(record, file_date="2024-12-31")
+        assert len(rows) == 2
+
+    def test_bet_type_is_umaren(self):
+        """bet_type が 'umaren' であること"""
+        record = self._make_oz_record_with_umaren(umaren_odds_dict={(1, 2): 10.0})
+        rows = JRDBParser.expand_oz_to_combo_rows(record, file_date="2024-12-31")
+        assert rows[0]["bet_type"] == "umaren"
+
+    def test_schema_fields(self):
+        """必須フィールドが全て含まれること"""
+        record = self._make_oz_record_with_umaren(umaren_odds_dict={(2, 5): 15.3})
+        rows = JRDBParser.expand_oz_to_combo_rows(record, file_date="2024-12-31")
+        row = rows[0]
+        assert "race_id" in row
+        assert "race_date" in row
+        assert "bet_type" in row
+        assert "horse_number_1" in row
+        assert "horse_number_2" in row
+        assert "horse_number_3" in row
+        assert "odds_value" in row
+        assert "odds_timestamp" in row
+
+    def test_horse_number_3_is_none(self):
+        """horse_number_3 が None であること (馬連は2頭)"""
+        record = self._make_oz_record_with_umaren(umaren_odds_dict={(1, 2): 10.0})
+        rows = JRDBParser.expand_oz_to_combo_rows(record, file_date="2024-12-31")
+        assert rows[0]["horse_number_3"] is None
+
+    def test_zero_or_none_odds_skipped(self):
+        """0以下またはNoneのオッズはスキップされること"""
+        record = self._make_oz_record_with_umaren(umaren_odds_dict={(1, 2): 0.0})
+        rows = JRDBParser.expand_oz_to_combo_rows(record, file_date="2024-12-31")
+        assert len(rows) == 0
+
+    def test_empty_umaren_returns_empty_list(self):
+        """umaren_odds_listが空または全None時は空リストを返すこと"""
+        record = self._make_oz_record_with_umaren(umaren_odds_dict={})
+        rows = JRDBParser.expand_oz_to_combo_rows(record, file_date="2024-12-31")
+        assert rows == []
+
+    def test_odds_timestamp_format(self):
+        """file_date が odds_timestamp に反映されること"""
+        record = self._make_oz_record_with_umaren(umaren_odds_dict={(1, 2): 10.0})
+        rows = JRDBParser.expand_oz_to_combo_rows(record, file_date="2024-12-31")
+        assert "2024-12-31T19:00:00" in rows[0]["odds_timestamp"]
+
+    def test_race_id_propagated(self):
+        """race_id が全行に伝播すること"""
+        record = self._make_oz_record_with_umaren(race_id="09261205", umaren_odds_dict={(1, 2): 10.0})
+        rows = JRDBParser.expand_oz_to_combo_rows(record, file_date="2024-12-31")
+        assert all(r["race_id"] == "09261205" for r in rows)

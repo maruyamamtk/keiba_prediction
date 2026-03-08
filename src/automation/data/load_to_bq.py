@@ -50,6 +50,8 @@ TABLE_MAPPING = {
     "HJB": "payouts",
     "HJC": "payouts",
     "OZ": "odds",
+    "OW": "combo_odds",
+    "OT": "combo_odds",
 }
 
 # テーブルごとの一意キー (MERGE文で使用)
@@ -62,10 +64,11 @@ TABLE_UNIQUE_KEYS = {
     "venue_info": ["venue_id"],
     "payouts": ["race_id", "bet_type", "rank"],
     "odds": ["race_id", "horse_number", "odds_type"],
+    "combo_odds": ["race_id", "bet_type", "horse_number_1", "horse_number_2", "horse_number_3"],
 }
 
 # パース後に行展開が必要なデータタイプ
-EXPAND_DATA_TYPES = {"HJB", "HJC", "OZ"}
+EXPAND_DATA_TYPES = {"HJB", "HJC", "OZ", "OW", "OT"}
 
 # ロード履歴テーブル名
 LOAD_HISTORY_TABLE = "load_history"
@@ -542,7 +545,7 @@ class BigQueryLoader:
                 logger.warning(f"ファイルからデータをパースできませんでした: {blob_name}")
                 return result
 
-            # HJB/HJC/OZ は1レコードを複数行に展開する
+            # HJB/HJC/OZ/OW/OT は1レコードを複数行に展開する
             if data_type.upper() in EXPAND_DATA_TYPES:
                 expanded: List[Dict] = []
                 if data_type.upper() in {"HJB", "HJC"}:
@@ -554,6 +557,29 @@ class BigQueryLoader:
                     for record in parsed_data:
                         expanded.extend(JRDBParser.expand_oz_to_odds_rows(record, file_date))
                     empty_label = "OZ"
+                    # デュアルライト: 馬連オッズを combo_odds にも書き込む
+                    combo_rows: List[Dict] = []
+                    for record in parsed_data:
+                        combo_rows.extend(JRDBParser.expand_oz_to_combo_rows(record, file_date))
+                    if combo_rows:
+                        try:
+                            self._load_to_bigquery(
+                                table_id="combo_odds",
+                                rows=combo_rows,
+                                data_type="OZ",
+                            )
+                        except Exception as e:
+                            logger.warning(f"OZ combo_odds デュアルライト失敗 (スキップ): {e}")
+                elif data_type.upper() == "OW":
+                    file_date = extract_file_date(blob_name)
+                    for record in parsed_data:
+                        expanded.extend(JRDBParser.expand_ow_to_combo_rows(record, file_date))
+                    empty_label = "OW"
+                elif data_type.upper() == "OT":
+                    file_date = extract_file_date(blob_name)
+                    for record in parsed_data:
+                        expanded.extend(JRDBParser.expand_ot_to_combo_rows(record, file_date))
+                    empty_label = "OT"
                 else:
                     empty_label = data_type.upper()
                 parsed_data = expanded

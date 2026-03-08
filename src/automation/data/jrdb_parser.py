@@ -14,6 +14,7 @@ BigQueryにロード可能な形式に変換します。
 """
 
 import logging
+from itertools import combinations
 from typing import Dict, List, Optional
 from datetime import datetime
 import re
@@ -1514,11 +1515,22 @@ class JRDBParser:
                     val = JRDBParser.safe_float(line[start:end]) if end <= len(line) else None
                     place_odds_list.append(val)
 
+            # 馬連オッズ (153通り: 各5文字, 位置190-954)
+            umaren_odds_list: list = []
+            if len(line) >= 955:  # 190 + 153*5 = 955
+                umaren_pairs = list(combinations(range(1, 19), 2))
+                for idx, (h1, h2) in enumerate(umaren_pairs):
+                    start = 190 + idx * 5
+                    end = start + 5
+                    val = JRDBParser.safe_float(line[start:end]) if end <= len(line) else None
+                    umaren_odds_list.append((h1, h2, val))
+
             return {
                 'race_id': race_key,
                 'registered_count': registered_count,
                 'win_odds_list': win_odds_list,
                 'place_odds_list': place_odds_list,
+                'umaren_odds_list': umaren_odds_list,
                 'created_at': datetime.utcnow().isoformat(),
             }
 
@@ -1569,6 +1581,203 @@ class JRDBParser:
         return rows
 
     @staticmethod
+    def expand_oz_to_combo_rows(oz_record: Dict, file_date: Optional[str] = None) -> List[Dict]:
+        """
+        OZの馬連オッズを raw.combo_odds スキーマの行リストに展開する。
+
+        Args:
+            oz_record: parse_oz_line() の返り値
+            file_date: ファイル名から抽出した日付文字列 (YYYY-MM-DD)
+
+        Returns:
+            raw.combo_odds テーブルの行リスト
+        """
+        rows = []
+        race_id = oz_record['race_id']
+        created_at = oz_record['created_at']
+        odds_timestamp = f"{file_date}T19:00:00+00:00" if file_date else created_at
+
+        for h1, h2, odds_value in oz_record.get('umaren_odds_list', []):
+            if odds_value is None or odds_value <= 0:
+                continue
+            rows.append({
+                'race_id': race_id,
+                'race_date': file_date,
+                'bet_type': 'umaren',
+                'horse_number_1': h1,
+                'horse_number_2': h2,
+                'horse_number_3': None,
+                'odds_value': odds_value,
+                'odds_timestamp': odds_timestamp,
+                'created_at': created_at,
+            })
+        return rows
+
+    @staticmethod
+    def parse_ow_line(line: str) -> Optional[Dict]:
+        """
+        OW（ワイド基準オッズ）の1行をパースする。
+        仕様: OW第2版, レコード長780バイト
+
+        フォーマット:
+          0-7  : レースキー (8文字)
+          8-9  : 登録頭数 (2文字)
+          10-774: ワイドオッズ 153通り (5文字×153)
+
+        Args:
+            line: 固定長レコード文字列 (UTF-8変換済み)
+
+        Returns:
+            {race_id, registered_count, wide_odds_list, created_at} or None
+        """
+        try:
+            if len(line) < 20:
+                logger.warning(f"OW line too short: {len(line)} chars")
+                return None
+
+            race_key = line[0:8].strip()
+            if not race_key:
+                return None
+
+            JRDBParser.parse_race_id(race_key)
+            registered_count = JRDBParser.safe_int(line[8:10], default=18)
+
+            wide_pairs = list(combinations(range(1, 19), 2))
+            wide_odds_list = []
+            for idx, (h1, h2) in enumerate(wide_pairs):
+                start = 10 + idx * 5
+                end = start + 5
+                val = JRDBParser.safe_float(line[start:end]) if end <= len(line) else None
+                wide_odds_list.append((h1, h2, val))
+
+            return {
+                'race_id': race_key,
+                'registered_count': registered_count,
+                'wide_odds_list': wide_odds_list,
+                'created_at': datetime.utcnow().isoformat(),
+            }
+        except Exception as e:
+            logger.error(f"Error parsing OW line: {e}", exc_info=True)
+            return None
+
+    @staticmethod
+    def expand_ow_to_combo_rows(ow_record: Dict, file_date: Optional[str] = None) -> List[Dict]:
+        """
+        OWのワイドオッズを raw.combo_odds スキーマの行リストに展開する。
+
+        Args:
+            ow_record: parse_ow_line() の返り値
+            file_date: ファイル名から抽出した日付文字列 (YYYY-MM-DD)
+
+        Returns:
+            raw.combo_odds テーブルの行リスト
+        """
+        rows = []
+        race_id = ow_record['race_id']
+        created_at = ow_record['created_at']
+        odds_timestamp = f"{file_date}T19:00:00+00:00" if file_date else created_at
+
+        for h1, h2, odds_value in ow_record.get('wide_odds_list', []):
+            if odds_value is None or odds_value <= 0:
+                continue
+            rows.append({
+                'race_id': race_id,
+                'race_date': file_date,
+                'bet_type': 'wide',
+                'horse_number_1': h1,
+                'horse_number_2': h2,
+                'horse_number_3': None,
+                'odds_value': odds_value,
+                'odds_timestamp': odds_timestamp,
+                'created_at': created_at,
+            })
+        return rows
+
+    @staticmethod
+    def parse_ot_line(line: str) -> Optional[Dict]:
+        """
+        OT（三連複基準オッズ）の1行をパースする。
+        仕様: OT第2版, レコード長4912バイト
+
+        フォーマット:
+          0-7  : レースキー (8文字)
+          8-9  : 登録頭数 (2文字)
+          10-4905: 三連複オッズ 816通り (6文字×816)  ZZZ9.9形式
+        取消時: 9999.9以上 → None として扱う
+
+        Args:
+            line: 固定長レコード文字列 (UTF-8変換済み)
+
+        Returns:
+            {race_id, registered_count, sanrenpuku_odds_list, created_at} or None
+        """
+        try:
+            if len(line) < 20:
+                logger.warning(f"OT line too short: {len(line)} chars")
+                return None
+
+            race_key = line[0:8].strip()
+            if not race_key:
+                return None
+
+            JRDBParser.parse_race_id(race_key)
+            registered_count = JRDBParser.safe_int(line[8:10], default=18)
+
+            sanrenpuku_triples = list(combinations(range(1, 19), 3))
+            sanrenpuku_odds_list = []
+            for idx, (h1, h2, h3) in enumerate(sanrenpuku_triples):
+                start = 10 + idx * 6
+                end = start + 6
+                val = JRDBParser.safe_float(line[start:end]) if end <= len(line) else None
+                # 取消時 (9999.9以上) は None として扱う
+                if val is not None and val >= 9999.0:
+                    val = None
+                sanrenpuku_odds_list.append((h1, h2, h3, val))
+
+            return {
+                'race_id': race_key,
+                'registered_count': registered_count,
+                'sanrenpuku_odds_list': sanrenpuku_odds_list,
+                'created_at': datetime.utcnow().isoformat(),
+            }
+        except Exception as e:
+            logger.error(f"Error parsing OT line: {e}", exc_info=True)
+            return None
+
+    @staticmethod
+    def expand_ot_to_combo_rows(ot_record: Dict, file_date: Optional[str] = None) -> List[Dict]:
+        """
+        OTの三連複オッズを raw.combo_odds スキーマの行リストに展開する。
+
+        Args:
+            ot_record: parse_ot_line() の返り値
+            file_date: ファイル名から抽出した日付文字列 (YYYY-MM-DD)
+
+        Returns:
+            raw.combo_odds テーブルの行リスト
+        """
+        rows = []
+        race_id = ot_record['race_id']
+        created_at = ot_record['created_at']
+        odds_timestamp = f"{file_date}T19:00:00+00:00" if file_date else created_at
+
+        for h1, h2, h3, odds_value in ot_record.get('sanrenpuku_odds_list', []):
+            if odds_value is None or odds_value <= 0:
+                continue
+            rows.append({
+                'race_id': race_id,
+                'race_date': file_date,
+                'bet_type': 'sanrenpuku',
+                'horse_number_1': h1,
+                'horse_number_2': h2,
+                'horse_number_3': h3,
+                'odds_value': odds_value,
+                'odds_timestamp': odds_timestamp,
+                'created_at': created_at,
+            })
+        return rows
+
+    @staticmethod
     def parse_file(file_content: str, data_type: str) -> List[Dict]:
         """
         ファイル全体を解析
@@ -1597,6 +1806,8 @@ class JRDBParser:
             'HJB': JRDBParser.parse_hjb_line,
             'HJC': JRDBParser.parse_hjb_line,
             'OZ': JRDBParser.parse_oz_line,
+            'OW': JRDBParser.parse_ow_line,
+            'OT': JRDBParser.parse_ot_line,
         }
 
         parser_func = parser_map.get(data_type.upper())
