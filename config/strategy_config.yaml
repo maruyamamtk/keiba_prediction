@@ -1,8 +1,12 @@
-p1: 0.3
-p2: 0.2
+# 最適化対象（run_strategy_optimization.py で自動更新）
+p1: 0.2
 expected_return_threshold: 1.2
-kelly_fraction: 0.5
-max_bet_ratio: 0.03
+
+# 固定パラメータ
+max_bet_ratio: 0.05
+min_bet_amount: 100
+top_n: 5
+
 optimization:
   last_run: '2026-03-08T13:15:07'
   metric: recovery_rate

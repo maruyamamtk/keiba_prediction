@@ -5,10 +5,7 @@
 
 最適化対象パラメータ:
   - p1: 突出型の判定閾値
-  - p2: 拮抗型の判定閾値
   - expected_return_threshold: 期待回収率フィルタ閾値
-  - kelly_fraction: Fractional Kelly の係数
-  - max_bet_ratio: 1レースあたりの最大賭け金比率
 """
 
 from __future__ import annotations
@@ -39,7 +36,7 @@ class OptimizationResult:
         sharpe_ratio: シャープレシオ
         total_bets: 総賭け数
         pattern_breakdown: パターン別の成績辞書
-            各キーは 'one_dominant' | 'competitive' | 'standard'
+            各キーは 'one_dominant' | 'standard'
             各値は {"bets", "hits", "bet_amount", "return_amount", "recovery_rate"}
     """
 
@@ -72,6 +69,8 @@ class StrategyOptimizer:
         predictions_df: pd.DataFrame,
         payouts_df: pd.DataFrame,
         initial_capital: float = 100_000.0,
+        combo_odds_df: pd.DataFrame | None = None,
+        max_bet_ratio: float = 0.05,
     ):
         """
         初期化
@@ -85,28 +84,61 @@ class StrategyOptimizer:
                   - place_odds (複勝オッズ)
             payouts_df: 払戻情報 DataFrame
                 カラム: race_id, horse_number_1, payout_amount, bet_type
-                None でもよい（その場合は place_odds から推定）
+                None でもよい
             initial_capital: 初期資金 (円)
+            combo_odds_df: コンボオッズ DataFrame（None の場合は空 DataFrame）
+            max_bet_ratio: 1レースあたりの最大賭け金比率
         """
         self.predictions_df = predictions_df.copy()
         self.payouts_df = payouts_df if payouts_df is not None else pd.DataFrame()
         self.initial_capital = initial_capital
+        self.combo_odds_df = combo_odds_df if combo_odds_df is not None else pd.DataFrame()
+        self.max_bet_ratio = max_bet_ratio
 
-        # 払戻マップを事前構築: (race_id, horse_number) -> payout_amount
+        # 払戻マップを事前構築: (race_id, bet_type, horse_numbers_tuple) -> payout_amount
         self._payout_map: dict[tuple, int] = {}
         if len(self.payouts_df) > 0 and "bet_type" in self.payouts_df.columns:
-            place_df = self.payouts_df[self.payouts_df["bet_type"] == "place"]
-            for _, row in place_df.iterrows():
-                key = (str(row["race_id"]), int(row["horse_number_1"]))
+            for _, row in self.payouts_df.iterrows():
+                bet_type = str(row.get("bet_type", "place"))
+                race_id = str(row["race_id"])
+
+                h1 = row.get("horse_number_1", None)
+                h2 = row.get("horse_number_2", None)
+                h3 = row.get("horse_number_3", None)
+
+                if pd.isna(h1) if h1 is not None else True:
+                    continue
+
+                h1 = int(h1)
+
+                if bet_type == "place":
+                    key = (race_id, "place", (h1,))
+                elif bet_type == "win":
+                    key = (race_id, "win", (h1,))
+                elif bet_type in ("wide", "umaren"):
+                    if h2 is None or (isinstance(h2, float) and pd.isna(h2)):
+                        continue
+                    h2 = int(h2)
+                    key = (race_id, bet_type, tuple(sorted([h1, h2])))
+                elif bet_type == "sanrenpuku":
+                    if h2 is None or h3 is None:
+                        continue
+                    if isinstance(h2, float) and pd.isna(h2):
+                        continue
+                    if isinstance(h3, float) and pd.isna(h3):
+                        continue
+                    h2 = int(h2)
+                    h3 = int(h3)
+                    key = (race_id, "sanrenpuku", tuple(sorted([h1, h2, h3])))
+                else:
+                    continue
+
                 self._payout_map[key] = int(row["payout_amount"])
 
     def _run_simulation(
         self,
         p1: float,
-        p2: float,
         expected_return_threshold: float,
-        kelly_fraction: float,
-        max_bet_ratio: float,
         min_bet_amount: float = 100.0,
     ) -> tuple[pd.DataFrame, dict[str, dict]]:
         """
@@ -114,10 +146,7 @@ class StrategyOptimizer:
 
         Args:
             p1: 突出型判定閾値
-            p2: 拮抗型判定閾値
             expected_return_threshold: 期待回収率閾値
-            kelly_fraction: Fractional Kelly 係数
-            max_bet_ratio: 1レースあたり最大賭け金比率
             min_bet_amount: 最低賭け金 (円)
 
         Returns:
@@ -133,17 +162,16 @@ class StrategyOptimizer:
         capital = float(self.initial_capital)
         records: list[dict] = []
 
-        # パターン別集計用
+        # パターン別集計用（2パターン）
         pattern_stats: dict[str, dict] = {
             "one_dominant": {"bets": 0, "hits": 0, "bet_amount": 0.0, "return_amount": 0.0},
-            "competitive": {"bets": 0, "hits": 0, "bet_amount": 0.0, "return_amount": 0.0},
             "standard": {"bets": 0, "hits": 0, "bet_amount": 0.0, "return_amount": 0.0},
         }
 
         for race_id, race_group in df.groupby("race_id", sort=False):
             race_date = race_group["race_date"].iloc[0]
 
-            # 着順の完全性チェック（有効な着順データが1件もなければスキップ）
+            # 着順の完全性チェック
             if "finish_position" in race_group.columns:
                 valid_finish = pd.to_numeric(
                     race_group["finish_position"], errors="coerce"
@@ -167,16 +195,24 @@ class StrategyOptimizer:
             if len(race_df) < 3:
                 continue
 
+            # このレースのcombo_odds_dfをフィルタ
+            race_id_str = str(race_id)
+            if len(self.combo_odds_df) > 0:
+                race_combo_df = self.combo_odds_df[
+                    self.combo_odds_df["race_id"] == race_id_str
+                ]
+            else:
+                race_combo_df = pd.DataFrame()
+
             # パターン判定と賭け選定
             try:
                 bets, race_pattern = select_bets_for_race(
                     race_df=race_df,
+                    combo_odds_df=race_combo_df,
                     capital=capital,
                     p1=p1,
-                    p2=p2,
                     expected_return_threshold=expected_return_threshold,
-                    kelly_fraction=kelly_fraction,
-                    max_bet_ratio=max_bet_ratio,
+                    max_bet_ratio=self.max_bet_ratio,
                     min_bet_amount=min_bet_amount,
                 )
             except ValueError:
@@ -187,37 +223,49 @@ class StrategyOptimizer:
 
             pattern_name = race_pattern.pattern
 
+            # finish_position マップを作成
+            finish_map = {}
+            for _, row in race_df.iterrows():
+                hn = int(row["horse_number"])
+                fp_raw = row.get("finish_position", None)
+                if fp_raw is not None and not pd.isna(fp_raw):
+                    finish_map[hn] = int(fp_raw)
+
             # 各賭けの結果を記録
             for bet in bets:
-                horse_number = bet["horse_number"]
+                horse_numbers = bet["horse_numbers"]
                 bet_amount = bet["bet_amount"]
                 odds = bet["odds"]
+                bet_type = bet["bet_type"]
 
-                # 着順の確認
-                horse_row = race_df[race_df["horse_number"] == horse_number]
-                if len(horse_row) == 0:
-                    continue
-
-                finish_raw = horse_row["finish_position"].iloc[0]
-                if pd.isna(finish_raw):
-                    finish_position = None
-                    is_hit = False
-                elif int(finish_raw) == 0:
-                    # 出走取消・競走中止 → スキップ
-                    continue
+                # 着順判定
+                if bet_type == "win":
+                    is_hit = finish_map.get(horse_numbers[0], 99) == 1
                 else:
-                    finish_position = int(finish_raw)
-                    is_hit = (1 <= finish_position <= 3)
+                    # place / wide / umaren / sanrenpuku: 全馬が3着以内
+                    is_hit = all(
+                        1 <= finish_map.get(h, 99) <= 3
+                        for h in horse_numbers
+                    )
+
+                # 0着（取消等）チェック
+                skip = False
+                for h in horse_numbers:
+                    fp = finish_map.get(h, None)
+                    if fp is not None and fp == 0:
+                        skip = True
+                        break
+                if skip:
+                    continue
 
                 # 払戻金計算
-                payout_key = (str(race_id), horse_number)
+                payout_key = (race_id_str, bet_type, tuple(sorted(horse_numbers)))
                 payout_per_100 = self._payout_map.get(payout_key, None)
 
                 if is_hit:
                     if payout_per_100 is not None:
                         return_amount = bet_amount * (payout_per_100 / 100.0)
                     else:
-                        # 払戻データなし: オッズから推定
                         return_amount = bet_amount * odds
                 else:
                     return_amount = 0.0
@@ -232,19 +280,32 @@ class StrategyOptimizer:
                 ps["bet_amount"] += bet_amount
                 ps["return_amount"] += return_amount
 
+                # horse_id: place/win なら bet から取得、それ以外はNone
+                horse_id = bet.get("horse_id", None)
+                # horse_number: 代表値（単一or複数）
+                horse_number_repr = horse_numbers[0] if len(horse_numbers) == 1 else horse_numbers[0]
+
+                # win_place_prob: place/win なら race_dfから取得
+                win_place_prob_val = None
+                if len(horse_numbers) == 1:
+                    horse_rows = race_df[race_df["horse_number"] == horse_numbers[0]]
+                    if len(horse_rows) > 0:
+                        win_place_prob_val = float(horse_rows["win_place_prob"].iloc[0])
+
+                # finish_position: 代表値
+                finish_position = finish_map.get(horse_numbers[0], None)
+
                 records.append(
                     {
-                        "race_id": str(race_id),
+                        "race_id": race_id_str,
                         "race_date": race_date,
-                        "horse_id": bet["horse_id"],
-                        "horse_number": horse_number,
-                        "win_place_prob": float(
-                            horse_row["win_place_prob"].iloc[0]
-                        ),
+                        "horse_id": horse_id,
+                        "horse_number": horse_number_repr,
+                        "horse_numbers": str(horse_numbers),
+                        "bet_type": bet_type,
+                        "win_place_prob": win_place_prob_val,
                         "odds": odds,
-                        "expected_return": float(
-                            horse_row["win_place_prob"].iloc[0]
-                        ) * odds,
+                        "expected_return": (win_place_prob_val * odds) if win_place_prob_val else None,
                         "bet_amount": bet_amount,
                         "finish_position": finish_position,
                         "is_hit": is_hit,
@@ -270,70 +331,47 @@ class StrategyOptimizer:
     def run_grid_search(
         self,
         p1_range: list[float] | None = None,
-        p2_range: list[float] | None = None,
         threshold_range: list[float] | None = None,
-        kelly_range: list[float] | None = None,
-        max_bet_ratio_range: list[float] | None = None,
     ) -> list[OptimizationResult]:
         """
         グリッドサーチを実行し、全パラメータ組み合わせのバックテスト結果を返す
 
         デフォルト探索範囲:
           - p1: [0.1, 0.15, 0.2, 0.25, 0.3]
-          - p2: [0.1, 0.15, 0.2]
           - threshold: [1.0, 1.1, 1.2, 1.3, 1.5]
-          - kelly_fraction: [0.1, 0.25, 0.5]
-          - max_bet_ratio: [0.03, 0.05]
 
         Args:
             p1_range: p1 の探索値リスト
-            p2_range: p2 の探索値リスト
             threshold_range: 期待回収率閾値の探索値リスト
-            kelly_range: kelly_fraction の探索値リスト
-            max_bet_ratio_range: max_bet_ratio の探索値リスト
 
         Returns:
             OptimizationResult のリスト（全パラメータ組み合わせ分）
         """
         if p1_range is None:
             p1_range = [0.1, 0.15, 0.2, 0.25, 0.3]
-        if p2_range is None:
-            p2_range = [0.1, 0.15, 0.2]
         if threshold_range is None:
             threshold_range = [1.0, 1.1, 1.2, 1.3, 1.5]
-        if kelly_range is None:
-            kelly_range = [0.1, 0.25, 0.5]
-        if max_bet_ratio_range is None:
-            max_bet_ratio_range = [0.03, 0.05]
 
-        # 全パラメータ組み合わせを生成
-        param_grid = list(
-            product(p1_range, p2_range, threshold_range, kelly_range, max_bet_ratio_range)
-        )
+        # 全パラメータ組み合わせを生成（5×5=25通り）
+        param_grid = list(product(p1_range, threshold_range))
 
         total = len(param_grid)
         logger.info(f"グリッドサーチ開始: {total} パラメータ組み合わせ")
 
         results: list[OptimizationResult] = []
 
-        for i, (p1, p2, threshold, kelly, max_ratio) in enumerate(param_grid):
+        for i, (p1, threshold) in enumerate(param_grid):
             params = {
                 "p1": p1,
-                "p2": p2,
                 "expected_return_threshold": threshold,
-                "kelly_fraction": kelly,
-                "max_bet_ratio": max_ratio,
             }
 
-            if (i + 1) % 50 == 0 or (i + 1) == total:
-                logger.info(f"  [{i + 1}/{total}] p1={p1} p2={p2} threshold={threshold} kelly={kelly} max_ratio={max_ratio}")
+            if (i + 1) % 10 == 0 or (i + 1) == total:
+                logger.info(f"  [{i + 1}/{total}] p1={p1} threshold={threshold}")
 
             history_df, pattern_stats = self._run_simulation(
                 p1=p1,
-                p2=p2,
                 expected_return_threshold=threshold,
-                kelly_fraction=kelly,
-                max_bet_ratio=max_ratio,
             )
 
             metrics = compute_metrics(history_df, self.initial_capital)
@@ -429,7 +467,7 @@ class StrategyOptimizer:
         """
         全グリッドサーチ結果のパターン別成績サマリーを DataFrame で返す
 
-        各パターン（one_dominant / competitive / standard）について、
+        各パターン（one_dominant / standard）について、
         全パラメータ設定の平均・最大・最小の成績を集計する。
 
         Args:
@@ -444,7 +482,7 @@ class StrategyOptimizer:
         if not results:
             return pd.DataFrame()
 
-        patterns = ["one_dominant", "competitive", "standard"]
+        patterns = ["one_dominant", "standard"]
         rows = []
 
         for pname in patterns:
