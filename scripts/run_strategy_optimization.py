@@ -46,13 +46,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from scripts.run_backtest import (
     fetch_historical_features,
-    fetch_historical_payouts,
     fetch_historical_results,
+    fetch_place_payouts as fetch_historical_payouts,
+    fetch_place_odds,
+    generate_predictions,
 )
 from src.backtest.strategy_optimizer import StrategyOptimizer
-from src.models.lgbm_ranker import LGBMRanker
-from src.models.predict import _scores_to_place_prob
-from src.models.train import build_feature_matrix, load_config
+from src.models.train import load_config
 
 load_dotenv()
 logging.basicConfig(
@@ -93,32 +93,20 @@ def _load_model_and_predict(
         model_path = str(local_path)
         logger.info(f"GCSからモデルをダウンロード: {model_path}")
 
-    model_config = load_config()
-    feature_cols = model_config.get("feature_columns", [])
+    config = load_config()
 
-    ranker = LGBMRanker()
-    ranker.load(model_path)
-
-    X, groups, meta = build_feature_matrix(features_df, feature_cols)
-    scores = ranker.predict(X)
-    place_probs = _scores_to_place_prob(scores, groups)
-
-    meta = meta.copy()
-    meta["win_place_prob"] = place_probs
-
-    # 着順をJOIN
-    if len(results_df) > 0:
-        meta = meta.merge(
-            results_df[["race_id", "horse_id", "finish_position"]],
-            on=["race_id", "horse_id"],
-            how="left",
-        )
+    predictions_df = generate_predictions(
+        features_df=features_df,
+        results_df=results_df,
+        model_path=model_path,
+        config=config,
+    )
 
     # place_odds カラムがなければ NaN で補完
-    if "place_odds" not in meta.columns:
-        meta["place_odds"] = float("nan")
+    if "place_odds" not in predictions_df.columns:
+        predictions_df["place_odds"] = float("nan")
 
-    return meta
+    return predictions_df
 
 
 def save_best_params_to_yaml(
@@ -210,6 +198,47 @@ def main() -> None:
         results_df=results_df,
         project_id=args.project_id,
     )
+
+    # place_odds を raw.odds から取得（事前オッズ優先）
+    race_ids = predictions_df["race_id"].unique().tolist()
+    odds_df = fetch_place_odds(args.project_id, race_ids)
+
+    predictions_df = predictions_df.drop(columns=["place_odds"], errors="ignore")
+
+    if not odds_df.empty:
+        predictions_df = predictions_df.merge(
+            odds_df[["race_id", "horse_number", "place_odds"]],
+            on=["race_id", "horse_number"],
+            how="left",
+        )
+        n_with_odds = predictions_df["place_odds"].notna().sum()
+        logger.info(f"place_oddsをraw.oddsから付与: {n_with_odds}/{len(predictions_df)}件")
+    else:
+        logger.warning("raw.oddsが空のため、payouts_dfからplace_oddsを推算します")
+        predictions_df["place_odds"] = float("nan")
+
+    # raw.odds で取得できなかった馬は payouts_df（実際の払戻）で補完
+    if not payouts_df.empty and "bet_type" in payouts_df.columns:
+        place_payouts = payouts_df[payouts_df["bet_type"] == "place"].copy()
+        place_payouts["place_odds_payout"] = place_payouts["payout_amount"] / 100.0
+        place_payouts = place_payouts.rename(columns={"horse_number_1": "horse_number"})
+        predictions_df = predictions_df.merge(
+            place_payouts[["race_id", "horse_number", "place_odds_payout"]],
+            on=["race_id", "horse_number"],
+            how="left",
+        )
+        # raw.odds で取得できなかった行のみ payouts で補完
+        mask = predictions_df["place_odds"].isna() & predictions_df["place_odds_payout"].notna()
+        predictions_df.loc[mask, "place_odds"] = predictions_df.loc[mask, "place_odds_payout"]
+        predictions_df = predictions_df.drop(columns=["place_odds_payout"])
+        n_filled = mask.sum()
+        if n_filled > 0:
+            logger.info(f"payouts_dfでplace_oddsを補完: {n_filled}件")
+
+    n_with_odds = predictions_df["place_odds"].notna().sum()
+    logger.info(f"place_odds付与済み合計: {n_with_odds}/{len(predictions_df)}件")
+    if n_with_odds == 0:
+        logger.warning("place_oddsが全行NaNです。全ベットがスキップされます。")
 
     # グリッドサーチ最適化
     optimizer = StrategyOptimizer(
