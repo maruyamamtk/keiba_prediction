@@ -9,10 +9,10 @@ from src.backtest.simulator import BacktestSimulator, fractional_kelly, kelly_cr
 from src.backtest.strategy import (
     RacePattern,
     classify_race_pattern,
-    select_bets_competitive,
     select_bets_for_race,
-    select_bets_one_dominant,
-    select_bets_standard,
+    select_base_bets,
+    _allocate_bets,
+    select_pattern_a_extra_bets,
 )
 from src.backtest.strategy_optimizer import OptimizationResult, StrategyOptimizer
 
@@ -23,10 +23,10 @@ __all__ = [
     "compute_metrics",
     "RacePattern",
     "classify_race_pattern",
-    "select_bets_one_dominant",
-    "select_bets_competitive",
-    "select_bets_standard",
     "select_bets_for_race",
+    "select_base_bets",
+    "_allocate_bets",
+    "select_pattern_a_extra_bets",
     "OptimizationResult",
     "StrategyOptimizer",
 ]

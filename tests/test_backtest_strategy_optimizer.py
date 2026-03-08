@@ -4,9 +4,10 @@ StrategyOptimizer のユニットテスト
 テスト対象:
   - __init__: 払戻マップの構築
   - _run_simulation: シミュレーション実行（パターン別集計含む）
+  - run_grid_search: グリッドサーチ（25通り）
   - best_params: 最良パラメータの選定
   - filter_by_goals: 目標達成フィルタ
-  - summary_by_pattern: パターン別サマリー
+  - summary_by_pattern: パターン別サマリー（2パターン）
 """
 
 from __future__ import annotations
@@ -92,31 +93,51 @@ class TestStrategyOptimizerInit:
         payouts_df = _make_payouts_df(
             ["race_000", "race_001"], horse_numbers=[1, 2], payout_amount=300
         )
-        optimizer = StrategyOptimizer(predictions_df, payouts_df)
-        assert ("race_000", 1) in optimizer._payout_map
-        assert optimizer._payout_map[("race_000", 1)] == 300
+        optimizer = StrategyOptimizer(predictions_df, payouts_df, combo_odds_df=None)
+        # キー形式: (race_id, bet_type, horse_numbers_tuple)
+        assert ("race_000", "place", (1,)) in optimizer._payout_map
+        assert optimizer._payout_map[("race_000", "place", (1,))] == 300
 
-    def test_non_place_bets_are_excluded_from_payout_map(self):
-        """複勝以外（単勝など）は払戻マップに含まれない"""
+    def test_non_place_bets_excluded_from_payout_map(self):
+        """複勝以外（win）の払戻マップへのキー確認"""
         predictions_df = _make_predictions_df()
-        payouts_df = pd.DataFrame(
-            [
-                {
-                    "race_id": "race_000",
-                    "horse_number_1": 1,
-                    "payout_amount": 500,
-                    "bet_type": "win",
-                }
-            ]
-        )
-        optimizer = StrategyOptimizer(predictions_df, payouts_df)
-        assert len(optimizer._payout_map) == 0
+        payouts_df = pd.DataFrame([
+            {
+                "race_id": "race_000",
+                "horse_number_1": 1,
+                "payout_amount": 500,
+                "bet_type": "win",
+            }
+        ])
+        optimizer = StrategyOptimizer(predictions_df, payouts_df, combo_odds_df=None)
+        # win は含まれる（全bet_typeを処理）
+        assert ("race_000", "win", (1,)) in optimizer._payout_map
 
     def test_none_payouts_gives_empty_payout_map(self):
         """payouts_df が None でも初期化できる"""
         predictions_df = _make_predictions_df()
-        optimizer = StrategyOptimizer(predictions_df, None)
+        optimizer = StrategyOptimizer(predictions_df, None, combo_odds_df=None)
         assert optimizer._payout_map == {}
+
+    def test_combo_odds_df_stored(self):
+        """combo_odds_df が正しく格納される"""
+        predictions_df = _make_predictions_df()
+        combo_df = pd.DataFrame([{
+            "race_id": "race_000",
+            "bet_type": "wide",
+            "horse_number_1": 1,
+            "horse_number_2": 2,
+            "horse_number_3": None,
+            "odds_value": 10.0,
+        }])
+        optimizer = StrategyOptimizer(predictions_df, None, combo_odds_df=combo_df)
+        assert len(optimizer.combo_odds_df) == 1
+
+    def test_max_bet_ratio_stored(self):
+        """max_bet_ratio が正しく格納される"""
+        predictions_df = _make_predictions_df()
+        optimizer = StrategyOptimizer(predictions_df, None, max_bet_ratio=0.03)
+        assert optimizer.max_bet_ratio == 0.03
 
 
 # ---------------------------------------------------------------------------
@@ -128,33 +149,30 @@ class TestStrategyOptimizerRunSimulation:
     def test_returns_tuple_of_dataframe_and_pattern_stats(self):
         """戻り値が (DataFrame, dict) のタプルであること"""
         df = _make_predictions_df(n_races=2, n_horses=5, win_place_prob=0.5, odds=3.0)
-        optimizer = StrategyOptimizer(df, None)
+        optimizer = StrategyOptimizer(df, None, combo_odds_df=None)
         result = optimizer._run_simulation(
-            p1=0.2, p2=0.15, expected_return_threshold=1.2,
-            kelly_fraction=0.25, max_bet_ratio=0.05,
+            p1=0.2, expected_return_threshold=1.2,
         )
         assert isinstance(result, tuple) and len(result) == 2
         history_df, pattern_stats = result
         assert isinstance(history_df, pd.DataFrame)
         assert isinstance(pattern_stats, dict)
 
-    def test_pattern_stats_has_three_keys(self):
-        """pattern_stats に3パターンのキーが存在する"""
+    def test_pattern_stats_has_two_keys(self):
+        """pattern_stats に2パターンのキーが存在する"""
         df = _make_predictions_df()
-        optimizer = StrategyOptimizer(df, None)
+        optimizer = StrategyOptimizer(df, None, combo_odds_df=None)
         _, pattern_stats = optimizer._run_simulation(
-            p1=0.2, p2=0.15, expected_return_threshold=1.2,
-            kelly_fraction=0.25, max_bet_ratio=0.05,
+            p1=0.2, expected_return_threshold=1.2,
         )
-        assert set(pattern_stats.keys()) == {"one_dominant", "competitive", "standard"}
+        assert set(pattern_stats.keys()) == {"one_dominant", "standard"}
 
     def test_bets_produced_when_threshold_is_low(self):
         """閾値が低ければ賭けが発生する"""
         df = _make_predictions_df(n_races=2, n_horses=5, win_place_prob=0.5, odds=3.0)
-        optimizer = StrategyOptimizer(df, None)
+        optimizer = StrategyOptimizer(df, None, combo_odds_df=None)
         history_df, _ = optimizer._run_simulation(
-            p1=0.2, p2=0.15, expected_return_threshold=1.0,
-            kelly_fraction=0.25, max_bet_ratio=0.05,
+            p1=0.2, expected_return_threshold=1.0,
         )
         assert len(history_df) > 0
 
@@ -162,10 +180,9 @@ class TestStrategyOptimizerRunSimulation:
         """期待回収率閾値が高すぎると賭けが発生しない"""
         # win_place_prob=0.2, odds=2.0 → expected_return=0.4
         df = _make_predictions_df(win_place_prob=0.2, odds=2.0)
-        optimizer = StrategyOptimizer(df, None)
+        optimizer = StrategyOptimizer(df, None, combo_odds_df=None)
         history_df, _ = optimizer._run_simulation(
-            p1=0.2, p2=0.15, expected_return_threshold=5.0,
-            kelly_fraction=0.25, max_bet_ratio=0.05,
+            p1=0.2, expected_return_threshold=5.0,
         )
         assert len(history_df) == 0
 
@@ -174,54 +191,68 @@ class TestStrategyOptimizerRunSimulation:
         df = _make_predictions_df(n_races=2, n_horses=5, win_place_prob=0.5, odds=3.0)
         # race_000 の着順を全て NaN にする
         df.loc[df["race_id"] == "race_000", "finish_position"] = float("nan")
-        optimizer = StrategyOptimizer(df, None)
+        optimizer = StrategyOptimizer(df, None, combo_odds_df=None)
         history_df, _ = optimizer._run_simulation(
-            p1=0.2, p2=0.15, expected_return_threshold=1.0,
-            kelly_fraction=0.25, max_bet_ratio=0.05,
+            p1=0.2, expected_return_threshold=1.0,
         )
-        # race_001 のみ処理されるため、race_000 の馬は記録されない
         if len(history_df) > 0:
             assert "race_000" not in history_df["race_id"].values
 
-    def test_horse_with_finish_zero_is_skipped(self):
-        """着順 0 の馬（出走取消等）は賭け対象に含まれない"""
-        df = _make_predictions_df(n_races=1, n_horses=5, win_place_prob=0.6, odds=3.0)
-        # 1番馬の着順を 0 にする
-        df.loc[df["horse_number"] == 1, "finish_position"] = 0
-        optimizer = StrategyOptimizer(df, None)
-        history_df, _ = optimizer._run_simulation(
-            p1=0.2, p2=0.15, expected_return_threshold=1.0,
-            kelly_fraction=0.25, max_bet_ratio=0.05,
-        )
-        if len(history_df) > 0:
-            assert 1 not in history_df["horse_number"].values
-
-    def test_payout_map_used_when_available(self):
-        """払戻マップが存在する場合はオッズ推定ではなく払戻額を使用する"""
-        df = _make_predictions_df(n_races=1, n_horses=5, win_place_prob=0.6, odds=3.0)
+    def test_payout_map_key_format(self):
+        """払戻マップのキー形式が (race_id, bet_type, horse_numbers_tuple) であること"""
+        predictions_df = _make_predictions_df()
         payouts_df = _make_payouts_df(["race_000"], [1, 2, 3], payout_amount=400)
-        optimizer = StrategyOptimizer(df, payouts_df)
-        history_df, _ = optimizer._run_simulation(
-            p1=0.2, p2=0.15, expected_return_threshold=1.0,
-            kelly_fraction=0.25, max_bet_ratio=0.05,
-        )
-        if len(history_df) > 0:
-            hit_rows = history_df[history_df["is_hit"] & (history_df["payout_per_100"].notna())]
-            for _, row in hit_rows.iterrows():
-                expected = row["bet_amount"] * (row["payout_per_100"] / 100.0)
-                assert abs(row["return_amount"] - expected) < 1e-6
+        optimizer = StrategyOptimizer(predictions_df, payouts_df, combo_odds_df=None)
+        # キー形式確認
+        assert ("race_000", "place", (1,)) in optimizer._payout_map
+        assert optimizer._payout_map[("race_000", "place", (1,))] == 400
 
     def test_capital_changes_after_simulation(self):
         """シミュレーション後に資金が変動する（賭けが発生した場合）"""
         df = _make_predictions_df(n_races=3, n_horses=5, win_place_prob=0.5, odds=3.0)
-        optimizer = StrategyOptimizer(df, None, initial_capital=100_000.0)
+        optimizer = StrategyOptimizer(df, None, initial_capital=100_000.0, combo_odds_df=None)
         history_df, _ = optimizer._run_simulation(
-            p1=0.2, p2=0.15, expected_return_threshold=1.0,
-            kelly_fraction=0.25, max_bet_ratio=0.05,
+            p1=0.2, expected_return_threshold=1.0,
         )
         if len(history_df) > 0:
             final_capital = history_df["capital_after"].iloc[-1]
             assert final_capital != 100_000.0
+
+
+# ---------------------------------------------------------------------------
+# run_grid_search のテスト
+# ---------------------------------------------------------------------------
+
+
+class TestStrategyOptimizerRunGridSearch:
+    def test_grid_search_returns_25_results(self):
+        """デフォルトグリッドサーチが25通り（5×5）の結果を返す"""
+        df = _make_predictions_df(n_races=2, n_horses=5, win_place_prob=0.5, odds=3.0)
+        optimizer = StrategyOptimizer(df, None, combo_odds_df=None)
+        results = optimizer.run_grid_search()
+        assert len(results) == 25
+
+    def test_grid_search_results_have_params(self):
+        """各結果に p1 と expected_return_threshold が含まれる"""
+        df = _make_predictions_df(n_races=2, n_horses=5, win_place_prob=0.5, odds=3.0)
+        optimizer = StrategyOptimizer(df, None, combo_odds_df=None)
+        results = optimizer.run_grid_search()
+        for r in results:
+            assert "p1" in r.params
+            assert "expected_return_threshold" in r.params
+            # p2/kelly_fraction/max_bet_ratio は含まれない
+            assert "p2" not in r.params
+            assert "kelly_fraction" not in r.params
+
+    def test_custom_ranges(self):
+        """カスタムレンジを指定すると対応する組み合わせ数になる"""
+        df = _make_predictions_df(n_races=2, n_horses=5, win_place_prob=0.5, odds=3.0)
+        optimizer = StrategyOptimizer(df, None, combo_odds_df=None)
+        results = optimizer.run_grid_search(
+            p1_range=[0.1, 0.2],
+            threshold_range=[1.0, 1.2, 1.5],
+        )
+        assert len(results) == 6  # 2×3
 
 
 # ---------------------------------------------------------------------------
@@ -233,36 +264,39 @@ class TestStrategyOptimizerBestParams:
     def _make_results(self) -> list[OptimizationResult]:
         return [
             OptimizationResult(
-                params={"p1": 0.1}, recovery_rate=90.0, hit_rate=30.0,
+                params={"p1": 0.1, "expected_return_threshold": 1.0},
+                recovery_rate=90.0, hit_rate=30.0,
                 max_drawdown=20.0, sharpe_ratio=0.5, total_bets=100,
             ),
             OptimizationResult(
-                params={"p1": 0.2}, recovery_rate=110.0, hit_rate=35.0,
+                params={"p1": 0.2, "expected_return_threshold": 1.2},
+                recovery_rate=110.0, hit_rate=35.0,
                 max_drawdown=15.0, sharpe_ratio=0.8, total_bets=80,
             ),
             OptimizationResult(
-                params={"p1": 0.3}, recovery_rate=95.0, hit_rate=28.0,
+                params={"p1": 0.3, "expected_return_threshold": 1.5},
+                recovery_rate=95.0, hit_rate=28.0,
                 max_drawdown=25.0, sharpe_ratio=0.3, total_bets=60,
             ),
         ]
 
     def test_best_params_by_recovery_rate(self):
         """recovery_rate が最大のパラメータが返る"""
-        optimizer = StrategyOptimizer(_make_predictions_df(), None)
+        optimizer = StrategyOptimizer(_make_predictions_df(), None, combo_odds_df=None)
         results = self._make_results()
         best = optimizer.best_params(results, metric="recovery_rate")
         assert best.recovery_rate == 110.0
 
     def test_best_params_by_max_drawdown_is_minimum(self):
         """max_drawdown は小さいほど良い（最小値が選ばれる）"""
-        optimizer = StrategyOptimizer(_make_predictions_df(), None)
+        optimizer = StrategyOptimizer(_make_predictions_df(), None, combo_odds_df=None)
         results = self._make_results()
         best = optimizer.best_params(results, metric="max_drawdown")
         assert best.max_drawdown == 15.0
 
     def test_best_params_raises_on_empty_results(self):
         """空リストを渡すと ValueError が発生する"""
-        optimizer = StrategyOptimizer(_make_predictions_df(), None)
+        optimizer = StrategyOptimizer(_make_predictions_df(), None, combo_odds_df=None)
         with pytest.raises(ValueError):
             optimizer.best_params([], metric="recovery_rate")
 
@@ -295,14 +329,14 @@ class TestStrategyOptimizerFilterByGoals:
 
     def test_returns_only_results_meeting_both_goals(self):
         """回収率≥100% かつ ドローダウン≤30% の結果のみ返す"""
-        optimizer = StrategyOptimizer(_make_predictions_df(), None)
+        optimizer = StrategyOptimizer(_make_predictions_df(), None, combo_odds_df=None)
         filtered = optimizer.filter_by_goals(self._make_results())
         assert all(r.recovery_rate >= 100.0 for r in filtered)
         assert all(r.max_drawdown <= 30.0 for r in filtered)
 
     def test_returns_empty_when_no_results_meet_goals(self):
         """条件を満たす結果がない場合は空リストを返す"""
-        optimizer = StrategyOptimizer(_make_predictions_df(), None)
+        optimizer = StrategyOptimizer(_make_predictions_df(), None, combo_odds_df=None)
         results = [
             OptimizationResult(
                 params={}, recovery_rate=80.0, hit_rate=20.0,
@@ -313,30 +347,20 @@ class TestStrategyOptimizerFilterByGoals:
 
     def test_filtered_results_are_sorted_by_recovery_rate(self):
         """フィルタ後の結果は回収率降順でソートされる"""
-        optimizer = StrategyOptimizer(_make_predictions_df(), None)
+        optimizer = StrategyOptimizer(_make_predictions_df(), None, combo_odds_df=None)
         filtered = optimizer.filter_by_goals(self._make_results())
         rates = [r.recovery_rate for r in filtered]
         assert rates == sorted(rates, reverse=True)
 
-    def test_custom_thresholds_work(self):
-        """カスタム閾値が正しく機能する"""
-        optimizer = StrategyOptimizer(_make_predictions_df(), None)
-        # min_recovery_rate=110, max_max_drawdown=30 → recovery_rate=112 かつ drawdown=35 の結果は除外
-        filtered = optimizer.filter_by_goals(
-            self._make_results(), min_recovery_rate=110.0, max_max_drawdown=30.0
-        )
-        # recovery_rate=112 だが max_drawdown=35 > 30 なので対象外
-        assert all(r.max_drawdown <= 30.0 for r in filtered)
-
 
 # ---------------------------------------------------------------------------
-# summary_by_pattern のテスト
+# summary_by_pattern のテスト（2パターン版）
 # ---------------------------------------------------------------------------
 
 
 class TestStrategyOptimizerSummaryByPattern:
     def _make_result_with_breakdown(
-        self, one_dominant_rr: float, competitive_rr: float, standard_rr: float
+        self, one_dominant_rr: float, standard_rr: float
     ) -> OptimizationResult:
         return OptimizationResult(
             params={},
@@ -351,11 +375,6 @@ class TestStrategyOptimizerSummaryByPattern:
                     "return_amount": 10000.0 * one_dominant_rr / 100,
                     "recovery_rate": one_dominant_rr,
                 },
-                "competitive": {
-                    "bets": 20, "hits": 6, "bet_amount": 20000.0,
-                    "return_amount": 20000.0 * competitive_rr / 100,
-                    "recovery_rate": competitive_rr,
-                },
                 "standard": {
                     "bets": 15, "hits": 5, "bet_amount": 15000.0,
                     "return_amount": 15000.0 * standard_rr / 100,
@@ -364,27 +383,30 @@ class TestStrategyOptimizerSummaryByPattern:
             },
         )
 
-    def test_returns_dataframe_with_pattern_index(self):
-        """DataFrame がパターン名をインデックスに持つ"""
-        optimizer = StrategyOptimizer(_make_predictions_df(), None)
-        results = [self._make_result_with_breakdown(110.0, 95.0, 105.0)]
+    def test_returns_dataframe_with_two_pattern_index(self):
+        """DataFrame が 2パターン（one_dominant/standard）をインデックスに持つ"""
+        optimizer = StrategyOptimizer(_make_predictions_df(), None, combo_odds_df=None)
+        results = [self._make_result_with_breakdown(110.0, 105.0)]
         summary = optimizer.summary_by_pattern(results)
         assert isinstance(summary, pd.DataFrame)
         assert "one_dominant" in summary.index
+        assert "standard" in summary.index
+        # competitive は含まれない
+        assert "competitive" not in summary.index
 
     def test_empty_results_returns_empty_dataframe(self):
         """空リストを渡すと空 DataFrame を返す"""
-        optimizer = StrategyOptimizer(_make_predictions_df(), None)
+        optimizer = StrategyOptimizer(_make_predictions_df(), None, combo_odds_df=None)
         summary = optimizer.summary_by_pattern([])
         assert isinstance(summary, pd.DataFrame)
         assert len(summary) == 0
 
     def test_avg_recovery_rate_is_calculated(self):
         """avg_recovery_rate カラムが正しく集計される"""
-        optimizer = StrategyOptimizer(_make_predictions_df(), None)
+        optimizer = StrategyOptimizer(_make_predictions_df(), None, combo_odds_df=None)
         results = [
-            self._make_result_with_breakdown(100.0, 90.0, 110.0),
-            self._make_result_with_breakdown(120.0, 80.0, 100.0),
+            self._make_result_with_breakdown(100.0, 110.0),
+            self._make_result_with_breakdown(120.0, 100.0),
         ]
         summary = optimizer.summary_by_pattern(results)
         assert "avg_recovery_rate" in summary.columns

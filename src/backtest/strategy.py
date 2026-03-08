@@ -4,46 +4,20 @@
 レースの複勝率分布パターンを分析し、パターンに応じた最適な投資戦略を選定する。
 
 パターン分類:
-  - one_dominant（突出型）: top1 確率が top2 を大きく上回る → 単複一点買い、Kelly最大化
-  - competitive（拮抗型）: top1〜top3 が接近している → 複勝複数買い、穴狙い
-  - standard（標準型）: 中間 → 期待回収率フィルタによる選定
+  - one_dominant（突出型）: top1 確率が top2 を大きく上回る → 単複一点買い + 馬連
+  - standard（標準型）: それ以外 → 期待回収率フィルタによる複勝選定
 """
 
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from itertools import combinations
 
 import numpy as np
 import pandas as pd
 
-from .simulator import fractional_kelly
-
 logger = logging.getLogger(__name__)
-
-
-def _calc_bet_amount(
-    capital: float,
-    kf: float,
-    max_bet_ratio: float,
-    min_bet_amount: float,
-) -> float:
-    """
-    賭け金を計算する共通ヘルパー（100円単位切り捨て・上限適用）
-
-    Args:
-        capital: 現在の資金 (円)
-        kf: Fractional Kelly の賭け金比率
-        max_bet_ratio: 1レースあたりの最大賭け金比率
-        min_bet_amount: 最低賭け金 (円)
-
-    Returns:
-        賭け金 (円)
-    """
-    bet_amount = capital * kf
-    bet_amount = min(bet_amount, capital * max_bet_ratio)
-    bet_amount = np.floor(bet_amount / 100.0) * 100.0
-    return max(min_bet_amount, bet_amount)
 
 
 @dataclass
@@ -52,7 +26,7 @@ class RacePattern:
     レースの複勝率分布パターン
 
     Attributes:
-        pattern: パターン名 ('one_dominant' | 'competitive' | 'standard')
+        pattern: パターン名 ('one_dominant' | 'standard')
         top1_prob: 1位馬の複勝率
         top2_prob: 2位馬の複勝率
         top3_prob: 3位馬の複勝率
@@ -71,20 +45,17 @@ class RacePattern:
 def classify_race_pattern(
     probs: list[float],
     p1: float = 0.2,
-    p2: float = 0.15,
 ) -> RacePattern:
     """
     複勝率リストからレースパターンを分類する
 
-    判定ロジック（優先順位順）:
+    判定ロジック:
       1. top1 - top2 > p1 → 'one_dominant'（突出型）
-      2. top1 - top3 < p2 → 'competitive'（拮抗型）
-      3. それ以外         → 'standard'（標準型）
+      2. それ以外         → 'standard'（標準型）
 
     Args:
         probs: 各馬の予測複勝率（降順ソート済みを期待するが、関数内でソートする）
         p1: 突出型の判定閾値（top1 と top2 の差がこれを超えると突出型）
-        p2: 拮抗型の判定閾値（top1 と top3 の差がこれ未満だと拮抗型）
 
     Returns:
         RacePattern インスタンス
@@ -109,14 +80,12 @@ def classify_race_pattern(
     # パターン判定
     if gap_12 > p1:
         pattern = "one_dominant"
-    elif gap_13 < p2:
-        pattern = "competitive"
     else:
         pattern = "standard"
 
     logger.debug(
         f"パターン分類: top1={top1:.3f} top2={top2:.3f} top3={top3:.3f}"
-        f" gap_12={gap_12:.3f} gap_13={gap_13:.3f} → {pattern}"
+        f" gap_12={gap_12:.3f} → {pattern}"
     )
 
     return RacePattern(
@@ -129,246 +98,268 @@ def classify_race_pattern(
     )
 
 
-def select_bets_one_dominant(
-    race_df: pd.DataFrame,
+def _allocate_bets(
+    selected_bets: list[dict],
     capital: float,
-    kelly_fraction: float = 0.25,
-    max_bet_ratio: float = 0.05,
-    min_bet_amount: float = 100.0,
+    max_bet_ratio: float,
+    min_bet_amount: float,
 ) -> list[dict]:
     """
-    突出型レースの賭け選定（単複一点買い、Kelly最大化）
+    選定済みbet候補にオッズ逆数比率で賭け金を配分する
 
-    最も複勝率が高い馬 1 頭を選定し、Fractional Kelly で賭け金を計算する。
-    Kelly 値が正の場合のみ賭け対象とする。
+    総予算 = capital × max_bet_ratio を各betのオッズ逆数の比率で割り当てる。
+    100円単位に切り捨て後、min_bet_amount 未満のbetは除外する。
 
     Args:
-        race_df: レースの予測データ DataFrame
-            必須カラム: horse_id, horse_number, win_place_prob, odds
+        selected_bets: betの候補リスト。各要素は少なくとも 'odds' キーを持つ dict
         capital: 現在の資金 (円)
-        kelly_fraction: Fractional Kelly の係数
         max_bet_ratio: 1レースあたりの最大賭け金比率
         min_bet_amount: 最低賭け金 (円)
 
     Returns:
-        賭け選定リスト。各要素は dict:
-            {"horse_id", "horse_number", "bet_amount", "odds"}
-        賭け対象なしの場合は空リストを返す
+        bet_amount が付与され、min_bet_amount 以上のbetのみを含むリスト
     """
-    if len(race_df) == 0:
+    if not selected_bets:
         return []
 
-    # 複勝率最上位の馬を選定
-    sorted_df = race_df.sort_values("win_place_prob", ascending=False)
-    top_row = sorted_df.iloc[0]
+    total_budget = capital * max_bet_ratio
 
-    win_prob = float(top_row["win_place_prob"])
-    odds = float(top_row["odds"])
+    # オッズ逆数を計算
+    inv_odds = []
+    for bet in selected_bets:
+        odds = float(bet.get("odds", 1.0))
+        inv_odds.append(1.0 / max(odds, 0.01))
 
-    # Kelly 値が 0 以下（期待値マイナス）なら賭けない
-    kf = fractional_kelly(win_prob, odds, kelly_fraction)
-    if kf <= 0:
-        logger.debug(
-            f"突出型: 馬番{top_row['horse_number']} Kelly={kf:.4f} ≤ 0 → スキップ"
-        )
+    total_inv = sum(inv_odds)
+    if total_inv <= 0:
         return []
 
-    # 賭け金計算（100円単位切り捨て・上限チェック）
-    bet_amount = _calc_bet_amount(capital, kf, max_bet_ratio, min_bet_amount)
+    result = []
+    for bet, inv in zip(selected_bets, inv_odds):
+        ratio = inv / total_inv
+        raw_amount = total_budget * ratio
+        # 100円単位切り捨て
+        bet_amount = float(np.floor(raw_amount / 100.0) * 100.0)
+        if bet_amount < min_bet_amount:
+            continue
+        bet_copy = dict(bet)
+        bet_copy["bet_amount"] = bet_amount
+        result.append(bet_copy)
 
-    if bet_amount > capital:
-        logger.debug(f"突出型: 賭け金 {bet_amount:.0f}円 が残高 {capital:.0f}円 を超過 → スキップ")
-        return []
-
-    return [
-        {
-            "horse_id": str(top_row["horse_id"]),
-            "horse_number": int(top_row["horse_number"]),
-            "bet_amount": bet_amount,
-            "odds": odds,
-        }
-    ]
+    return result
 
 
-def select_bets_competitive(
+def select_base_bets(
     race_df: pd.DataFrame,
-    capital: float,
-    top_n: int = 3,
-    expected_return_threshold: float = 1.0,
-    kelly_fraction: float = 0.25,
-    max_bet_ratio: float = 0.05,
-    min_bet_amount: float = 100.0,
+    combo_odds_df: pd.DataFrame | None,
+    expected_return_threshold: float,
+    top_n: int = 5,
 ) -> list[dict]:
     """
-    拮抗型レースの賭け選定（複勝複数買い・穴狙い）
-
-    複勝率上位 top_n 頭の中から、期待回収率（複勝率 × オッズ）が
-    expected_return_threshold を超える馬を選定する。
-    拮抗型では閾値を低め（デフォルト 1.0）に設定し、複数馬を購入する。
+    複勝/ワイド/三連複の候補を選定する（配分前）
 
     Args:
         race_df: レースの予測データ DataFrame
-            必須カラム: horse_id, horse_number, win_place_prob, odds
-        capital: 現在の資金 (円)
-        top_n: 複勝率上位から選定する候補数
+            必須カラム: horse_id, horse_number, win_place_prob, odds（複勝オッズ）
+        combo_odds_df: コンボオッズ DataFrame
+            カラム: bet_type, horse_number_1, horse_number_2, horse_number_3, odds_value
+            None または空の場合は複勝のみ選定
         expected_return_threshold: 期待回収率の最低閾値
-        kelly_fraction: Fractional Kelly の係数
-        max_bet_ratio: 1レースあたりの最大賭け金比率
-        min_bet_amount: 最低賭け金 (円)
+        top_n: 組み合わせ候補とする上位馬数
 
     Returns:
-        賭け選定リスト。各要素は dict:
-            {"horse_id", "horse_number", "bet_amount", "odds"}
-        賭け対象なしの場合は空リストを返す
+        bet dict のリスト（bet_amount は未設定）
     """
     if len(race_df) == 0:
         return []
 
-    # 複勝率上位 top_n 頭を候補にする
-    candidates = race_df.sort_values("win_place_prob", ascending=False).head(top_n)
+    # 複勝率降順でソート
+    sorted_df = race_df.sort_values("win_place_prob", ascending=False)
 
-    bets = []
-    for _, row in candidates.iterrows():
-        win_prob = float(row["win_place_prob"])
-        odds = float(row["odds"])
-        expected_return = win_prob * odds
-
-        # 期待回収率フィルタ
-        if expected_return <= expected_return_threshold:
-            continue
-
-        kf = fractional_kelly(win_prob, odds, kelly_fraction)
-        if kf <= 0:
-            continue
-
-        # 賭け金計算（100円単位切り捨て・上限チェック）
-        bet_amount = _calc_bet_amount(capital, kf, max_bet_ratio, min_bet_amount)
-
-        if bet_amount > capital:
-            logger.debug(
-                f"拮抗型: 馬番{row['horse_number']} 賭け金 {bet_amount:.0f}円"
-                f" が残高 {capital:.0f}円 を超過 → スキップ"
-            )
-            continue
-
-        bets.append(
-            {
+    # 複勝候補選定
+    place_bets = []
+    for _, row in sorted_df.iterrows():
+        prob = float(row["win_place_prob"])
+        place_odds = float(row["odds"])
+        if prob * place_odds > expected_return_threshold:
+            place_bets.append({
+                "bet_type": "place",
+                "horse_numbers": [int(row["horse_number"])],
                 "horse_id": str(row["horse_id"]),
-                "horse_number": int(row["horse_number"]),
-                "bet_amount": bet_amount,
-                "odds": odds,
-            }
-        )
+                "odds": place_odds,
+            })
 
-    return bets
+    # top_n頭候補
+    top_candidates = sorted_df.head(top_n)
+    top_horse_numbers = top_candidates["horse_number"].tolist()
+    top_prob_map = dict(zip(
+        top_candidates["horse_number"].tolist(),
+        top_candidates["win_place_prob"].tolist(),
+    ))
+
+    combo_bets = []
+
+    # combo_odds_dfがある場合のみワイド/三連複を選定
+    has_combo = (
+        combo_odds_df is not None
+        and isinstance(combo_odds_df, pd.DataFrame)
+        and len(combo_odds_df) > 0
+    )
+
+    if has_combo:
+        # ワイド
+        wide_df = combo_odds_df[combo_odds_df["bet_type"] == "wide"]
+        for _, row in wide_df.iterrows():
+            h1 = int(row["horse_number_1"])
+            h2 = int(row["horse_number_2"])
+            if h1 not in top_horse_numbers or h2 not in top_horse_numbers:
+                continue
+            prob_i = float(top_prob_map.get(h1, 0))
+            prob_j = float(top_prob_map.get(h2, 0))
+            wide_odds = float(row["odds_value"])
+            if prob_i * prob_j * wide_odds > expected_return_threshold:
+                combo_bets.append({
+                    "bet_type": "wide",
+                    "horse_numbers": sorted([h1, h2]),
+                    "horse_id": None,
+                    "odds": wide_odds,
+                })
+
+        # 三連複
+        san_df = combo_odds_df[combo_odds_df["bet_type"] == "sanrenpuku"]
+        for _, row in san_df.iterrows():
+            h1 = int(row["horse_number_1"])
+            h2 = int(row["horse_number_2"])
+            h3_raw = row.get("horse_number_3", None)
+            if pd.isna(h3_raw):
+                continue
+            h3 = int(h3_raw)
+            if h1 not in top_horse_numbers or h2 not in top_horse_numbers or h3 not in top_horse_numbers:
+                continue
+            prob_i = float(top_prob_map.get(h1, 0))
+            prob_j = float(top_prob_map.get(h2, 0))
+            prob_k = float(top_prob_map.get(h3, 0))
+            san_odds = float(row["odds_value"])
+            if prob_i * prob_j * prob_k * san_odds > expected_return_threshold:
+                combo_bets.append({
+                    "bet_type": "sanrenpuku",
+                    "horse_numbers": sorted([h1, h2, h3]),
+                    "horse_id": None,
+                    "odds": san_odds,
+                })
+
+    return place_bets + combo_bets
 
 
-def select_bets_standard(
+def select_pattern_a_extra_bets(
     race_df: pd.DataFrame,
-    capital: float,
-    expected_return_threshold: float = 1.2,
-    kelly_fraction: float = 0.25,
-    max_bet_ratio: float = 0.05,
-    min_bet_amount: float = 100.0,
+    combo_odds_df: pd.DataFrame | None,
+    expected_return_threshold: float,
+    top_n: int = 5,
 ) -> list[dict]:
     """
-    標準型レースの賭け選定（期待回収率フィルタ）
-
-    全馬から期待回収率（複勝率 × オッズ）が expected_return_threshold を超える
-    馬を選定し、Fractional Kelly で賭け金を計算する。
+    one_dominant 時の追加ベット（単勝 + 馬連）を選定する
 
     Args:
         race_df: レースの予測データ DataFrame
             必須カラム: horse_id, horse_number, win_place_prob, odds
-        capital: 現在の資金 (円)
-        expected_return_threshold: 期待回収率の最低閾値（デフォルト: 1.2）
-        kelly_fraction: Fractional Kelly の係数
-        max_bet_ratio: 1レースあたりの最大賭け金比率
-        min_bet_amount: 最低賭け金 (円)
+            オプション: win_odds（単勝オッズ）
+        combo_odds_df: コンボオッズ DataFrame
+        expected_return_threshold: 期待回収率の最低閾値
+        top_n: 馬連の相手候補とする上位馬数
 
     Returns:
-        賭け選定リスト。各要素は dict:
-            {"horse_id", "horse_number", "bet_amount", "odds"}
-        賭け対象なしの場合は空リストを返す
+        bet dict のリスト（bet_amount は未設定）
     """
     if len(race_df) == 0:
         return []
 
-    bets = []
-    for _, row in race_df.iterrows():
-        win_prob = float(row["win_place_prob"])
-        odds = float(row["odds"])
-        expected_return = win_prob * odds
+    sorted_df = race_df.sort_values("win_place_prob", ascending=False)
+    top1_row = sorted_df.iloc[0]
+    top1_prob = float(top1_row["win_place_prob"])
+    top1_horse_number = int(top1_row["horse_number"])
+    top1_horse_id = str(top1_row["horse_id"])
 
-        # 期待回収率フィルタ
-        if expected_return <= expected_return_threshold:
-            continue
+    extra_bets = []
 
-        kf = fractional_kelly(win_prob, odds, kelly_fraction)
-        if kf <= 0:
-            continue
+    # 単勝
+    if "win_odds" in race_df.columns:
+        win_odds_val = top1_row.get("win_odds", None)
+        if win_odds_val is not None and not pd.isna(win_odds_val):
+            win_odds = float(win_odds_val)
+            if top1_prob * win_odds > expected_return_threshold:
+                extra_bets.append({
+                    "bet_type": "win",
+                    "horse_numbers": [top1_horse_number],
+                    "horse_id": top1_horse_id,
+                    "odds": win_odds,
+                })
 
-        # 賭け金計算（100円単位切り捨て・上限チェック）
-        bet_amount = _calc_bet_amount(capital, kf, max_bet_ratio, min_bet_amount)
+    # 馬連
+    has_combo = (
+        combo_odds_df is not None
+        and isinstance(combo_odds_df, pd.DataFrame)
+        and len(combo_odds_df) > 0
+    )
+    if has_combo:
+        top_candidates = sorted_df.head(top_n)
+        top_horse_numbers = top_candidates["horse_number"].tolist()
+        top_prob_map = dict(zip(
+            top_candidates["horse_number"].tolist(),
+            top_candidates["win_place_prob"].tolist(),
+        ))
 
-        if bet_amount > capital:
-            logger.debug(
-                f"標準型: 馬番{row['horse_number']} 賭け金 {bet_amount:.0f}円"
-                f" が残高 {capital:.0f}円 を超過 → スキップ"
-            )
-            continue
+        umaren_df = combo_odds_df[combo_odds_df["bet_type"] == "umaren"]
+        for _, row in umaren_df.iterrows():
+            h1 = int(row["horse_number_1"])
+            h2 = int(row["horse_number_2"])
+            # top1軸が含まれているか
+            if top1_horse_number not in (h1, h2):
+                continue
+            # 相手馬がtop_n候補内か
+            other = h2 if h1 == top1_horse_number else h1
+            if other not in top_horse_numbers:
+                continue
+            prob_other = float(top_prob_map.get(other, 0))
+            umaren_odds = float(row["odds_value"])
+            if top1_prob * prob_other * umaren_odds > expected_return_threshold:
+                extra_bets.append({
+                    "bet_type": "umaren",
+                    "horse_numbers": sorted([top1_horse_number, other]),
+                    "horse_id": None,
+                    "odds": umaren_odds,
+                })
 
-        bets.append(
-            {
-                "horse_id": str(row["horse_id"]),
-                "horse_number": int(row["horse_number"]),
-                "bet_amount": bet_amount,
-                "odds": odds,
-            }
-        )
-
-    return bets
+    return extra_bets
 
 
 def select_bets_for_race(
     race_df: pd.DataFrame,
-    capital: float,
+    combo_odds_df: pd.DataFrame | None = None,
+    capital: float = 100_000.0,
     p1: float = 0.2,
-    p2: float = 0.15,
     expected_return_threshold: float = 1.2,
-    competitive_threshold_offset: float = 0.2,
-    kelly_fraction: float = 0.25,
     max_bet_ratio: float = 0.05,
     min_bet_amount: float = 100.0,
+    top_n: int = 5,
 ) -> tuple[list[dict], RacePattern]:
     """
     レースパターンを判定し、最適な投資戦略で賭けを選定する（統合関数）
 
-    内部で classify_race_pattern を呼び出してパターンを判定し、
-    パターンに応じた select_bets_* 関数を実行する。
-
-    パターンと戦略の対応:
-      - one_dominant: select_bets_one_dominant（単複一点買い）
-      - competitive:  select_bets_competitive（複勝複数買い、閾値を低め設定）
-      - standard:     select_bets_standard（期待回収率フィルタ）
-
     Args:
         race_df: レースの予測データ DataFrame
             必須カラム: horse_id, horse_number, win_place_prob, odds
+        combo_odds_df: コンボオッズ DataFrame（None の場合は複勝のみ）
         capital: 現在の資金 (円)
         p1: 突出型の判定閾値（top1 と top2 の複勝率差）
-        p2: 拮抗型の判定閾値（top1 と top3 の複勝率差）
-        expected_return_threshold: 標準型・拮抗型の期待回収率閾値
-        competitive_threshold_offset: 拮抗型で期待回収率閾値を下げる幅
-            `max(1.0, expected_return_threshold - competitive_threshold_offset)` が
-            拮抗型の実際の閾値となる（デフォルト: 0.2）
-        kelly_fraction: Fractional Kelly の係数
+        expected_return_threshold: 期待回収率閾値
         max_bet_ratio: 1レースあたりの最大賭け金比率
         min_bet_amount: 最低賭け金 (円)
+        top_n: ワイド/三連複/馬連の候補数
 
     Returns:
         (bets, pattern) のタプル:
-          - bets: 賭け選定リスト（空リストの場合は賭け対象なし）
+          - bets: 賭け選定リスト
           - pattern: RacePattern インスタンス
 
     Raises:
@@ -379,12 +370,15 @@ def select_bets_for_race(
             f"race_df は最低 3 頭必要です（現在: {len(race_df)} 頭）"
         )
 
-    # NaN オッズを除外した上でパターン判定（NaN があっても複勝率でパターン判定は可能）
+    # combo_odds_dfがNoneの場合は空DataFrameとして扱う
+    if combo_odds_df is None:
+        combo_odds_df = pd.DataFrame()
+
+    # NaN オッズを除外
     valid_df = race_df.dropna(subset=["win_place_prob", "odds"]).copy()
-    valid_df = valid_df[valid_df["odds"] > 0]
+    valid_df = valid_df[pd.to_numeric(valid_df["odds"], errors="coerce") > 0]
 
     if len(valid_df) < 3:
-        # 有効データが 3 頭未満の場合はパターン判定不可 → 標準型として扱う
         probs_for_pattern = sorted(
             race_df["win_place_prob"].dropna().tolist(), reverse=True
         )
@@ -396,7 +390,7 @@ def select_bets_for_race(
         probs_for_pattern = valid_df["win_place_prob"].tolist()
 
     # パターン分類
-    race_pattern = classify_race_pattern(probs_for_pattern, p1=p1, p2=p2)
+    race_pattern = classify_race_pattern(probs_for_pattern, p1=p1)
 
     logger.debug(
         f"レースパターン: {race_pattern.pattern}"
@@ -404,36 +398,32 @@ def select_bets_for_race(
         f" top3={race_pattern.top3_prob:.3f})"
     )
 
-    # パターンに応じた賭け選定
+    # ベースベット選定
+    base_bets = select_base_bets(
+        race_df=valid_df,
+        combo_odds_df=combo_odds_df,
+        expected_return_threshold=expected_return_threshold,
+        top_n=top_n,
+    )
+
+    # one_dominant ならパターンA追加ベット
+    extra_bets = []
     if race_pattern.pattern == "one_dominant":
-        bets = select_bets_one_dominant(
+        extra_bets = select_pattern_a_extra_bets(
             race_df=valid_df,
-            capital=capital,
-            kelly_fraction=kelly_fraction,
-            max_bet_ratio=max_bet_ratio,
-            min_bet_amount=min_bet_amount,
-        )
-    elif race_pattern.pattern == "competitive":
-        # 拮抗型は期待回収率閾値を低めに設定（標準型の閾値より下げる）
-        competitive_threshold = max(1.0, expected_return_threshold - competitive_threshold_offset)
-        bets = select_bets_competitive(
-            race_df=valid_df,
-            capital=capital,
-            top_n=3,
-            expected_return_threshold=competitive_threshold,
-            kelly_fraction=kelly_fraction,
-            max_bet_ratio=max_bet_ratio,
-            min_bet_amount=min_bet_amount,
-        )
-    else:
-        # standard
-        bets = select_bets_standard(
-            race_df=valid_df,
-            capital=capital,
+            combo_odds_df=combo_odds_df,
             expected_return_threshold=expected_return_threshold,
-            kelly_fraction=kelly_fraction,
-            max_bet_ratio=max_bet_ratio,
-            min_bet_amount=min_bet_amount,
+            top_n=top_n,
         )
+
+    all_bets = base_bets + extra_bets
+
+    # 賭け金配分
+    bets = _allocate_bets(
+        selected_bets=all_bets,
+        capital=capital,
+        max_bet_ratio=max_bet_ratio,
+        min_bet_amount=min_bet_amount,
+    )
 
     return bets, race_pattern

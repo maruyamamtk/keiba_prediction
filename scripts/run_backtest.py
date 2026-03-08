@@ -207,6 +207,137 @@ def fetch_place_payouts(
         return pd.DataFrame()
 
 
+def fetch_combo_odds(
+    project_id: str,
+    race_ids: list[str],
+    ticket_types: list[str] | None = None,
+) -> pd.DataFrame:
+    """
+    コンボオッズを以下の優先順位で取得し、統一スキーマで返す。
+
+    優先順位:
+      1. predictions.daily_odds_combo（netkeiba当日オッズ）: 精度が高い。スクレイプ開始日以降のみ有効
+      2. raw.combo_odds（JRDB基準オッズ）: 過去データを含む事前オッズ
+      3. raw.payouts（確定払戻金）: ヒット馬券のみ、事後データ（最終フォールバック）
+
+    返り値の統一スキーマ:
+        race_id, bet_type, horse_number_1, horse_number_2, horse_number_3, odds_value
+
+    Args:
+        project_id: GCP プロジェクト ID
+        race_ids: オッズを取得するレース ID のリスト
+        ticket_types: 取得する馬券種別（None の場合は ['wide', 'sanrenpuku', 'umaren']）
+
+    Returns:
+        コンボオッズ DataFrame
+    """
+    if ticket_types is None:
+        ticket_types = ["wide", "sanrenpuku", "umaren"]
+
+    if not race_ids:
+        return pd.DataFrame()
+
+    _UNIFIED_SCHEMA = ["race_id", "bet_type", "horse_number_1", "horse_number_2", "horse_number_3", "odds_value"]
+
+    def _ensure_schema(df: pd.DataFrame) -> pd.DataFrame:
+        """統一スキーマを確保する（欠損列はNoneで補完）"""
+        for col in _UNIFIED_SCHEMA:
+            if col not in df.columns:
+                df[col] = None
+        return df[_UNIFIED_SCHEMA]
+
+    all_results = []
+    remaining_ids = list(race_ids)
+
+    client = bigquery.Client(project=project_id)
+    ids_str = ", ".join(f"'{r}'" for r in remaining_ids)
+    types_str = ", ".join(f"'{t}'" for t in ticket_types)
+
+    # Stage 1: predictions.daily_odds_combo
+    try:
+        query1 = f"""
+        SELECT race_id, ticket_type AS bet_type,
+               horse_number_1, horse_number_2, horse_number_3,
+               odds AS odds_value
+        FROM `{project_id}.predictions.daily_odds_combo`
+        WHERE ticket_type IN ({types_str})
+          AND race_id IN ({ids_str})
+        """
+        df1 = client.query(query1).to_dataframe()
+        if len(df1) > 0:
+            df1 = _ensure_schema(df1)
+            all_results.append(df1)
+            covered_ids = set(df1["race_id"].unique())
+            remaining_ids = [r for r in remaining_ids if r not in covered_ids]
+            logger.info(
+                f"predictions.daily_odds_combo から {len(df1)} 件取得"
+                f"（カバー: {len(covered_ids)} レース）"
+            )
+        else:
+            logger.info("predictions.daily_odds_combo にデータなし → Stage 2 へ")
+    except Exception as e:
+        logger.info(f"predictions.daily_odds_combo が存在しないか取得失敗: {e} → Stage 2 へ")
+
+    if not remaining_ids:
+        return pd.concat(all_results, ignore_index=True) if all_results else pd.DataFrame(columns=_UNIFIED_SCHEMA)
+
+    # Stage 2: raw.combo_odds
+    rem_ids_str = ", ".join(f"'{r}'" for r in remaining_ids)
+    try:
+        query2 = f"""
+        SELECT race_id, bet_type,
+               horse_number_1, horse_number_2, horse_number_3,
+               odds_value
+        FROM `{project_id}.raw.combo_odds`
+        WHERE bet_type IN ({types_str})
+          AND race_id IN ({rem_ids_str})
+        """
+        df2 = client.query(query2).to_dataframe()
+        if len(df2) > 0:
+            df2 = _ensure_schema(df2)
+            all_results.append(df2)
+            covered_ids2 = set(df2["race_id"].unique())
+            remaining_ids = [r for r in remaining_ids if r not in covered_ids2]
+            logger.info(
+                f"raw.combo_odds から {len(df2)} 件取得"
+                f"（カバー: {len(covered_ids2)} レース）"
+            )
+        else:
+            logger.info("raw.combo_odds にデータなし → Stage 3 へ")
+    except Exception as e:
+        logger.info(f"raw.combo_odds が存在しないか取得失敗: {e} → Stage 3 へ")
+
+    if not remaining_ids:
+        return pd.concat(all_results, ignore_index=True) if all_results else pd.DataFrame(columns=_UNIFIED_SCHEMA)
+
+    # Stage 3: raw.payouts（フォールバック）
+    logger.warning(
+        "raw.payoutsを使用: 的中馬券のみ存在するため回収率が過大評価になる可能性あり"
+    )
+    rem_ids_str3 = ", ".join(f"'{r}'" for r in remaining_ids)
+    try:
+        query3 = f"""
+        SELECT race_id, bet_type,
+               horse_number_1, horse_number_2, horse_number_3,
+               (payout_amount / 100.0) AS odds_value
+        FROM `{project_id}.raw.payouts`
+        WHERE bet_type IN ({types_str})
+          AND race_id IN ({rem_ids_str3})
+        """
+        df3 = client.query(query3).to_dataframe()
+        if len(df3) > 0:
+            df3 = _ensure_schema(df3)
+            all_results.append(df3)
+            logger.info(f"raw.payouts から {len(df3)} 件取得（フォールバック）")
+    except Exception as e:
+        logger.warning(f"raw.payouts からの取得に失敗しました: {e}")
+
+    if not all_results:
+        return pd.DataFrame(columns=_UNIFIED_SCHEMA)
+
+    return pd.concat(all_results, ignore_index=True)
+
+
 # ---------------------------------------------------------------------------
 # 予測生成
 # ---------------------------------------------------------------------------

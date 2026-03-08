@@ -49,6 +49,7 @@ from scripts.run_backtest import (
     fetch_historical_results,
     fetch_place_payouts as fetch_historical_payouts,
     fetch_place_odds,
+    fetch_combo_odds,
     generate_predictions,
 )
 from src.backtest.strategy_optimizer import StrategyOptimizer
@@ -120,10 +121,7 @@ def save_best_params_to_yaml(
         config = yaml.safe_load(f)
 
     config["p1"] = best.params["p1"]
-    config["p2"] = best.params["p2"]
     config["expected_return_threshold"] = best.params["expected_return_threshold"]
-    config["kelly_fraction"] = best.params["kelly_fraction"]
-    config["max_bet_ratio"] = best.params["max_bet_ratio"]
     config["optimization"] = {
         "last_run": datetime.datetime.now().isoformat(timespec="seconds"),
         "metric": metric,
@@ -139,10 +137,8 @@ def save_best_params_to_yaml(
         yaml.dump(config, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
 
     logger.info(f"最適パラメータを保存: {STRATEGY_CONFIG_PATH}")
-    logger.info(f"  p1={best.params['p1']}, p2={best.params['p2']}, "
-                f"threshold={best.params['expected_return_threshold']}, "
-                f"kelly={best.params['kelly_fraction']}, "
-                f"max_bet_ratio={best.params['max_bet_ratio']}")
+    logger.info(f"  p1={best.params['p1']}, "
+                f"threshold={best.params['expected_return_threshold']}")
     logger.info(f"  回収率={best.recovery_rate:.2f}%, 的中率={best.hit_rate:.2f}%, "
                 f"最大ドローダウン={best.max_drawdown:.2f}%")
 
@@ -240,11 +236,17 @@ def main() -> None:
     if n_with_odds == 0:
         logger.warning("place_oddsが全行NaNです。全ベットがスキップされます。")
 
+    # コンボオッズ取得
+    race_ids = predictions_df["race_id"].unique().tolist()
+    combo_odds_df = fetch_combo_odds(args.project_id, race_ids)
+
     # グリッドサーチ最適化
     optimizer = StrategyOptimizer(
         predictions_df=predictions_df,
         payouts_df=payouts_df,
         initial_capital=args.initial_capital,
+        combo_odds_df=combo_odds_df,
+        max_bet_ratio=0.05,
     )
     results = optimizer.run_grid_search()
 
@@ -261,10 +263,8 @@ def main() -> None:
     logger.info(f"\n=== 上位{args.top_n}パラメータ（{args.metric} 順）===")
     for i, res in enumerate(sorted_results[: args.top_n]):
         logger.info(
-            f"  #{i + 1}: p1={res.params['p1']} p2={res.params['p2']} "
+            f"  #{i + 1}: p1={res.params['p1']} "
             f"threshold={res.params['expected_return_threshold']} "
-            f"kelly={res.params['kelly_fraction']} "
-            f"max_ratio={res.params['max_bet_ratio']} "
             f"→ 回収率={res.recovery_rate:.1f}% 的中率={res.hit_rate:.1f}% "
             f"ドローダウン={res.max_drawdown:.1f}%"
         )
