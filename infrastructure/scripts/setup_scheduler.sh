@@ -104,8 +104,11 @@ fi
 
 log_info "サービスURL: ${SERVICE_URL}"
 
-# ターゲットURL（データロード: 非同期エンドポイント）
-LOAD_TARGET_URI="${SERVICE_URL}/api/v1/load/daily/async"
+# ターゲットURL（データロード: 同期エンドポイント）
+# ※ 非同期エンドポイント(/async)はCloud Runが即座にレスポンスを返すため
+#    バックグラウンドタスク実行中にインスタンスがスケールダウンしてロードが中断される。
+#    同期エンドポイントを使用してパイプライン完了まで接続を維持する。
+LOAD_TARGET_URI="${SERVICE_URL}/api/v1/load/daily"
 log_info "データロードURI: ${LOAD_TARGET_URI}"
 # ターゲットURL（予測: 日次予測エンドポイント）
 PREDICT_TARGET_URI="${SERVICE_URL}/api/v1/predict/daily"
