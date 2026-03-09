@@ -139,6 +139,8 @@ def _build_feature_matrix(booster: lgb.Booster, df: pd.DataFrame) -> pd.DataFram
 
     # モデルのカテゴリカル特徴量インデックスを取得
     model_str = booster.model_to_string()
+    if not isinstance(model_str, str):
+        return X
     match = re.search(r'\[categorical_feature: ([\d,]+)\]', model_str)
     if match and booster.pandas_categorical:
         cat_indices = [int(i) for i in match.group(1).split(',')]
