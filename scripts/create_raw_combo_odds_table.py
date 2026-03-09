@@ -7,6 +7,7 @@ Usage:
     python scripts/create_raw_combo_odds_table.py --project-id <PROJECT_ID>
 """
 import argparse
+import json
 import logging
 import os
 import sys
@@ -21,21 +22,28 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+CONFIG_DIR = Path(__file__).resolve().parents[1] / "config"
+
+
+def load_schema(schema_file: str) -> list:
+    schema_path = CONFIG_DIR / schema_file
+    with open(schema_path, "r", encoding="utf-8") as f:
+        schema_json = json.load(f)
+    return [
+        bigquery.SchemaField(
+            name=field["name"],
+            field_type=field["type"],
+            mode=field.get("mode", "NULLABLE"),
+            description=field.get("description", ""),
+        )
+        for field in schema_json
+    ]
+
 
 def create_table(project_id: str) -> None:
     client = bigquery.Client(project=project_id)
 
-    schema = [
-        bigquery.SchemaField("race_id", "STRING", mode="REQUIRED"),
-        bigquery.SchemaField("race_date", "DATE", mode="NULLABLE"),
-        bigquery.SchemaField("bet_type", "STRING", mode="REQUIRED"),   # 'umaren' / 'wide' / 'sanrenpuku'
-        bigquery.SchemaField("horse_number_1", "INTEGER", mode="REQUIRED"),
-        bigquery.SchemaField("horse_number_2", "INTEGER", mode="REQUIRED"),
-        bigquery.SchemaField("horse_number_3", "INTEGER", mode="NULLABLE"),  # 三連複のみ
-        bigquery.SchemaField("odds_value", "FLOAT64", mode="NULLABLE"),
-        bigquery.SchemaField("odds_timestamp", "TIMESTAMP", mode="NULLABLE"),
-        bigquery.SchemaField("created_at", "TIMESTAMP", mode="NULLABLE"),
-    ]
+    schema = load_schema("bq_schema_combo_odds.json")
 
     table_ref = f"{project_id}.raw.combo_odds"
     table = bigquery.Table(table_ref, schema=schema)

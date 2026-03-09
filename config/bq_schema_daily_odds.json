@@ -1,0 +1,44 @@
+[
+  {
+    "name": "race_id",
+    "type": "STRING",
+    "mode": "REQUIRED",
+    "description": "JRDB形式のレースID（クラスタリングキー）"
+  },
+  {
+    "name": "race_date",
+    "type": "DATE",
+    "mode": "REQUIRED",
+    "description": "開催日（パーティションキー）"
+  },
+  {
+    "name": "horse_number",
+    "type": "INTEGER",
+    "mode": "REQUIRED",
+    "description": "馬番"
+  },
+  {
+    "name": "win_odds",
+    "type": "FLOAT64",
+    "mode": "NULLABLE",
+    "description": "単勝オッズ"
+  },
+  {
+    "name": "place_odds_min",
+    "type": "FLOAT64",
+    "mode": "NULLABLE",
+    "description": "複勝オッズ（下限）。投資戦略では保守的推定としてこちらを使用"
+  },
+  {
+    "name": "place_odds_max",
+    "type": "FLOAT64",
+    "mode": "NULLABLE",
+    "description": "複勝オッズ（上限）"
+  },
+  {
+    "name": "scraped_at",
+    "type": "TIMESTAMP",
+    "mode": "REQUIRED",
+    "description": "netkeibaからスクレイプした日時（UTC）"
+  }
+]
