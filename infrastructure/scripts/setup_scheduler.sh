@@ -9,6 +9,7 @@
 #   1. daily-data-pipeline   AM 6:00 JST  データロード
 #   2. race-day-predict      AM 8:00 JST  翌日レース予測
 #   3. race-day-odds-scrape  AM 8:15 JST  netkeibaオッズ取得（単複＋組み合わせ）
+#   4. race-day-strategy     AM 8:30 JST  投資戦略策定・investment_decisions保存
 #
 # 使用方法:
 #   ./infrastructure/scripts/setup_scheduler.sh
@@ -74,6 +75,9 @@ PREDICT_SCHEDULE="0 8 * * *"
 # オッズ取得ジョブ
 ODDS_SCRAPE_JOB_NAME="race-day-odds-scrape"
 ODDS_SCRAPE_SCHEDULE="15 8 * * *"
+# 投資戦略ジョブ
+STRATEGY_JOB_NAME="race-day-strategy"
+STRATEGY_SCHEDULE="30 8 * * *"
 TIME_ZONE="Asia/Tokyo"
 
 # サービスアカウントのメールアドレス
@@ -87,6 +91,7 @@ log_info "リージョン: ${GCP_REGION}"
 log_info "データロードジョブ: ${LOAD_JOB_NAME} (${LOAD_SCHEDULE})"
 log_info "予測ジョブ: ${PREDICT_JOB_NAME} (${PREDICT_SCHEDULE})"
 log_info "オッズ取得ジョブ: ${ODDS_SCRAPE_JOB_NAME} (${ODDS_SCRAPE_SCHEDULE})"
+log_info "投資戦略ジョブ: ${STRATEGY_JOB_NAME} (${STRATEGY_SCHEDULE})"
 log_info "タイムゾーン: ${TIME_ZONE}"
 log_info "サービスアカウント: ${PIPELINE_SA_EMAIL}"
 log_info "=========================================="
@@ -121,6 +126,9 @@ log_info "予測URI: ${PREDICT_TARGET_URI}"
 # ターゲットURL（オッズ取得: netkeibaスクレイパーエンドポイント）
 ODDS_SCRAPE_TARGET_URI="${SERVICE_URL}/api/v1/odds/scrape"
 log_info "オッズ取得URI: ${ODDS_SCRAPE_TARGET_URI}"
+# ターゲットURL（投資戦略: 日次投資戦略エンドポイント）
+STRATEGY_TARGET_URI="${SERVICE_URL}/api/v1/strategy/daily"
+log_info "投資戦略URI: ${STRATEGY_TARGET_URI}"
 
 # ========================================
 # 2. Cloud Scheduler APIの有効化確認
@@ -238,6 +246,16 @@ create_or_update_job \
     "800s" \
     '{"include_combo": true}'
 
+# 4-4. 投資戦略ジョブ（race-day-strategy）
+# daily_predictions + daily_odds を参照して investment_decisions に保存
+# race-day-odds-scrape(AM 8:15) 完了後の AM 8:30 に実行
+log_info "--- 投資戦略ジョブの設定 ---"
+create_or_update_job \
+    "${STRATEGY_JOB_NAME}" \
+    "${STRATEGY_SCHEDULE}" \
+    "${STRATEGY_TARGET_URI}" \
+    "800s"
+
 # ========================================
 # 5. ジョブの確認
 # ========================================
@@ -273,9 +291,14 @@ log_info "  一時停止:    gcloud scheduler jobs pause ${ODDS_SCRAPE_JOB_NAME}
 log_info "  再開:        gcloud scheduler jobs resume ${ODDS_SCRAPE_JOB_NAME} --location=${GCP_REGION}"
 log_info "  実行履歴:    gcloud logging read 'resource.type=\"cloud_scheduler_job\" AND resource.labels.job_id=\"${ODDS_SCRAPE_JOB_NAME}\"' --limit=10"
 log_info ""
+log_info "【投資戦略ジョブ (${STRATEGY_JOB_NAME})】"
+log_info "  手動実行:    gcloud scheduler jobs run ${STRATEGY_JOB_NAME} --location=${GCP_REGION}"
+log_info "  一時停止:    gcloud scheduler jobs pause ${STRATEGY_JOB_NAME} --location=${GCP_REGION}"
+log_info "  再開:        gcloud scheduler jobs resume ${STRATEGY_JOB_NAME} --location=${GCP_REGION}"
+log_info "  実行履歴:    gcloud logging read 'resource.type=\"cloud_scheduler_job\" AND resource.labels.job_id=\"${STRATEGY_JOB_NAME}\"' --limit=10"
+log_info ""
 log_info "注意: 以下のジョブは依存Issueの完了後に追加予定です:"
-log_info "  race-day-strategy (AM 8:30) - Issue #145 完了後"
-log_info "  race-day-notify   (AM 9:00) - Issue #25  完了後"
+log_info "  race-day-notify (AM 9:00) - Issue #25 完了後"
 log_info ""
 
 # ========================================
