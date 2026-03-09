@@ -63,6 +63,11 @@ class TestComputeMetrics:
     def _make_mock_booster(self, n_features: int = 3):
         """モックBoosterを生成する"""
         mock = MagicMock()
+        # feature_name() はサンプルDFの特徴量カラムを返す（EXCLUDE_COLS以外）
+        feature_names = [c for c in _make_sample_df(n_races=1).columns if c not in EXCLUDE_COLS]
+        mock.feature_name.return_value = feature_names
+        # model_to_string() は空文字列を返す（カテゴリカル特徴量なし）
+        mock.model_to_string.return_value = ""
         # predictは特徴量の第1列をスコアとして返す（決定論的）
         mock.predict.side_effect = lambda X: X.iloc[:, 0].values.astype(float)
         return mock

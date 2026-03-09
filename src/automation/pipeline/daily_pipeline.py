@@ -337,10 +337,8 @@ class DailyPipeline:
 
             # 日曜日は当日ファイルを強制再ロード（解決策B）
             # JRDBは土曜19:00に全レース分を更新するため、日曜バッチでは当日データを必ず再取得する
-            # Cloud RunはUTCで動作するため、JSTの現在時刻で日曜日を判定する
-            from datetime import timezone
-            JST = timezone(timedelta(hours=9))
-            is_sunday = datetime.now(JST).weekday() == 6
+            # target_date の曜日で判定することでテストの再現性を確保する
+            is_sunday = target_date.weekday() == 6
             date_str = self.date_to_yymmdd(target_date)
 
             if is_sunday:
