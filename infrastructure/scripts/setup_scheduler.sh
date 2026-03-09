@@ -6,8 +6,9 @@
 # Cloud Schedulerジョブを作成する。
 #
 # 作成されるジョブ:
-#   1. daily-data-pipeline  AM 6:00 JST  データロード
-#   2. race-day-predict     AM 8:00 JST  翌日レース予測
+#   1. daily-data-pipeline   AM 6:00 JST  データロード
+#   2. race-day-predict      AM 8:00 JST  翌日レース予測
+#   3. race-day-odds-scrape  AM 8:15 JST  netkeibaオッズ取得（単複＋組み合わせ）
 #
 # 使用方法:
 #   ./infrastructure/scripts/setup_scheduler.sh
@@ -70,6 +71,9 @@ LOAD_SCHEDULE="0 6 * * *"
 # 予測ジョブ
 PREDICT_JOB_NAME="race-day-predict"
 PREDICT_SCHEDULE="0 8 * * *"
+# オッズ取得ジョブ
+ODDS_SCRAPE_JOB_NAME="race-day-odds-scrape"
+ODDS_SCRAPE_SCHEDULE="15 8 * * *"
 TIME_ZONE="Asia/Tokyo"
 
 # サービスアカウントのメールアドレス
@@ -82,6 +86,7 @@ log_info "プロジェクトID: ${GCP_PROJECT_ID}"
 log_info "リージョン: ${GCP_REGION}"
 log_info "データロードジョブ: ${LOAD_JOB_NAME} (${LOAD_SCHEDULE})"
 log_info "予測ジョブ: ${PREDICT_JOB_NAME} (${PREDICT_SCHEDULE})"
+log_info "オッズ取得ジョブ: ${ODDS_SCRAPE_JOB_NAME} (${ODDS_SCRAPE_SCHEDULE})"
 log_info "タイムゾーン: ${TIME_ZONE}"
 log_info "サービスアカウント: ${PIPELINE_SA_EMAIL}"
 log_info "=========================================="
@@ -113,6 +118,9 @@ log_info "データロードURI: ${LOAD_TARGET_URI}"
 # ターゲットURL（予測: 日次予測エンドポイント）
 PREDICT_TARGET_URI="${SERVICE_URL}/api/v1/predict/daily"
 log_info "予測URI: ${PREDICT_TARGET_URI}"
+# ターゲットURL（オッズ取得: netkeibaスクレイパーエンドポイント）
+ODDS_SCRAPE_TARGET_URI="${SERVICE_URL}/api/v1/odds/scrape"
+log_info "オッズ取得URI: ${ODDS_SCRAPE_TARGET_URI}"
 
 # ========================================
 # 2. Cloud Scheduler APIの有効化確認
@@ -148,11 +156,13 @@ log_info "権限設定が完了しました"
 # ========================================
 
 # ジョブ作成/更新の共通関数
+# 引数: job_name schedule uri [deadline] [message_body]
 create_or_update_job() {
     local job_name="$1"
     local schedule="$2"
     local uri="$3"
     local deadline="${4:-900s}"
+    local message_body="${5:-{}}"
 
     if gcloud scheduler jobs describe "${job_name}" \
         --location="${GCP_REGION}" > /dev/null 2>&1; then
@@ -165,7 +175,7 @@ create_or_update_job() {
             --uri="${uri}" \
             --http-method=POST \
             --update-headers="Content-Type=application/json" \
-            --message-body='{}' \
+            --message-body="${message_body}" \
             --oidc-service-account-email="${PIPELINE_SA_EMAIL}" \
             --oidc-token-audience="${SERVICE_URL}" \
             --attempt-deadline="${deadline}" \
@@ -185,7 +195,7 @@ create_or_update_job() {
             --uri="${uri}" \
             --http-method=POST \
             --headers="Content-Type=application/json" \
-            --message-body='{}' \
+            --message-body="${message_body}" \
             --oidc-service-account-email="${PIPELINE_SA_EMAIL}" \
             --oidc-token-audience="${SERVICE_URL}" \
             --attempt-deadline="${deadline}" \
@@ -217,6 +227,17 @@ create_or_update_job \
     "${PREDICT_TARGET_URI}" \
     "800s"
 
+# 4-3. オッズ取得ジョブ（race-day-odds-scrape）
+# include_combo=true で単複オッズ(daily_odds) + 組み合わせオッズ(daily_odds_combo) を両方取得
+# race-day-predict(AM 8:00) 完了後の AM 8:15 に実行
+log_info "--- オッズ取得ジョブの設定 ---"
+create_or_update_job \
+    "${ODDS_SCRAPE_JOB_NAME}" \
+    "${ODDS_SCRAPE_SCHEDULE}" \
+    "${ODDS_SCRAPE_TARGET_URI}" \
+    "800s" \
+    '{"include_combo": true}'
+
 # ========================================
 # 5. ジョブの確認
 # ========================================
@@ -246,8 +267,14 @@ log_info "  一時停止:    gcloud scheduler jobs pause ${PREDICT_JOB_NAME} --l
 log_info "  再開:        gcloud scheduler jobs resume ${PREDICT_JOB_NAME} --location=${GCP_REGION}"
 log_info "  実行履歴:    gcloud logging read 'resource.type=\"cloud_scheduler_job\" AND resource.labels.job_id=\"${PREDICT_JOB_NAME}\"' --limit=10"
 log_info ""
+log_info "【オッズ取得ジョブ (${ODDS_SCRAPE_JOB_NAME})】"
+log_info "  手動実行:    gcloud scheduler jobs run ${ODDS_SCRAPE_JOB_NAME} --location=${GCP_REGION}"
+log_info "  一時停止:    gcloud scheduler jobs pause ${ODDS_SCRAPE_JOB_NAME} --location=${GCP_REGION}"
+log_info "  再開:        gcloud scheduler jobs resume ${ODDS_SCRAPE_JOB_NAME} --location=${GCP_REGION}"
+log_info "  実行履歴:    gcloud logging read 'resource.type=\"cloud_scheduler_job\" AND resource.labels.job_id=\"${ODDS_SCRAPE_JOB_NAME}\"' --limit=10"
+log_info ""
 log_info "注意: 以下のジョブは依存Issueの完了後に追加予定です:"
-log_info "  race-day-strategy (AM 8:30) - Issue #105 完了後"
+log_info "  race-day-strategy (AM 8:30) - Issue #145 完了後"
 log_info "  race-day-notify   (AM 9:00) - Issue #25  完了後"
 log_info ""
 
