@@ -1,0 +1,80 @@
+[
+  {
+    "name": "race_date",
+    "type": "DATE",
+    "mode": "REQUIRED",
+    "description": "レース日（パーティションキー）"
+  },
+  {
+    "name": "race_id",
+    "type": "STRING",
+    "mode": "REQUIRED",
+    "description": "レースID"
+  },
+  {
+    "name": "horse_id",
+    "type": "STRING",
+    "mode": "REQUIRED",
+    "description": "馬ID"
+  },
+  {
+    "name": "horse_number",
+    "type": "INTEGER",
+    "mode": "NULLABLE",
+    "description": "馬番"
+  },
+  {
+    "name": "horse_name",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "馬名"
+  },
+  {
+    "name": "venue_code",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "場所コード（クラスタリングキー）"
+  },
+  {
+    "name": "race_number",
+    "type": "INTEGER",
+    "mode": "NULLABLE",
+    "description": "レース番号（クラスタリングキー）"
+  },
+  {
+    "name": "win_place_prob",
+    "type": "FLOAT64",
+    "mode": "NULLABLE",
+    "description": "複勝予測確率（0〜1）"
+  },
+  {
+    "name": "pred_score",
+    "type": "FLOAT64",
+    "mode": "NULLABLE",
+    "description": "予測スコア（モデル出力値）"
+  },
+  {
+    "name": "place_odds",
+    "type": "FLOAT64",
+    "mode": "NULLABLE",
+    "description": "複勝オッズ"
+  },
+  {
+    "name": "rank_in_race",
+    "type": "INTEGER",
+    "mode": "NULLABLE",
+    "description": "レース内予測順位"
+  },
+  {
+    "name": "created_at",
+    "type": "TIMESTAMP",
+    "mode": "NULLABLE",
+    "description": "レコード作成日時"
+  },
+  {
+    "name": "model_version",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "使用モデルのバージョン/パス"
+  }
+]

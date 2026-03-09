@@ -10,12 +10,31 @@ Usage:
 """
 
 import argparse
+import json
 import os
 import sys
+from pathlib import Path
 
 from dotenv import load_dotenv
 from google.cloud import bigquery
 from google.cloud.exceptions import Conflict, NotFound
+
+CONFIG_DIR = Path(__file__).resolve().parents[1] / "config"
+
+
+def load_schema(schema_file: str) -> list:
+    schema_path = CONFIG_DIR / schema_file
+    with open(schema_path, "r", encoding="utf-8") as f:
+        schema_json = json.load(f)
+    return [
+        bigquery.SchemaField(
+            name=field["name"],
+            field_type=field["type"],
+            mode=field.get("mode", "NULLABLE"),
+            description=field.get("description", ""),
+        )
+        for field in schema_json
+    ]
 
 
 def create_predictions_table(project_id: str) -> None:
@@ -50,21 +69,7 @@ def create_predictions_table(project_id: str) -> None:
     except NotFound:
         pass
 
-    schema = [
-        bigquery.SchemaField("race_date", "DATE", mode="REQUIRED", description="レース日"),
-        bigquery.SchemaField("race_id", "STRING", mode="REQUIRED", description="レースID"),
-        bigquery.SchemaField("horse_id", "STRING", mode="REQUIRED", description="馬ID"),
-        bigquery.SchemaField("horse_number", "INTEGER", mode="NULLABLE", description="馬番"),
-        bigquery.SchemaField("horse_name", "STRING", mode="NULLABLE", description="馬名"),
-        bigquery.SchemaField("venue_code", "STRING", mode="NULLABLE", description="場所コード"),
-        bigquery.SchemaField("race_number", "INTEGER", mode="NULLABLE", description="レース番号"),
-        bigquery.SchemaField("win_place_prob", "FLOAT64", mode="NULLABLE", description="複勝予測確率 (0〜1)"),
-        bigquery.SchemaField("pred_score", "FLOAT64", mode="NULLABLE", description="予測スコア（モデル出力値）"),
-        bigquery.SchemaField("place_odds", "FLOAT64", mode="NULLABLE", description="複勝オッズ"),
-        bigquery.SchemaField("rank_in_race", "INTEGER", mode="NULLABLE", description="レース内予測順位"),
-        bigquery.SchemaField("created_at", "TIMESTAMP", mode="NULLABLE", description="レコード作成日時"),
-        bigquery.SchemaField("model_version", "STRING", mode="NULLABLE", description="使用モデルのバージョン/パス"),
-    ]
+    schema = load_schema("bq_schema_daily_predictions.json")
 
     table = bigquery.Table(table_ref, schema=schema)
     table.time_partitioning = bigquery.TimePartitioning(

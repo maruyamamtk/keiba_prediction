@@ -1,0 +1,56 @@
+[
+  {
+    "name": "race_id",
+    "type": "STRING",
+    "mode": "REQUIRED",
+    "description": "JRDB形式のレースID（クラスタリングキー）"
+  },
+  {
+    "name": "race_date",
+    "type": "DATE",
+    "mode": "NULLABLE",
+    "description": "開催日（パーティションキー）"
+  },
+  {
+    "name": "bet_type",
+    "type": "STRING",
+    "mode": "REQUIRED",
+    "description": "馬券種（umaren / wide / sanrenpuku）"
+  },
+  {
+    "name": "horse_number_1",
+    "type": "INTEGER",
+    "mode": "REQUIRED",
+    "description": "馬番1"
+  },
+  {
+    "name": "horse_number_2",
+    "type": "INTEGER",
+    "mode": "REQUIRED",
+    "description": "馬番2"
+  },
+  {
+    "name": "horse_number_3",
+    "type": "INTEGER",
+    "mode": "NULLABLE",
+    "description": "馬番3（三連複のみ、それ以外はNULL）"
+  },
+  {
+    "name": "odds_value",
+    "type": "FLOAT64",
+    "mode": "NULLABLE",
+    "description": "基準オッズ値（JRDBのZZZ9.9形式から変換）"
+  },
+  {
+    "name": "odds_timestamp",
+    "type": "TIMESTAMP",
+    "mode": "NULLABLE",
+    "description": "オッズ基準日時"
+  },
+  {
+    "name": "created_at",
+    "type": "TIMESTAMP",
+    "mode": "NULLABLE",
+    "description": "レコード作成日時（UTC）"
+  }
+]

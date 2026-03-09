@@ -1036,38 +1036,9 @@ gcloud scheduler jobs run daily-data-pipeline --location=asia-northeast1
 | `odds` | OZ (基準オッズ) | 単勝・複勝オッズ（JRDBコード表） | 実装済み |
 | `combo_odds` | OW/OT/OZ | JRDBコンボ基準オッズ（ワイド/三連複/馬連） | 実装済み（Issue #140） |
 
-詳細なスキーマは [SCHEMA.md](./SCHEMA.md) を参照してください。
+詳細なスキーマは [SCHEMA.md](./SCHEMA.md) および `config/bq_schema_*.json` を参照してください。
 
-#### ロード履歴テーブル (`raw.load_history`)
-
-| カラム | 説明 |
-|--------|------|
-| file_name | ロードされたファイル名 (GCS上のパス) |
-| loaded_at | ロード実行日時 |
-| records_count | ロードされたレコード数 |
-| table_name | ロード先テーブル名 |
-| data_type | データタイプ (BAA, KYF, SEC等) |
-| status | ステータス (success/failed) |
-| error_message | エラーメッセージ (失敗時) |
-| duration_seconds | 処理時間(秒) |
-| file_size_bytes | ファイルサイズ(バイト) |
-
-#### combo_odds テーブルスキーマ
-
-JRDBのOW（ワイド）・OT（三連複）・OZ（馬連）ファイルから展開したコンボ基準オッズ。
-
-| カラム名 | 型 | 説明 |
-|---------|-----|------|
-| `race_id` | STRING | JRDB形式のレースID（クラスタリングキー） |
-| `race_date` | DATE | 開催日（パーティションキー） |
-| `bet_type` | STRING | 馬券種（wide / sanrenpuku / umaren） |
-| `horse_number_1` | INTEGER | 馬番1 |
-| `horse_number_2` | INTEGER | 馬番2 |
-| `horse_number_3` | INTEGER | 馬番3（三連複のみ、それ以外はNULL） |
-| `odds` | FLOAT64 | 基準オッズ（JRDBのZZZ9.9形式） |
-| `loaded_at` | TIMESTAMP | ロード日時（UTC） |
-
-テーブル作成コマンド:
+テーブル作成コマンド（raw.combo_odds）:
 
 ```bash
 python3 scripts/create_raw_combo_odds_table.py --project-id <PROJECT_ID>
@@ -1090,86 +1061,18 @@ python3 scripts/create_raw_combo_odds_table.py --project-id <PROJECT_ID>
 | `predictions.daily_odds_combo` | netkeibaリアルタイム組み合わせ馬券オッズ | 実装済み（Issue #134） |
 | `predictions.investment_decisions` | 日次投資判断結果 | 実装済み（Issue #105） |
 
-#### daily_predictions テーブルスキーマ
-
-| カラム | 型 | 説明 |
-|--------|-----|------|
-| `race_date` | DATE | レース日（パーティションキー） |
-| `race_id` | STRING | レースID |
-| `horse_id` | STRING | 馬ID |
-| `horse_number` | INTEGER | 馬番 |
-| `horse_name` | STRING | 馬名 |
-| `venue_code` | STRING | 場所コード（クラスタリングキー） |
-| `race_number` | INTEGER | レース番号（クラスタリングキー） |
-| `win_place_prob` | FLOAT64 | 複勝予測確率（0〜1） |
-| `pred_score` | FLOAT64 | モデル出力値 |
-| `place_odds` | FLOAT64 | 複勝オッズ |
-| `rank_in_race` | INTEGER | レース内予測順位 |
-| `created_at` | TIMESTAMP | レコード作成日時 |
-| `model_version` | STRING | 使用モデルのバージョン/パス |
-
 テーブル作成コマンド:
 
 ```bash
 python3 scripts/create_predictions_table.py
 # GCP_PROJECT_IDを環境変数から読み込む。または --project-id で明示指定も可能。
-```
 
-#### daily_odds テーブルスキーマ
-
-| カラム | 型 | 説明 |
-|--------|-----|------|
-| `race_id` | STRING | JRDB形式のレースID（クラスタリングキー） |
-| `race_date` | DATE | 開催日（パーティションキー） |
-| `horse_number` | INTEGER | 馬番 |
-| `win_odds` | FLOAT64 | 単勝オッズ |
-| `place_odds_min` | FLOAT64 | 複勝オッズ（下限）。投資戦略では保守的推定としてこちらを使用 |
-| `place_odds_max` | FLOAT64 | 複勝オッズ（上限） |
-| `scraped_at` | TIMESTAMP | netkeibaからスクレイプした日時（UTC） |
-
-テーブル作成コマンド:
-
-```bash
 python3 scripts/create_daily_odds_table.py --project-id <PROJECT_ID>
-```
-
-#### daily_odds_combo テーブルスキーマ
-
-| カラム名 | 型 | 説明 |
-|---------|-----|------|
-| `race_id` | STRING | JRDB形式のレースID（パーティション連携） |
-| `race_date` | DATE | 開催日（パーティションキー） |
-| `ticket_type` | STRING | 馬券種（umaren / umatan / wide / sanrenpuku） |
-| `horse_number_1` | INTEGER | 馬番1（小さい方） |
-| `horse_number_2` | INTEGER | 馬番2 |
-| `horse_number_3` | INTEGER | 馬番3（三連複のみ、それ以外はNULL） |
-| `odds` | FLOAT64 | オッズ |
-| `scraped_at` | TIMESTAMP | netkeibaからスクレイプした日時（UTC） |
-
-テーブル作成コマンド:
-
-```bash
 python3 scripts/create_daily_odds_combo_table.py --project-id <PROJECT_ID>
+python3 scripts/create_investment_decisions_table.py --project-id <PROJECT_ID>
 ```
 
-#### investment_decisions テーブルスキーマ
-
-| カラム名 | 型 | 説明 |
-|---------|-----|------|
-| `race_id` | STRING | JRDB形式のレースID |
-| `race_date` | DATE | 開催日 |
-| `horse_id` | STRING | 馬ID |
-| `horse_number` | INTEGER | 馬番 |
-| `horse_name` | STRING | 馬名 |
-| `venue_code` | STRING | 競馬場コード |
-| `race_number` | INTEGER | レース番号 |
-| `race_pattern` | STRING | レースパターン（one_dominant / standard） |
-| `bet_type` | STRING | 馬券種（place など） |
-| `bet_amount` | FLOAT64 | 賭け金（円） |
-| `win_place_prob` | FLOAT64 | 複勝予測確率 |
-| `place_odds` | FLOAT64 | 複勝オッズ |
-| `expected_return` | FLOAT64 | 期待回収率（prob × odds） |
-| `created_at` | TIMESTAMP | 作成日時（UTC） |
+各テーブルのスキーマ詳細は `config/bq_schema_*.json` を参照してください。
 
 ### backtestsデータセット
 

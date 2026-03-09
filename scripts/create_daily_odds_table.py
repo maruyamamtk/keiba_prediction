@@ -11,8 +11,10 @@ Issue #131: netkeibaリアルタイムオッズスクレイパーの実装
 """
 
 import argparse
+import json
 import logging
 import sys
+from pathlib import Path
 
 from google.cloud import bigquery
 from google.cloud.exceptions import Conflict
@@ -22,6 +24,23 @@ logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+CONFIG_DIR = Path(__file__).resolve().parents[1] / "config"
+
+
+def load_schema(schema_file: str) -> list:
+    schema_path = CONFIG_DIR / schema_file
+    with open(schema_path, "r", encoding="utf-8") as f:
+        schema_json = json.load(f)
+    return [
+        bigquery.SchemaField(
+            name=field["name"],
+            field_type=field["type"],
+            mode=field.get("mode", "NULLABLE"),
+            description=field.get("description", ""),
+        )
+        for field in schema_json
+    ]
 
 
 def create_daily_odds_table(project_id: str, dataset: str = "predictions") -> None:
@@ -38,36 +57,7 @@ def create_daily_odds_table(project_id: str, dataset: str = "predictions") -> No
     client = bigquery.Client(project=project_id)
     table_id = f"{project_id}.{dataset}.daily_odds"
 
-    schema = [
-        bigquery.SchemaField(
-            "race_id", "STRING", mode="REQUIRED",
-            description="JRDB形式のレースID"
-        ),
-        bigquery.SchemaField(
-            "race_date", "DATE", mode="REQUIRED",
-            description="開催日（パーティションキー）"
-        ),
-        bigquery.SchemaField(
-            "horse_number", "INTEGER", mode="REQUIRED",
-            description="馬番"
-        ),
-        bigquery.SchemaField(
-            "win_odds", "FLOAT64",
-            description="単勝オッズ"
-        ),
-        bigquery.SchemaField(
-            "place_odds_min", "FLOAT64",
-            description="複勝オッズ（最小・下限）。strategy.select_bets_for_race()ではこちらを使用"
-        ),
-        bigquery.SchemaField(
-            "place_odds_max", "FLOAT64",
-            description="複勝オッズ（最大・上限）"
-        ),
-        bigquery.SchemaField(
-            "scraped_at", "TIMESTAMP", mode="REQUIRED",
-            description="netkeibaからスクレイプした日時（UTC）"
-        ),
-    ]
+    schema = load_schema("bq_schema_daily_odds.json")
 
     table = bigquery.Table(table_id, schema=schema)
 
@@ -91,7 +81,6 @@ def create_daily_odds_table(project_id: str, dataset: str = "predictions") -> No
         logger.info(f"テーブルを作成しました: {table_id}")
         logger.info(f"  パーティション: race_date (DAY)")
         logger.info(f"  クラスタリング: race_id")
-        logger.info(f"  スキーマ: {[f.name for f in schema]}")
     except Conflict:
         logger.info(f"テーブルはすでに存在します: {table_id}")
 

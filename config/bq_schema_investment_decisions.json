@@ -1,0 +1,86 @@
+[
+  {
+    "name": "race_id",
+    "type": "STRING",
+    "mode": "REQUIRED",
+    "description": "JRDB形式のレースID（クラスタリングキー）"
+  },
+  {
+    "name": "race_date",
+    "type": "DATE",
+    "mode": "REQUIRED",
+    "description": "開催日（パーティションキー）"
+  },
+  {
+    "name": "horse_id",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "馬ID"
+  },
+  {
+    "name": "horse_number",
+    "type": "INTEGER",
+    "mode": "REQUIRED",
+    "description": "馬番"
+  },
+  {
+    "name": "horse_name",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "馬名"
+  },
+  {
+    "name": "venue_code",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "競馬場コード"
+  },
+  {
+    "name": "race_number",
+    "type": "INTEGER",
+    "mode": "NULLABLE",
+    "description": "レース番号"
+  },
+  {
+    "name": "race_pattern",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "レースパターン（one_dominant / standard）"
+  },
+  {
+    "name": "bet_type",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "馬券種（place など）"
+  },
+  {
+    "name": "bet_amount",
+    "type": "FLOAT64",
+    "mode": "NULLABLE",
+    "description": "賭け金（円）"
+  },
+  {
+    "name": "win_place_prob",
+    "type": "FLOAT64",
+    "mode": "NULLABLE",
+    "description": "複勝予測確率（0〜1）"
+  },
+  {
+    "name": "place_odds",
+    "type": "FLOAT64",
+    "mode": "NULLABLE",
+    "description": "複勝オッズ"
+  },
+  {
+    "name": "expected_return",
+    "type": "FLOAT64",
+    "mode": "NULLABLE",
+    "description": "期待回収率（win_place_prob × place_odds）"
+  },
+  {
+    "name": "created_at",
+    "type": "TIMESTAMP",
+    "mode": "REQUIRED",
+    "description": "レコード作成日時（UTC）"
+  }
+]

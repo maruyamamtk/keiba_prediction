@@ -14,6 +14,7 @@ Issue #134: netkeibaスクレイパー拡張 - 組み合わせ馬券オッズ取
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import sys
@@ -28,19 +29,22 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
-SCHEMA = [
-    bigquery.SchemaField("race_id", "STRING", mode="REQUIRED", description="JRDB形式のレースID"),
-    bigquery.SchemaField("race_date", "DATE", mode="REQUIRED", description="開催日（パーティションキー）"),
-    bigquery.SchemaField(
-        "ticket_type", "STRING", mode="REQUIRED",
-        description="馬券種 (umaren / umatan / wide / sanrenpuku)",
-    ),
-    bigquery.SchemaField("horse_number_1", "INTEGER", mode="REQUIRED", description="馬番1（小さい方）"),
-    bigquery.SchemaField("horse_number_2", "INTEGER", mode="REQUIRED", description="馬番2"),
-    bigquery.SchemaField("horse_number_3", "INTEGER", mode="NULLABLE", description="馬番3（三連複のみ）"),
-    bigquery.SchemaField("odds", "FLOAT64", mode="NULLABLE", description="オッズ"),
-    bigquery.SchemaField("scraped_at", "TIMESTAMP", mode="REQUIRED", description="スクレイプ日時（UTC）"),
-]
+CONFIG_DIR = Path(__file__).resolve().parents[1] / "config"
+
+
+def load_schema(schema_file: str) -> list:
+    schema_path = CONFIG_DIR / schema_file
+    with open(schema_path, "r", encoding="utf-8") as f:
+        schema_json = json.load(f)
+    return [
+        bigquery.SchemaField(
+            name=field["name"],
+            field_type=field["type"],
+            mode=field.get("mode", "NULLABLE"),
+            description=field.get("description", ""),
+        )
+        for field in schema_json
+    ]
 
 
 def create_table(project_id: str) -> None:
@@ -58,7 +62,8 @@ def create_table(project_id: str) -> None:
         client.create_dataset(dataset_ref, exists_ok=True)
         logger.info(f"データセット作成: {dataset_id}")
 
-    table = bigquery.Table(full_table_id, schema=SCHEMA)
+    schema = load_schema("bq_schema_daily_odds_combo.json")
+    table = bigquery.Table(full_table_id, schema=schema)
 
     # パーティション設定
     table.time_partitioning = bigquery.TimePartitioning(

@@ -14,6 +14,7 @@ Issue #105: 投資戦略モジュールをバックテストパイプライン�
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import sys
@@ -28,28 +29,22 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
-SCHEMA = [
-    bigquery.SchemaField("race_id", "STRING", mode="REQUIRED", description="JRDB形式のレースID"),
-    bigquery.SchemaField("race_date", "DATE", mode="REQUIRED", description="開催日（パーティションキー）"),
-    bigquery.SchemaField("horse_id", "STRING", mode="NULLABLE", description="馬ID"),
-    bigquery.SchemaField("horse_number", "INTEGER", mode="REQUIRED", description="馬番"),
-    bigquery.SchemaField("horse_name", "STRING", mode="NULLABLE", description="馬名"),
-    bigquery.SchemaField("venue_code", "STRING", mode="NULLABLE", description="競馬場コード"),
-    bigquery.SchemaField("race_number", "INTEGER", mode="NULLABLE", description="レース番号"),
-    bigquery.SchemaField(
-        "race_pattern", "STRING", mode="NULLABLE",
-        description="レースパターン (one_dominant / competitive / standard)",
-    ),
-    bigquery.SchemaField("bet_type", "STRING", mode="NULLABLE", description="馬券種 (place など)"),
-    bigquery.SchemaField("bet_amount", "FLOAT64", mode="NULLABLE", description="賭け金（円）"),
-    bigquery.SchemaField("win_place_prob", "FLOAT64", mode="NULLABLE", description="複勝予測確率（0〜1）"),
-    bigquery.SchemaField("place_odds", "FLOAT64", mode="NULLABLE", description="複勝オッズ"),
-    bigquery.SchemaField(
-        "expected_return", "FLOAT64", mode="NULLABLE",
-        description="期待回収率（win_place_prob × place_odds）",
-    ),
-    bigquery.SchemaField("created_at", "TIMESTAMP", mode="REQUIRED", description="レコード作成日時（UTC）"),
-]
+CONFIG_DIR = Path(__file__).resolve().parents[1] / "config"
+
+
+def load_schema(schema_file: str) -> list:
+    schema_path = CONFIG_DIR / schema_file
+    with open(schema_path, "r", encoding="utf-8") as f:
+        schema_json = json.load(f)
+    return [
+        bigquery.SchemaField(
+            name=field["name"],
+            field_type=field["type"],
+            mode=field.get("mode", "NULLABLE"),
+            description=field.get("description", ""),
+        )
+        for field in schema_json
+    ]
 
 
 def create_table(project_id: str) -> None:
@@ -66,7 +61,8 @@ def create_table(project_id: str) -> None:
         client.create_dataset(dataset_ref, exists_ok=True)
         logger.info(f"データセット作成: {dataset_id}")
 
-    table = bigquery.Table(full_table_id, schema=SCHEMA)
+    schema = load_schema("bq_schema_investment_decisions.json")
+    table = bigquery.Table(full_table_id, schema=schema)
 
     table.time_partitioning = bigquery.TimePartitioning(
         type_=bigquery.TimePartitioningType.DAY,
