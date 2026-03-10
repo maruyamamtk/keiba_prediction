@@ -93,6 +93,9 @@ for t in tests:
 ```bash
 python3 -c "
 import os
+from dotenv import load_dotenv
+load_dotenv()  # .env から環境変数を読み込む
+
 from src.utils.line_notify import push_messages, text_message
 
 push_messages(
@@ -128,9 +131,10 @@ ngrokが発行した `https://xxxx.ngrok.io` を LINE Developers コンソール
 
 ```bash
 python3 -c "
-import hashlib, hmac, json, requests
+import hashlib, hmac, json, requests, os
 from base64 import b64encode
-import os
+from dotenv import load_dotenv
+load_dotenv()  # .env から環境変数を読み込む
 
 secret = os.environ.get('LINE_CHANNEL_SECRET', '')
 body = json.dumps({
@@ -165,10 +169,7 @@ BQ に当日の予測データとオッズデータが入っている状態で�
 # BQ 認証
 gcloud auth application-default login
 
-# ローカルサーバー起動
-GCP_PROJECT_ID=your_project_id \
-LINE_CHANNEL_ACCESS_TOKEN=your_token \
-LINE_CHANNEL_SECRET=your_secret \
+# ローカルサーバー起動（.env の値が自動で読み込まれる）
 uvicorn src.automation.api.app:app --reload --port 8080
 ```
 
