@@ -780,6 +780,7 @@ Cloud RunにデプロイされたFastAPIアプリケーションは以下のエ�
 | POST | `/api/v1/predict/on-demand` | 任意日付レース予測 + BQ/GCS保存（手動実行用） |
 | POST | `/api/v1/odds/scrape` | netkeibaから当日オッズを取得し `predictions.daily_odds` にUPSERT保存。`include_combo=true` で組み合わせ馬券オッズも取得し `predictions.daily_odds_combo` に保存。 |
 | POST | `/api/v1/strategy/daily` | 当日の投資戦略を策定し `predictions.investment_decisions` にUPSERT保存。`config/strategy_config.yaml` のパラメータを使用。 |
+| POST | `/api/v1/line/webhook` | LINE Messaging API Webhook受信。「日付 競馬場名 レース番号」形式のメッセージに対して予測テーブルと推奨馬券リストを返信。 |
 
 ---
 
@@ -1191,8 +1192,13 @@ python -m pytest tests/ --cov=src --cov-report=html
   - JRDB race_id（8文字）→ netkeiba race_id（12桁）のローカル変換（BQ照会不要）
   - 既スクレイプ済みレースのスキップによる再開対応
   - 単複オッズ（predictions.daily_odds）とコンボオッズ（predictions.daily_odds_combo）両対応
+- ✅ LINE Messaging API Webhook Bot - Issue #25
+  - `POST /api/v1/line/webhook`: HMAC-SHA256署名検証 + 「日付 競馬場名 レース番号」形式のメッセージ解析
+  - メッセージ1: 予測テーブル（予測順・馬番・馬名・スコア・複勝率・オッズ・期待値）
+  - メッセージ2: 推奨馬券リスト（馬券種・馬番・馬名・オッズ・賭け金・合計投資額）
+  - `src/automation/api/line_webhook.py` + `src/utils/line_notify.py` に実装
+  - 必要な環境変数: `LINE_CHANNEL_SECRET`（Webhook署名検証用）、`LINE_CHANNEL_ACCESS_TOKEN`（リプライ送信用）
 - ⬜ Webダッシュボード
-- ⬜ 通知システム（LINE Messaging API）
 
 ---
 
@@ -1219,3 +1225,4 @@ python -m pytest tests/ --cov=src --cov-report=html
 | 2026-03-01 | Issue #116（ロード履歴スキップロジック改善）・Issue #117（日次予測パイプライン完成）の実装を反映。predictions.daily_predictionsテーブル追加、POST /api/v1/predict/dailyのmodel_pathをOptional化、Phase 5を一部実装済みに更新 |
 | 2026-03-07 | Issue #131（netkeibaリアルタイムオッズスクレイパー）の実装を反映。netkeiba_scraper.py追加、predictions.daily_oddsテーブル追加、POST /api/v1/odds/scrapeエンドポイント追加、strategy.py/strategy_optimizer.pyをプロジェクト構成に追記 |
 | 2026-03-08 | Issue #140（JRDBコンボ基準オッズ raw.combo_odds）・Issue #139（投資戦略複勝+ワイド+三連複改修、パターンA追加）・PR #143（過去レース一括オッズ取得スクリプト）の実装を反映 |
+| 2026-03-10 | Issue #25（LINE Messaging API Webhook Bot）の実装を反映。POST /api/v1/line/webhookエンドポイント追加、line_webhook.py/line_notify.py追加、Phase 5通知システムを実装済みに更新 |

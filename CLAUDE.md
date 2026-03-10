@@ -63,8 +63,12 @@
   - `POST /api/v1/odds/scrape`: Playwright (Chromium) で当日全レースの単複オッズ取得
   - `predictions.daily_odds` テーブルへのUPSERT保存（race_id + horse_numberキー）
   - `src/automation/data/netkeiba_scraper.py` に実装
+- 通知システム（LINE Messaging API） ✅ 実装済み Issue #25
+  - `POST /api/v1/line/webhook`: HMAC-SHA256署名検証 + 「日付 競馬場名 レース番号」形式のメッセージ解析
+  - メッセージ1: 予測テーブル（予測順・馬番・馬名・スコア・複勝率・オッズ・期待値）
+  - メッセージ2: 推奨馬券リスト（馬券種・馬番・馬名・オッズ・賭け金・合計投資額）
+  - `src/automation/api/line_webhook.py` + `src/utils/line_notify.py` に実装
 - Webダッシュボード（Streamlit） ⬜ 未実装
-- 通知システム（LINE Messaging API） ⬜ 未実装 Issue #25
 
 詳細なアーキテクチャ図と実行手順は [README.md](./README.md) を参照してください。
 
@@ -94,7 +98,7 @@ APIエンドポイントの詳細は [README.md](./README.md#apiエンドポイ�
 - `daily-data-load`: 毎日AM 6:00 データロード（設定手順は実装済み、ジョブ作成は要実施）
 - `race-day-predict`: 当日AM 8:00 推論実行（APIエンドポイント実装済み・Issue #117。Schedulerジョブ作成は要実施）
 - `race-day-strategy`: 当日AM 8:30 投資戦略策定（未実装）
-- `race-day-notify`: 当日AM 9:00 LINE通知（未実装）
+- `race-day-notify`: 当日AM 9:00 LINE通知（APIエンドポイント実装済み・Issue #25。Schedulerジョブ作成は要実施）
 
 ---
 
@@ -222,13 +226,13 @@ def fractional_kelly(win_prob, odds, fraction=0.25):
 #### 7.2.1 実行タイミング
 - **当日AM 8:00**: 推論実行 → `predictions.daily_predictions` 保存 ✅ 実装済み
 - **当日AM 8:30**: netkeibaオッズ取得 → `predictions.daily_odds` 保存 ✅ 実装済み
-- **当日AM 9:00**: 投資戦略策定 → LINE通知 ⬜ 未実装
+- **当日AM 9:00**: 投資戦略策定 → LINE通知 ✅ 実装済み
 
 #### 7.2.2 実装方針
 - Cloud Schedulerから Cloud Run HTTPエンドポイントをトリガー
 - 予測結果を `predictions.daily_predictions` に保存（実装済み）
 - リアルタイムオッズを `predictions.daily_odds` に保存（実装済み）
-- 期待回収率上位の馬券を抽出し LINE Messaging API で通知（未実装）
+- 期待回収率上位の馬券を抽出し LINE Messaging API で通知（実装済み・Issue #25）
 
 ---
 
@@ -297,7 +301,7 @@ if __name__ == "__main__":
 
 ---
 
-## 9. 通知システム [未実装 - 設計のみ]
+## 9. 通知システム
 
 ### 9.1 メール通知
 
@@ -350,19 +354,37 @@ def send_email_notification(predictions_df):
     response = sg.send(message)
 ```
 
-### 9.2 LINE通知（未実装 - Issue #25）
+### 9.2 LINE通知（✅ 実装済み - Issue #25）
 
-LINE Messaging APIを使った双方向Botを実装予定。
+LINE Messaging APIを使った双方向Botを実装済み。
 
-**機能設計:**
-- **プッシュ通知**: 毎朝AM 9:00 に上位推奨馬券を自動送信
-- **オンデマンド問い合わせ**: ユーザーがLINEでメッセージ送信 → Webhookで受信 → 当日オッズを再取得してリアルタイムで返信
+**実装済み機能:**
+- **オンデマンド問い合わせ**: ユーザーがLINEで「日付 競馬場名 レース番号」形式のメッセージ送信 → Webhookで受信 → 予測テーブルと推奨馬券リストを返信
 
-**実装方針:**
-- LINE Messaging API（Messaging API, not LINE Notify）を使用
-- Webhook受信エンドポイント: `POST /api/v1/line/webhook` をCloud Runに追加
+**実装ファイル:**
+- `src/automation/api/line_webhook.py`: LINE Webhookハンドラ
+  - `verify_line_signature()`: HMAC-SHA256署名検証
+  - `parse_race_query()`: 「日付 競馬場名 レース番号」形式のメッセージ解析
+  - `handle_race_query()`: BQデータ取得 + 2通の返答メッセージ生成
+  - `process_webhook_events()`: Webhookイベント処理
+- `src/utils/__init__.py`: utilsパッケージ初期化
+- `src/utils/line_notify.py`: LINE リプライ/プッシュ通知ヘルパー
+  - `reply_messages()`: リプライ API
+  - `push_messages()`: プッシュ API
+  - `text_message()`: テキストメッセージオブジェクト生成
+- `tests/test_line_webhook.py`: ユニットテスト35件
+
+**必要な環境変数:**
+
+| 変数名 | 説明 |
+|--------|------|
+| `LINE_CHANNEL_SECRET` | Webhook署名検証用シークレット |
+| `LINE_CHANNEL_ACCESS_TOKEN` | リプライ送信用アクセストークン |
+
+**APIエンドポイント:**
+- Webhook受信: `POST /api/v1/line/webhook`（Cloud Runに実装済み）
 - `predictions.daily_predictions` と `predictions.daily_odds` を参照し投資戦略を計算
-- `src/backtest/strategy.py` の `select_bets_for_race()` をそのまま流用
+- `src/backtest/strategy.py` の `select_bets_for_race()` を流用
 
 ---
 
@@ -483,6 +505,7 @@ Cloud Run または Cloud Function のデプロイメント完了を宣言する
 | 2026-02-22 | 3.2.0 | Issue #17（バックテストシミュレーター）の実装を反映。Backtest Layer実装済みに更新、セクション6を実装済みに変更、実装ファイル一覧を追記 | Claude |
 | 2026-03-01 | 3.3.0 | Issue #116（ロード履歴スキップロジック改善）・Issue #117（日次予測パイプライン完成）の実装を反映。Prediction & Operation Layer一部実装済みに更新、predictionsバケット/データセット実装済みに更新、race-day-predictのAPI実装済みに更新 | Claude |
 | 2026-03-07 | 3.4.0 | Issue #131（netkeibaリアルタイムオッズスクレイパー）の実装を反映。netkeibaスクレイパーLayer追加、predictions.daily_odds追加、section 7.2を実装済みに更新、section 9.2をLINE Messaging API設計に更新、strategy.py/strategy_optimizer.pyをsection 6.1に追記 | Claude |
+| 2026-03-10 | 3.5.0 | Issue #25（LINE Messaging API Webhook Bot）の実装を反映。Prediction & Operation Layer通知システムを実装済みに更新、race-day-notifyのAPI実装済みに更新、section 7.2.1のLINE通知を実装済みに更新、section 9の見出しを実装済みに変更、section 9.2を実装済み内容に書き換え（実装ファイル・環境変数・APIエンドポイント詳細追記） | Claude |
 
 ---
 
