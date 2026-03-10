@@ -18,10 +18,9 @@ from __future__ import annotations
 import hashlib
 import hmac
 import logging
-import os
 import re
-from base64 import b64decode, b64encode
-from datetime import date, datetime
+from base64 import b64encode
+from datetime import date
 from typing import Any
 
 import pandas as pd
