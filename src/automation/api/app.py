@@ -21,7 +21,7 @@ import uuid
 from datetime import date
 from typing import Optional
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
 
@@ -1037,6 +1037,65 @@ async def run_strategy_daily(request: StrategyDailyRequest):
     except Exception as e:
         logger.error(f"日次投資戦略エラー: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+class LineWebhookResponse(BaseModel):
+    """LINE Webhook レスポンス"""
+
+    status: str = Field(description="処理ステータス (ok)")
+
+
+@app.post("/api/v1/line/webhook", response_model=LineWebhookResponse)
+async def line_webhook(request: Request):
+    """
+    LINE Messaging API Webhook エンドポイント
+
+    ユーザーが「日付 競馬場名 レース番号」形式のメッセージを送信した場合のみ返答する。
+    - メッセージ1: 予測テーブル（予測順・馬番・馬名・スコア・複勝率・オッズ・期待値）
+    - メッセージ2: 推奨馬券リスト（馬券種・馬番・馬名・オッズ・賭け金・合計）
+
+    環境変数:
+      LINE_CHANNEL_SECRET       : 署名検証用シークレット
+      LINE_CHANNEL_ACCESS_TOKEN : リプライ送信用アクセストークン
+      GCP_PROJECT_ID            : BigQuery プロジェクト ID
+    """
+    channel_secret = os.environ.get("LINE_CHANNEL_SECRET", "")
+    channel_access_token = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN", "")
+    project_id = os.environ.get("GCP_PROJECT_ID")
+
+    if not project_id:
+        raise HTTPException(status_code=500, detail="GCP_PROJECT_IDが未設定です")
+
+    body = await request.body()
+    signature = request.headers.get("X-Line-Signature", "")
+
+    # 署名検証（channel_secret が設定されている場合のみ）
+    if channel_secret:
+        from src.automation.api.line_webhook import verify_line_signature
+
+        if not verify_line_signature(channel_secret, body, signature):
+            logger.warning("LINE署名検証失敗")
+            raise HTTPException(status_code=400, detail="Invalid signature")
+
+    import json
+
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    events = payload.get("events", [])
+    if events:
+        from src.automation.api.line_webhook import process_webhook_events
+
+        await asyncio.to_thread(
+            process_webhook_events,
+            events=events,
+            project_id=project_id,
+            channel_access_token=channel_access_token,
+        )
+
+    return LineWebhookResponse(status="ok")
 
 
 def create_app() -> FastAPI:
