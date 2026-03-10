@@ -1,0 +1,505 @@
+"""
+LINE Messaging API Webhook ハンドラー
+
+ユーザーが「日付 競馬場名 レース番号」形式でメッセージを送信した場合のみ返答する。
+
+返答内容:
+  1. 予測テーブル（予測順・馬番・馬名・スコア・複勝率・オッズ・期待値）
+  2. 推奨馬券リスト（馬券種・馬番・馬名・オッズ・賭け金）
+
+環境変数:
+  LINE_CHANNEL_SECRET         : Webhook 署名検証用シークレット
+  LINE_CHANNEL_ACCESS_TOKEN   : リプライ送信用アクセストークン
+  GCP_PROJECT_ID              : BigQuery プロジェクト ID
+"""
+
+from __future__ import annotations
+
+import hashlib
+import hmac
+import logging
+import re
+from base64 import b64encode
+from datetime import date
+from typing import Any
+
+import pandas as pd
+
+logger = logging.getLogger(__name__)
+
+# 競馬場名 → venue_code 変換マップ
+VENUE_NAME_TO_CODE: dict[str, str] = {
+    "札幌": "01",
+    "函館": "02",
+    "福島": "03",
+    "新潟": "04",
+    "東京": "05",
+    "中山": "06",
+    "中京": "07",
+    "京都": "08",
+    "阪神": "09",
+    "小倉": "10",
+}
+
+VENUE_CODE_TO_NAME: dict[str, str] = {v: k for k, v in VENUE_NAME_TO_CODE.items()}
+
+# 馬券種の日本語ラベル
+BET_TYPE_LABELS: dict[str, str] = {
+    "place": "複勝",
+    "win": "単勝",
+    "wide": "ワイド",
+    "umaren": "馬連",
+    "sanrenpuku": "三連複",
+}
+
+# レースパターンの日本語ラベル
+PATTERN_LABELS: dict[str, str] = {
+    "one_dominant": "突出型",
+    "standard": "標準型",
+}
+
+
+def verify_line_signature(
+    channel_secret: str,
+    body: bytes,
+    signature: str,
+) -> bool:
+    """
+    LINE Webhook 署名を HMAC-SHA256 で検証する
+
+    Args:
+        channel_secret: LINE チャネルシークレット
+        body: リクエストボディ（生バイト列）
+        signature: X-Line-Signature ヘッダー値（Base64エンコード済み）
+
+    Returns:
+        署名が正しければ True
+    """
+    hash_val = hmac.new(
+        channel_secret.encode("utf-8"),
+        body,
+        hashlib.sha256,
+    ).digest()
+    expected = b64encode(hash_val).decode("utf-8")
+    return hmac.compare_digest(expected, signature)
+
+
+# --- メッセージパース -----------------------------------------------------------
+
+# 受け付けるパターン例: "2026-03-08 阪神 12R" / "03/08 阪神 12" / "阪神 12R 2026-03-08"
+_DATE_PATTERN_FULL = r"(\d{4})[/-](\d{1,2})[/-](\d{1,2})"   # YYYY-MM-DD / YYYY/MM/DD
+_DATE_PATTERN_SHORT = r"(\d{1,2})[/-](\d{1,2})"              # MM-DD / MM/DD (年は今年)
+_VENUE_PATTERN = "|".join(VENUE_NAME_TO_CODE.keys())
+# R/r サフィックスが付いているものを優先、なければ末尾の独立した数値
+_RACE_NUM_WITH_R = r"(\d{1,2})[Rr]"
+_RACE_NUM_STANDALONE = r"(?<!\d)(\d{1,2})(?!\d)"
+
+
+def parse_race_query(text: str) -> dict[str, Any] | None:
+    """
+    「日付 競馬場名 レース番号」形式のテキストを解析する。
+
+    戻り値:
+        {"race_date": date, "venue_code": str, "race_number": int} または None
+    """
+    # 競馬場名を抽出
+    venue_match = re.search(_VENUE_PATTERN, text)
+    if not venue_match:
+        return None
+
+    venue_name = venue_match.group(0)
+    venue_code = VENUE_NAME_TO_CODE[venue_name]
+
+    # 日付を先に抽出して日付部分を除去（レース番号との誤マッチ防止）
+    race_date: date | None = None
+    date_span: tuple[int, int] | None = None
+
+    m_full = re.search(_DATE_PATTERN_FULL, text)
+    if m_full:
+        year, month, day = int(m_full.group(1)), int(m_full.group(2)), int(m_full.group(3))
+        try:
+            race_date = date(year, month, day)
+            date_span = m_full.span()
+        except ValueError:
+            return None
+    else:
+        m_short = re.search(_DATE_PATTERN_SHORT, text)
+        if m_short:
+            month, day = int(m_short.group(1)), int(m_short.group(2))
+            try:
+                race_date = date(date.today().year, month, day)
+                date_span = m_short.span()
+            except ValueError:
+                return None
+        else:
+            return None
+
+    # 日付部分を除去したテキストでレース番号を探す
+    text_without_date = text[: date_span[0]] + " " * (date_span[1] - date_span[0]) + text[date_span[1] :]
+
+    # 「12R」「12r」形式を優先
+    race_num_match = re.search(_RACE_NUM_WITH_R, text_without_date)
+    if race_num_match:
+        race_number = int(race_num_match.group(1))
+    else:
+        # 独立した数値（1〜12桁）を探す
+        candidates = list(re.finditer(_RACE_NUM_STANDALONE, text_without_date))
+        # 競馬場名以外の数値のみを対象にする
+        venue_start, venue_end = venue_match.span()
+        num_matches = [m for m in candidates if not (venue_start <= m.start() < venue_end)]
+        if not num_matches:
+            return None
+        # 最後に現れた数値をレース番号として採用
+        race_number = int(num_matches[-1].group(1))
+
+    return {
+        "race_date": race_date,
+        "venue_code": venue_code,
+        "venue_name": venue_name,
+        "race_number": race_number,
+    }
+
+
+# --- BigQuery データ取得 -------------------------------------------------------
+
+def _fetch_race_predictions(
+    project_id: str,
+    race_date: date,
+    venue_code: str,
+    race_number: int,
+) -> pd.DataFrame:
+    """
+    predictions.daily_predictions から指定レースの予測データを取得する
+    """
+    from google.cloud import bigquery
+
+    client = bigquery.Client(project=project_id)
+    query = f"""
+    SELECT
+        horse_number,
+        horse_name,
+        win_place_prob,
+        pred_score,
+        rank_in_race
+    FROM `{project_id}.predictions.daily_predictions`
+    WHERE race_date = '{race_date.isoformat()}'
+      AND venue_code = '{venue_code}'
+      AND race_number = {race_number}
+    ORDER BY rank_in_race ASC
+    """
+    return client.query(query).to_dataframe()
+
+
+def _fetch_race_odds(
+    project_id: str,
+    race_date: date,
+    venue_code: str,
+    race_number: int,
+) -> pd.DataFrame:
+    """
+    predictions.daily_odds から指定レースの単複オッズを取得する
+    """
+    from google.cloud import bigquery
+
+    client = bigquery.Client(project=project_id)
+    query = f"""
+    SELECT
+        horse_number,
+        win_odds,
+        place_odds_min AS place_odds
+    FROM `{project_id}.predictions.daily_odds`
+    WHERE race_date = '{race_date.isoformat()}'
+      AND venue_code = '{venue_code}'
+      AND race_number = {race_number}
+    """
+    return client.query(query).to_dataframe()
+
+
+def _fetch_race_combo_odds(
+    project_id: str,
+    race_date: date,
+    venue_code: str,
+    race_number: int,
+) -> pd.DataFrame:
+    """
+    predictions.daily_odds_combo から組み合わせオッズを取得する（なければ空）
+    """
+    try:
+        from google.cloud import bigquery
+
+        client = bigquery.Client(project=project_id)
+        query = f"""
+        SELECT
+            bet_type,
+            horse_number_1,
+            horse_number_2,
+            horse_number_3,
+            odds_value
+        FROM `{project_id}.predictions.daily_odds_combo`
+        WHERE race_date = '{race_date.isoformat()}'
+          AND venue_code = '{venue_code}'
+          AND race_number = {race_number}
+        """
+        return client.query(query).to_dataframe()
+    except Exception as e:
+        logger.warning(f"combo_odds 取得失敗（スキップ）: {e}")
+        return pd.DataFrame()
+
+
+# --- メッセージフォーマット -------------------------------------------------------
+
+def _format_prediction_table(
+    race_date: date,
+    venue_name: str,
+    race_number: int,
+    merged_df: pd.DataFrame,
+) -> str:
+    """
+    予測順・馬番・馬名・スコア・複勝率・オッズ・期待値 の表を生成する
+    """
+    header = (
+        f"{'='*44}\n"
+        f"Race: {venue_name} {race_number}R ({race_date.isoformat()})\n"
+        f"{'='*44}\n"
+        f"  予測順  馬番 馬名              スコア    複勝率  オッズ  期待値\n"
+        f"{'-'*44}"
+    )
+
+    rows = []
+    for _, row in merged_df.sort_values("rank_in_race").iterrows():
+        rank = int(row["rank_in_race"])
+        num = int(row["horse_number"])
+        name = str(row.get("horse_name", ""))[:8].ljust(8)
+        score = float(row.get("pred_score", 0.0))
+        prob = float(row.get("win_place_prob", 0.0))
+        odds_val = row.get("place_odds")
+        if odds_val is None or pd.isna(odds_val):
+            odds_str = "  -  "
+            ev_str = "  -  "
+        else:
+            odds_f = float(odds_val)
+            ev_f = prob * odds_f
+            odds_str = f"{odds_f:5.1f}倍"
+            ev_str = f"{ev_f:5.2f}"
+        rows.append(
+            f"  {rank:3d}  {num:3d} {name}  {score:+7.4f}  {prob*100:5.1f}%  {odds_str}  {ev_str}"
+        )
+
+    return header + "\n" + "\n".join(rows)
+
+
+def _format_bet_recommendations(
+    race_date: date,
+    venue_name: str,
+    race_number: int,
+    bets: list[dict[str, Any]],
+    race_pattern: str,
+    merged_df: pd.DataFrame,
+) -> str:
+    """
+    推奨馬券リストのメッセージを生成する
+    """
+    pattern_label = PATTERN_LABELS.get(race_pattern, race_pattern)
+    title = (
+        f"🏇 推奨馬券リスト\n"
+        f"【{venue_name} {race_number}R】({race_date.isoformat()})\n"
+        f"パターン: {pattern_label}\n"
+        f"{'─'*30}"
+    )
+
+    if not bets:
+        return title + "\n推奨馬券なし（期待値基準を満たす馬券が見つかりませんでした）"
+
+    # horse_number → horse_name のマップ
+    name_map: dict[int, str] = {}
+    if not merged_df.empty and "horse_name" in merged_df.columns:
+        for _, r in merged_df.iterrows():
+            name_map[int(r["horse_number"])] = str(r.get("horse_name", ""))
+
+    lines = []
+    total_bet = 0.0
+    for bet in bets:
+        bet_type_label = BET_TYPE_LABELS.get(bet.get("bet_type", ""), bet.get("bet_type", ""))
+        horse_numbers = bet.get("horse_numbers", [])
+        horse_parts = []
+        for hn in horse_numbers:
+            hn_name = name_map.get(int(hn), "")
+            horse_parts.append(f"馬番{hn} {hn_name}")
+        horse_str = " / ".join(horse_parts)
+        odds_val = float(bet.get("odds", 0.0))
+        bet_amount = float(bet.get("bet_amount", 0.0))
+        total_bet += bet_amount
+        lines.append(
+            f"  [{bet_type_label}] {horse_str}\n"
+            f"    オッズ: {odds_val:.1f}倍  推奨額: ¥{bet_amount:,.0f}"
+        )
+
+    footer = f"{'─'*30}\n合計投資額: ¥{total_bet:,.0f}"
+    return title + "\n" + "\n".join(lines) + "\n" + footer
+
+
+# --- 投資戦略実行 ---------------------------------------------------------------
+
+def _run_strategy_for_race(
+    project_id: str,
+    race_date: date,
+    venue_code: str,
+    race_number: int,
+    race_df: pd.DataFrame,
+    combo_odds_df: pd.DataFrame,
+) -> tuple[list[dict[str, Any]], str]:
+    """
+    select_bets_for_race() を呼び出して推奨馬券を生成する
+
+    Returns:
+        (bets, race_pattern_str)
+    """
+    import yaml
+    from pathlib import Path
+    from src.backtest.strategy import select_bets_for_race
+
+    config_path = Path(__file__).resolve().parents[3] / "config" / "strategy_config.yaml"
+    if config_path.exists():
+        with open(config_path) as f:
+            cfg = yaml.safe_load(f)
+        p1 = float(cfg.get("p1", 0.2))
+        threshold = float(cfg.get("expected_return_threshold", 1.2))
+        max_bet_ratio = float(cfg.get("max_bet_ratio", 0.05))
+        min_bet_amount = float(cfg.get("min_bet_amount", 100.0))
+    else:
+        p1, threshold, max_bet_ratio, min_bet_amount = 0.2, 1.2, 0.05, 100.0
+
+    try:
+        bets, pattern = select_bets_for_race(
+            race_df=race_df,
+            combo_odds_df=combo_odds_df if not combo_odds_df.empty else None,
+            p1=p1,
+            expected_return_threshold=threshold,
+            max_bet_ratio=max_bet_ratio,
+            min_bet_amount=min_bet_amount,
+        )
+        return bets, pattern.pattern
+    except ValueError as e:
+        logger.warning(f"select_bets_for_race エラー: {e}")
+        return [], "standard"
+
+
+# --- インテントハンドラ ---------------------------------------------------------
+
+def handle_race_query(
+    text: str,
+    project_id: str,
+) -> list[dict[str, str]] | None:
+    """
+    「日付 競馬場名 レース番号」形式のメッセージを処理して返答メッセージリストを返す。
+
+    Args:
+        text: ユーザーから受信したメッセージテキスト
+        project_id: GCP プロジェクト ID
+
+    Returns:
+        LINE メッセージオブジェクトのリスト（2件）、またはパース失敗時は None
+    """
+    query = parse_race_query(text)
+    if query is None:
+        return None
+
+    race_date = query["race_date"]
+    venue_code = query["venue_code"]
+    venue_name = query["venue_name"]
+    race_number = query["race_number"]
+
+    logger.info(
+        f"レースクエリ: date={race_date}, venue={venue_name}({venue_code}), "
+        f"race_number={race_number}"
+    )
+
+    # BigQuery からデータ取得
+    pred_df = _fetch_race_predictions(project_id, race_date, venue_code, race_number)
+    odds_df = _fetch_race_odds(project_id, race_date, venue_code, race_number)
+    combo_df = _fetch_race_combo_odds(project_id, race_date, venue_code, race_number)
+
+    if pred_df.empty:
+        return [{"type": "text", "text": f"{venue_name} {race_number}R ({race_date.isoformat()}) の予測データが見つかりませんでした。"}]
+
+    # 予測 + オッズを結合
+    if not odds_df.empty:
+        merged = pd.merge(pred_df, odds_df, on="horse_number", how="left")
+    else:
+        merged = pred_df.copy()
+        for col in ("win_odds", "place_odds"):
+            merged[col] = None
+
+    # 複勝オッズを strategy 用にカラム名を揃える
+    if "place_odds" in merged.columns:
+        merged["odds"] = merged["place_odds"]
+    else:
+        merged["odds"] = None
+
+    # horse_id カラムがなければダミーを追加（select_bets_for_race の必須カラム）
+    if "horse_id" not in merged.columns:
+        merged["horse_id"] = merged["horse_number"].astype(str)
+
+    # メッセージ1: 予測テーブル
+    msg1_text = _format_prediction_table(race_date, venue_name, race_number, merged)
+
+    # 推奨馬券の計算
+    bets, pattern_str = _run_strategy_for_race(
+        project_id=project_id,
+        race_date=race_date,
+        venue_code=venue_code,
+        race_number=race_number,
+        race_df=merged,
+        combo_odds_df=combo_df,
+    )
+
+    # メッセージ2: 推奨馬券リスト
+    msg2_text = _format_bet_recommendations(
+        race_date, venue_name, race_number, bets, pattern_str, merged
+    )
+
+    return [
+        {"type": "text", "text": msg1_text},
+        {"type": "text", "text": msg2_text},
+    ]
+
+
+# --- Webhook イベント処理 -------------------------------------------------------
+
+def process_webhook_events(
+    events: list[dict[str, Any]],
+    project_id: str,
+    channel_access_token: str,
+) -> None:
+    """
+    LINE Webhook イベントリストを処理してリプライを送信する
+
+    「日付 競馬場名 レース番号」形式のテキストメッセージのみ返答する。
+
+    Args:
+        events: Webhook の events 配列
+        project_id: GCP プロジェクト ID
+        channel_access_token: LINE チャネルアクセストークン
+    """
+    from src.utils.line_notify import reply_messages
+
+    for event in events:
+        if event.get("type") != "message":
+            continue
+        message = event.get("message", {})
+        if message.get("type") != "text":
+            continue
+
+        text = message.get("text", "").strip()
+        reply_token = event.get("replyToken", "")
+
+        messages = handle_race_query(text, project_id)
+        if messages is None:
+            # 「日付 競馬場名 レース番号」形式以外は無視
+            logger.debug(f"レースクエリ以外のメッセージを無視: {text!r}")
+            continue
+
+        try:
+            reply_messages(channel_access_token, reply_token, messages)
+        except Exception as e:
+            logger.error(f"LINE リプライ送信失敗: {e}", exc_info=True)
