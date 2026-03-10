@@ -510,28 +510,50 @@ def process_webhook_events(
 def _fetch_investment_decisions(
     project_id: str,
     target_date: date,
+    max_races: int = 10,
 ) -> list[dict[str, Any]]:
     """
-    predictions.investment_decisions から当日の投資判断を取得する
+    predictions.investment_decisions から当日の投資判断を取得する。
+
+    レースごとに最大期待回収率の馬でレースをランク付けし、
+    上位 max_races レースのみを返す。
+
+    Args:
+        project_id: GCP プロジェクト ID
+        target_date: 対象日
+        max_races: 通知対象の最大レース数（デフォルト10）
     """
     from google.cloud import bigquery
 
     client = bigquery.Client(project=project_id)
     query = f"""
+    WITH race_rank AS (
+      -- レースごとの最大期待回収率を計算し、上位 {max_races} レースを選定
+      SELECT
+        race_id,
+        MAX(expected_return) AS max_expected_return
+      FROM `{project_id}.predictions.investment_decisions`
+      WHERE race_date = '{target_date.isoformat()}'
+      GROUP BY race_id
+      ORDER BY max_expected_return DESC
+      LIMIT {max_races}
+    )
     SELECT
-        venue_code,
-        race_number,
-        race_pattern,
-        horse_number,
-        horse_name,
-        bet_type,
-        bet_amount,
-        win_place_prob,
-        place_odds,
-        expected_return
-    FROM `{project_id}.predictions.investment_decisions`
-    WHERE race_date = '{target_date.isoformat()}'
-    ORDER BY venue_code, race_number, expected_return DESC
+      d.venue_code,
+      d.race_number,
+      d.race_pattern,
+      d.horse_number,
+      d.horse_name,
+      d.bet_type,
+      d.bet_amount,
+      d.win_place_prob,
+      d.place_odds,
+      d.expected_return,
+      r.max_expected_return
+    FROM `{project_id}.predictions.investment_decisions` d
+    JOIN race_rank r ON d.race_id = r.race_id
+    WHERE d.race_date = '{target_date.isoformat()}'
+    ORDER BY r.max_expected_return DESC, d.venue_code, d.race_number, d.expected_return DESC
     """
     rows = client.query(query).result()
     return [dict(row) for row in rows]
@@ -639,7 +661,7 @@ def send_daily_push_notification(
         logger.info(f"平日のためLINE通知をスキップ: {target_date} (weekday={target_date.weekday()})")
         return {"status": "skipped", "messages_sent": 0}
 
-    decisions = _fetch_investment_decisions(project_id, target_date)
+    decisions = _fetch_investment_decisions(project_id, target_date, max_races=10)
     if not decisions:
         logger.info(f"投資判断なし: {target_date}")
         return {"status": "no_decisions", "messages_sent": 0}

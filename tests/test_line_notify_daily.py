@@ -139,7 +139,8 @@ class TestFormatPushNotification:
         assert "ありません" in messages[0]["text"]
 
     def test_max_5_messages(self):
-        # 大量レースでも5件以下に収まること
+        # 上位10レースに絞られた後も、LINEメッセージは5件以下に収まること
+        # （上位10レースの選定はSQL側で行うため、ここでは10レース分のデータを渡す）
         decisions = [
             {
                 "venue_code": "05",
@@ -152,8 +153,9 @@ class TestFormatPushNotification:
                 "win_place_prob": 0.5,
                 "place_odds": 2.0,
                 "expected_return": 1.0,
+                "max_expected_return": 1.0,
             }
-            for i in range(1, 20)
+            for i in range(1, 11)  # 上位10レース分
         ]
         messages = format_push_notification(date(2026, 3, 8), decisions)
         assert len(messages) <= 5
@@ -240,3 +242,19 @@ class TestSendDailyPushNotification:
 
         assert result["status"] == "sent"
         mock_post.assert_called_once()
+
+    @patch("src.automation.api.line_webhook._fetch_investment_decisions")
+    @patch("src.utils.line_notify.requests.post")
+    def test_fetch_called_with_max_races_10(self, mock_post, mock_fetch):
+        """_fetch_investment_decisions が max_races=10 で呼ばれることを確認"""
+        mock_fetch.return_value = []
+        mock_post.return_value = MagicMock(status_code=200)
+
+        send_daily_push_notification(
+            project_id="test_project",
+            channel_access_token="test_token",
+            user_id="test_user",
+            target_date=date(2026, 3, 7),  # 土曜
+        )
+
+        mock_fetch.assert_called_once_with("test_project", date(2026, 3, 7), max_races=10)
