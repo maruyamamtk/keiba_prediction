@@ -10,6 +10,7 @@
 #   2. race-day-predict      AM 8:00 JST  翌日レース予測
 #   3. race-day-odds-scrape  AM 8:15 JST  netkeibaオッズ取得（単複＋組み合わせ）
 #   4. race-day-strategy     AM 8:30 JST  投資戦略策定・investment_decisions保存
+#   5. race-day-notify       AM 9:00 JST  LINE推奨馬券通知（土日のみ）
 #
 # 使用方法:
 #   ./infrastructure/scripts/setup_scheduler.sh
@@ -78,6 +79,9 @@ ODDS_SCRAPE_SCHEDULE="15 8 * * *"
 # 投資戦略ジョブ
 STRATEGY_JOB_NAME="race-day-strategy"
 STRATEGY_SCHEDULE="30 8 * * *"
+# LINE通知ジョブ（土日のみ）
+NOTIFY_JOB_NAME="race-day-notify"
+NOTIFY_SCHEDULE="0 9 * * 0,6"
 TIME_ZONE="Asia/Tokyo"
 
 # サービスアカウントのメールアドレス
@@ -92,6 +96,7 @@ log_info "データロードジョブ: ${LOAD_JOB_NAME} (${LOAD_SCHEDULE})"
 log_info "予測ジョブ: ${PREDICT_JOB_NAME} (${PREDICT_SCHEDULE})"
 log_info "オッズ取得ジョブ: ${ODDS_SCRAPE_JOB_NAME} (${ODDS_SCRAPE_SCHEDULE})"
 log_info "投資戦略ジョブ: ${STRATEGY_JOB_NAME} (${STRATEGY_SCHEDULE})"
+log_info "LINE通知ジョブ: ${NOTIFY_JOB_NAME} (${NOTIFY_SCHEDULE}) ※土日のみ"
 log_info "タイムゾーン: ${TIME_ZONE}"
 log_info "サービスアカウント: ${PIPELINE_SA_EMAIL}"
 log_info "=========================================="
@@ -129,6 +134,9 @@ log_info "オッズ取得URI: ${ODDS_SCRAPE_TARGET_URI}"
 # ターゲットURL（投資戦略: 日次投資戦略エンドポイント）
 STRATEGY_TARGET_URI="${SERVICE_URL}/api/v1/strategy/daily"
 log_info "投資戦略URI: ${STRATEGY_TARGET_URI}"
+# ターゲットURL（LINE通知: 土日AM9:00プッシュ通知エンドポイント）
+NOTIFY_TARGET_URI="${SERVICE_URL}/api/v1/line/notify/daily"
+log_info "LINE通知URI: ${NOTIFY_TARGET_URI}"
 
 # ========================================
 # 2. Cloud Scheduler APIの有効化確認
@@ -256,6 +264,16 @@ create_or_update_job \
     "${STRATEGY_TARGET_URI}" \
     "800s"
 
+# 4-5. LINE通知ジョブ（race-day-notify）
+# investment_decisions を参照してLINEプッシュ通知を送信
+# 土日 AM 9:00 のみ実行（平日はエンドポイント側でスキップ）
+log_info "--- LINE通知ジョブの設定 ---"
+create_or_update_job \
+    "${NOTIFY_JOB_NAME}" \
+    "${NOTIFY_SCHEDULE}" \
+    "${NOTIFY_TARGET_URI}" \
+    "60s"
+
 # ========================================
 # 5. ジョブの確認
 # ========================================
@@ -297,8 +315,11 @@ log_info "  一時停止:    gcloud scheduler jobs pause ${STRATEGY_JOB_NAME} --
 log_info "  再開:        gcloud scheduler jobs resume ${STRATEGY_JOB_NAME} --location=${GCP_REGION}"
 log_info "  実行履歴:    gcloud logging read 'resource.type=\"cloud_scheduler_job\" AND resource.labels.job_id=\"${STRATEGY_JOB_NAME}\"' --limit=10"
 log_info ""
-log_info "注意: 以下のジョブは依存Issueの完了後に追加予定です:"
-log_info "  race-day-notify (AM 9:00) - Issue #25 完了後"
+log_info "【LINE通知ジョブ (${NOTIFY_JOB_NAME})】 ※土日 AM 9:00 のみ"
+log_info "  手動実行:    gcloud scheduler jobs run ${NOTIFY_JOB_NAME} --location=${GCP_REGION}"
+log_info "  一時停止:    gcloud scheduler jobs pause ${NOTIFY_JOB_NAME} --location=${GCP_REGION}"
+log_info "  再開:        gcloud scheduler jobs resume ${NOTIFY_JOB_NAME} --location=${GCP_REGION}"
+log_info "  実行履歴:    gcloud logging read 'resource.type=\"cloud_scheduler_job\" AND resource.labels.job_id=\"${NOTIFY_JOB_NAME}\"' --limit=10"
 log_info ""
 
 # ========================================

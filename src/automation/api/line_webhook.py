@@ -503,3 +503,148 @@ def process_webhook_events(
             reply_messages(channel_access_token, reply_token, messages)
         except Exception as e:
             logger.error(f"LINE リプライ送信失敗: {e}", exc_info=True)
+
+
+# --- 日次プッシュ通知（土日限定）--------------------------------------------------
+
+def _fetch_investment_decisions(
+    project_id: str,
+    target_date: date,
+) -> list[dict[str, Any]]:
+    """
+    predictions.investment_decisions から当日の投資判断を取得する
+    """
+    from google.cloud import bigquery
+
+    client = bigquery.Client(project=project_id)
+    query = f"""
+    SELECT
+        venue_code,
+        race_number,
+        race_pattern,
+        horse_number,
+        horse_name,
+        bet_type,
+        bet_amount,
+        win_place_prob,
+        place_odds,
+        expected_return
+    FROM `{project_id}.predictions.investment_decisions`
+    WHERE race_date = '{target_date.isoformat()}'
+    ORDER BY venue_code, race_number, expected_return DESC
+    """
+    rows = client.query(query).result()
+    return [dict(row) for row in rows]
+
+
+def format_push_notification(
+    target_date: date,
+    decisions: list[dict[str, Any]],
+) -> list[dict[str, str]]:
+    """
+    投資判断リストから LINE プッシュ通知用のメッセージを生成する。
+
+    レース数が多い場合は最大 4 メッセージ（LINE上限 5 件のうち 1 件はヘッダー）に収める。
+
+    Args:
+        target_date: 対象日
+        decisions: investment_decisions の行リスト
+
+    Returns:
+        LINE メッセージオブジェクトのリスト
+    """
+    if not decisions:
+        return [{"type": "text", "text": f"🏇 {target_date.isoformat()} の推奨馬券はありません。"}]
+
+    # レースごとにグループ化
+    races: dict[tuple[str, int], list[dict]] = {}
+    for d in decisions:
+        key = (str(d.get("venue_code", "")), int(d.get("race_number", 0)))
+        races.setdefault(key, []).append(d)
+
+    total_bet = sum(float(d.get("bet_amount", 0)) for d in decisions)
+
+    # ヘッダーメッセージ
+    header = (
+        f"🏇 本日の推奨馬券 ({target_date.isoformat()})\n"
+        f"レース数: {len(races)}  総投資額: ¥{total_bet:,.0f}"
+    )
+    messages: list[dict[str, str]] = [{"type": "text", "text": header}]
+
+    # レースブロックを最大 4 メッセージに分割
+    race_blocks: list[str] = []
+    for (venue_code, race_number), bets in races.items():
+        venue_name = VENUE_CODE_TO_NAME.get(venue_code, venue_code)
+        pattern_label = PATTERN_LABELS.get(str(bets[0].get("race_pattern", "")), "")
+        lines = [f"【{venue_name} {race_number}R】{pattern_label}"]
+        for b in bets:
+            bet_label = BET_TYPE_LABELS.get(str(b.get("bet_type", "")), str(b.get("bet_type", "")))
+            prob = float(b.get("win_place_prob", 0)) * 100
+            odds = float(b.get("place_odds", 0))
+            ev = float(b.get("expected_return", 0))
+            amount = float(b.get("bet_amount", 0))
+            lines.append(
+                f"  [{bet_label}] 馬番{b.get('horse_number')} {b.get('horse_name', '')}\n"
+                f"    複勝率:{prob:.1f}% / オッズ:{odds:.1f}倍 / 期待値:{ev:.2f}\n"
+                f"    推奨: ¥{amount:,.0f}"
+            )
+        race_blocks.append("\n".join(lines))
+
+    # 4 メッセージに収まるよう複数ブロックをまとめる
+    chunk: list[str] = []
+    chunk_len = 0
+    for block in race_blocks:
+        if chunk_len + len(block) > 4500 or len(messages) + 1 > 4:
+            if chunk:
+                messages.append({"type": "text", "text": "\n\n".join(chunk)})
+                chunk = []
+                chunk_len = 0
+            if len(messages) >= 5:
+                break
+        chunk.append(block)
+        chunk_len += len(block)
+
+    if chunk and len(messages) < 5:
+        messages.append({"type": "text", "text": "\n\n".join(chunk)})
+
+    return messages
+
+
+def is_weekend_in_jst(target_date: date) -> bool:
+    """土曜（weekday=5）または日曜（weekday=6）か判定する"""
+    return target_date.weekday() in (5, 6)
+
+
+def send_daily_push_notification(
+    project_id: str,
+    channel_access_token: str,
+    user_id: str,
+    target_date: date,
+) -> dict[str, Any]:
+    """
+    当日が土日の場合のみ、投資判断をLINEプッシュ通知で送信する。
+
+    Args:
+        project_id: GCP プロジェクト ID
+        channel_access_token: LINE チャネルアクセストークン
+        user_id: 送信先 LINE ユーザー ID
+        target_date: 対象日
+
+    Returns:
+        {"status": "sent"|"skipped"|"no_decisions", "messages_sent": int}
+    """
+    from src.utils.line_notify import push_messages
+
+    if not is_weekend_in_jst(target_date):
+        logger.info(f"平日のためLINE通知をスキップ: {target_date} (weekday={target_date.weekday()})")
+        return {"status": "skipped", "messages_sent": 0}
+
+    decisions = _fetch_investment_decisions(project_id, target_date)
+    if not decisions:
+        logger.info(f"投資判断なし: {target_date}")
+        return {"status": "no_decisions", "messages_sent": 0}
+
+    messages = format_push_notification(target_date, decisions)
+    push_messages(channel_access_token, user_id, messages)
+    logger.info(f"LINE プッシュ通知送信完了: {len(messages)}件")
+    return {"status": "sent", "messages_sent": len(messages)}
