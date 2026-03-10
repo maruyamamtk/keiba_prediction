@@ -658,7 +658,8 @@ keiba_prediction/
 │   └── scripts/
 ├── docs/                              # ドキュメント
 │   ├── GCP_SETUP.md
-│   └── BIGQUERY_SETUP.md
+│   ├── BIGQUERY_SETUP.md
+│   └── LINE_SETUP.md
 ├── reports/                           # 品質チェックレポート出力先
 ├── Dockerfile
 ├── requirements.txt
