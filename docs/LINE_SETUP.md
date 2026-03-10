@@ -119,6 +119,9 @@ uvicorn src.automation.api.app:app --reload --port 8080
 
 #### ステップ2: ngrok で外部公開（LINEからのWebhookを受信するため）
 
+> **注意: ngrok はローカル開発時のみ必要です。**
+> 本番（Cloud Run）では最初から公開 HTTPS URL が発行されるため、ngrok は不要です。
+
 ```bash
 # ngrok がない場合: brew install ngrok
 ngrok http 8080
@@ -126,6 +129,12 @@ ngrok http 8080
 
 ngrokが発行した `https://xxxx.ngrok.io` を LINE Developers コンソール → Messaging API設定 → Webhook URL に設定。
 「検証」ボタンを押して `{"statusCode": 200}` が返れば接続成功。
+
+**本番（Cloud Run）の場合:**
+Cloud Run デプロイ後に発行される URL をそのまま設定します。ngrok・サインアップは不要です。
+```
+https://xxx.run.app/api/v1/line/webhook
+```
 
 #### ステップ3: ローカルで直接 Webhook リクエストを模擬
 
