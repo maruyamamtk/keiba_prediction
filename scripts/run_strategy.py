@@ -181,7 +181,9 @@ def save_decisions_to_bq(
     merge_query = f"""
     MERGE `{table_ref}` AS target
     USING `{temp_table}` AS source
-    ON target.race_id = source.race_id AND target.horse_number = source.horse_number
+    ON target.race_id = source.race_id
+       AND target.horse_number = source.horse_number
+       AND target.bet_type = source.bet_type
     WHEN MATCHED THEN UPDATE SET
         race_date = source.race_date,
         horse_id = source.horse_id,
@@ -224,15 +226,15 @@ def run_daily_strategy(
     """
     config = load_strategy_config()
     p1 = config["p1"]
-    p2 = config["p2"]
     threshold = config["expected_return_threshold"]
-    kelly_fraction = config["kelly_fraction"]
     max_bet_ratio = config["max_bet_ratio"]
+    min_bet_amount = config.get("min_bet_amount", 100.0)
+    top_n = config.get("top_n", 5)
 
     opt = config.get("optimization", {})
     logger.info(f"=== 日次投資戦略策定 ({target_date}) ===")
-    logger.info(f"パラメータ: p1={p1}, p2={p2}, threshold={threshold}, "
-                f"kelly={kelly_fraction}, max_bet_ratio={max_bet_ratio}")
+    logger.info(f"パラメータ: p1={p1}, threshold={threshold}, "
+                f"max_bet_ratio={max_bet_ratio}, min_bet_amount={min_bet_amount}, top_n={top_n}")
     if opt.get("last_run"):
         logger.info(f"最終最適化: {opt['last_run']} "
                     f"(回収率={opt.get('recovery_rate')}%, 的中率={opt.get('hit_rate')}%)")
@@ -261,10 +263,10 @@ def run_daily_strategy(
                 race_df=race_group,
                 capital=capital,
                 p1=p1,
-                p2=p2,
                 expected_return_threshold=threshold,
-                kelly_fraction=kelly_fraction,
                 max_bet_ratio=max_bet_ratio,
+                min_bet_amount=min_bet_amount,
+                top_n=top_n,
             )
         except ValueError as e:
             logger.debug(f"レース {race_id} スキップ: {e}")
@@ -275,29 +277,37 @@ def run_daily_strategy(
 
         meta_row = race_group.iloc[0]
         for bet in bets:
-            horse_row = race_group[race_group["horse_number"] == bet["horse_number"]]
-            if horse_row.empty:
+            horse_numbers = bet.get("horse_numbers", [])
+            if not horse_numbers:
                 continue
-            hr = horse_row.iloc[0]
+            bet_type = bet.get("bet_type", "place")
             odds = float(bet["odds"])
-            prob = float(hr["win_place_prob"])
-            decisions.append({
-                "race_id": str(race_id),
-                "race_date": target_date,
-                "horse_id": str(bet.get("horse_id", hr.get("horse_id", ""))),
-                "horse_number": int(bet["horse_number"]),
-                "horse_name": str(hr.get("horse_name", "")),
-                "venue_code": str(meta_row.get("venue_code", "")),
-                "race_number": int(meta_row.get("race_number", 0)),
-                "race_pattern": race_pattern.pattern,
-                "bet_type": "place",
-                "bet_amount": float(bet["bet_amount"]),
-                "win_place_prob": prob,
-                "place_odds": odds,
-                "expected_return": round(prob * odds, 4),
-                "created_at": created_at,
-            })
-            capital -= float(bet["bet_amount"])
+            bet_amount = float(bet["bet_amount"])
+            capital -= bet_amount
+            # 馬ごとに1行保存（マルチ馬券は関連する各馬を個別に記録）
+            for hn in horse_numbers:
+                horse_row = race_group[race_group["horse_number"] == hn]
+                if horse_row.empty:
+                    continue
+                hr = horse_row.iloc[0]
+                prob = float(hr["win_place_prob"])
+                horse_id = str(bet.get("horse_id") or hr.get("horse_id", ""))
+                decisions.append({
+                    "race_id": str(race_id),
+                    "race_date": target_date,
+                    "horse_id": horse_id,
+                    "horse_number": int(hn),
+                    "horse_name": str(hr.get("horse_name", "")),
+                    "venue_code": str(meta_row.get("venue_code", "")),
+                    "race_number": int(meta_row.get("race_number", 0)),
+                    "race_pattern": race_pattern.pattern,
+                    "bet_type": bet_type,
+                    "bet_amount": bet_amount,
+                    "win_place_prob": prob,
+                    "place_odds": odds,
+                    "expected_return": round(prob * odds, 4),
+                    "created_at": created_at,
+                })
 
     logger.info(f"投資判断: {len(decisions)}件")
     if decisions:

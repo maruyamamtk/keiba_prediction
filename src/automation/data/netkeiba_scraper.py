@@ -281,7 +281,7 @@ def get_today_race_list(date: datetime.date, sleep_sec: float = 1.0) -> list[dic
     logger.info(f"レース一覧取得: {url}")
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
+        browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu"])
         try:
             page = browser.new_page()
             page.goto(url, wait_until="load", timeout=60_000)
@@ -333,7 +333,7 @@ def get_win_place_odds(
     logger.debug(f"オッズ取得: {url}")
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
+        browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu"])
         try:
             page = browser.new_page()
             page.goto(url, wait_until="load", timeout=60_000)
@@ -692,7 +692,7 @@ def get_combo_odds(
             time.sleep(sleep_sec)
 
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
+            browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu"])
             try:
                 page = browser.new_page()
                 page.goto(url, wait_until="load", timeout=30_000)
