@@ -115,7 +115,7 @@ with temp_race_horse_count as (
       else 0
     end as condition_change_flag
     ,r_r_1.finish_position as finish_position_1
-    ,safe_divide(r_r_1.finish_position, coalesce(t_r_h_c_1.num_horses, r_r_1.num_horses)) as finish_position_rate_1 -- 全体に対するゴール位置の割合
+    ,IF(r_r_1.finish_position > 0, safe_divide(r_r_1.finish_position, coalesce(t_r_h_c_1.num_horses, r_r_1.num_horses)), NULL) as finish_position_rate_1 -- 全体に対するゴール位置の割合 (finish_position=0は無効扱い)
     ,r_r_1.win_odds as win_odds_1
     ,r_r_1.win_popularity as win_popularity_1
     ,safe_divide(r_r_1.win_popularity, coalesce(t_r_h_c_1.num_horses, r_r_1.num_horses)) as popularity_rate_1 -- 全体に対する人気の割合
@@ -129,7 +129,7 @@ with temp_race_horse_count as (
     ,r_r_2.race_name as race_name_2
     ,round(safe_divide(date_diff(t_b_r_e.race_date, r_r_2.race_date, day), 7))-1 as race_date_diff_2
     ,r_r_2.finish_position as finish_position_2
-    ,safe_divide(r_r_2.finish_position, coalesce(t_r_h_c_2.num_horses, r_r_2.num_horses)) as finish_position_rate_2 -- 全体に対するゴール位置の割合
+    ,IF(r_r_2.finish_position > 0, safe_divide(r_r_2.finish_position, coalesce(t_r_h_c_2.num_horses, r_r_2.num_horses)), NULL) as finish_position_rate_2 -- 全体に対するゴール位置の割合 (finish_position=0は無効扱い)
     ,r_r_2.win_odds as win_odds_2
     ,r_r_2.win_popularity as win_popularity_2
     ,safe_divide(r_r_2.win_popularity, coalesce(t_r_h_c_2.num_horses, r_r_2.num_horses)) as popularity_rate_2 -- 全体に対する人気の割合
@@ -142,7 +142,7 @@ with temp_race_horse_count as (
     -- 3走前のレース結果
     ,r_r_3.race_name as race_name_3
     ,r_r_3.finish_position as finish_position_3
-    ,safe_divide(r_r_3.finish_position, coalesce(t_r_h_c_3.num_horses, r_r_3.num_horses)) as finish_position_rate_3 -- 全体に対するゴール位置の割合
+    ,IF(r_r_3.finish_position > 0, safe_divide(r_r_3.finish_position, coalesce(t_r_h_c_3.num_horses, r_r_3.num_horses)), NULL) as finish_position_rate_3 -- 全体に対するゴール位置の割合 (finish_position=0は無効扱い)
     ,r_r_3.win_odds as win_odds_3
     ,r_r_3.win_popularity as win_popularity_3
     ,safe_divide(r_r_3.win_popularity, coalesce(t_r_h_c_3.num_horses, r_r_3.num_horses)) as popularity_rate_3 -- 全体に対する人気の割合
@@ -155,7 +155,7 @@ with temp_race_horse_count as (
     -- 4走前のレース結果
     ,r_r_4.race_name as race_name_4
     ,r_r_4.finish_position as finish_position_4
-    ,safe_divide(r_r_4.finish_position, coalesce(t_r_h_c_4.num_horses, r_r_4.num_horses)) as finish_position_rate_4 -- 全体に対するゴール位置の割合
+    ,IF(r_r_4.finish_position > 0, safe_divide(r_r_4.finish_position, coalesce(t_r_h_c_4.num_horses, r_r_4.num_horses)), NULL) as finish_position_rate_4 -- 全体に対するゴール位置の割合 (finish_position=0は無効扱い)
     ,r_r_4.win_odds as win_odds_4
     ,r_r_4.win_popularity as win_popularity_4
     ,safe_divide(r_r_4.win_popularity, coalesce(t_r_h_c_4.num_horses, r_r_4.num_horses)) as popularity_rate_4 -- 全体に対する人気の割合
@@ -168,7 +168,7 @@ with temp_race_horse_count as (
     -- 5走前のレース結果
     ,r_r_5.race_name as race_name_5
     ,r_r_5.finish_position as finish_position_5
-    ,safe_divide(r_r_5.finish_position, coalesce(t_r_h_c_5.num_horses, r_r_5.num_horses)) as finish_position_rate_5 -- 全体に対するゴール位置の割合
+    ,IF(r_r_5.finish_position > 0, safe_divide(r_r_5.finish_position, coalesce(t_r_h_c_5.num_horses, r_r_5.num_horses)), NULL) as finish_position_rate_5 -- 全体に対するゴール位置の割合 (finish_position=0は無効扱い)
     ,r_r_5.win_odds as win_odds_5
     ,r_r_5.win_popularity as win_popularity_5
     ,safe_divide(r_r_5.win_popularity, coalesce(t_r_h_c_5.num_horses, r_r_5.num_horses)) as popularity_rate_5 -- 全体に対する人気の割合
@@ -201,29 +201,29 @@ with temp_race_horse_count as (
     )as ema_idm
     ,(SELECT MAX(v) FROM UNNEST([r_r_1.idm, r_r_2.idm, r_r_3.idm, r_r_4.idm, r_r_5.idm]) v WHERE v IS NOT NULL) as max_idm
     ,(SELECT MIN(v) FROM UNNEST([r_r_1.idm, r_r_2.idm, r_r_3.idm, r_r_4.idm, r_r_5.idm]) v WHERE v IS NOT NULL) as min_idm
-    /* finish_position (着順) */
+    /* finish_position (着順) -- finish_position=0は無効(失格/取消)のためNULL扱い */
     ,safe_divide(
-      (coalesce(r_r_1.finish_position, 0) + coalesce(r_r_2.finish_position, 0) + coalesce(r_r_3.finish_position, 0) + coalesce(r_r_4.finish_position, 0) + coalesce(r_r_5.finish_position, 0))
+      (coalesce(IF(r_r_1.finish_position > 0, r_r_1.finish_position, NULL), 0) + coalesce(IF(r_r_2.finish_position > 0, r_r_2.finish_position, NULL), 0) + coalesce(IF(r_r_3.finish_position > 0, r_r_3.finish_position, NULL), 0) + coalesce(IF(r_r_4.finish_position > 0, r_r_4.finish_position, NULL), 0) + coalesce(IF(r_r_5.finish_position > 0, r_r_5.finish_position, NULL), 0))
       ,nullif(
-        (case when r_r_1.finish_position is not null then 1 else 0 end +
-        case when r_r_2.finish_position is not null then 1 else 0 end +
-        case when r_r_3.finish_position is not null then 1 else 0 end +
-        case when r_r_4.finish_position is not null then 1 else 0 end +
-        case when r_r_5.finish_position is not null then 1 else 0 end)
+        (case when r_r_1.finish_position is not null AND r_r_1.finish_position > 0 then 1 else 0 end +
+        case when r_r_2.finish_position is not null AND r_r_2.finish_position > 0 then 1 else 0 end +
+        case when r_r_3.finish_position is not null AND r_r_3.finish_position > 0 then 1 else 0 end +
+        case when r_r_4.finish_position is not null AND r_r_4.finish_position > 0 then 1 else 0 end +
+        case when r_r_5.finish_position is not null AND r_r_5.finish_position > 0 then 1 else 0 end)
         , 0)
     ) as mean_finish_position
     ,safe_divide(
-      (coalesce(r_r_1.finish_position*1.5, 0) + coalesce(r_r_2.finish_position*1.25, 0) + coalesce(r_r_3.finish_position*1, 0) + coalesce(r_r_4.finish_position*0.75, 0) + coalesce(r_r_5.finish_position*0.5, 0))
+      (coalesce(IF(r_r_1.finish_position > 0, r_r_1.finish_position, NULL)*1.5, 0) + coalesce(IF(r_r_2.finish_position > 0, r_r_2.finish_position, NULL)*1.25, 0) + coalesce(IF(r_r_3.finish_position > 0, r_r_3.finish_position, NULL)*1, 0) + coalesce(IF(r_r_4.finish_position > 0, r_r_4.finish_position, NULL)*0.75, 0) + coalesce(IF(r_r_5.finish_position > 0, r_r_5.finish_position, NULL)*0.5, 0))
       ,nullif(
-        (case when r_r_1.finish_position is not null then 1.5 else 0 end +
-        case when r_r_2.finish_position is not null then 1.25 else 0 end +
-        case when r_r_3.finish_position is not null then 1 else 0 end +
-        case when r_r_4.finish_position is not null then 0.75 else 0 end +
-        case when r_r_5.finish_position is not null then 0.5 else 0 end)
+        (case when r_r_1.finish_position is not null AND r_r_1.finish_position > 0 then 1.5 else 0 end +
+        case when r_r_2.finish_position is not null AND r_r_2.finish_position > 0 then 1.25 else 0 end +
+        case when r_r_3.finish_position is not null AND r_r_3.finish_position > 0 then 1 else 0 end +
+        case when r_r_4.finish_position is not null AND r_r_4.finish_position > 0 then 0.75 else 0 end +
+        case when r_r_5.finish_position is not null AND r_r_5.finish_position > 0 then 0.5 else 0 end)
         , 0)
     ) as ema_finish_position
-    ,(SELECT MAX(v) FROM UNNEST([r_r_1.finish_position, r_r_2.finish_position, r_r_3.finish_position, r_r_4.finish_position, r_r_5.finish_position]) v WHERE v IS NOT NULL) as max_finish_position
-    ,(SELECT MIN(v) FROM UNNEST([r_r_1.finish_position, r_r_2.finish_position, r_r_3.finish_position, r_r_4.finish_position, r_r_5.finish_position]) v WHERE v IS NOT NULL) as min_finish_position
+    ,(SELECT MAX(v) FROM UNNEST([r_r_1.finish_position, r_r_2.finish_position, r_r_3.finish_position, r_r_4.finish_position, r_r_5.finish_position]) v WHERE v IS NOT NULL AND v > 0) as max_finish_position
+    ,(SELECT MIN(v) FROM UNNEST([r_r_1.finish_position, r_r_2.finish_position, r_r_3.finish_position, r_r_4.finish_position, r_r_5.finish_position]) v WHERE v IS NOT NULL AND v > 0) as min_finish_position
     /* win_popularity (単勝人気) */
     ,safe_divide(
       (coalesce(r_r_1.win_popularity, 0) + coalesce(r_r_2.win_popularity, 0) + coalesce(r_r_3.win_popularity, 0) + coalesce(r_r_4.win_popularity, 0) + coalesce(r_r_5.win_popularity, 0))
