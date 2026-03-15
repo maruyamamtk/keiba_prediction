@@ -897,7 +897,7 @@ class StrategyDailyResponse(BaseModel):
 
 
 @app.post("/api/v1/odds/scrape", response_model=OddsScrapeResponse)
-async def scrape_odds(request: OddsScrapeRequest):
+async def scrape_odds(request: OddsScrapeRequest, background_tasks: BackgroundTasks):
     """
     netkeibaから当日レースの単勝・複勝オッズをスクレイピングしてBigQueryに保存する
 
@@ -906,12 +906,14 @@ async def scrape_odds(request: OddsScrapeRequest):
     2. 各レースの単複オッズを取得
     3. JRDB形式のrace_idに変換
     4. predictions.daily_odds テーブルにUPSERT保存
+    5. include_combo=True の場合、組み合わせオッズをバックグラウンドで取得・保存
 
     Args:
         request: リクエストボディ
+        background_tasks: FastAPI BackgroundTasks（組み合わせオッズの非同期保存に使用）
 
     Returns:
-        スクレイプ結果
+        スクレイプ結果（組み合わせオッズはバックグラウンドで処理継続）
     """
     execution_date_str = request.execution_date or date.today().isoformat()
     execution_date = datetime.date.fromisoformat(execution_date_str)
@@ -952,14 +954,14 @@ async def scrape_odds(request: OddsScrapeRequest):
         else:
             logger.warning(f"単複オッズを取得できませんでした: {execution_date_str}")
 
-        combo_rows_saved = 0
+        # 組み合わせオッズはバックグラウンドで処理（タイムアウト回避のため即座に200を返す）
         if request.include_combo:
-            combo_rows_saved = await asyncio.to_thread(
+            background_tasks.add_task(
                 scrape_today_combo_odds,
                 date=execution_date,
                 project_id=project_id,
             )
-            logger.info(f"組み合わせオッズ保存: {combo_rows_saved}行")
+            logger.info("組み合わせオッズスクレイプをバックグラウンドで開始")
 
         return OddsScrapeResponse(
             status="success",
@@ -967,7 +969,7 @@ async def scrape_odds(request: OddsScrapeRequest):
             races_scraped=races_scraped,
             horses_scraped=horses_scraped,
             saved_rows=saved_rows,
-            combo_rows_saved=combo_rows_saved,
+            combo_rows_saved=0,  # バックグラウンド処理のため結果は非同期
         )
 
     except Exception as e:
