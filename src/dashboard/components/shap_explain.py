@@ -185,6 +185,15 @@ def _render_horse_header(row: pd.Series, venue_name: str, race_number: int) -> N
     )
 
 
+def _is_numeric(v) -> bool:
+    """値が数値として扱えるか判定する"""
+    try:
+        float(v)
+        return True
+    except (ValueError, TypeError):
+        return False
+
+
 def _render_waterfall(shap_df: pd.DataFrame, top_n: int = 20) -> None:
     """SHAP ウォーターフォール（横棒グラフ）を表示する"""
     try:
@@ -240,7 +249,9 @@ def _render_shap_table(shap_df: pd.DataFrame) -> None:
         display = shap_df[["feature", "shap_value", "feature_value"]].copy()
         display.columns = ["特徴量", "SHAP値", "特徴量値"]
         display["SHAP値"] = display["SHAP値"].round(6)
-        display["特徴量値"] = display["特徴量値"].round(4)
+        display["特徴量値"] = display["特徴量値"].apply(
+            lambda v: round(float(v), 4) if _is_numeric(v) else v
+        )
 
         def color_shap(val):
             if val > 0:
