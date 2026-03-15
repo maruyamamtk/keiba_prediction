@@ -1,0 +1,239 @@
+"""
+SHAP説明画面コンポーネント
+
+特定の馬がなぜ複勝率が高い（低い）のかを SHAP ウォーターフォールで可視化する。
+
+SHAPの解釈:
+  - 予測スコア = base_value（全馬平均）+ 各特徴量のSHAP値の合計
+  - SHAP値 > 0: その特徴量がスコアを押し上げている（複勝率UPに寄与）
+  - SHAP値 < 0: その特徴量がスコアを押し下げている（複勝率DOWNに寄与）
+"""
+
+from __future__ import annotations
+
+import logging
+
+import numpy as np
+import pandas as pd
+import streamlit as st
+
+from src.dashboard.data import (
+    VENUE_CODE_TO_NAME,
+    fetch_horse_features,
+    fetch_race_detail,
+    fetch_race_list,
+    load_lgbm_ranker_for_shap,
+)
+
+logger = logging.getLogger(__name__)
+
+# model_config から除外カラムを読み込む（学習時と同じ除外リスト）
+_EXCLUDE_COLUMNS = [
+    "race_id", "horse_id", "race_date", "target_place",
+    "finish_position", "venue_code", "jockey_id", "trainer_id",
+    "created_at", "race_number", "horse_number", "horse_name",
+]
+_CATEGORICAL_COLUMNS = ["course_type", "track_condition"]
+
+
+def render(race_date: str) -> None:
+    """SHAP説明画面を描画する"""
+    st.header("SHAP説明 — 予測スコアの要因分析")
+    st.caption(
+        "各馬の予測スコア（複勝率ランキングの根拠）を特徴量ごとに分解します。"
+        " 棒が右（赤）=スコアを押し上げる要因 / 左（青）=押し下げる要因。"
+    )
+
+    # ── 1. レース・馬の選択 ────────────────────────────────────────────────
+    race_list_df = fetch_race_list(race_date)
+    if race_list_df.empty:
+        st.info(f"{race_date} の予測データがありません。")
+        return
+
+    col1, col2, col3 = st.columns(3)
+
+    venue_codes = sorted(race_list_df["venue_code"].unique())
+    venue_options = {VENUE_CODE_TO_NAME.get(vc, vc): vc for vc in venue_codes}
+    selected_venue_name = col1.selectbox("競馬場", list(venue_options.keys()), key="shap_venue")
+    selected_venue_code = venue_options[selected_venue_name]
+
+    race_numbers = sorted(
+        race_list_df[race_list_df["venue_code"] == selected_venue_code]["race_number"].unique()
+    )
+    selected_race = col2.selectbox(
+        "レース番号", race_numbers, format_func=lambda r: f"{r}R", key="shap_race"
+    )
+
+    detail_df = fetch_race_detail(race_date, selected_venue_code, int(selected_race))
+    if detail_df.empty:
+        st.warning("詳細データを取得できませんでした。")
+        return
+
+    horse_options = {
+        f"{int(row['horse_number'])}番 {row['horse_name']} (複勝率 {row['win_place_prob']*100:.1f}%)": int(row["horse_number"])
+        for _, row in detail_df.sort_values("rank_in_race").iterrows()
+    }
+    selected_horse_label = col3.selectbox("馬", list(horse_options.keys()), key="shap_horse")
+    selected_horse_number = horse_options[selected_horse_label]
+
+    selected_horse_row = detail_df[detail_df["horse_number"] == selected_horse_number].iloc[0]
+
+    st.divider()
+
+    # ── 2. SHAP計算 ──────────────────────────────────────────────────────
+    with st.spinner("モデルを読み込み中...（初回のみ時間がかかります）"):
+        ranker, feature_names = load_lgbm_ranker_for_shap()
+
+    if ranker is None or not feature_names:
+        st.error("モデルの読み込みに失敗しました。GCS 上のモデルファイルを確認してください。")
+        return
+
+    with st.spinner("特徴量を取得し SHAP 値を計算中..."):
+        horse_df = fetch_horse_features(
+            race_date, selected_venue_code, int(selected_race), selected_horse_number
+        )
+
+    if horse_df.empty:
+        st.warning(
+            "features.training_data に該当馬のデータが見つかりませんでした。"
+            " 特徴量生成バッチが完了しているか確認してください。"
+        )
+        return
+
+    shap_df = _compute_shap(ranker, horse_df, feature_names)
+    if shap_df is None:
+        st.error("SHAP 値の計算に失敗しました。")
+        return
+
+    # ── 3. 結果表示 ─────────────────────────────────────────────────────
+    _render_horse_header(selected_horse_row, selected_venue_name, int(selected_race))
+    _render_waterfall(shap_df, top_n=20)
+    _render_shap_table(shap_df)
+
+
+# ---------------------------------------------------------------------------
+# 内部関数
+# ---------------------------------------------------------------------------
+
+def _compute_shap(ranker, horse_df: pd.DataFrame, feature_names: list[str]):
+    """
+    SHAP TreeExplainer で指定馬のSHAP値を計算する。
+
+    Returns:
+        DataFrame[feature, shap_value, feature_value] (|shap_value|降順)
+        失敗時は None
+    """
+    try:
+        import shap
+
+        # 学習時と同じ除外カラムを除去して特徴量行列を作る
+        available_features = [f for f in feature_names if f in horse_df.columns]
+        missing = set(feature_names) - set(available_features)
+        if missing:
+            logger.warning(f"特徴量 {len(missing)} 件が training_data に存在しない: {list(missing)[:5]}...")
+
+        X = horse_df[available_features].copy()
+
+        # カテゴリカル変換
+        for col in _CATEGORICAL_COLUMNS:
+            if col in X.columns:
+                X[col] = X[col].astype("category")
+
+        explainer = shap.TreeExplainer(ranker.model)
+        shap_values = explainer.shap_values(X)  # shape: (1, n_features)
+
+        values = shap_values[0] if shap_values.ndim == 2 else shap_values
+        feature_vals = X.iloc[0].values
+
+        df = pd.DataFrame({
+            "feature": available_features,
+            "shap_value": values,
+            "feature_value": feature_vals,
+        })
+        df["abs_shap"] = df["shap_value"].abs()
+        return df.sort_values("abs_shap", ascending=False).reset_index(drop=True)
+
+    except Exception as e:
+        logger.error(f"SHAP 計算失敗: {e}", exc_info=True)
+        return None
+
+
+def _render_horse_header(row: pd.Series, venue_name: str, race_number: int) -> None:
+    """馬の予測情報ヘッダーを表示する"""
+    st.subheader(
+        f"{venue_name} {race_number}R — "
+        f"{int(row['horse_number'])}番 **{row['horse_name']}**"
+    )
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("予測順位", f"{int(row['rank_in_race'])}位")
+    col2.metric("複勝率", f"{row['win_place_prob']*100:.1f}%")
+    col3.metric("複勝オッズ", f"{row['place_odds']:.1f}" if pd.notna(row.get("place_odds")) else "—")
+    col4.metric(
+        "期待回収率",
+        f"{row['expected_return']:.3f}" if pd.notna(row.get("expected_return")) else "—",
+    )
+
+
+def _render_waterfall(shap_df: pd.DataFrame, top_n: int = 20) -> None:
+    """SHAP ウォーターフォール（横棒グラフ）を表示する"""
+    try:
+        import plotly.graph_objects as go
+
+        top = shap_df.head(top_n).copy()
+        top = top.sort_values("shap_value")  # 昇順でプロット（下が最大）
+
+        colors = ["#d62728" if v > 0 else "#1f77b4" for v in top["shap_value"]]
+        text_labels = [
+            f"{v:+.4f}  ({fv:.3g})"
+            for v, fv in zip(top["shap_value"], top["feature_value"])
+        ]
+
+        fig = go.Figure(go.Bar(
+            x=top["shap_value"],
+            y=top["feature"],
+            orientation="h",
+            marker_color=colors,
+            text=text_labels,
+            textposition="outside",
+            hovertemplate=(
+                "<b>%{y}</b><br>"
+                "SHAP値: %{x:.4f}<br>"
+                "特徴量値: %{customdata:.4g}<extra></extra>"
+            ),
+            customdata=top["feature_value"],
+        ))
+
+        fig.add_vline(x=0, line_width=1, line_color="black")
+        fig.update_layout(
+            title=f"SHAP ウォーターフォール（上位 {top_n} 特徴量）",
+            xaxis_title="SHAP値（予測スコアへの寄与）",
+            yaxis_title="特徴量",
+            height=max(400, top_n * 28),
+            margin=dict(l=200, r=120, t=60, b=40),
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    except ImportError:
+        st.info("plotly がインストールされていないためグラフを表示できません。")
+
+
+def _render_shap_table(shap_df: pd.DataFrame) -> None:
+    """SHAP値テーブルを折りたたみ表示する"""
+    with st.expander("全特徴量のSHAP値テーブル"):
+        display = shap_df[["feature", "shap_value", "feature_value"]].copy()
+        display.columns = ["特徴量", "SHAP値", "特徴量値"]
+        display["SHAP値"] = display["SHAP値"].round(6)
+        display["特徴量値"] = display["特徴量値"].round(4)
+
+        def color_shap(val):
+            if val > 0:
+                return "color: #d62728"
+            elif val < 0:
+                return "color: #1f77b4"
+            return ""
+
+        st.dataframe(
+            display.style.applymap(color_shap, subset=["SHAP値"]),
+            hide_index=True,
+            use_container_width=True,
+        )
