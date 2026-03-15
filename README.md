@@ -267,7 +267,31 @@ python3 scripts/run_strategy.py --project-id <PROJECT_ID> --dry-run
 python3 scripts/create_investment_decisions_table.py --project-id <PROJECT_ID>
 ```
 
-### 8. Cloud Runデプロイ（本番環境）
+### 8. Webダッシュボード閲覧
+
+BigQueryの予測結果・バックテスト・モデル情報をブラウザで確認できます。
+
+```bash
+# 依存パッケージをインストール（初回のみ）
+pip3 install streamlit==1.32.0 plotly==5.19.0
+
+# ダッシュボードを起動
+GCP_PROJECT_ID=your-project-id streamlit run src/dashboard/app.py
+```
+
+起動後、ブラウザで **http://localhost:8501** が自動的に開きます。
+
+| 画面 | 内容 |
+|------|------|
+| ホーム | 指定日の推奨馬券TOP10・期待回収率・推奨投資額 |
+| レース一覧 | 当日全レースの予測TOP3を一覧表示 |
+| レース詳細 | 全馬の予測確率・オッズ・Plotlyグラフ・組み合わせオッズ |
+| バックテスト | 累積損益推移グラフ・月次集計テーブル |
+| モデル情報 | GCS最新モデルの特徴量重要度TOP30 |
+
+---
+
+### 9. Cloud Runデプロイ（本番環境）
 
 ```bash
 # Dockerイメージのビルド・プッシュ
