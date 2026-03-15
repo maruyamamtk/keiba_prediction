@@ -10,7 +10,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # 依存パッケージをインストール（Playwright は不要）
-COPY requirements.txt .
 RUN pip install --no-cache-dir \
     google-cloud-bigquery==3.14.1 \
     google-cloud-storage==2.14.0 \

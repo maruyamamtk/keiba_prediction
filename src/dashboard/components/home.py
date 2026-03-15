@@ -10,7 +10,6 @@ import pandas as pd
 import streamlit as st
 
 from src.dashboard.data import (
-    BET_TYPE_LABELS,
     fetch_daily_summary,
     fetch_today_investment_decisions,
 )
