@@ -1,0 +1,41 @@
+# Dockerfile.dashboard
+# Streamlit ダッシュボード用コンテナ（dashboard-service Cloud Run）
+FROM python:3.9-slim
+
+WORKDIR /app
+
+# システム依存パッケージ（LightGBM 読み込みのみ必要）
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
+# 依存パッケージをインストール（Playwright は不要）
+COPY requirements.txt .
+RUN pip install --no-cache-dir \
+    google-cloud-bigquery==3.14.1 \
+    google-cloud-storage==2.14.0 \
+    db-dtypes==1.2.0 \
+    pandas==2.1.4 \
+    numpy==1.26.2 \
+    lightgbm==4.6.0 \
+    streamlit==1.32.0 \
+    plotly==5.19.0 \
+    python-dotenv==1.0.0 \
+    PyYAML==6.0.1
+
+# アプリケーションコードをコピー
+COPY src/ ./src/
+COPY config/ ./config/
+
+# 環境変数
+ENV PORT=8080
+ENV PYTHONUNBUFFERED=1
+
+EXPOSE 8080
+
+# Streamlit を起動（ヘッドレス・ポート指定）
+CMD ["streamlit", "run", "src/dashboard/app.py", \
+     "--server.port=8080", \
+     "--server.address=0.0.0.0", \
+     "--server.headless=true", \
+     "--browser.gatherUsageStats=false"]
