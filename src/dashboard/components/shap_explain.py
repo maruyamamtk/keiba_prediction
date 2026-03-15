@@ -194,8 +194,14 @@ def _render_waterfall(shap_df: pd.DataFrame, top_n: int = 20) -> None:
         top = top.sort_values("shap_value")  # 昇順でプロット（下が最大）
 
         colors = ["#d62728" if v > 0 else "#1f77b4" for v in top["shap_value"]]
+        def _fmt_fv(fv):
+            try:
+                return f"{float(fv):.3g}"
+            except (ValueError, TypeError):
+                return str(fv)
+
         text_labels = [
-            f"{v:+.4f}  ({fv:.3g})"
+            f"{v:+.4f}  ({_fmt_fv(fv)})"
             for v, fv in zip(top["shap_value"], top["feature_value"])
         ]
 
@@ -209,9 +215,9 @@ def _render_waterfall(shap_df: pd.DataFrame, top_n: int = 20) -> None:
             hovertemplate=(
                 "<b>%{y}</b><br>"
                 "SHAP値: %{x:.4f}<br>"
-                "特徴量値: %{customdata:.4g}<extra></extra>"
+                "特徴量値: %{customdata}<extra></extra>"
             ),
-            customdata=top["feature_value"],
+            customdata=top["feature_value"].apply(_fmt_fv),
         ))
 
         fig.add_vline(x=0, line_width=1, line_color="black")
