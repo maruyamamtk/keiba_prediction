@@ -19,6 +19,7 @@ JRDBデータを活用した機械学習による馬券購入支援システム
 - **最適化**: Optuna (ハイパーパラメータチューニング)
 - **クラウド**: GCP (BigQuery, Cloud Storage, Cloud Run, Cloud Scheduler)
 - **API**: FastAPI
+- **ダッシュボード**: Streamlit, Plotly
 - **テスト**: pytest
 - **データソース**: JRDB
 
@@ -629,12 +630,21 @@ keiba_prediction/
 │   │   ├── train.py                  # 学習パイプライン
 │   │   ├── predict.py                # 推論パイプライン
 │   │   └── tuning.py                 # Optunaハイパーパラメータチューニング
-│   └── backtest/                      # バックテストシミュレーター
-│       ├── __init__.py
-│       ├── simulator.py              # Kelly基準・BacktestSimulatorクラス
-│       ├── metrics.py                # 評価指標（回収率・的中率・ドローダウン・シャープレシオ）
-│       ├── strategy.py               # 投資戦略（Kelly基準・期待回収率フィルタ）
-│       └── strategy_optimizer.py     # 戦略パラメータ最適化
+│   ├── backtest/                      # バックテストシミュレーター
+│   │   ├── __init__.py
+│   │   ├── simulator.py              # Kelly基準・BacktestSimulatorクラス
+│   │   ├── metrics.py                # 評価指標（回収率・的中率・ドローダウン・シャープレシオ）
+│   │   ├── strategy.py               # 投資戦略（Kelly基準・期待回収率フィルタ）
+│   │   └── strategy_optimizer.py     # 戦略パラメータ最適化
+│   └── dashboard/                     # Streamlit Webダッシュボード
+│       ├── app.py                    # メインアプリ（サイドバーナビ・日付選択UI）
+│       ├── data.py                   # BigQueryデータ取得（@st.cache_data TTLキャッシュ付き）
+│       └── components/
+│           ├── home.py               # ホーム画面（推奨馬券TOP10・レース別内訳）
+│           ├── race_list.py          # レース一覧画面（当日全レースの予測TOP3）
+│           ├── race_detail.py        # レース詳細（全馬予測・Plotly棒グラフ・組み合わせオッズ）
+│           ├── backtest.py           # バックテスト（累積損益推移グラフ・月次集計テーブル）
+│           └── model_info.py         # モデル情報（GCS最新モデルから特徴量重要度を可視化）
 ├── scripts/                           # ユーティリティスクリプト
 │   ├── create_daily_odds_combo_table.py  # predictions.daily_odds_comboテーブル作成
 │   ├── create_daily_odds_table.py    # predictions.daily_oddsテーブル作成
@@ -662,6 +672,7 @@ keiba_prediction/
 │   └── LINE_SETUP.md
 ├── reports/                           # 品質チェックレポート出力先
 ├── Dockerfile
+├── Dockerfile.dashboard               # ダッシュボード用軽量コンテナ（Playwright不要）
 ├── requirements.txt
 ├── .env.example
 ├── CLAUDE.md                          # システム仕様書
@@ -740,7 +751,43 @@ keiba_prediction/
 
 詳細は [src/models/README.md](./src/models/README.md) を参照してください。
 
-### 5. `src/backtest/` - バックテストシミュレーター
+### 5. `src/dashboard/` - Streamlit Webダッシュボード
+
+**目的**: BigQueryの予測結果・バックテスト結果・モデル情報をブラウザから閲覧できるWebダッシュボードを提供する。
+
+**含まれるモジュール**:
+- `app.py`: Streamlitメインアプリ（サイドバーナビ・日付選択UI）
+- `data.py`: BigQueryデータ取得モジュール（`@st.cache_data` TTLキャッシュ付き）
+- `components/home.py`: ホーム画面（指定日の推奨馬券TOP10・期待回収率・推奨額・レース別内訳）
+- `components/race_list.py`: レース一覧画面（当日全レースの予測TOP3を一覧表示）
+- `components/race_detail.py`: レース詳細（全馬の予測確率・オッズ・期待回収率、Plotly棒グラフ、組み合わせオッズ）
+- `components/backtest.py`: バックテスト（累積損益推移グラフ、月次集計テーブル）
+- `components/model_info.py`: モデル情報（GCSから最新モデルを読み込み特徴量重要度TOP30を可視化）
+
+**環境変数**:
+
+| 変数名 | 説明 |
+|--------|------|
+| `GCP_PROJECT_ID` | GCP プロジェクト ID |
+
+**起動方法**:
+
+```bash
+# ローカル起動
+GCP_PROJECT_ID=your-project streamlit run src/dashboard/app.py
+
+# Cloud Run デプロイ（dashboard-service）
+docker build --platform linux/amd64 -f Dockerfile.dashboard -t dashboard-service .
+```
+
+**使用場面**:
+- 当日の推奨馬券を確認する（ホーム画面）
+- 全レースの予測上位馬を一覧で確認する（レース一覧画面）
+- 特定レースの全馬予測と組み合わせオッズを詳細確認する（レース詳細画面）
+- 過去の投資シミュレーション結果を可視化する（バックテスト画面）
+- モデルの特徴量重要度を確認する（モデル情報画面）
+
+### 6. `src/backtest/` - バックテストシミュレーター
 
 **目的**: 過去データを用いた投資シミュレーションにより、モデルの実用性を検証する。
 
@@ -1199,7 +1246,13 @@ python -m pytest tests/ --cov=src --cov-report=html
   - メッセージ2: 推奨馬券リスト（馬券種・馬番・馬名・オッズ・賭け金・合計投資額）
   - `src/automation/api/line_webhook.py` + `src/utils/line_notify.py` に実装
   - 必要な環境変数: `LINE_CHANNEL_SECRET`（Webhook署名検証用）、`LINE_CHANNEL_ACCESS_TOKEN`（リプライ送信用）
-- ⬜ Webダッシュボード
+- ✅ Webダッシュボード（Streamlit） - Issue #24
+  - 5画面構成: ホーム / レース一覧 / レース詳細 / バックテスト / モデル情報
+  - `src/dashboard/app.py`: メインアプリ（サイドバーナビ・日付選択UI）
+  - `src/dashboard/data.py`: BigQueryデータ取得（`@st.cache_data` TTLキャッシュ）
+  - `src/dashboard/components/`: 各画面コンポーネント（Plotly グラフ対応）
+  - `Dockerfile.dashboard`: Playwright不要の軽量Cloud Runコンテナ（`dashboard-service`）
+  - ローカル起動: `GCP_PROJECT_ID=your-project streamlit run src/dashboard/app.py`
 
 ---
 
@@ -1227,3 +1280,4 @@ python -m pytest tests/ --cov=src --cov-report=html
 | 2026-03-07 | Issue #131（netkeibaリアルタイムオッズスクレイパー）の実装を反映。netkeiba_scraper.py追加、predictions.daily_oddsテーブル追加、POST /api/v1/odds/scrapeエンドポイント追加、strategy.py/strategy_optimizer.pyをプロジェクト構成に追記 |
 | 2026-03-08 | Issue #140（JRDBコンボ基準オッズ raw.combo_odds）・Issue #139（投資戦略複勝+ワイド+三連複改修、パターンA追加）・PR #143（過去レース一括オッズ取得スクリプト）の実装を反映 |
 | 2026-03-10 | Issue #25（LINE Messaging API Webhook Bot）の実装を反映。POST /api/v1/line/webhookエンドポイント追加、line_webhook.py/line_notify.py追加、Phase 5通知システムを実装済みに更新 |
+| 2026-03-15 | Issue #24（Streamlit Webダッシュボード）の実装を反映。src/dashboard/追加、Dockerfile.dashboard追加、技術スタックにStreamlit/Plotly追記、Phase 5 Webダッシュボードを実装済みに更新 |
