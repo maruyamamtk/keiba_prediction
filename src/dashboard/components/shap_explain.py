@@ -33,7 +33,6 @@ _EXCLUDE_COLUMNS = [
     "finish_position", "venue_code", "jockey_id", "trainer_id",
     "created_at", "race_number", "horse_number", "horse_name",
 ]
-_CATEGORICAL_COLUMNS = ["course_type", "track_condition"]
 
 
 def render(race_date: str) -> None:
@@ -141,10 +140,10 @@ def _compute_shap(ranker, horse_df: pd.DataFrame, feature_names: list[str]):
 
         X = horse_df[available_features].copy()
 
-        # カテゴリカル変換
-        for col in _CATEGORICAL_COLUMNS:
-            if col in X.columns:
-                X[col] = X[col].astype("category")
+        # NOTE: category dtype への変換はしない。
+        # LightGBM の pred_contrib (SHAP) は生の値で処理できるが、
+        # 1行だけのデータで category dtype を付けると学習時のカテゴリレベルと
+        # 不一致になり ValueError になる。
 
         explainer = shap.TreeExplainer(ranker.model)
         shap_values = explainer.shap_values(X)  # shape: (1, n_features) or list
