@@ -2,6 +2,7 @@
 SHAP説明コンポーネントのユニットテスト
 
 _compute_shap の計算ロジックを中心に検証する。
+LightGBM の pred_contrib=True を直接使う実装のテスト。
 戻り値: (DataFrame, None) 成功 / (None, str) 失敗 のタプル形式。
 """
 
@@ -35,16 +36,13 @@ class TestComputeShap:
         horse_df = pd.DataFrame(
             {f: [float(i)] for i, f in enumerate(feature_names)}
         )
-
         ranker = _make_mock_ranker(n)
 
-        mock_shap_values = np.array([[0.1, -0.2, 0.3, -0.05, 0.15]])
-        with patch("shap.TreeExplainer") as mock_explainer_cls:
-            mock_explainer = MagicMock()
-            mock_explainer.shap_values.return_value = mock_shap_values
-            mock_explainer_cls.return_value = mock_explainer
+        # pred_contrib=True は (n_samples, n_features+1) を返す
+        mock_contrib = np.array([[0.1, -0.2, 0.3, -0.05, 0.15, -0.05]])  # +base_value
+        ranker.model.predict.return_value = mock_contrib
 
-            result, err = _compute_shap(ranker, horse_df, feature_names)
+        result, err = _compute_shap(ranker, horse_df, feature_names)
 
         assert err is None
         assert result is not None
@@ -58,73 +56,54 @@ class TestComputeShap:
         horse_df = pd.DataFrame({"a": [1.0], "b": [2.0], "c": [3.0]})
         ranker = _make_mock_ranker(3)
 
-        # |shap| が b > c > a となるよう設定
-        mock_shap_values = np.array([[0.05, -0.8, 0.3]])
-        with patch("shap.TreeExplainer") as mock_explainer_cls:
-            mock_explainer = MagicMock()
-            mock_explainer.shap_values.return_value = mock_shap_values
-            mock_explainer_cls.return_value = mock_explainer
+        # |shap| が b > c > a となるよう設定（最後の列はbase value）
+        mock_contrib = np.array([[0.05, -0.8, 0.3, 0.0]])
+        ranker.model.predict.return_value = mock_contrib
 
-            result, err = _compute_shap(ranker, horse_df, feature_names)
+        result, err = _compute_shap(ranker, horse_df, feature_names)
 
         assert err is None
         assert result.iloc[0]["feature"] == "b"   # |shap|=0.8 が最大
         assert result.iloc[1]["feature"] == "c"   # |shap|=0.3
         assert result.iloc[2]["feature"] == "a"   # |shap|=0.05
 
-    def test_handles_1d_shap_values(self):
-        """shap_values が 1D 配列で返ってくる場合も正常処理する"""
+    def test_encodes_object_columns_to_numeric(self):
+        """object dtype の列（BQからの文字列）を数値化して処理できる"""
         from src.dashboard.components.shap_explain import _compute_shap
 
-        feature_names = ["x", "y"]
-        horse_df = pd.DataFrame({"x": [1.0], "y": [2.0]})
+        feature_names = ["num_feat", "course_type"]
+        horse_df = pd.DataFrame({
+            "num_feat": [1.5],
+            "course_type": ["turf"],  # object dtype (BQ由来)
+        })
         ranker = _make_mock_ranker(2)
 
-        mock_shap_values = np.array([0.5, -0.3])  # 1D
-        with patch("shap.TreeExplainer") as mock_explainer_cls:
-            mock_explainer = MagicMock()
-            mock_explainer.shap_values.return_value = mock_shap_values
-            mock_explainer_cls.return_value = mock_explainer
+        mock_contrib = np.array([[0.3, -0.1, 0.0]])  # +base_value
+        ranker.model.predict.return_value = mock_contrib
 
-            result, err = _compute_shap(ranker, horse_df, feature_names)
+        result, err = _compute_shap(ranker, horse_df, feature_names)
 
         assert err is None
         assert len(result) == 2
-
-    def test_handles_3d_shap_values(self):
-        """shap_values が 3D (n_outputs, n_samples, n_features) で返る場合を処理する"""
-        from src.dashboard.components.shap_explain import _compute_shap
-
-        feature_names = ["x", "y"]
-        horse_df = pd.DataFrame({"x": [1.0], "y": [2.0]})
-        ranker = _make_mock_ranker(2)
-
-        mock_shap_values = np.array([[[0.5, -0.3]]])  # 3D: (1, 1, 2)
-        with patch("shap.TreeExplainer") as mock_explainer_cls:
-            mock_explainer = MagicMock()
-            mock_explainer.shap_values.return_value = mock_shap_values
-            mock_explainer_cls.return_value = mock_explainer
-
-            result, err = _compute_shap(ranker, horse_df, feature_names)
-
-        assert err is None
-        assert len(result) == 2
+        # course_type の feature_value は元の文字列 "turf" が保持されている
+        course_row = result[result["feature"] == "course_type"].iloc[0]
+        assert course_row["feature_value"] == "turf"
 
     def test_returns_none_with_error_message_on_exception(self):
-        """SHAP 計算で例外が発生した場合は (None, エラーメッセージ) を返す"""
+        """例外が発生した場合は (None, エラーメッセージ) を返す"""
         from src.dashboard.components.shap_explain import _compute_shap
 
         feature_names = ["x"]
         horse_df = pd.DataFrame({"x": [1.0]})
         ranker = _make_mock_ranker(1)
+        ranker.model.predict.side_effect = RuntimeError("predict error")
 
-        with patch("shap.TreeExplainer", side_effect=RuntimeError("SHAP error")):
-            result, err = _compute_shap(ranker, horse_df, feature_names)
+        result, err = _compute_shap(ranker, horse_df, feature_names)
 
         assert result is None
         assert err is not None
         assert "RuntimeError" in err
-        assert "SHAP error" in err
+        assert "predict error" in err
 
     def test_returns_error_when_no_available_features(self):
         """モデルの特徴量が horse_df に一切ない場合はエラーメッセージを返す"""
@@ -148,17 +127,32 @@ class TestComputeShap:
         horse_df = pd.DataFrame({"feat_0": [1.0], "feat_1": [2.0]})
         ranker = _make_mock_ranker(3)
 
-        mock_shap_values = np.array([[0.1, -0.2]])  # 2特徴量分
-        with patch("shap.TreeExplainer") as mock_explainer_cls:
-            mock_explainer = MagicMock()
-            mock_explainer.shap_values.return_value = mock_shap_values
-            mock_explainer_cls.return_value = mock_explainer
+        mock_contrib = np.array([[0.1, -0.2, 0.0]])  # 2特徴量 + base_value
+        ranker.model.predict.return_value = mock_contrib
 
-            result, err = _compute_shap(ranker, horse_df, feature_names)
+        result, err = _compute_shap(ranker, horse_df, feature_names)
 
         assert err is None
         assert len(result) == 2
         assert "feat_missing" not in result["feature"].values
+
+    def test_uses_numpy_array_for_prediction(self):
+        """ranker.model.predict に numpy 配列が渡されることを確認する"""
+        from src.dashboard.components.shap_explain import _compute_shap
+
+        feature_names = ["x", "course_type"]
+        horse_df = pd.DataFrame({"x": [1.0], "course_type": ["turf"]})
+        ranker = _make_mock_ranker(2)
+
+        mock_contrib = np.array([[0.1, 0.2, 0.0]])
+        ranker.model.predict.return_value = mock_contrib
+
+        _compute_shap(ranker, horse_df, feature_names)
+
+        # predict に渡された第1引数が numpy 配列であること
+        call_args = ranker.model.predict.call_args
+        passed_data = call_args[0][0]
+        assert isinstance(passed_data, np.ndarray), "numpy 配列が渡されるべき"
 
 
 class TestFetchHorseFeatures:

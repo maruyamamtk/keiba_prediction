@@ -116,15 +116,17 @@ def render(race_date: str) -> None:
 
 def _compute_shap(ranker, horse_df: pd.DataFrame, feature_names: list[str]):
     """
-    SHAP TreeExplainer で指定馬のSHAP値を計算する。
+    LightGBM の pred_contrib=True で指定馬のSHAP値を計算する。
+
+    shap.TreeExplainer は内部で pred_contrib=True を呼ぶが、
+    pandas DataFrame に object/category 列があるとカテゴリ不一致エラーになる。
+    numpy 配列に変換してから直接呼び出すことで回避する。
 
     Returns:
         (DataFrame, None)  — 成功時: (|shap_value|降順のDF, None)
         (None, str)        — 失敗時: (None, エラーメッセージ)
     """
     try:
-        import shap
-
         # 学習時と同じ除外カラムを除去して特徴量行列を作る
         available_features = [f for f in feature_names if f in horse_df.columns]
         missing = set(feature_names) - set(available_features)
@@ -139,23 +141,18 @@ def _compute_shap(ranker, horse_df: pd.DataFrame, feature_names: list[str]):
             )
 
         X = horse_df[available_features].copy()
+        feature_vals = X.iloc[0].values  # 元の値（表示用）
 
-        # NOTE: category dtype への変換はしない。
-        # LightGBM の pred_contrib (SHAP) は生の値で処理できるが、
-        # 1行だけのデータで category dtype を付けると学習時のカテゴリレベルと
-        # 不一致になり ValueError になる。
+        # object/category dtype の列を整数コードに変換してから numpy 配列化。
+        # pandas DataFrame のまま渡すとカテゴリ列のレベル不一致で ValueError になる。
+        for col in X.select_dtypes(include=["object", "category"]).columns:
+            X[col] = pd.factorize(X[col])[0].astype(float)
+        X_np = X.to_numpy(dtype=float, na_value=0.0)
 
-        explainer = shap.TreeExplainer(ranker.model)
-        shap_values = explainer.shap_values(X)  # shape: (1, n_features) or list
-
-        # SHAP バージョンによって list / ndarray が返る場合がある
-        sv = np.array(shap_values)
-        if sv.ndim == 3:
-            # 一部バージョンで (n_outputs, n_samples, n_features) になる
-            sv = sv[0]
-        values = sv[0] if sv.ndim == 2 else sv
-
-        feature_vals = X.iloc[0].values
+        # pred_contrib=True: shape (n_samples, n_features + 1)
+        # 最終列は base value (期待値)、それ以外が各特徴量のSHAP値
+        contrib = ranker.model.predict(X_np, pred_contrib=True)
+        values = contrib[0, :-1]  # 1サンプル・特徴量分のみ
 
         df = pd.DataFrame({
             "feature": available_features,
