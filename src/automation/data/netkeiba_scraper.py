@@ -677,39 +677,49 @@ def get_combo_odds(
 
     all_dfs: list[pd.DataFrame] = []
 
-    for i, ttype in enumerate(ticket_types):
-        if ttype not in COMBO_TICKET_TYPES:
-            logger.warning(f"未対応の馬券種をスキップ: {ttype}")
-            continue
-
-        url = (
-            f"{NETKEIBA_BASE_URL}/odds/index.html"
-            f"?race_id={netkeiba_race_id}&type={ttype}"
+    # ブラウザを1回だけ起動して全馬券種を取得（起動コストを削減）
+    with sync_playwright() as p:
+        browser = p.chromium.launch(
+            headless=True,
+            args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
         )
-        logger.debug(f"組み合わせオッズ取得: {url}")
+        try:
+            for i, ttype in enumerate(ticket_types):
+                if ttype not in COMBO_TICKET_TYPES:
+                    logger.warning(f"未対応の馬券種をスキップ: {ttype}")
+                    continue
 
-        if i > 0:
-            time.sleep(sleep_sec)
+                url = (
+                    f"{NETKEIBA_BASE_URL}/odds/index.html"
+                    f"?race_id={netkeiba_race_id}&type={ttype}"
+                )
+                logger.debug(f"組み合わせオッズ取得: {url}")
 
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu"])
-            try:
-                page = browser.new_page()
-                page.goto(url, wait_until="load", timeout=30_000)
-                time.sleep(sleep_sec)
-                html = page.content()
-            except Exception as e:
-                logger.error(f"オッズページ取得失敗: {ttype} race_id={netkeiba_race_id}, {e}")
-                html = ""
-            finally:
-                browser.close()
+                if i > 0:
+                    time.sleep(sleep_sec)
 
-        df = _parse_combo_odds_html(html, ttype)
-        if not df.empty:
-            all_dfs.append(df)
-            logger.debug(
-                f"  {COMBO_TICKET_TYPES[ttype]}: {len(df)}件"
-            )
+                try:
+                    page = browser.new_page()
+                    page.goto(url, wait_until="load", timeout=15_000)
+                    time.sleep(sleep_sec)
+                    html = page.content()
+                    page.close()
+                except Exception as e:
+                    logger.error(f"オッズページ取得失敗: {ttype} race_id={netkeiba_race_id}, {e}")
+                    html = ""
+                    try:
+                        page.close()
+                    except Exception:
+                        pass
+
+                df = _parse_combo_odds_html(html, ttype)
+                if not df.empty:
+                    all_dfs.append(df)
+                    logger.debug(
+                        f"  {COMBO_TICKET_TYPES[ttype]}: {len(df)}件"
+                    )
+        finally:
+            browser.close()
 
     if not all_dfs:
         return pd.DataFrame(columns=_EMPTY_COMBO_COLUMNS)
