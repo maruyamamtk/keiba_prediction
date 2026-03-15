@@ -17,6 +17,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
+from src.dashboard.feature_labels import to_label
 from src.dashboard.data import (
     VENUE_CODE_TO_NAME,
     fetch_horse_features,
@@ -159,6 +160,7 @@ def _compute_shap(ranker, horse_df: pd.DataFrame, feature_names: list[str]):
             "shap_value": values,
             "feature_value": feature_vals,
         })
+        df["label"] = df["feature"].map(to_label)
         df["abs_shap"] = df["shap_value"].abs()
         return df.sort_values("abs_shap", ascending=False).reset_index(drop=True), None
 
@@ -216,7 +218,7 @@ def _render_waterfall(shap_df: pd.DataFrame, top_n: int = 20) -> None:
 
         fig = go.Figure(go.Bar(
             x=top["shap_value"],
-            y=top["feature"],
+            y=top["label"],
             orientation="h",
             marker_color=colors,
             text=text_labels,
@@ -234,8 +236,8 @@ def _render_waterfall(shap_df: pd.DataFrame, top_n: int = 20) -> None:
             title=f"SHAP ウォーターフォール（上位 {top_n} 特徴量）",
             xaxis_title="SHAP値（予測スコアへの寄与）",
             yaxis_title="特徴量",
-            height=max(400, top_n * 28),
-            margin=dict(l=200, r=120, t=60, b=40),
+            height=max(400, top_n * 30),
+            margin=dict(l=260, r=130, t=60, b=40),
         )
         st.plotly_chart(fig, use_container_width=True)
 
@@ -246,8 +248,8 @@ def _render_waterfall(shap_df: pd.DataFrame, top_n: int = 20) -> None:
 def _render_shap_table(shap_df: pd.DataFrame) -> None:
     """SHAP値テーブルを折りたたみ表示する"""
     with st.expander("全特徴量のSHAP値テーブル"):
-        display = shap_df[["feature", "shap_value", "feature_value"]].copy()
-        display.columns = ["特徴量", "SHAP値", "特徴量値"]
+        display = shap_df[["label", "feature", "shap_value", "feature_value"]].copy()
+        display.columns = ["特徴量(日本語)", "カラム名", "SHAP値", "特徴量値"]
         display["SHAP値"] = display["SHAP値"].round(6)
         display["特徴量値"] = display["特徴量値"].apply(
             lambda v: round(float(v), 4) if _is_numeric(v) else v
