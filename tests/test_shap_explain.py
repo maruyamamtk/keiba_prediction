@@ -2,6 +2,7 @@
 SHAP説明コンポーネントのユニットテスト
 
 _compute_shap の計算ロジックを中心に検証する。
+戻り値: (DataFrame, None) 成功 / (None, str) 失敗 のタプル形式。
 """
 
 from __future__ import annotations
@@ -37,17 +38,17 @@ class TestComputeShap:
 
         ranker = _make_mock_ranker(n)
 
-        # shap.TreeExplainer をモック
         mock_shap_values = np.array([[0.1, -0.2, 0.3, -0.05, 0.15]])
         with patch("shap.TreeExplainer") as mock_explainer_cls:
             mock_explainer = MagicMock()
             mock_explainer.shap_values.return_value = mock_shap_values
             mock_explainer_cls.return_value = mock_explainer
 
-            result = _compute_shap(ranker, horse_df, feature_names)
+            result, err = _compute_shap(ranker, horse_df, feature_names)
 
+        assert err is None
         assert result is not None
-        assert set(["feature", "shap_value", "feature_value", "abs_shap"]).issubset(result.columns)
+        assert {"feature", "shap_value", "feature_value", "abs_shap"}.issubset(result.columns)
         assert len(result) == n
 
     def test_sorted_by_abs_shap_descending(self):
@@ -64,9 +65,9 @@ class TestComputeShap:
             mock_explainer.shap_values.return_value = mock_shap_values
             mock_explainer_cls.return_value = mock_explainer
 
-            result = _compute_shap(ranker, horse_df, feature_names)
+            result, err = _compute_shap(ranker, horse_df, feature_names)
 
-        assert result is not None
+        assert err is None
         assert result.iloc[0]["feature"] == "b"   # |shap|=0.8 が最大
         assert result.iloc[1]["feature"] == "c"   # |shap|=0.3
         assert result.iloc[2]["feature"] == "a"   # |shap|=0.05
@@ -85,13 +86,32 @@ class TestComputeShap:
             mock_explainer.shap_values.return_value = mock_shap_values
             mock_explainer_cls.return_value = mock_explainer
 
-            result = _compute_shap(ranker, horse_df, feature_names)
+            result, err = _compute_shap(ranker, horse_df, feature_names)
 
-        assert result is not None
+        assert err is None
         assert len(result) == 2
 
-    def test_returns_none_on_exception(self):
-        """SHAP 計算で例外が発生した場合は None を返す"""
+    def test_handles_3d_shap_values(self):
+        """shap_values が 3D (n_outputs, n_samples, n_features) で返る場合を処理する"""
+        from src.dashboard.components.shap_explain import _compute_shap
+
+        feature_names = ["x", "y"]
+        horse_df = pd.DataFrame({"x": [1.0], "y": [2.0]})
+        ranker = _make_mock_ranker(2)
+
+        mock_shap_values = np.array([[[0.5, -0.3]]])  # 3D: (1, 1, 2)
+        with patch("shap.TreeExplainer") as mock_explainer_cls:
+            mock_explainer = MagicMock()
+            mock_explainer.shap_values.return_value = mock_shap_values
+            mock_explainer_cls.return_value = mock_explainer
+
+            result, err = _compute_shap(ranker, horse_df, feature_names)
+
+        assert err is None
+        assert len(result) == 2
+
+    def test_returns_none_with_error_message_on_exception(self):
+        """SHAP 計算で例外が発生した場合は (None, エラーメッセージ) を返す"""
         from src.dashboard.components.shap_explain import _compute_shap
 
         feature_names = ["x"]
@@ -99,17 +119,32 @@ class TestComputeShap:
         ranker = _make_mock_ranker(1)
 
         with patch("shap.TreeExplainer", side_effect=RuntimeError("SHAP error")):
-            result = _compute_shap(ranker, horse_df, feature_names)
+            result, err = _compute_shap(ranker, horse_df, feature_names)
 
         assert result is None
+        assert err is not None
+        assert "RuntimeError" in err
+        assert "SHAP error" in err
+
+    def test_returns_error_when_no_available_features(self):
+        """モデルの特徴量が horse_df に一切ない場合はエラーメッセージを返す"""
+        from src.dashboard.components.shap_explain import _compute_shap
+
+        feature_names = ["model_feat_A", "model_feat_B"]
+        horse_df = pd.DataFrame({"completely_different_col": [1.0]})
+        ranker = _make_mock_ranker(2)
+
+        result, err = _compute_shap(ranker, horse_df, feature_names)
+
+        assert result is None
+        assert err is not None
+        assert "一致しません" in err
 
     def test_skips_missing_features_gracefully(self):
         """training_data に存在しない特徴量はスキップして残りで計算する"""
         from src.dashboard.components.shap_explain import _compute_shap
 
-        # モデルは feat_0, feat_1, feat_missing の3特徴量を想定
         feature_names = ["feat_0", "feat_1", "feat_missing"]
-        # horse_df には feat_missing が存在しない
         horse_df = pd.DataFrame({"feat_0": [1.0], "feat_1": [2.0]})
         ranker = _make_mock_ranker(3)
 
@@ -119,10 +154,10 @@ class TestComputeShap:
             mock_explainer.shap_values.return_value = mock_shap_values
             mock_explainer_cls.return_value = mock_explainer
 
-            result = _compute_shap(ranker, horse_df, feature_names)
+            result, err = _compute_shap(ranker, horse_df, feature_names)
 
-        assert result is not None
-        assert len(result) == 2  # feat_missing は除外
+        assert err is None
+        assert len(result) == 2
         assert "feat_missing" not in result["feature"].values
 
 

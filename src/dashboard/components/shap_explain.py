@@ -100,9 +100,9 @@ def render(race_date: str) -> None:
         )
         return
 
-    shap_df = _compute_shap(ranker, horse_df, feature_names)
+    shap_df, error_msg = _compute_shap(ranker, horse_df, feature_names)
     if shap_df is None:
-        st.error("SHAP 値の計算に失敗しました。")
+        st.error(f"SHAP 値の計算に失敗しました。\n\n```\n{error_msg}\n```")
         return
 
     # ── 3. 結果表示 ─────────────────────────────────────────────────────
@@ -120,8 +120,8 @@ def _compute_shap(ranker, horse_df: pd.DataFrame, feature_names: list[str]):
     SHAP TreeExplainer で指定馬のSHAP値を計算する。
 
     Returns:
-        DataFrame[feature, shap_value, feature_value] (|shap_value|降順)
-        失敗時は None
+        (DataFrame, None)  — 成功時: (|shap_value|降順のDF, None)
+        (None, str)        — 失敗時: (None, エラーメッセージ)
     """
     try:
         import shap
@@ -132,6 +132,13 @@ def _compute_shap(ranker, horse_df: pd.DataFrame, feature_names: list[str]):
         if missing:
             logger.warning(f"特徴量 {len(missing)} 件が training_data に存在しない: {list(missing)[:5]}...")
 
+        if not available_features:
+            return None, (
+                f"モデルの特徴量 ({len(feature_names)} 件) が"
+                " features.training_data の列と一致しませんでした。"
+                " 特徴量生成バッチが最新かどうか確認してください。"
+            )
+
         X = horse_df[available_features].copy()
 
         # カテゴリカル変換
@@ -140,9 +147,15 @@ def _compute_shap(ranker, horse_df: pd.DataFrame, feature_names: list[str]):
                 X[col] = X[col].astype("category")
 
         explainer = shap.TreeExplainer(ranker.model)
-        shap_values = explainer.shap_values(X)  # shape: (1, n_features)
+        shap_values = explainer.shap_values(X)  # shape: (1, n_features) or list
 
-        values = shap_values[0] if shap_values.ndim == 2 else shap_values
+        # SHAP バージョンによって list / ndarray が返る場合がある
+        sv = np.array(shap_values)
+        if sv.ndim == 3:
+            # 一部バージョンで (n_outputs, n_samples, n_features) になる
+            sv = sv[0]
+        values = sv[0] if sv.ndim == 2 else sv
+
         feature_vals = X.iloc[0].values
 
         df = pd.DataFrame({
@@ -151,11 +164,13 @@ def _compute_shap(ranker, horse_df: pd.DataFrame, feature_names: list[str]):
             "feature_value": feature_vals,
         })
         df["abs_shap"] = df["shap_value"].abs()
-        return df.sort_values("abs_shap", ascending=False).reset_index(drop=True)
+        return df.sort_values("abs_shap", ascending=False).reset_index(drop=True), None
 
     except Exception as e:
+        import traceback
+        msg = f"{type(e).__name__}: {e}\n\n{traceback.format_exc()}"
         logger.error(f"SHAP 計算失敗: {e}", exc_info=True)
-        return None
+        return None, msg
 
 
 def _render_horse_header(row: pd.Series, venue_name: str, race_number: int) -> None:
