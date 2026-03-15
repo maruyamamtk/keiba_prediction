@@ -328,6 +328,85 @@ def fetch_feature_importance(model_path: Optional[str] = None) -> pd.DataFrame:
         return pd.DataFrame()
 
 
+# ---------------------------------------------------------------------------
+# SHAP説明
+# ---------------------------------------------------------------------------
+
+@st.cache_resource
+def load_lgbm_ranker_for_shap(model_path: Optional[str] = None):
+    """
+    GCS から最新 LGBMRanker を読み込み、モデルオブジェクトを返す。
+    @st.cache_resource でプロセスライフタイム中キャッシュする。
+
+    Returns:
+        (LGBMRanker, list[str]) — ranker インスタンスと特徴量名リスト
+        失敗時は (None, [])
+    """
+    import sys
+    import tempfile
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+    try:
+        from src.models.lgbm_ranker import LGBMRanker
+
+        ranker = LGBMRanker()
+        if model_path:
+            ranker.load(model_path)
+        else:
+            project_id = get_project_id()
+            if not project_id:
+                return None, []
+            from google.cloud import storage
+            gcs_client = storage.Client(project=project_id)
+            bucket = gcs_client.bucket(f"{project_id}-keiba-models")
+            blobs = list(bucket.list_blobs(prefix="lgbm_ranker/"))
+            model_blobs = [b for b in blobs if b.name.endswith(".txt")]
+            if not model_blobs:
+                return None, []
+            model_blobs.sort(key=lambda b: b.name.split("/")[-2], reverse=True)
+            latest = model_blobs[0]
+            with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as f:
+                latest.download_to_filename(f.name)
+                ranker.load(f.name)
+
+        feature_names = ranker.model.feature_name() if ranker.model else []
+        return ranker, feature_names
+    except Exception as e:
+        logger.warning(f"LGBMRanker 読み込み失敗: {e}")
+        return None, []
+
+
+@st.cache_data(ttl=3600)
+def fetch_horse_features(
+    race_date: str,
+    venue_code: str,
+    race_number: int,
+    horse_number: int,
+) -> pd.DataFrame:
+    """
+    features.training_data から指定馬の特徴量行を取得する。
+    """
+    project_id = get_project_id()
+    if not project_id:
+        return pd.DataFrame()
+    try:
+        client = _get_bq_client()
+        query = f"""
+        SELECT *
+        FROM `{project_id}.features.training_data`
+        WHERE race_date = '{race_date}'
+          AND venue_code = '{venue_code}'
+          AND race_number = {race_number}
+          AND horse_number = {horse_number}
+        LIMIT 1
+        """
+        return client.query(query).to_dataframe()
+    except Exception as e:
+        logger.warning(f"horse_features 取得失敗: {e}")
+        return pd.DataFrame()
+
+
 def get_available_dates(days_back: int = 30) -> list[str]:
     """
     過去 N 日間で予測データが存在する日付リストを返す

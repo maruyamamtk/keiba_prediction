@@ -28,10 +28,10 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-from src.dashboard.components import backtest, home, model_info, race_detail, race_list
+from src.dashboard.components import backtest, home, model_info, race_detail, race_list, shap_explain
 from src.dashboard.data import get_available_dates
 
-MENU_ITEMS = ["ホーム", "レース一覧", "レース詳細", "バックテスト", "モデル情報"]
+MENU_ITEMS = ["ホーム", "レース一覧", "レース詳細", "SHAP説明", "バックテスト", "モデル情報"]
 
 
 def main() -> None:
@@ -45,8 +45,8 @@ def main() -> None:
 
         st.divider()
 
-        # 日付選択（ホーム・レース一覧・レース詳細で共通）
-        if menu in ("ホーム", "レース一覧", "レース詳細"):
+        # 日付選択（ホーム・レース一覧・レース詳細・SHAP説明で共通）
+        if menu in ("ホーム", "レース一覧", "レース詳細", "SHAP説明"):
             available_dates = get_available_dates(days_back=30)
             today_str = date.today().isoformat()
 
@@ -74,6 +74,8 @@ def main() -> None:
         race_list.render(selected_date)
     elif menu == "レース詳細":
         race_detail.render(selected_date)
+    elif menu == "SHAP説明":
+        shap_explain.render(selected_date)
     elif menu == "バックテスト":
         backtest.render()
     elif menu == "モデル情報":
