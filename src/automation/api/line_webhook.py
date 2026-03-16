@@ -515,7 +515,7 @@ def _fetch_investment_decisions(
     """
     predictions.investment_decisions から当日の投資判断を取得する。
 
-    レースごとに最大期待回収率の馬でレースをランク付けし、
+    レースごとに最大期待回収率（単複のみ）でレースをランク付けし、
     上位 max_races レースのみを返す。
 
     Args:
@@ -528,10 +528,10 @@ def _fetch_investment_decisions(
     client = bigquery.Client(project=project_id)
     query = f"""
     WITH race_rank AS (
-      -- レースごとの最大期待回収率を計算し、上位 {max_races} レースを選定
+      -- 単複の期待回収率でレースをランク付け（マルチ馬券は expected_return が NULL のため MAX で除外）
       SELECT
         race_id,
-        MAX(expected_return) AS max_expected_return
+        MAX(COALESCE(expected_return, 0)) AS max_expected_return
       FROM `{project_id}.predictions.investment_decisions`
       WHERE race_date = '{target_date.isoformat()}'
       GROUP BY race_id
@@ -542,8 +542,8 @@ def _fetch_investment_decisions(
       d.venue_code,
       d.race_number,
       d.race_pattern,
-      d.horse_number,
-      d.horse_name,
+      d.horse_numbers,
+      d.horse_names,
       d.bet_type,
       d.bet_amount,
       d.win_place_prob,
@@ -553,10 +553,58 @@ def _fetch_investment_decisions(
     FROM `{project_id}.predictions.investment_decisions` d
     JOIN race_rank r ON d.race_id = r.race_id
     WHERE d.race_date = '{target_date.isoformat()}'
-    ORDER BY r.max_expected_return DESC, d.venue_code, d.race_number, d.expected_return DESC
+    ORDER BY r.max_expected_return DESC, d.venue_code, d.race_number, d.bet_type, d.horse_numbers
     """
     rows = client.query(query).result()
     return [dict(row) for row in rows]
+
+
+def _format_single_bet_line(bet: dict[str, Any]) -> str:
+    """
+    1馬券分の表示行を生成する。
+
+    単複（単一馬番）は複勝率・期待値を表示し、
+    マルチ馬券（ワイド/馬連/三連複）は馬番と馬名のみを表示する。
+
+    Args:
+        bet: investment_decisions の1行（horse_numbers はカンマ区切り文字列）
+
+    Returns:
+        表示行テキスト（複数行になる場合あり）
+    """
+    bet_type = str(bet.get("bet_type", ""))
+    bet_label = BET_TYPE_LABELS.get(bet_type, bet_type)
+    odds = float(bet.get("place_odds", 0) or 0)
+    amount = float(bet.get("bet_amount", 0) or 0)
+
+    # horse_numbers / horse_names をパース（カンマ区切り文字列）
+    hn_str = str(bet.get("horse_numbers", "") or "")
+    nm_str = str(bet.get("horse_names", "") or "")
+    horse_numbers = [h.strip() for h in hn_str.split(",") if h.strip()]
+    horse_names = [n.strip() for n in nm_str.split(",") if nm_str.strip()]
+
+    # 馬番+馬名のペアを組み立て
+    horse_parts = []
+    for i, hn in enumerate(horse_numbers):
+        name = horse_names[i] if i < len(horse_names) else ""
+        horse_parts.append(f"馬番{hn} {name}".strip())
+    horse_str = " / ".join(horse_parts)
+
+    if len(horse_numbers) == 1:
+        # 単複: 複勝率・期待値を表示
+        prob = float(bet.get("win_place_prob", 0) or 0) * 100
+        ev = float(bet.get("expected_return", 0) or 0)
+        return (
+            f"  [{bet_label}] {horse_str}\n"
+            f"    複勝率:{prob:.1f}% / オッズ:{odds:.1f}倍 / 期待値:{ev:.2f}\n"
+            f"    推奨: ¥{amount:,.0f}"
+        )
+    else:
+        # マルチ馬券: 馬番・馬名・オッズのみ
+        return (
+            f"  [{bet_label}] {horse_str}\n"
+            f"    オッズ:{odds:.1f}倍 / 推奨: ¥{amount:,.0f}"
+        )
 
 
 def format_push_notification(
@@ -566,11 +614,13 @@ def format_push_notification(
     """
     投資判断リストから LINE プッシュ通知用のメッセージを生成する。
 
+    全馬券種（複勝/ワイド/三連複/単勝/馬連）に対応し、
+    1馬券を1行のデータとして扱う。
     レース数が多い場合は最大 4 メッセージ（LINE上限 5 件のうち 1 件はヘッダー）に収める。
 
     Args:
         target_date: 対象日
-        decisions: investment_decisions の行リスト
+        decisions: investment_decisions の行リスト（1行/馬券形式）
 
     Returns:
         LINE メッセージオブジェクトのリスト
@@ -578,13 +628,13 @@ def format_push_notification(
     if not decisions:
         return [{"type": "text", "text": f"🏇 {target_date.isoformat()} の推奨馬券はありません。"}]
 
-    # レースごとにグループ化
+    # レースごとにグループ化（venue_code, race_number でキー）
     races: dict[tuple[str, int], list[dict]] = {}
     for d in decisions:
         key = (str(d.get("venue_code", "")), int(d.get("race_number", 0)))
         races.setdefault(key, []).append(d)
 
-    total_bet = sum(float(d.get("bet_amount", 0)) for d in decisions)
+    total_bet = sum(float(d.get("bet_amount", 0) or 0) for d in decisions)
 
     # ヘッダーメッセージ
     header = (
@@ -599,17 +649,8 @@ def format_push_notification(
         venue_name = VENUE_CODE_TO_NAME.get(venue_code, venue_code)
         pattern_label = PATTERN_LABELS.get(str(bets[0].get("race_pattern", "")), "")
         lines = [f"【{venue_name} {race_number}R】{pattern_label}"]
-        for b in bets:
-            bet_label = BET_TYPE_LABELS.get(str(b.get("bet_type", "")), str(b.get("bet_type", "")))
-            prob = float(b.get("win_place_prob", 0)) * 100
-            odds = float(b.get("place_odds", 0))
-            ev = float(b.get("expected_return", 0))
-            amount = float(b.get("bet_amount", 0))
-            lines.append(
-                f"  [{bet_label}] 馬番{b.get('horse_number')} {b.get('horse_name', '')}\n"
-                f"    複勝率:{prob:.1f}% / オッズ:{odds:.1f}倍 / 期待値:{ev:.2f}\n"
-                f"    推奨: ¥{amount:,.0f}"
-            )
+        for bet in bets:
+            lines.append(_format_single_bet_line(bet))
         race_blocks.append("\n".join(lines))
 
     # 4 メッセージに収まるよう複数ブロックをまとめる
