@@ -1,10 +1,12 @@
 # 最適化対象（run_strategy_optimization.py で自動更新）
 p1: 0.2
 expected_return_threshold: 1.2
+prob_weight_r: 1.0
 
 # 固定パラメータ
 max_bet_ratio: 0.05
 min_bet_amount: 100
+min_prob_threshold: 0.10
 top_n: 5
 
 optimization:

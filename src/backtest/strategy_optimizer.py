@@ -140,6 +140,8 @@ class StrategyOptimizer:
         p1: float,
         expected_return_threshold: float,
         min_bet_amount: float = 100.0,
+        min_prob_threshold: float = 0.0,
+        prob_weight_r: float = 1.0,
     ) -> tuple[pd.DataFrame, dict[str, dict]]:
         """
         指定パラメータでシミュレーションを実行する（内部メソッド）
@@ -148,6 +150,8 @@ class StrategyOptimizer:
             p1: 突出型判定閾値
             expected_return_threshold: 期待回収率閾値
             min_bet_amount: 最低賭け金 (円)
+            min_prob_threshold: 軸馬の最低複勝率
+            prob_weight_r: 選定スコアの確率ウェイト係数
 
         Returns:
             (history_df, pattern_stats) のタプル:
@@ -214,6 +218,8 @@ class StrategyOptimizer:
                     expected_return_threshold=expected_return_threshold,
                     max_bet_ratio=self.max_bet_ratio,
                     min_bet_amount=min_bet_amount,
+                    min_prob_threshold=min_prob_threshold,
+                    prob_weight_r=prob_weight_r,
                 )
             except ValueError:
                 continue
@@ -332,6 +338,7 @@ class StrategyOptimizer:
         self,
         p1_range: list[float] | None = None,
         threshold_range: list[float] | None = None,
+        r_range: list[float] | None = None,
     ) -> list[OptimizationResult]:
         """
         グリッドサーチを実行し、全パラメータ組み合わせのバックテスト結果を返す
@@ -339,10 +346,12 @@ class StrategyOptimizer:
         デフォルト探索範囲:
           - p1: [0.1, 0.15, 0.2, 0.25, 0.3]
           - threshold: [1.0, 1.1, 1.2, 1.3, 1.5]
+          - r: [0.5, 1.0, 1.5, 2.0]
 
         Args:
             p1_range: p1 の探索値リスト
             threshold_range: 期待回収率閾値の探索値リスト
+            r_range: prob_weight_r の探索値リスト
 
         Returns:
             OptimizationResult のリスト（全パラメータ組み合わせ分）
@@ -351,27 +360,31 @@ class StrategyOptimizer:
             p1_range = [0.1, 0.15, 0.2, 0.25, 0.3]
         if threshold_range is None:
             threshold_range = [1.0, 1.1, 1.2, 1.3, 1.5]
+        if r_range is None:
+            r_range = [0.5, 1.0, 1.5, 2.0]
 
-        # 全パラメータ組み合わせを生成（5×5=25通り）
-        param_grid = list(product(p1_range, threshold_range))
+        # 全パラメータ組み合わせを生成（5×5×4=100通り）
+        param_grid = list(product(p1_range, threshold_range, r_range))
 
         total = len(param_grid)
         logger.info(f"グリッドサーチ開始: {total} パラメータ組み合わせ")
 
         results: list[OptimizationResult] = []
 
-        for i, (p1, threshold) in enumerate(param_grid):
+        for i, (p1, threshold, r) in enumerate(param_grid):
             params = {
                 "p1": p1,
                 "expected_return_threshold": threshold,
+                "prob_weight_r": r,
             }
 
             if (i + 1) % 10 == 0 or (i + 1) == total:
-                logger.info(f"  [{i + 1}/{total}] p1={p1} threshold={threshold}")
+                logger.info(f"  [{i + 1}/{total}] p1={p1} threshold={threshold} r={r}")
 
             history_df, pattern_stats = self._run_simulation(
                 p1=p1,
                 expected_return_threshold=threshold,
+                prob_weight_r=r,
             )
 
             metrics = compute_metrics(history_df, self.initial_capital)

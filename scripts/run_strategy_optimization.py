@@ -122,6 +122,7 @@ def save_best_params_to_yaml(
 
     config["p1"] = best.params["p1"]
     config["expected_return_threshold"] = best.params["expected_return_threshold"]
+    config["prob_weight_r"] = best.params.get("prob_weight_r", 1.0)
     config["optimization"] = {
         "last_run": datetime.datetime.now().isoformat(timespec="seconds"),
         "metric": metric,
@@ -138,7 +139,8 @@ def save_best_params_to_yaml(
 
     logger.info(f"最適パラメータを保存: {STRATEGY_CONFIG_PATH}")
     logger.info(f"  p1={best.params['p1']}, "
-                f"threshold={best.params['expected_return_threshold']}")
+                f"threshold={best.params['expected_return_threshold']}, "
+                f"prob_weight_r={best.params.get('prob_weight_r', 1.0)}")
     logger.info(f"  回収率={best.recovery_rate:.2f}%, 的中率={best.hit_rate:.2f}%, "
                 f"最大ドローダウン={best.max_drawdown:.2f}%")
 
@@ -160,6 +162,13 @@ def main() -> None:
     parser.add_argument("--initial-capital", type=float, default=100_000.0)
     parser.add_argument("--output-csv", help="全グリッドサーチ結果のCSV保存先")
     parser.add_argument("--top-n", type=int, default=10, help="上位N件の結果を表示")
+    parser.add_argument(
+        "--r-range",
+        type=float,
+        nargs="+",
+        default=None,
+        help="prob_weight_r の探索値（複数指定可、デフォルト: 0.5 1.0 1.5 2.0）",
+    )
     args = parser.parse_args()
 
     if not args.project_id:
@@ -248,7 +257,7 @@ def main() -> None:
         combo_odds_df=combo_odds_df,
         max_bet_ratio=0.05,
     )
-    results = optimizer.run_grid_search()
+    results = optimizer.run_grid_search(r_range=args.r_range)
 
     if not results:
         logger.error("グリッドサーチ結果が空です。データを確認してください。")
@@ -265,6 +274,7 @@ def main() -> None:
         logger.info(
             f"  #{i + 1}: p1={res.params['p1']} "
             f"threshold={res.params['expected_return_threshold']} "
+            f"r={res.params.get('prob_weight_r', 1.0)} "
             f"→ 回収率={res.recovery_rate:.1f}% 的中率={res.hit_rate:.1f}% "
             f"ドローダウン={res.max_drawdown:.1f}%"
         )

@@ -406,12 +406,15 @@ def run_daily_strategy(
     threshold = config["expected_return_threshold"]
     max_bet_ratio = config["max_bet_ratio"]
     min_bet_amount = config.get("min_bet_amount", 100.0)
+    min_prob_threshold = config.get("min_prob_threshold", 0.10)
+    prob_weight_r = config.get("prob_weight_r", 1.0)
     top_n = config.get("top_n", 5)
 
     opt = config.get("optimization", {})
     logger.info(f"=== 日次投資戦略策定 ({target_date}) ===")
     logger.info(f"パラメータ: p1={p1}, threshold={threshold}, "
-                f"max_bet_ratio={max_bet_ratio}, min_bet_amount={min_bet_amount}, top_n={top_n}")
+                f"max_bet_ratio={max_bet_ratio}, min_bet_amount={min_bet_amount}, "
+                f"min_prob_threshold={min_prob_threshold}, prob_weight_r={prob_weight_r}, top_n={top_n}")
     if opt.get("last_run"):
         logger.info(f"最終最適化: {opt['last_run']} "
                     f"(回収率={opt.get('recovery_rate')}%, 的中率={opt.get('hit_rate')}%)")
@@ -459,6 +462,8 @@ def run_daily_strategy(
                 max_bet_ratio=max_bet_ratio,
                 min_bet_amount=min_bet_amount,
                 top_n=top_n,
+                min_prob_threshold=min_prob_threshold,
+                prob_weight_r=prob_weight_r,
             )
         except ValueError as e:
             logger.debug(f"レース {race_id} スキップ: {e}")
