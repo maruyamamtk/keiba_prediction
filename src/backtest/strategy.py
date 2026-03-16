@@ -154,6 +154,8 @@ def select_base_bets(
     combo_odds_df: pd.DataFrame | None,
     expected_return_threshold: float,
     top_n: int = 5,
+    min_prob_threshold: float = 0.0,
+    prob_weight_r: float = 1.0,
 ) -> list[dict]:
     """
     複勝/ワイド/三連複の候補を選定する（配分前）
@@ -166,6 +168,9 @@ def select_base_bets(
             None または空の場合は複勝のみ選定
         expected_return_threshold: 期待回収率の最低閾値
         top_n: 組み合わせ候補とする上位馬数
+        min_prob_threshold: 軸馬の最低複勝率。これ未満の馬は軸馬（複勝単体買い）から除外
+        prob_weight_r: 選定スコアの確率ウェイト係数。スコア = odds * prob^r
+            r=1 で通常の期待値と同等。r>1 で高確率馬が有利になる
 
     Returns:
         bet dict のリスト（bet_amount は未設定）
@@ -173,14 +178,20 @@ def select_base_bets(
     if len(race_df) == 0:
         return []
 
-    # 複勝率降順でソート
-    sorted_df = race_df.sort_values("win_place_prob", ascending=False)
+    # 選定スコア (odds * prob^r) 降順でソート
+    df_sorted = race_df.copy()
+    df_sorted["_selection_score"] = (
+        df_sorted["odds"] * df_sorted["win_place_prob"].pow(prob_weight_r)
+    )
+    sorted_df = df_sorted.sort_values("_selection_score", ascending=False)
 
-    # 複勝候補選定
+    # 複勝候補選定（min_prob_threshold 以上の馬のみ軸馬として選定）
     place_bets = []
     for _, row in sorted_df.iterrows():
         prob = float(row["win_place_prob"])
         place_odds = float(row["odds"])
+        if prob < min_prob_threshold:
+            continue
         if prob * place_odds > expected_return_threshold:
             place_bets.append({
                 "bet_type": "place",
@@ -189,7 +200,7 @@ def select_base_bets(
                 "odds": place_odds,
             })
 
-    # top_n頭候補
+    # top_n頭候補（流し馬券の相手馬は min_prob_threshold フィルタ対象外）
     top_candidates = sorted_df.head(top_n)
     top_horse_numbers = top_candidates["horse_number"].tolist()
     top_prob_map = dict(zip(
@@ -342,6 +353,8 @@ def select_bets_for_race(
     max_bet_ratio: float = 0.05,
     min_bet_amount: float = 100.0,
     top_n: int = 5,
+    min_prob_threshold: float = 0.0,
+    prob_weight_r: float = 1.0,
 ) -> tuple[list[dict], RacePattern]:
     """
     レースパターンを判定し、最適な投資戦略で賭けを選定する（統合関数）
@@ -356,6 +369,8 @@ def select_bets_for_race(
         max_bet_ratio: 1レースあたりの最大賭け金比率
         min_bet_amount: 最低賭け金 (円)
         top_n: ワイド/三連複/馬連の候補数
+        min_prob_threshold: 軸馬の最低複勝率（複勝単体買いの最低条件）
+        prob_weight_r: 選定スコアの確率ウェイト係数（odds * prob^r）
 
     Returns:
         (bets, pattern) のタプル:
@@ -404,6 +419,8 @@ def select_bets_for_race(
         combo_odds_df=combo_odds_df,
         expected_return_threshold=expected_return_threshold,
         top_n=top_n,
+        min_prob_threshold=min_prob_threshold,
+        prob_weight_r=prob_weight_r,
     )
 
     # one_dominant ならパターンA追加ベット

@@ -412,3 +412,157 @@ class TestSelectBetsForRace:
         )
         total = sum(b["bet_amount"] for b in bets)
         assert total <= capital * max_bet_ratio
+
+
+# ---------------------------------------------------------------------------
+# min_prob_threshold のテスト
+# ---------------------------------------------------------------------------
+
+
+class TestMinProbThreshold:
+    """min_prob_threshold（軸馬フィルタ）のテスト"""
+
+    def test_low_prob_horse_excluded_as_pivot(self):
+        """min_prob_threshold 未満の馬は複勝単体買いから除外される"""
+        # 馬番1: prob=0.07 (< 0.10), odds=15.0 → 期待値=1.05 > 1.0 だがフィルタされる
+        # 馬番2: prob=0.30, odds=4.0 → 期待値=1.20 > 1.0 → 選定される
+        race_df = _make_race_df(
+            n_horses=3,
+            probs=[0.07, 0.30, 0.20],
+            odds=[15.0, 4.0, 5.0],
+        )
+        bets = select_base_bets(
+            race_df,
+            None,
+            expected_return_threshold=1.0,
+            min_prob_threshold=0.10,
+        )
+        place_bets = [b for b in bets if b["bet_type"] == "place"]
+        horse_numbers = [b["horse_numbers"][0] for b in place_bets]
+        # 馬番1（prob=0.07 < 0.10）は除外される
+        assert 1 not in horse_numbers
+        # 馬番2（prob=0.30 >= 0.10）は選定される
+        assert 2 in horse_numbers
+
+    def test_zero_threshold_allows_all(self):
+        """min_prob_threshold=0.0 なら全馬が軸馬候補"""
+        race_df = _make_race_df(
+            n_horses=3,
+            probs=[0.05, 0.20, 0.15],
+            odds=[20.0, 8.0, 10.0],
+        )
+        bets = select_base_bets(
+            race_df,
+            None,
+            expected_return_threshold=1.0,
+            min_prob_threshold=0.0,
+        )
+        place_bets = [b for b in bets if b["bet_type"] == "place"]
+        horse_numbers = [b["horse_numbers"][0] for b in place_bets]
+        # 全馬が候補（期待値フィルタのみ）
+        # 馬番1: 0.05×20=1.0 > 1.0 はFalse（境界値なので除外）
+        # 馬番2: 0.20×8=1.6 > 1.0 → 選定
+        # 馬番3: 0.15×10=1.5 > 1.0 → 選定
+        assert 2 in horse_numbers
+        assert 3 in horse_numbers
+
+    def test_select_bets_for_race_passes_min_prob_threshold(self):
+        """select_bets_for_race が min_prob_threshold を正しく渡す"""
+        # 馬番1: prob=0.07, odds=20.0 → 低確率高オッズ馬（フィルタ対象）
+        # 馬番2: prob=0.40, odds=3.0 → 高確率馬
+        # 馬番3: prob=0.30, odds=4.0
+        race_df = _make_race_df(
+            n_horses=3,
+            probs=[0.07, 0.40, 0.30],
+            odds=[20.0, 3.0, 4.0],
+        )
+        bets_filtered, _ = select_bets_for_race(
+            race_df,
+            capital=100_000.0,
+            expected_return_threshold=1.0,
+            min_prob_threshold=0.10,
+        )
+        bets_unfiltered, _ = select_bets_for_race(
+            race_df,
+            capital=100_000.0,
+            expected_return_threshold=1.0,
+            min_prob_threshold=0.0,
+        )
+        place_filtered = [b for b in bets_filtered if b["bet_type"] == "place"]
+        place_unfiltered = [b for b in bets_unfiltered if b["bet_type"] == "place"]
+        hn_filtered = [b["horse_numbers"][0] for b in place_filtered]
+        hn_unfiltered = [b["horse_numbers"][0] for b in place_unfiltered]
+        # フィルタあり: 馬番1（prob=0.07）は除外
+        assert 1 not in hn_filtered
+        # フィルタなし: 馬番1も選定される（期待値1.4 > 1.0）
+        assert 1 in hn_unfiltered
+
+
+# ---------------------------------------------------------------------------
+# prob_weight_r のテスト
+# ---------------------------------------------------------------------------
+
+
+class TestProbWeightR:
+    """prob_weight_r（選定スコア係数）のテスト"""
+
+    def test_r_gt_1_favors_high_prob_horse(self):
+        """r > 1 のとき高確率馬がスコアで優先される"""
+        # 馬A: prob=0.30, odds=4.0 → r=1: score=1.20, r=2: score=4.0×0.09=0.36
+        # 馬B: prob=0.07, odds=30.0 → r=1: score=2.10, r=2: score=30.0×0.0049=0.147
+        # r=1: 馬Bが高スコア, r=2: 馬Aが高スコア
+        race_df = _make_race_df(
+            n_horses=3,
+            probs=[0.30, 0.07, 0.20],
+            odds=[4.0, 30.0, 5.0],
+        )
+        bets_r1 = select_base_bets(
+            race_df,
+            None,
+            expected_return_threshold=1.0,
+            min_prob_threshold=0.0,
+            prob_weight_r=1.0,
+        )
+        bets_r2 = select_base_bets(
+            race_df,
+            None,
+            expected_return_threshold=1.0,
+            min_prob_threshold=0.0,
+            prob_weight_r=2.0,
+        )
+        # r=1 でも r=2 でもエラーなく動作すること
+        assert isinstance(bets_r1, list)
+        assert isinstance(bets_r2, list)
+
+    def test_r_default_is_1_compatible(self):
+        """prob_weight_r=1.0（デフォルト）は従来の期待値ソートと等価"""
+        race_df = _make_race_df(
+            n_horses=4,
+            probs=[0.40, 0.30, 0.20, 0.10],
+            odds=[3.0, 4.0, 5.0, 10.0],
+        )
+        # デフォルト（r=1.0）と明示r=1.0は同じ結果
+        bets_default = select_base_bets(
+            race_df, None, expected_return_threshold=1.0
+        )
+        bets_explicit = select_base_bets(
+            race_df, None, expected_return_threshold=1.0, prob_weight_r=1.0
+        )
+        assert len(bets_default) == len(bets_explicit)
+        hn_default = sorted([b["horse_numbers"][0] for b in bets_default])
+        hn_explicit = sorted([b["horse_numbers"][0] for b in bets_explicit])
+        assert hn_default == hn_explicit
+
+    def test_select_bets_for_race_passes_prob_weight_r(self):
+        """select_bets_for_race が prob_weight_r を正しく渡す（エラーなし）"""
+        race_df = _make_race_df(
+            n_horses=5,
+            probs=[0.40, 0.30, 0.20, 0.10, 0.05],
+            odds=[3.0, 4.0, 5.0, 10.0, 20.0],
+        )
+        for r in [0.5, 1.0, 1.5, 2.0]:
+            bets, pattern = select_bets_for_race(
+                race_df, capital=100_000.0, prob_weight_r=r
+            )
+            assert isinstance(bets, list)
+            assert isinstance(pattern, RacePattern)

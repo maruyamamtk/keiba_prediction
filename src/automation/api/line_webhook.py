@@ -366,9 +366,12 @@ def _run_strategy_for_race(
         threshold = float(cfg.get("expected_return_threshold", 1.2))
         max_bet_ratio = float(cfg.get("max_bet_ratio", 0.05))
         min_bet_amount = float(cfg.get("min_bet_amount", 100.0))
+        min_prob_threshold = float(cfg.get("min_prob_threshold", 0.10))
+        prob_weight_r = float(cfg.get("prob_weight_r", 1.0))
         top_n = int(cfg.get("top_n", 5))
     else:
-        p1, threshold, max_bet_ratio, min_bet_amount, top_n = 0.2, 1.2, 0.05, 100.0, 5
+        p1, threshold, max_bet_ratio, min_bet_amount = 0.2, 1.2, 0.05, 100.0
+        min_prob_threshold, prob_weight_r, top_n = 0.10, 1.0, 5
 
     try:
         bets, pattern = select_bets_for_race(
@@ -379,6 +382,8 @@ def _run_strategy_for_race(
             max_bet_ratio=max_bet_ratio,
             min_bet_amount=min_bet_amount,
             top_n=top_n,
+            min_prob_threshold=min_prob_threshold,
+            prob_weight_r=prob_weight_r,
         )
         return bets, pattern.pattern
     except ValueError as e:
