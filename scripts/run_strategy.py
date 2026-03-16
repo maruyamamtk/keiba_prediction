@@ -431,6 +431,12 @@ def run_daily_strategy(
     combo_odds_df = fetch_combo_odds_for_date(client, project_id, race_ids)
     logger.info(f"コンボオッズ取得: {len(combo_odds_df)}件")
 
+    # ループ内の O(n*m) フィルタを避けるため、レースIDでグループ化しておく
+    combo_odds_by_race: dict[str, pd.DataFrame] = (
+        {str(k): v for k, v in combo_odds_df.groupby("race_id")}
+        if not combo_odds_df.empty else {}
+    )
+
     decisions: list[dict] = []
     capital = initial_capital
     created_at = datetime.datetime.now(datetime.timezone.utc)
@@ -440,12 +446,8 @@ def run_daily_strategy(
         if len(race_group) < 3:
             continue
 
-        # このレースの combo_odds をフィルタ
         race_id_str = str(race_id)
-        if len(combo_odds_df) > 0:
-            race_combo_df = combo_odds_df[combo_odds_df["race_id"] == race_id_str]
-        else:
-            race_combo_df = pd.DataFrame()
+        race_combo_df = combo_odds_by_race.get(race_id_str, pd.DataFrame())
 
         try:
             bets, race_pattern = select_bets_for_race(
@@ -484,10 +486,11 @@ def run_daily_strategy(
 
     logger.info(f"投資判断: {len(decisions)}件")
     if decisions:
-        total_bet = sum(d["bet_amount"] for d in decisions)
+        total_bet = 0.0
         patterns: dict[str, int] = {}
         bet_types: dict[str, int] = {}
         for d in decisions:
+            total_bet += d["bet_amount"]
             patterns[d["race_pattern"]] = patterns.get(d["race_pattern"], 0) + 1
             bet_types[d["bet_type"]] = bet_types.get(d["bet_type"], 0) + 1
         logger.info(f"  総賭け金: {total_bet:,.0f}円")

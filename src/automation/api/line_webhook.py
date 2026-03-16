@@ -366,8 +366,9 @@ def _run_strategy_for_race(
         threshold = float(cfg.get("expected_return_threshold", 1.2))
         max_bet_ratio = float(cfg.get("max_bet_ratio", 0.05))
         min_bet_amount = float(cfg.get("min_bet_amount", 100.0))
+        top_n = int(cfg.get("top_n", 5))
     else:
-        p1, threshold, max_bet_ratio, min_bet_amount = 0.2, 1.2, 0.05, 100.0
+        p1, threshold, max_bet_ratio, min_bet_amount, top_n = 0.2, 1.2, 0.05, 100.0, 5
 
     try:
         bets, pattern = select_bets_for_race(
@@ -377,6 +378,7 @@ def _run_strategy_for_race(
             expected_return_threshold=threshold,
             max_bet_ratio=max_bet_ratio,
             min_bet_amount=min_bet_amount,
+            top_n=top_n,
         )
         return bets, pattern.pattern
     except ValueError as e:
@@ -581,7 +583,7 @@ def _format_single_bet_line(bet: dict[str, Any]) -> str:
     hn_str = str(bet.get("horse_numbers", "") or "")
     nm_str = str(bet.get("horse_names", "") or "")
     horse_numbers = [h.strip() for h in hn_str.split(",") if h.strip()]
-    horse_names = [n.strip() for n in nm_str.split(",") if nm_str.strip()]
+    horse_names = [n.strip() for n in nm_str.split(",") if n.strip()]
 
     # 馬番+馬名のペアを組み立て
     horse_parts = []
@@ -628,13 +630,13 @@ def format_push_notification(
     if not decisions:
         return [{"type": "text", "text": f"🏇 {target_date.isoformat()} の推奨馬券はありません。"}]
 
-    # レースごとにグループ化（venue_code, race_number でキー）
+    # レースごとにグループ化しながら総投資額も計算（1パスで処理）
     races: dict[tuple[str, int], list[dict]] = {}
+    total_bet = 0.0
     for d in decisions:
         key = (str(d.get("venue_code", "")), int(d.get("race_number", 0)))
         races.setdefault(key, []).append(d)
-
-    total_bet = sum(float(d.get("bet_amount", 0) or 0) for d in decisions)
+        total_bet += float(d.get("bet_amount", 0) or 0)
 
     # ヘッダーメッセージ
     header = (
