@@ -339,6 +339,7 @@ class StrategyOptimizer:
         p1_range: list[float] | None = None,
         threshold_range: list[float] | None = None,
         r_range: list[float] | None = None,
+        min_prob_threshold: float = 0.0,
     ) -> list[OptimizationResult]:
         """
         グリッドサーチを実行し、全パラメータ組み合わせのバックテスト結果を返す
@@ -352,6 +353,7 @@ class StrategyOptimizer:
             p1_range: p1 の探索値リスト
             threshold_range: 期待回収率閾値の探索値リスト
             r_range: prob_weight_r の探索値リスト
+            min_prob_threshold: 軸馬の最低複勝率（固定パラメータ。全組み合わせで共通適用）
 
         Returns:
             OptimizationResult のリスト（全パラメータ組み合わせ分）
@@ -367,7 +369,7 @@ class StrategyOptimizer:
         param_grid = list(product(p1_range, threshold_range, r_range))
 
         total = len(param_grid)
-        logger.info(f"グリッドサーチ開始: {total} パラメータ組み合わせ")
+        logger.info(f"グリッドサーチ開始: {total} パラメータ組み合わせ (min_prob_threshold={min_prob_threshold})")
 
         results: list[OptimizationResult] = []
 
@@ -385,6 +387,7 @@ class StrategyOptimizer:
                 p1=p1,
                 expected_return_threshold=threshold,
                 prob_weight_r=r,
+                min_prob_threshold=min_prob_threshold,
             )
 
             metrics = compute_metrics(history_df, self.initial_capital)

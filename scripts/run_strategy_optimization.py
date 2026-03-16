@@ -249,6 +249,15 @@ def main() -> None:
     race_ids = predictions_df["race_id"].unique().tolist()
     combo_odds_df = fetch_combo_odds(args.project_id, race_ids)
 
+    # strategy_config.yaml から固定パラメータを読み込む
+    _strategy_cfg = {}
+    if STRATEGY_CONFIG_PATH.exists():
+        import yaml as _yaml
+        with open(STRATEGY_CONFIG_PATH) as _f:
+            _strategy_cfg = _yaml.safe_load(_f) or {}
+    min_prob_threshold = float(_strategy_cfg.get("min_prob_threshold", 0.10))
+    logger.info(f"min_prob_threshold={min_prob_threshold} (固定パラメータ)")
+
     # グリッドサーチ最適化
     optimizer = StrategyOptimizer(
         predictions_df=predictions_df,
@@ -257,7 +266,7 @@ def main() -> None:
         combo_odds_df=combo_odds_df,
         max_bet_ratio=0.05,
     )
-    results = optimizer.run_grid_search(r_range=args.r_range)
+    results = optimizer.run_grid_search(r_range=args.r_range, min_prob_threshold=min_prob_threshold)
 
     if not results:
         logger.error("グリッドサーチ結果が空です。データを確認してください。")
