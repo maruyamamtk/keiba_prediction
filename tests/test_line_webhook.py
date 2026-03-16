@@ -26,6 +26,8 @@ from src.automation.api.line_webhook import (
     VENUE_NAME_TO_CODE,
     _format_bet_recommendations,
     _format_prediction_table,
+    _format_single_bet_line,
+    format_push_notification,
     handle_race_query,
     parse_race_query,
     process_webhook_events,
@@ -384,3 +386,172 @@ class TestProcessWebhookEvents:
         }]
         process_webhook_events(events, "test_project", "test_token")
         mock_post.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# _format_single_bet_line
+# ---------------------------------------------------------------------------
+
+class TestFormatSingleBetLine:
+    def _make_place_bet(self) -> dict:
+        return {
+            "bet_type": "place",
+            "horse_numbers": "3",
+            "horse_names": "テストホース",
+            "win_place_prob": 0.25,
+            "place_odds": 4.5,
+            "expected_return": 1.125,
+            "bet_amount": 1000.0,
+        }
+
+    def _make_wide_bet(self) -> dict:
+        return {
+            "bet_type": "wide",
+            "horse_numbers": "1,3",
+            "horse_names": "ホースA,テストホース",
+            "win_place_prob": None,
+            "place_odds": 8.2,
+            "expected_return": None,
+            "bet_amount": 500.0,
+        }
+
+    def _make_sanrenpuku_bet(self) -> dict:
+        return {
+            "bet_type": "sanrenpuku",
+            "horse_numbers": "1,3,7",
+            "horse_names": "ホースA,テストホース,ホースC",
+            "win_place_prob": None,
+            "place_odds": 25.0,
+            "expected_return": None,
+            "bet_amount": 300.0,
+        }
+
+    def test_place_shows_prob_and_ev(self):
+        result = _format_single_bet_line(self._make_place_bet())
+        assert "複勝率" in result
+        assert "25.0%" in result
+        assert "期待値" in result
+        assert "1.12" in result  # 1.125 → 1.12 (:.2f truncates)
+
+    def test_place_shows_horse_name(self):
+        result = _format_single_bet_line(self._make_place_bet())
+        assert "テストホース" in result
+        assert "馬番3" in result
+
+    def test_wide_no_prob_no_ev(self):
+        result = _format_single_bet_line(self._make_wide_bet())
+        assert "複勝率" not in result
+        assert "期待値" not in result
+
+    def test_wide_shows_both_horses(self):
+        result = _format_single_bet_line(self._make_wide_bet())
+        assert "馬番1" in result
+        assert "馬番3" in result
+        assert "ホースA" in result
+        assert "テストホース" in result
+
+    def test_sanrenpuku_shows_three_horses(self):
+        result = _format_single_bet_line(self._make_sanrenpuku_bet())
+        assert "馬番1" in result
+        assert "馬番3" in result
+        assert "馬番7" in result
+
+    def test_place_shows_bet_amount(self):
+        result = _format_single_bet_line(self._make_place_bet())
+        assert "1,000" in result
+
+    def test_wide_shows_bet_amount(self):
+        result = _format_single_bet_line(self._make_wide_bet())
+        assert "500" in result
+
+
+# ---------------------------------------------------------------------------
+# format_push_notification
+# ---------------------------------------------------------------------------
+
+class TestFormatPushNotification:
+    def _make_decisions(self) -> list[dict]:
+        return [
+            {
+                "venue_code": "09",
+                "race_number": 5,
+                "race_pattern": "standard",
+                "horse_numbers": "3",
+                "horse_names": "テストホース",
+                "bet_type": "place",
+                "bet_amount": 1000.0,
+                "win_place_prob": 0.25,
+                "place_odds": 4.5,
+                "expected_return": 1.125,
+                "max_expected_return": 1.125,
+            },
+            {
+                "venue_code": "09",
+                "race_number": 5,
+                "race_pattern": "standard",
+                "horse_numbers": "1,3",
+                "horse_names": "ホースA,テストホース",
+                "bet_type": "wide",
+                "bet_amount": 500.0,
+                "win_place_prob": None,
+                "place_odds": 8.2,
+                "expected_return": None,
+                "max_expected_return": 1.125,
+            },
+            {
+                "venue_code": "06",
+                "race_number": 3,
+                "race_pattern": "one_dominant",
+                "horse_numbers": "7",
+                "horse_names": "エースホース",
+                "bet_type": "win",
+                "bet_amount": 2000.0,
+                "win_place_prob": 0.40,
+                "place_odds": 3.0,
+                "expected_return": 1.20,
+                "max_expected_return": 1.20,
+            },
+        ]
+
+    def test_returns_at_least_two_messages(self):
+        result = format_push_notification(date(2026, 3, 16), self._make_decisions())
+        assert len(result) >= 2
+
+    def test_header_contains_date(self):
+        result = format_push_notification(date(2026, 3, 16), self._make_decisions())
+        assert "2026-03-16" in result[0]["text"]
+
+    def test_header_contains_total_bet(self):
+        result = format_push_notification(date(2026, 3, 16), self._make_decisions())
+        # 1000 + 500 + 2000 = 3500
+        assert "3,500" in result[0]["text"]
+
+    def test_contains_race_label(self):
+        full_text = "\n".join(m["text"] for m in format_push_notification(date(2026, 3, 16), self._make_decisions()))
+        assert "阪神 5R" in full_text
+        assert "中山 3R" in full_text
+
+    def test_place_bet_shows_prob(self):
+        full_text = "\n".join(m["text"] for m in format_push_notification(date(2026, 3, 16), self._make_decisions()))
+        assert "複勝率" in full_text
+        assert "25.0%" in full_text
+
+    def test_wide_bet_no_prob(self):
+        full_text = "\n".join(m["text"] for m in format_push_notification(date(2026, 3, 16), self._make_decisions()))
+        # ワイドのブロックには複勝率行が1つしかない（複勝のもの）
+        assert "ワイド" in full_text
+        # ワイドの行には「複勝率」が含まれないはず
+        for msg in format_push_notification(date(2026, 3, 16), self._make_decisions()):
+            for line in msg["text"].split("\n"):
+                if "ワイド" in line:
+                    assert "複勝率" not in line
+
+    def test_empty_decisions_returns_no_recommendation(self):
+        result = format_push_notification(date(2026, 3, 16), [])
+        assert len(result) == 1
+        assert "推奨馬券はありません" in result[0]["text"]
+
+    def test_pattern_labels_shown(self):
+        full_text = "\n".join(m["text"] for m in format_push_notification(date(2026, 3, 16), self._make_decisions()))
+        assert "標準型" in full_text
+        assert "突出型" in full_text

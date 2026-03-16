@@ -12,22 +12,16 @@
     "description": "開催日（パーティションキー）"
   },
   {
-    "name": "horse_id",
+    "name": "horse_numbers",
     "type": "STRING",
-    "mode": "NULLABLE",
-    "description": "馬ID"
-  },
-  {
-    "name": "horse_number",
-    "type": "INTEGER",
     "mode": "REQUIRED",
-    "description": "馬番"
+    "description": "馬番（カンマ区切り文字列、例: '3' または '1,3' または '1,3,7'）"
   },
   {
-    "name": "horse_name",
+    "name": "horse_names",
     "type": "STRING",
     "mode": "NULLABLE",
-    "description": "馬名"
+    "description": "馬名（カンマ区切り文字列、horse_numbers に対応）"
   },
   {
     "name": "venue_code",
@@ -51,7 +45,7 @@
     "name": "bet_type",
     "type": "STRING",
     "mode": "NULLABLE",
-    "description": "馬券種（place など）"
+    "description": "馬券種（place / win / wide / umaren / sanrenpuku）"
   },
   {
     "name": "bet_amount",
@@ -63,19 +57,19 @@
     "name": "win_place_prob",
     "type": "FLOAT64",
     "mode": "NULLABLE",
-    "description": "複勝予測確率（0〜1）"
+    "description": "複勝予測確率（0〜1）。単複馬券のみ。複数馬番の馬券ではNULL"
   },
   {
     "name": "place_odds",
     "type": "FLOAT64",
     "mode": "NULLABLE",
-    "description": "複勝オッズ"
+    "description": "馬券オッズ（bet_type に応じた複勝/単勝/ワイド/馬連/三連複オッズ）"
   },
   {
     "name": "expected_return",
     "type": "FLOAT64",
     "mode": "NULLABLE",
-    "description": "期待回収率（win_place_prob × place_odds）"
+    "description": "期待回収率。単複は win_place_prob × place_odds、複数馬番の馬券はNULL"
   },
   {
     "name": "created_at",
