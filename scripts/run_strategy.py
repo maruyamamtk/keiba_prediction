@@ -208,24 +208,6 @@ def fetch_daily_odds(
     return df
 
 
-def fetch_race_ids_for_date(
-    client: bigquery.Client,
-    project_id: str,
-    target_date: datetime.date,
-) -> list[str]:
-    """predictions.daily_predictions から当日のレースIDリストを取得する"""
-    query = f"""
-    SELECT DISTINCT race_id
-    FROM `{project_id}.predictions.daily_predictions`
-    WHERE race_date = '{target_date.isoformat()}'
-    """
-    try:
-        df = client.query(query).to_dataframe()
-        return df["race_id"].tolist()
-    except Exception as e:
-        logger.warning(f"レースID取得に失敗しました: {e}")
-        return []
-
 
 def build_race_df(
     predictions_df: pd.DataFrame,
