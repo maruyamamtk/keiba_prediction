@@ -230,6 +230,7 @@ python3 scripts/run_strategy_optimization.py \
 | `--end-date` | 必須 | 最適化期間終了日 (YYYY-MM-DD) |
 | `--metric` | recovery_rate | 最適化指標（recovery_rate / hit_rate / sharpe_ratio / max_drawdown） |
 | `--initial-capital` | 100000 | 初期資金（円） |
+| `--r-range` | `0.5 1.0 1.5 2.0` | `prob_weight_r` の探索値（複数指定可） |
 | `--output-csv` | なし | 全グリッドサーチ結果のCSV保存先 |
 | `--top-n` | 10 | 上位N件を表示 |
 
@@ -265,7 +266,12 @@ python3 scripts/run_strategy.py --project-id <PROJECT_ID> --dry-run
 
 ```bash
 python3 scripts/create_investment_decisions_table.py --project-id <PROJECT_ID>
+
+# スキーマ変更後に再作成する場合（Issue #161: horse_number → horse_numbers）
+python3 scripts/create_investment_decisions_table.py --project-id <PROJECT_ID> --recreate
 ```
+
+> **スキーマ注意（Issue #161）**: `horse_numbers` カラムは STRING 型（カンマ区切り）です。単勝/複勝は `"3"`、ワイド/馬連は `"1,3"`、三連複は `"1,3,7"` のように格納します。
 
 ### 8. Webダッシュボード閲覧
 
@@ -829,7 +835,9 @@ docker build --platform linux/amd64 -f Dockerfile.dashboard -t dashboard-service
 - **パターンA（突出型）**: `top1_prob - top2_prob > p1` の場合、単勝・馬連を追加購入
 - 賭け金配分: **オッズ逆数比率**方式（1レース合計 = capital × max_bet_ratio 固定）
 - コンボオッズ参照: `predictions.daily_odds_combo` → `raw.combo_odds` → `raw.payouts` の順にフォールバック
-- パラメータ管理: `config/strategy_config.yaml`（`run_strategy_optimization.py` でグリッドサーチ25通り最適化）
+- パラメータ管理: `config/strategy_config.yaml`（`run_strategy_optimization.py` でグリッドサーチ100通り最適化: p1 × threshold × r の3次元探索）
+- **`min_prob_threshold`**: 軸馬の最低複勝率（これ未満は複勝単体買いの軸馬から除外）
+- **`prob_weight_r`**: 馬選定スコア係数（スコア = `odds × prob^r`。r>1 で高確率馬を優先）
 
 ---
 
@@ -1132,7 +1140,7 @@ python3 scripts/create_raw_combo_odds_table.py --project-id <PROJECT_ID>
 | `predictions.daily_predictions` | 日次予測結果 | 実装済み（Issue #117） |
 | `predictions.daily_odds` | netkeibaリアルタイム単複オッズ | 実装済み（Issue #131） |
 | `predictions.daily_odds_combo` | netkeibaリアルタイム組み合わせ馬券オッズ | 実装済み（Issue #134） |
-| `predictions.investment_decisions` | 日次投資判断結果 | 実装済み（Issue #105） |
+| `predictions.investment_decisions` | 日次投資判断結果（`horse_numbers` STRING型・カンマ区切り） | 実装済み（Issue #105 / スキーマ変更 Issue #161） |
 
 テーブル作成コマンド:
 
@@ -1258,7 +1266,7 @@ python -m pytest tests/ --cov=src --cov-report=html
   - パターンA（突出型）: top1確率が top2 より p1 以上高い場合に単勝+馬連を追加
   - 賭け金配分: オッズ逆数比率方式（トリガミ防止）
   - バックテスト `fetch_combo_odds`: predictions.daily_odds_combo → raw.combo_odds → raw.payouts の3段フォールバック
-  - グリッドサーチ: 450通り → 25通りに最適化（p1 × threshold の2次元探索）
+  - グリッドサーチ: 450通り → 100通りに拡張（p1 × threshold × r の3次元探索、Issue #162）
 - ✅ 過去レース一括オッズ取得スクリプト - PR #143
   - `scripts/scrape_historical_odds.py`: 2016年以降の全レース（約25,000レース）を一括スクレイプ
   - JRDB race_id（8文字）→ netkeiba race_id（12桁）のローカル変換（BQ照会不要）
@@ -1305,3 +1313,4 @@ python -m pytest tests/ --cov=src --cov-report=html
 | 2026-03-08 | Issue #140（JRDBコンボ基準オッズ raw.combo_odds）・Issue #139（投資戦略複勝+ワイド+三連複改修、パターンA追加）・PR #143（過去レース一括オッズ取得スクリプト）の実装を反映 |
 | 2026-03-10 | Issue #25（LINE Messaging API Webhook Bot）の実装を反映。POST /api/v1/line/webhookエンドポイント追加、line_webhook.py/line_notify.py追加、Phase 5通知システムを実装済みに更新 |
 | 2026-03-15 | Issue #24（Streamlit Webダッシュボード）の実装を反映。src/dashboard/追加、Dockerfile.dashboard追加、技術スタックにStreamlit/Plotly追記、Phase 5 Webダッシュボードを実装済みに更新 |
+| 2026-03-17 | Issue #161（investment_decisions スキーマ変更: horse_number INTEGER → horse_numbers STRING カンマ区切り）・Issue #162（馬選定スコアに prob_weight_r 導入、min_prob_threshold フィルタ追加、グリッドサーチ3次元化 100通り）の実装を反映 |
