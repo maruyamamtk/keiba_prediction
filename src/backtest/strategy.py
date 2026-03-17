@@ -183,7 +183,9 @@ def select_base_bets(
     df_sorted["_selection_score"] = (
         df_sorted["odds"] * df_sorted["win_place_prob"].pow(prob_weight_r)
     )
-    sorted_df = df_sorted.sort_values("_selection_score", ascending=False)
+    sorted_df = df_sorted.sort_values("_selection_score", ascending=False).drop(
+        columns=["_selection_score"]
+    )
 
     # 複勝候補選定（min_prob_threshold 以上の馬のみ軸馬として選定）
     place_bets = []

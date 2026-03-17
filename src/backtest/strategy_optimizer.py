@@ -106,7 +106,7 @@ class StrategyOptimizer:
                 h2 = row.get("horse_number_2", None)
                 h3 = row.get("horse_number_3", None)
 
-                if pd.isna(h1) if h1 is not None else True:
+                if h1 is None or pd.isna(h1):
                     continue
 
                 h1 = int(h1)

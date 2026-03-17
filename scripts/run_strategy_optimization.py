@@ -252,9 +252,8 @@ def main() -> None:
     # strategy_config.yaml から固定パラメータを読み込む
     _strategy_cfg = {}
     if STRATEGY_CONFIG_PATH.exists():
-        import yaml as _yaml
         with open(STRATEGY_CONFIG_PATH) as _f:
-            _strategy_cfg = _yaml.safe_load(_f) or {}
+            _strategy_cfg = yaml.safe_load(_f) or {}
     min_prob_threshold = float(_strategy_cfg.get("min_prob_threshold", 0.10))
     logger.info(f"min_prob_threshold={min_prob_threshold} (固定パラメータ)")
 
