@@ -151,9 +151,8 @@ class TestAllocateBets:
             {"bet_type": "place", "horse_numbers": [1], "horse_id": "h1", "odds": 2.0},
             {"bet_type": "place", "horse_numbers": [2], "horse_id": "h2", "odds": 4.0},
         ]
-        capital = 100_000.0
-        max_bet_ratio = 0.06  # 予算 = 6000円
-        result = _allocate_bets(bets, capital, max_bet_ratio, min_bet_amount=100.0)
+        budget_per_race = 6000.0  # 固定予算 6000円
+        result = _allocate_bets(bets, budget_per_race, min_bet_amount=100.0)
         # 全賭けが返ること
         assert len(result) == 2
         # 低オッズ（馬番1）の方が多く配分される
@@ -162,17 +161,16 @@ class TestAllocateBets:
         assert amt1 > amt2
 
     def test_total_budget_within_limit(self):
-        """総賭け金が capital × max_bet_ratio 以内"""
+        """総賭け金が budget_per_race 以内"""
         bets = [
             {"bet_type": "place", "horse_numbers": [1], "horse_id": "h1", "odds": 3.0},
             {"bet_type": "place", "horse_numbers": [2], "horse_id": "h2", "odds": 5.0},
             {"bet_type": "place", "horse_numbers": [3], "horse_id": "h3", "odds": 8.0},
         ]
-        capital = 100_000.0
-        max_bet_ratio = 0.05
-        result = _allocate_bets(bets, capital, max_bet_ratio, min_bet_amount=100.0)
+        budget_per_race = 3000.0
+        result = _allocate_bets(bets, budget_per_race, min_bet_amount=100.0)
         total = sum(b["bet_amount"] for b in result)
-        assert total <= capital * max_bet_ratio
+        assert total <= budget_per_race
 
     def test_min_bet_amount_filter(self):
         """min_bet_amount 未満は除外される"""
@@ -181,15 +179,13 @@ class TestAllocateBets:
             {"bet_type": "place", "horse_numbers": [1], "horse_id": "h1", "odds": 2.0},
             {"bet_type": "place", "horse_numbers": [2], "horse_id": "h2", "odds": 10000.0},
         ]
-        capital = 1000.0
-        max_bet_ratio = 0.05  # 予算50円
-        result = _allocate_bets(bets, capital, max_bet_ratio, min_bet_amount=100.0)
-        # 予算50円は全部min未満 → 全除外
+        budget_per_race = 50.0  # 予算50円（全部min未満 → 全除外）
+        result = _allocate_bets(bets, budget_per_race, min_bet_amount=100.0)
         assert len(result) == 0
 
     def test_empty_bets(self):
         """空リスト → 空リスト"""
-        result = _allocate_bets([], 100_000.0, 0.05, min_bet_amount=100.0)
+        result = _allocate_bets([], 3000.0, min_bet_amount=100.0)
         assert result == []
 
 
@@ -396,22 +392,21 @@ class TestSelectBetsForRace:
         """3頭未満で ValueError"""
         race_df = _make_race_df(n_horses=2, probs=[0.5, 0.3], odds=[3.0, 3.0])
         with pytest.raises(ValueError):
-            select_bets_for_race(race_df, capital=100_000.0)
+            select_bets_for_race(race_df)
 
     def test_bet_amount_not_exceeds_budget(self):
-        """総賭け金が capital × max_bet_ratio 以内"""
+        """総賭け金が budget_per_race 以内"""
         race_df = _make_race_df(
             n_horses=5,
             probs=[0.5, 0.3, 0.2, 0.1, 0.05],
             odds=[3.0] * 5,
         )
-        capital = 100_000.0
-        max_bet_ratio = 0.05
+        budget_per_race = 3000.0
         bets, _ = select_bets_for_race(
-            race_df, capital=capital, max_bet_ratio=max_bet_ratio
+            race_df, budget_per_race=budget_per_race
         )
         total = sum(b["bet_amount"] for b in bets)
-        assert total <= capital * max_bet_ratio
+        assert total <= budget_per_race
 
 
 # ---------------------------------------------------------------------------

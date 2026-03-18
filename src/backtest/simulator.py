@@ -6,8 +6,8 @@
 
 投資ルール:
 - 期待回収率フィルタ: 予測複勝率 × オッズ > 閾値 の馬のみ購入
-- 賭け金計算: Fractional Kelly 基準
-- 1レースあたり上限: 総資金の max_bet_ratio まで
+- 賭け金計算: Fractional Kelly 基準（budget_per_race を上限とする）
+- 1レースあたり上限: budget_per_race (円) の固定予算
 - 最低賭け金: 100円単位に切り捨て
 """
 
@@ -104,10 +104,12 @@ class BacktestSimulator:
         initial_capital: float = 100_000.0,
         kelly_fraction: float = 0.25,
         expected_return_threshold: float = 1.2,
-        max_bet_ratio: float = 0.05,
+        budget_per_race: float = 3000.0,
         min_bet_amount: float = 100.0,
         odds_column: str = "odds_yesterday",
         show_race_summary: bool = True,
+        # 後方互換性のための旧パラメータ（無視される）
+        max_bet_ratio: float | None = None,
     ):
         """
         初期化
@@ -117,7 +119,7 @@ class BacktestSimulator:
             kelly_fraction: Fractional Kelly の係数
             expected_return_threshold: 期待回収率フィルタ閾値
                 (予測複勝率 × オッズ > 閾値 の馬のみ購入)
-            max_bet_ratio: 1レースあたりの最大賭け金比率 (例: 0.05 = 5%)
+            budget_per_race: 1レースあたりの固定予算 (円)。Kelly で計算した賭け金の上限
             min_bet_amount: 最低賭け金 (円)
             odds_column: 意思決定に使用するオッズカラム名
             show_race_summary: True のときレース単位のサマリーログを出力する
@@ -125,7 +127,7 @@ class BacktestSimulator:
         self.initial_capital = initial_capital
         self.kelly_fraction = kelly_fraction
         self.expected_return_threshold = expected_return_threshold
-        self.max_bet_ratio = max_bet_ratio
+        self.budget_per_race = budget_per_race
         self.min_bet_amount = min_bet_amount
         self.odds_column = odds_column
         self.show_race_summary = show_race_summary
@@ -226,10 +228,10 @@ class BacktestSimulator:
                 if expected_return <= self.expected_return_threshold:
                     continue
 
-                # Fractional Kelly で賭け金計算
+                # Fractional Kelly で賭け金計算（budget_per_race を上限とする）
                 kf = fractional_kelly(win_place_prob, odds, self.kelly_fraction)
                 bet_amount = capital * kf
-                bet_amount = min(bet_amount, capital * self.max_bet_ratio)
+                bet_amount = min(bet_amount, self.budget_per_race)
                 # 100円単位に切り捨て
                 bet_amount = np.floor(bet_amount / 100.0) * 100.0
                 bet_amount = max(self.min_bet_amount, bet_amount)

@@ -263,7 +263,7 @@ def main() -> None:
         payouts_df=payouts_df,
         initial_capital=args.initial_capital,
         combo_odds_df=combo_odds_df,
-        max_bet_ratio=0.05,
+        budget_per_race=3000.0,
     )
     results = optimizer.run_grid_search(r_range=args.r_range, min_prob_threshold=min_prob_threshold)
 
