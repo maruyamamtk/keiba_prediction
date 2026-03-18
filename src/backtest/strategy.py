@@ -100,20 +100,18 @@ def classify_race_pattern(
 
 def _allocate_bets(
     selected_bets: list[dict],
-    capital: float,
-    max_bet_ratio: float,
+    budget_per_race: float,
     min_bet_amount: float,
 ) -> list[dict]:
     """
     選定済みbet候補にオッズ逆数比率で賭け金を配分する
 
-    総予算 = capital × max_bet_ratio を各betのオッズ逆数の比率で割り当てる。
+    総予算 = budget_per_race を各betのオッズ逆数の比率で割り当てる。
     100円単位に切り捨て後、min_bet_amount 未満のbetは除外する。
 
     Args:
         selected_bets: betの候補リスト。各要素は少なくとも 'odds' キーを持つ dict
-        capital: 現在の資金 (円)
-        max_bet_ratio: 1レースあたりの最大賭け金比率
+        budget_per_race: 1レースあたりの固定予算 (円)
         min_bet_amount: 最低賭け金 (円)
 
     Returns:
@@ -122,7 +120,7 @@ def _allocate_bets(
     if not selected_bets:
         return []
 
-    total_budget = capital * max_bet_ratio
+    total_budget = budget_per_race
 
     # オッズ逆数を計算
     inv_odds = []
@@ -183,7 +181,9 @@ def select_base_bets(
     df_sorted["_selection_score"] = (
         df_sorted["odds"] * df_sorted["win_place_prob"].pow(prob_weight_r)
     )
-    sorted_df = df_sorted.sort_values("_selection_score", ascending=False)
+    sorted_df = df_sorted.sort_values("_selection_score", ascending=False).drop(
+        columns=["_selection_score"]
+    )
 
     # 複勝候補選定（min_prob_threshold 以上の馬のみ軸馬として選定）
     place_bets = []
@@ -347,14 +347,16 @@ def select_pattern_a_extra_bets(
 def select_bets_for_race(
     race_df: pd.DataFrame,
     combo_odds_df: pd.DataFrame | None = None,
-    capital: float = 100_000.0,
+    budget_per_race: float = 3000.0,
     p1: float = 0.2,
     expected_return_threshold: float = 1.2,
-    max_bet_ratio: float = 0.05,
     min_bet_amount: float = 100.0,
     top_n: int = 5,
     min_prob_threshold: float = 0.0,
     prob_weight_r: float = 1.0,
+    # 後方互換性のための旧パラメータ（無視される）
+    capital: float | None = None,
+    max_bet_ratio: float | None = None,
 ) -> tuple[list[dict], RacePattern]:
     """
     レースパターンを判定し、最適な投資戦略で賭けを選定する（統合関数）
@@ -363,10 +365,9 @@ def select_bets_for_race(
         race_df: レースの予測データ DataFrame
             必須カラム: horse_id, horse_number, win_place_prob, odds
         combo_odds_df: コンボオッズ DataFrame（None の場合は複勝のみ）
-        capital: 現在の資金 (円)
+        budget_per_race: 1レースあたりの固定予算 (円)
         p1: 突出型の判定閾値（top1 と top2 の複勝率差）
         expected_return_threshold: 期待回収率閾値
-        max_bet_ratio: 1レースあたりの最大賭け金比率
         min_bet_amount: 最低賭け金 (円)
         top_n: ワイド/三連複/馬連の候補数
         min_prob_threshold: 軸馬の最低複勝率（複勝単体買いの最低条件）
@@ -438,8 +439,7 @@ def select_bets_for_race(
     # 賭け金配分
     bets = _allocate_bets(
         selected_bets=all_bets,
-        capital=capital,
-        max_bet_ratio=max_bet_ratio,
+        budget_per_race=budget_per_race,
         min_bet_amount=min_bet_amount,
     )
 

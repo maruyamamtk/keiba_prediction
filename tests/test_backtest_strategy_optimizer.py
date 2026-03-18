@@ -133,11 +133,11 @@ class TestStrategyOptimizerInit:
         optimizer = StrategyOptimizer(predictions_df, None, combo_odds_df=combo_df)
         assert len(optimizer.combo_odds_df) == 1
 
-    def test_max_bet_ratio_stored(self):
-        """max_bet_ratio が正しく格納される"""
+    def test_budget_per_race_stored(self):
+        """budget_per_race が正しく格納される"""
         predictions_df = _make_predictions_df()
-        optimizer = StrategyOptimizer(predictions_df, None, max_bet_ratio=0.03)
-        assert optimizer.max_bet_ratio == 0.03
+        optimizer = StrategyOptimizer(predictions_df, None, budget_per_race=5000.0)
+        assert optimizer.budget_per_race == 5000.0
 
 
 # ---------------------------------------------------------------------------
@@ -225,12 +225,12 @@ class TestStrategyOptimizerRunSimulation:
 
 
 class TestStrategyOptimizerRunGridSearch:
-    def test_grid_search_returns_25_results(self):
-        """デフォルトグリッドサーチが25通り（5×5）の結果を返す"""
+    def test_grid_search_returns_100_results(self):
+        """デフォルトグリッドサーチが100通り（5×5×4）の結果を返す"""
         df = _make_predictions_df(n_races=2, n_horses=5, win_place_prob=0.5, odds=3.0)
         optimizer = StrategyOptimizer(df, None, combo_odds_df=None)
         results = optimizer.run_grid_search()
-        assert len(results) == 25
+        assert len(results) == 100  # p1(5) × threshold(5) × r(4)
 
     def test_grid_search_results_have_params(self):
         """各結果に p1 と expected_return_threshold が含まれる"""
@@ -251,8 +251,9 @@ class TestStrategyOptimizerRunGridSearch:
         results = optimizer.run_grid_search(
             p1_range=[0.1, 0.2],
             threshold_range=[1.0, 1.2, 1.5],
+            r_range=[1.0],
         )
-        assert len(results) == 6  # 2×3
+        assert len(results) == 6  # 2×3×1
 
 
 # ---------------------------------------------------------------------------

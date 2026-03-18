@@ -539,13 +539,15 @@ def run_backtest_pipeline(
     initial_capital: float = 100_000.0,
     kelly_fraction: float = 0.25,
     expected_return_threshold: float = 1.2,
-    max_bet_ratio: float = 0.05,
+    budget_per_race: float = 3000.0,
     odds_column: str = "place_odds",
     show_race_summary: bool = True,
     output_csv: str | None = None,
     save_bq: bool = False,
     output_chart: str | None = None,
     run_id: str | None = None,
+    # 後方互換性のための旧パラメータ（無視される）
+    max_bet_ratio: float | None = None,
 ) -> tuple[pd.DataFrame, dict]:
     """
     バックテストパイプラインを実行する
@@ -559,7 +561,7 @@ def run_backtest_pipeline(
         initial_capital: 初期資金
         kelly_fraction: Fractional Kelly の係数
         expected_return_threshold: 期待回収率フィルタ閾値
-        max_bet_ratio: 1レースあたり最大賭け金比率
+        budget_per_race: 1レースあたりの固定予算 (円)
         odds_column: オッズカラム名
         show_race_summary: True のときレース単位のサマリーログを出力する
         output_csv: CSV 出力パス (None でスキップ)
@@ -633,7 +635,7 @@ def run_backtest_pipeline(
         initial_capital=initial_capital,
         kelly_fraction=kelly_fraction,
         expected_return_threshold=expected_return_threshold,
-        max_bet_ratio=max_bet_ratio,
+        budget_per_race=budget_per_race,
         odds_column=odds_column,
         show_race_summary=show_race_summary,
     )
@@ -722,10 +724,10 @@ def main() -> int:
         help="期待回収率フィルタ閾値 (予測複勝率 × オッズ > 閾値)",
     )
     parser.add_argument(
-        "--max-bet-ratio",
+        "--budget-per-race",
         type=float,
-        default=0.05,
-        help="1 レースあたりの最大賭け金比率 (例: 0.05 = 5%%)",
+        default=3000.0,
+        help="1レースあたりの固定予算 (円)。デフォルト: 3000",
     )
     parser.add_argument(
         "--odds-column",
@@ -790,10 +792,10 @@ def main() -> int:
     print(f"\nバックテスト設定:")
     print(f"  期間:           {start_date} ~ {end_date}")
     print(f"  モデル:         {args.model_path}")
-    print(f"  初期資金:       ¥{args.initial_capital:,.0f}")
-    print(f"  Kelly 係数:     {args.kelly_fraction}")
-    print(f"  期待回収率閾値: {args.expected_return_threshold}")
-    print(f"  最大賭け金比率: {args.max_bet_ratio:.0%}")
+    print(f"  初期資金:             ¥{args.initial_capital:,.0f}")
+    print(f"  Kelly 係数:           {args.kelly_fraction}")
+    print(f"  期待回収率閾値:       {args.expected_return_threshold}")
+    print(f"  1レースあたり予算:    ¥{args.budget_per_race:,.0f}")
 
     history_df, metrics = run_backtest_pipeline(
         project_id=args.project_id,
@@ -804,7 +806,7 @@ def main() -> int:
         initial_capital=args.initial_capital,
         kelly_fraction=args.kelly_fraction,
         expected_return_threshold=args.expected_return_threshold,
-        max_bet_ratio=args.max_bet_ratio,
+        budget_per_race=args.budget_per_race,
         odds_column=args.odds_column,
         show_race_summary=not args.no_race_summary,
         output_csv=args.output_csv,

@@ -225,8 +225,11 @@ def build_race_df(
         predictions_df["odds"] = float("nan")
         return predictions_df
 
+    cols = ["race_id", "horse_number", "place_odds_min"]
+    if "win_odds" in odds_df.columns:
+        cols.append("win_odds")
     merged = predictions_df.merge(
-        odds_df[["race_id", "horse_number", "place_odds_min"]],
+        odds_df[cols],
         on=["race_id", "horse_number"],
         how="left",
     )
@@ -384,7 +387,6 @@ def run_daily_strategy(
     project_id: str,
     target_date: datetime.date,
     dry_run: bool = False,
-    initial_capital: float = 100_000.0,
 ) -> list[dict]:
     """
     当日の投資戦略を実行し、投資判断リストを返す。
@@ -396,7 +398,6 @@ def run_daily_strategy(
         project_id: GCP プロジェクト ID
         target_date: 対象日
         dry_run: True の場合 BQ への保存をスキップ
-        initial_capital: 初期資金（Kelly 計算用）
 
     Returns:
         投資判断リスト（1行/馬券形式）
@@ -404,7 +405,7 @@ def run_daily_strategy(
     config = load_strategy_config()
     p1 = config["p1"]
     threshold = config["expected_return_threshold"]
-    max_bet_ratio = config["max_bet_ratio"]
+    budget_per_race = float(config.get("budget_per_race", 3000.0))
     min_bet_amount = config.get("min_bet_amount", 100.0)
     min_prob_threshold = config.get("min_prob_threshold", 0.10)
     prob_weight_r = config.get("prob_weight_r", 1.0)
@@ -413,7 +414,7 @@ def run_daily_strategy(
     opt = config.get("optimization", {})
     logger.info(f"=== 日次投資戦略策定 ({target_date}) ===")
     logger.info(f"パラメータ: p1={p1}, threshold={threshold}, "
-                f"max_bet_ratio={max_bet_ratio}, min_bet_amount={min_bet_amount}, "
+                f"budget_per_race={budget_per_race}, min_bet_amount={min_bet_amount}, "
                 f"min_prob_threshold={min_prob_threshold}, prob_weight_r={prob_weight_r}, top_n={top_n}")
     if opt.get("last_run"):
         logger.info(f"最終最適化: {opt['last_run']} "
@@ -441,7 +442,6 @@ def run_daily_strategy(
     )
 
     decisions: list[dict] = []
-    capital = initial_capital
     created_at = datetime.datetime.now(datetime.timezone.utc)
 
     for race_id, race_group in merged.groupby("race_id"):
@@ -456,10 +456,9 @@ def run_daily_strategy(
             bets, race_pattern = select_bets_for_race(
                 race_df=race_group,
                 combo_odds_df=race_combo_df if not race_combo_df.empty else None,
-                capital=capital,
+                budget_per_race=budget_per_race,
                 p1=p1,
                 expected_return_threshold=threshold,
-                max_bet_ratio=max_bet_ratio,
                 min_bet_amount=min_bet_amount,
                 top_n=top_n,
                 min_prob_threshold=min_prob_threshold,
@@ -476,8 +475,6 @@ def run_daily_strategy(
         for bet in bets:
             if not bet.get("horse_numbers"):
                 continue
-            bet_amount = float(bet["bet_amount"])
-            capital -= bet_amount
             row = _build_decision_row(
                 race_id=race_id_str,
                 target_date=target_date,
@@ -531,7 +528,6 @@ def main() -> None:
         action="store_true",
         help="BQへの保存をスキップして結果を表示のみ",
     )
-    parser.add_argument("--initial-capital", type=float, default=100_000.0)
     args = parser.parse_args()
 
     if not args.project_id:
@@ -547,7 +543,6 @@ def main() -> None:
         project_id=args.project_id,
         target_date=target_date,
         dry_run=args.dry_run,
-        initial_capital=args.initial_capital,
     )
 
 

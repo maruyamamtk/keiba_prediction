@@ -70,7 +70,9 @@ class StrategyOptimizer:
         payouts_df: pd.DataFrame,
         initial_capital: float = 100_000.0,
         combo_odds_df: pd.DataFrame | None = None,
-        max_bet_ratio: float = 0.05,
+        budget_per_race: float = 3000.0,
+        # 後方互換性のための旧パラメータ（無視される）
+        max_bet_ratio: float | None = None,
     ):
         """
         初期化
@@ -86,14 +88,15 @@ class StrategyOptimizer:
                 カラム: race_id, horse_number_1, payout_amount, bet_type
                 None でもよい
             initial_capital: 初期資金 (円)
+                資金曲線・最大ドローダウン計算に使用。賭け金には影響しない
             combo_odds_df: コンボオッズ DataFrame（None の場合は空 DataFrame）
-            max_bet_ratio: 1レースあたりの最大賭け金比率
+            budget_per_race: 1レースあたりの固定予算 (円)
         """
         self.predictions_df = predictions_df.copy()
         self.payouts_df = payouts_df if payouts_df is not None else pd.DataFrame()
         self.initial_capital = initial_capital
         self.combo_odds_df = combo_odds_df if combo_odds_df is not None else pd.DataFrame()
-        self.max_bet_ratio = max_bet_ratio
+        self.budget_per_race = budget_per_race
 
         # 払戻マップを事前構築: (race_id, bet_type, horse_numbers_tuple) -> payout_amount
         self._payout_map: dict[tuple, int] = {}
@@ -106,7 +109,7 @@ class StrategyOptimizer:
                 h2 = row.get("horse_number_2", None)
                 h3 = row.get("horse_number_3", None)
 
-                if pd.isna(h1) if h1 is not None else True:
+                if h1 is None or pd.isna(h1):
                     continue
 
                 h1 = int(h1)
@@ -213,10 +216,9 @@ class StrategyOptimizer:
                 bets, race_pattern = select_bets_for_race(
                     race_df=race_df,
                     combo_odds_df=race_combo_df,
-                    capital=capital,
+                    budget_per_race=self.budget_per_race,
                     p1=p1,
                     expected_return_threshold=expected_return_threshold,
-                    max_bet_ratio=self.max_bet_ratio,
                     min_bet_amount=min_bet_amount,
                     min_prob_threshold=min_prob_threshold,
                     prob_weight_r=prob_weight_r,
