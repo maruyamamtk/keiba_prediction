@@ -468,9 +468,9 @@ def main() -> None:
     parser.add_argument(
         "--ticket-types",
         nargs="+",
-        default=["b4", "b7", "b6"],
+        default=["b4", "b5", "b7"],
         choices=["b4", "b5", "b6", "b7"],
-        help="comboモードで取得する馬券種（b4=馬連 b5=馬単 b6=三連複 b7=ワイド, デフォルト: b4 b7 b6）",
+        help="comboモードで取得する馬券種（b4=馬連 b5=ワイド b6=馬単 b7=三連複, デフォルト: b4 b5 b7）",
     )
     parser.add_argument(
         "--sleep-sec",

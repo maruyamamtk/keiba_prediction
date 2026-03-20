@@ -57,9 +57,9 @@ _EMPTY_ODDS_COLUMNS = ["horse_number", "win_odds", "place_odds_min", "place_odds
 # 組み合わせ馬券の type コードと BQ 保存用 ticket_type 名の対応
 COMBO_TICKET_TYPES: dict[str, str] = {
     "b4": "umaren",     # 馬連（2頭・順不同）
-    "b5": "umatan",     # 馬単（2頭・順あり）
-    "b7": "wide",       # ワイド（2頭・順不同）
-    "b6": "sanrenpuku", # 三連複（3頭・順不同）
+    "b5": "wide",       # ワイド（2頭・順不同）
+    "b6": "umatan",     # 馬単（2頭・順あり）
+    "b7": "sanrenpuku", # 三連複（3頭・順不同）
 }
 
 # b4/b5/b7 の span id における数値コード
@@ -588,7 +588,7 @@ def _parse_combo_odds_html(html: str, ticket_type: str) -> pd.DataFrame:
 
     Args:
         html: オッズページのHTML文字列
-        ticket_type: 'b4'(馬連) / 'b5'(馬単) / 'b7'(ワイド) / 'b6'(三連複)
+        ticket_type: 'b4'(馬連) / 'b5'(ワイド) / 'b6'(馬単) / 'b7'(三連複)
 
     Returns:
         DataFrame[ticket_type(str), horse_number_1(int), horse_number_2(int),
@@ -601,8 +601,8 @@ def _parse_combo_odds_html(html: str, ticket_type: str) -> pd.DataFrame:
         return pd.DataFrame(columns=_EMPTY_COMBO_COLUMNS)
 
     soup = BeautifulSoup(html, "lxml")
-    is_trio = (ticket_type == "b6")
-    # 三連複は6桁、2頭組は4桁
+    is_trio = (ticket_type == "b7")
+    # 三連複(b7)は6桁、2頭組(b4/b5/b6)は4桁
     pattern = re.compile(rf'^odds-{code}-(\d{{6}})$' if is_trio else rf'^odds-{code}-(\d{{4}})$')
 
     rows = []
