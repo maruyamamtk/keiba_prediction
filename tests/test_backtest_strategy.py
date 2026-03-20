@@ -561,3 +561,76 @@ class TestProbWeightR:
             )
             assert isinstance(bets, list)
             assert isinstance(pattern, RacePattern)
+
+    def test_prob_weight_r_does_not_affect_wide_filter(self):
+        """prob_weight_r がワイド期待値フィルタに影響しないことを検証（Issue #165）
+
+        prob_weight_r はソート基準（odds * prob^r）にのみ使用し、
+        期待値フィルタ（prob_i * prob_j * wide_odds > threshold）には含めない。
+        r=0.5 でも r=2.0 でも同じワイド組み合わせが選定されること。
+        """
+        # 馬番1,2,3 の順位は prob_weight_r によらず変わらない設定
+        # prob=0.40,0.30,0.20 → score(r=1): 1.6,1.5,1.4 / score(r=2): 0.64,0.45,0.28
+        # どちらの r でも上位2頭は馬番1,2
+        race_df = _make_race_df(
+            n_horses=3,
+            probs=[0.40, 0.30, 0.20],
+            odds=[4.0, 5.0, 7.0],
+        )
+        # ワイドオッズ: 0.40*0.30*15.0=1.8 > threshold(1.5) → 通るべき
+        combo_df = _make_combo_odds_df([
+            {"bet_type": "wide", "horse_number_1": 1, "horse_number_2": 2, "odds_value": 15.0},
+        ])
+
+        bets_r_low = select_base_bets(
+            race_df, combo_df, expected_return_threshold=1.5,
+            top_n=3, prob_weight_r=0.5,
+        )
+        bets_r_high = select_base_bets(
+            race_df, combo_df, expected_return_threshold=1.5,
+            top_n=3, prob_weight_r=2.0,
+        )
+
+        wide_r_low = [b for b in bets_r_low if b["bet_type"] == "wide"]
+        wide_r_high = [b for b in bets_r_high if b["bet_type"] == "wide"]
+        # どちらも同じワイド馬券が選定されること
+        assert len(wide_r_low) == 1, "r=0.5 でワイドが1件選定されるべき"
+        assert len(wide_r_high) == 1, "r=2.0 でワイドが1件選定されるべき"
+        assert wide_r_low[0]["horse_numbers"] == wide_r_high[0]["horse_numbers"]
+
+    def test_prob_weight_r_does_not_affect_sanrenpuku_filter(self):
+        """prob_weight_r が三連複期待値フィルタに影響しないことを検証（Issue #165）
+
+        期待値フィルタ（prob_i * prob_j * prob_k * san_odds > threshold）に
+        prob_weight_r を含めると r < 1 のとき不当に除外される。
+        r=0.5 でも r=2.0 でも同じ三連複組み合わせが選定されること。
+        """
+        race_df = _make_race_df(
+            n_horses=4,
+            probs=[0.40, 0.30, 0.20, 0.10],
+            odds=[4.0, 5.0, 7.0, 15.0],
+        )
+        # 三連複オッズ: 0.40*0.30*0.20*70.0=1.68 > threshold(1.5) → 通るべき
+        # prob_weight_r=0.5 を誤って掛けると: 0.5*1.68=0.84 < 1.5 → 除外されてしまう
+        combo_df = _make_combo_odds_df([
+            {
+                "bet_type": "sanrenpuku",
+                "horse_number_1": 1, "horse_number_2": 2, "horse_number_3": 3,
+                "odds_value": 70.0,
+            },
+        ])
+
+        bets_r_low = select_base_bets(
+            race_df, combo_df, expected_return_threshold=1.5,
+            top_n=4, prob_weight_r=0.5,
+        )
+        bets_r_high = select_base_bets(
+            race_df, combo_df, expected_return_threshold=1.5,
+            top_n=4, prob_weight_r=2.0,
+        )
+
+        san_r_low = [b for b in bets_r_low if b["bet_type"] == "sanrenpuku"]
+        san_r_high = [b for b in bets_r_high if b["bet_type"] == "sanrenpuku"]
+        assert len(san_r_low) == 1, "r=0.5 で三連複が1件選定されるべき"
+        assert len(san_r_high) == 1, "r=2.0 で三連複が1件選定されるべき"
+        assert san_r_low[0]["horse_numbers"] == san_r_high[0]["horse_numbers"]
