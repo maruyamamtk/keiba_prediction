@@ -247,11 +247,11 @@ def _make_combo_html(ticket_type: str, combos: list[tuple]) -> str:
     """組み合わせオッズ span を含むHTMLを生成する
 
     Args:
-        ticket_type: 'b4'(馬連) / 'b5'(馬単) / 'b7'(ワイド) / 'b6'(三連複)
+        ticket_type: 'b4'(馬連) / 'b5'(ワイド) / 'b6'(馬単) / 'b7'(三連複)
         combos: 2頭の場合 [(h1, h2, odds), ...]、3頭の場合 [(h1, h2, h3, odds), ...]
     """
     type_code = {"b4": "4", "b5": "5", "b7": "7", "b6": "6"}[ticket_type]
-    is_trio = ticket_type == "b6"
+    is_trio = ticket_type == "b7"
     spans = ""
     for combo in combos:
         if is_trio:
@@ -274,21 +274,27 @@ class TestParseComboOddsHtml:
         assert row["odds"] == pytest.approx(5.5)
         assert row["horse_number_3"] is None
 
-    def test_umatan_b5(self):
+    def test_wide_b5(self):
+        """b5 はワイド（Issue #167 修正: 旧 umatan → 正しくは wide）"""
         html = _make_combo_html("b5", [(1, 2, 6.0)])
         df = _parse_combo_odds_html(html, "b5")
         assert len(df) == 1
-        assert df.iloc[0]["ticket_type"] == "umatan"
-
-    def test_wide_b7(self):
-        html = _make_combo_html("b7", [(2, 3, 3.2)])
-        df = _parse_combo_odds_html(html, "b7")
-        assert len(df) == 1
         assert df.iloc[0]["ticket_type"] == "wide"
 
-    def test_sanrenpuku_b6(self):
-        html = _make_combo_html("b6", [(1, 2, 3, 12.5)])
+    def test_umatan_b6(self):
+        """b6 は馬単・順序あり（Issue #167 修正: 旧 sanrenpuku → 正しくは umatan）"""
+        html = _make_combo_html("b6", [(1, 2, 8.0)])
         df = _parse_combo_odds_html(html, "b6")
+        assert len(df) == 1
+        assert df.iloc[0]["ticket_type"] == "umatan"
+        assert df.iloc[0]["horse_number_1"] == 1
+        assert df.iloc[0]["horse_number_2"] == 2
+        assert df.iloc[0]["horse_number_3"] is None
+
+    def test_sanrenpuku_b7(self):
+        """b7 は三連複・6桁（Issue #167 修正: 旧 wide → 正しくは sanrenpuku）"""
+        html = _make_combo_html("b7", [(1, 2, 3, 12.5)])
+        df = _parse_combo_odds_html(html, "b7")
         assert len(df) == 1
         assert df.iloc[0]["ticket_type"] == "sanrenpuku"
         assert df.iloc[0]["horse_number_1"] == 1
