@@ -142,11 +142,11 @@ def fetch_already_scraped_race_ids(
     table: str,
 ) -> set[str]:
     """
-    既にスクレイプ済みのrace_idをBQから取得する（スキップ用）
+    既にスクレイプ済みのrace_idをBQから取得する（単複オッズのスキップ用）
 
     Args:
         project_id: GCPプロジェクトID
-        table: テーブル名（"daily_odds" または "daily_odds_combo"）
+        table: テーブル名（"daily_odds"）
 
     Returns:
         スクレイプ済み race_id の set
@@ -154,22 +154,52 @@ def fetch_already_scraped_race_ids(
     client = bigquery.Client(project=project_id)
     table_ref = f"{project_id}.predictions.{table}"
 
-    # テーブルの存在確認
     try:
         client.get_table(table_ref)
     except Exception:
         logger.info(f"テーブルがまだ存在しません（0件スキップ）: {table_ref}")
         return set()
 
-    query = f"""
-    SELECT DISTINCT race_id
-    FROM `{table_ref}`
-    """
+    query = f"SELECT DISTINCT race_id FROM `{table_ref}`"
     try:
         rows = list(client.query(query).result())
         scraped = {row.race_id for row in rows}
         logger.info(f"既スクレイプ済み: {len(scraped):,}レース（{table}）")
         return scraped
+    except Exception as e:
+        logger.warning(f"スキップリスト取得失敗（スキップなしで続行）: {e}")
+        return set()
+
+
+def fetch_already_scraped_combo_pairs(project_id: str) -> set[tuple[str, str]]:
+    """
+    既にスクレイプ済みの (race_id, ticket_type) ペアをBQから取得する（コンボオッズのスキップ用）
+
+    race_id 単位ではなく (race_id, ticket_type) 単位でスキップ判定することで、
+    特定の券種だけ再取得する場合（Issue #167 修正後の wide/sanrenpuku 再取得など）に
+    既取得済みの umaren 等を無駄に再スクレイプしない。
+
+    Args:
+        project_id: GCPプロジェクトID
+
+    Returns:
+        スクレイプ済み (race_id, ticket_type) ペアの set
+    """
+    client = bigquery.Client(project=project_id)
+    table_ref = f"{project_id}.predictions.daily_odds_combo"
+
+    try:
+        client.get_table(table_ref)
+    except Exception:
+        logger.info(f"テーブルがまだ存在しません（0件スキップ）: {table_ref}")
+        return set()
+
+    query = f"SELECT DISTINCT race_id, ticket_type FROM `{table_ref}`"
+    try:
+        rows = list(client.query(query).result())
+        pairs = {(row.race_id, row.ticket_type) for row in rows}
+        logger.info(f"既スクレイプ済みコンボペア: {len(pairs):,}件（daily_odds_combo）")
+        return pairs
     except Exception as e:
         logger.warning(f"スキップリスト取得失敗（スキップなしで続行）: {e}")
         return set()
@@ -280,14 +310,17 @@ def scrape_combo_odds_batch(
     races: list[dict],
     ticket_types: list[str],
     sleep_sec: float = 1.5,
+    already_scraped_pairs: Optional[set[tuple[str, str]]] = None,
 ) -> list[tuple[str, datetime.date, pd.DataFrame]]:
     """
     複数レースの組み合わせ馬券オッズをまとめて取得する（ブラウザ1回起動）
 
     Args:
         races: [{"race_id", "race_date", "netkeiba_race_id"}] のリスト
-        ticket_types: 取得する馬券種（例: ["b4", "b7", "b6"]）
+        ticket_types: 取得する馬券種（例: ["b4", "b5", "b7"]）
         sleep_sec: ページ間スリープ秒数
+        already_scraped_pairs: スキップ対象の (race_id, ticket_type) ペア集合。
+                               指定すると既取得済みの券種はネットワークアクセスをスキップする。
 
     Returns:
         [(race_id, race_date, combo_df)] のリスト（取得できたレースのみ）
@@ -301,6 +334,7 @@ def scrape_combo_odds_batch(
         ) from e
 
     results: list[tuple[str, datetime.date, pd.DataFrame]] = []
+    first_request = True  # スリープ制御用
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
@@ -309,15 +343,24 @@ def scrape_combo_odds_batch(
 
             for i, race in enumerate(races):
                 netkeiba_id = race["netkeiba_race_id"]
+                race_id = race["race_id"]
                 all_dfs: list[pd.DataFrame] = []
 
-                for j, ttype in enumerate(ticket_types):
+                for ttype in ticket_types:
                     if ttype not in COMBO_TICKET_TYPES:
                         continue
+
+                    # 既取得済みの (race_id, ticket_type) はスキップ
+                    ticket_name = COMBO_TICKET_TYPES[ttype]
+                    if already_scraped_pairs and (race_id, ticket_name) in already_scraped_pairs:
+                        logger.debug(f"    スキップ（既取得済み）: {race_id} / {ticket_name}")
+                        continue
+
                     url = f"{NETKEIBA_BASE_URL}/odds/index.html?race_id={netkeiba_id}&type={ttype}"
 
-                    if i > 0 or j > 0:
+                    if not first_request:
                         time.sleep(sleep_sec)
+                    first_request = False
 
                     html = _fetch_html_with_page(page, url, wait_selector=None, sleep_sec=sleep_sec)
                     if not html:
@@ -329,7 +372,7 @@ def scrape_combo_odds_batch(
 
                 if all_dfs:
                     combined = pd.concat(all_dfs, ignore_index=True)
-                    results.append((race["race_id"], race["race_date"], combined))
+                    results.append((race_id, race["race_date"], combined))
                     logger.debug(
                         f"  [{i+1}/{len(races)}] {netkeiba_id}: "
                         f"{len(combined)}件"
@@ -397,13 +440,23 @@ def run_combo(
     batch_size: int,
 ) -> None:
     """組み合わせ馬券オッズの一括取得・保存"""
-    already_scraped = fetch_already_scraped_race_ids(project_id, "daily_odds_combo")
-    pending = [r for r in races if r["race_id"] not in already_scraped]
+    # (race_id, ticket_type) ペア単位でスキップ判定
+    # → 特定券種だけ再取得する場合（Issue #167 後の wide/sanrenpuku 再取得など）に
+    #   既取得済みの他券種を無駄に再スクレイプしない
+    already_pairs = fetch_already_scraped_combo_pairs(project_id)
+    ticket_type_names = {COMBO_TICKET_TYPES[t] for t in ticket_types if t in COMBO_TICKET_TYPES}
+
+    # 少なくとも1つの ticket_type が未取得のレースのみ対象
+    pending = [
+        r for r in races
+        if any((r["race_id"], name) not in already_pairs for name in ticket_type_names)
+    ]
+    skipped = len(races) - len(pending)
 
     ticket_names = [COMBO_TICKET_TYPES.get(t, t) for t in ticket_types]
     logger.info(
         f"コンボオッズ取得対象: {len(pending):,}レース "
-        f"（スキップ: {len(races) - len(pending):,}）"
+        f"（全券種スキップ: {skipped:,}）"
         f" 馬券種: {ticket_names}"
     )
 
@@ -422,7 +475,12 @@ def run_combo(
             f"バッチ処理: {batch_start + 1}〜{batch_end} / {len(pending):,}レース"
         )
 
-        results = scrape_combo_odds_batch(batch, ticket_types=ticket_types, sleep_sec=sleep_sec)
+        results = scrape_combo_odds_batch(
+            batch,
+            ticket_types=ticket_types,
+            sleep_sec=sleep_sec,
+            already_scraped_pairs=already_pairs,
+        )
 
         for race_id, race_date, combo_df in results:
             try:

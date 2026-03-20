@@ -498,6 +498,42 @@ def scrape_today_odds(
     return result_df
 
 
+def _fetch_existing_combo_pairs(
+    project_id: str,
+    race_date: datetime.date,
+    dataset: str = "predictions",
+    table: str = "daily_odds_combo",
+) -> set[tuple[str, str]]:
+    """
+    指定日付の既存 (race_id, ticket_type) ペアを BQ から取得する（スキップ判定用）
+
+    Args:
+        project_id: GCPプロジェクトID
+        race_date: 対象日付
+        dataset: データセット名
+        table: テーブル名
+
+    Returns:
+        既存の (race_id, ticket_type) ペアの集合（取得失敗時は空集合）
+    """
+    client = bigquery.Client(project=project_id)
+    table_ref = f"{project_id}.{dataset}.{table}"
+    try:
+        client.get_table(table_ref)
+    except Exception:
+        return set()
+    query = f"""
+    SELECT DISTINCT race_id, ticket_type
+    FROM `{table_ref}`
+    WHERE race_date = '{race_date}'
+    """
+    try:
+        return {(row.race_id, row.ticket_type) for row in client.query(query).result()}
+    except Exception as e:
+        logger.warning(f"既存コンボペア取得失敗（スキップなしで続行）: {e}")
+        return set()
+
+
 def scrape_today_combo_odds(
     date: datetime.date,
     project_id: str,
@@ -509,8 +545,8 @@ def scrape_today_combo_odds(
 
     処理フロー:
       1. get_today_race_list() で当日のnetkeibaレースIDを取得
-      2. 各レースの組み合わせオッズを get_combo_odds() で取得
-      3. netkeiba_to_jrdb_race_id() でJRDB race_idに変換
+      2. BQ の既存 (race_id, ticket_type) ペアを取得
+      3. 各レースについて未取得の ticket_type のみ get_combo_odds() で取得
       4. save_combo_odds_to_bq() で保存
 
     Args:
@@ -523,6 +559,9 @@ def scrape_today_combo_odds(
     Returns:
         BigQueryに保存した合計行数
     """
+    if ticket_types is None:
+        ticket_types = list(COMBO_TICKET_TYPES.keys())
+
     bq_client = bigquery.Client(project=project_id)
     scraped_at = datetime.datetime.now(datetime.timezone.utc)
 
@@ -530,6 +569,10 @@ def scrape_today_combo_odds(
     if not races:
         logger.warning(f"当日のレースが見つかりません: {date}")
         return 0
+
+    # BQの既存データを一括取得してスキップ判定に使用
+    existing_pairs = _fetch_existing_combo_pairs(project_id, date)
+    logger.info(f"既存コンボペア数: {len(existing_pairs)} (date={date})")
 
     total_saved = 0
     for race_info in races:
@@ -551,9 +594,21 @@ def scrape_today_combo_odds(
             )
             continue
 
+        # 未取得の ticket_type のみ対象にする
+        missing_types = [
+            t for t in ticket_types
+            if t in COMBO_TICKET_TYPES
+            and (jrdb_race_id, COMBO_TICKET_TYPES[t]) not in existing_pairs
+        ]
+        if not missing_types:
+            logger.info(
+                f"  → {venue_name} {race_number}R: 全券種取得済み → スキップ"
+            )
+            continue
+
         combo_df = get_combo_odds(
             netkeiba_race_id,
-            ticket_types=ticket_types,
+            ticket_types=missing_types,
             sleep_sec=sleep_sec,
         )
         if combo_df.empty:
