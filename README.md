@@ -357,7 +357,7 @@ python scripts/run_backtest.py \
 | `--initial-capital` | 100000 | 初期資金（円） |
 | `--kelly-fraction` | 0.25 | Fractional Kellyの係数 |
 | `--threshold` | 1.2 | 期待回収率フィルタ閾値 |
-| `--max-bet-ratio` | 0.05 | 1レースあたり最大賭け金比率 |
+| `--budget-per-race` | 3000 | 1レースあたり固定予算（円） |
 | `--output-csv` | なし | 賭け記録CSV保存先パス |
 | `--output-chart` | なし | 資金推移グラフ保存先パス |
 | `--save-to-bq` | False | `backtests.backtest_results` への保存フラグ |
@@ -597,7 +597,7 @@ python3 scripts/scrape_historical_odds.py \
     --project-id <PROJECT_ID> \
     --start-date 2016-01-01 \
     --mode combo \
-    --ticket-types b4 b7 b6
+    --ticket-types b4 b5 b7
 
 # バックグラウンド実行（長時間処理）
 nohup python3 scripts/scrape_historical_odds.py \
@@ -612,7 +612,7 @@ nohup python3 scripts/scrape_historical_odds.py \
 | `--start-date` | `2016-01-01` | 取得開始日 (YYYY-MM-DD) |
 | `--end-date` | 本日 | 取得終了日 (YYYY-MM-DD) |
 | `--mode` | `all` | 取得モード（`win_place` / `combo` / `all`） |
-| `--ticket-types` | `b4 b7 b6` | comboモードで取得する馬券種（b4=馬連 b5=馬単 b6=三連複 b7=ワイド） |
+| `--ticket-types` | `b4 b5 b7` | comboモードで取得する馬券種（b4=馬連 b5=ワイド b6=馬単 b7=三連複） |
 | `--sleep-sec` | `2.0` | ページ間スリープ秒数 |
 | `--batch-size` | `50` | BQへのバッチ保存間隔（レース数） |
 | `--dry-run` | False | 対象件数・推定時間の確認のみ（スクレイプなし） |
@@ -833,7 +833,7 @@ docker build --platform linux/amd64 -f Dockerfile.dashboard -t dashboard-service
 **投資ロジック（Issue #139 改修後）**:
 - **基本馬券**: 複勝・ワイド・三連複をベースに期待回収率フィルタで選定
 - **パターンA（突出型）**: `top1_prob - top2_prob > p1` の場合、単勝・馬連を追加購入
-- 賭け金配分: **オッズ逆数比率**方式（1レース合計 = capital × max_bet_ratio 固定）
+- 賭け金配分: **オッズ逆数比率**方式（1レース合計 = `budget_per_race` 固定 3000円）
 - コンボオッズ参照: `predictions.daily_odds_combo` → `raw.combo_odds` → `raw.payouts` の順にフォールバック
 - パラメータ管理: `config/strategy_config.yaml`（`run_strategy_optimization.py` でグリッドサーチ100通り最適化: p1 × threshold × r の3次元探索）
 - **`min_prob_threshold`**: 軸馬の最低複勝率（これ未満は複勝単体買いの軸馬から除外）
@@ -1314,3 +1314,4 @@ python -m pytest tests/ --cov=src --cov-report=html
 | 2026-03-10 | Issue #25（LINE Messaging API Webhook Bot）の実装を反映。POST /api/v1/line/webhookエンドポイント追加、line_webhook.py/line_notify.py追加、Phase 5通知システムを実装済みに更新 |
 | 2026-03-15 | Issue #24（Streamlit Webダッシュボード）の実装を反映。src/dashboard/追加、Dockerfile.dashboard追加、技術スタックにStreamlit/Plotly追記、Phase 5 Webダッシュボードを実装済みに更新 |
 | 2026-03-17 | Issue #161（investment_decisions スキーマ変更: horse_number INTEGER → horse_numbers STRING カンマ区切り）・Issue #162（馬選定スコアに prob_weight_r 導入、min_prob_threshold フィルタ追加、グリッドサーチ3次元化 100通り）の実装を反映 |
+| 2026-03-20 | Issue #167（netkeibaスクレイパー COMBO_TICKET_TYPESマッピング修正: b5=ワイド/b6=馬単/b7=三連複）・Issue #168（1レースあたり投資予算を capital×max_bet_ratio 方式から budget_per_race=3000円固定方式に変更: `--max-bet-ratio` → `--budget-per-race`、strategy_config.yaml更新）・Issue #165（prob_weight_r が期待値フィルタに影響しないことを検証するテスト追加）・Issue #166（build_race_df の win_odds JOIN 動作を検証する tests/test_run_strategy.py 新規作成）の実装を反映 |

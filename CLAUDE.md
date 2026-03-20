@@ -210,8 +210,8 @@ def fractional_kelly(win_prob, odds, fraction=0.25):
 #### 6.2.2 投資ルール
 1. **閾値設定**: 予測確率 > 閾値 の馬のみ購入
 2. **期待値フィルタ**: 期待回収率 = 予測確率 × オッズ > 1.2 の馬のみ
-3. **賭け金配分**: Fractional Kelly (25%)
-4. **1レースあたり上限**: 総資金の5%まで
+3. **賭け金配分**: オッズ逆数比率方式（1レース合計 = `budget_per_race` 固定）
+4. **1レースあたり固定予算**: 3000円（`budget_per_race`）
 
 ---
 
@@ -506,6 +506,7 @@ Cloud Run または Cloud Function のデプロイメント完了を宣言する
 | 2026-03-01 | 3.3.0 | Issue #116（ロード履歴スキップロジック改善）・Issue #117（日次予測パイプライン完成）の実装を反映。Prediction & Operation Layer一部実装済みに更新、predictionsバケット/データセット実装済みに更新、race-day-predictのAPI実装済みに更新 | Claude |
 | 2026-03-07 | 3.4.0 | Issue #131（netkeibaリアルタイムオッズスクレイパー）の実装を反映。netkeibaスクレイパーLayer追加、predictions.daily_odds追加、section 7.2を実装済みに更新、section 9.2をLINE Messaging API設計に更新、strategy.py/strategy_optimizer.pyをsection 6.1に追記 | Claude |
 | 2026-03-10 | 3.5.0 | Issue #25（LINE Messaging API Webhook Bot）の実装を反映。Prediction & Operation Layer通知システムを実装済みに更新、race-day-notifyのAPI実装済みに更新、section 7.2.1のLINE通知を実装済みに更新、section 9の見出しを実装済みに変更、section 9.2を実装済み内容に書き換え（実装ファイル・環境変数・APIエンドポイント詳細追記） | Claude |
+| 2026-03-20 | 3.6.0 | Issue #165（prob_weight_r が期待値フィルタに影響しないことを検証するテスト2件を test_backtest_strategy.py に追加）・Issue #166（build_race_df の win_odds JOIN 動作と place_odds_min→odds リネームを検証する tests/test_run_strategy.py を新規作成、6件）・Issue #167（netkeiba_scraper.py の COMBO_TICKET_TYPESマッピング修正: 旧b5=umatan/b6=sanrenpuku/b7=wide → 新b5=wide/b6=umatan/b7=sanrenpuku。is_trio の b6→b7 修正。scrape_historical_odds.py デフォルト値 b4 b7 b6 → b4 b5 b7 に修正）・Issue #168（1レースあたり投資予算を capital×max_bet_ratio 方式から budget_per_race=3000円固定方式に変更。section 6.2.2 投資ルール更新）の実装を反映 | Claude |
 
 ---
 
