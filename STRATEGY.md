@@ -35,23 +35,23 @@
 
          ↓
 【Step 1】classify_race_pattern()
-  複勝率リストを降順ソート
-  top1 - top2 > p1  →  one_dominant（突出型）
-  それ以外           →  standard（標準型）
+  全馬の複勝率分布のジニ係数を計算
+  ジニ係数 > p1  →  one_dominant（突出型）
+  それ以外        →  standard（標準型）
 
          ↓
-【Step 2】select_base_bets()         ← 両パターン共通
+【Step 2】select_base_bets()         ← 両パターン（パターン別パラメータ適用）
   選定スコア = place_odds × win_place_prob ^ prob_weight_r
-  スコア降順 top_n 頭を候補とする
+  スコア降順 top_n 頭を候補とする  ← パターンによって top_n が異なる
   複勝: prob × place_odds > threshold の馬を選定
   ワイド:  prob_i × prob_j × wide_odds > threshold の組み合わせを選定
   三連複: prob_i × prob_j × prob_k × san_odds > threshold の組み合わせを選定
+         ← threshold はパターンによって異なる（threshold_dominant / threshold_standard）
 
          ↓ one_dominant のみ
-【Step 3】select_pattern_a_extra_bets()
-  単勝: top1_prob × win_odds > threshold → 軸馬の単勝を選定
-  馬連: top1_prob × prob_other × umaren_odds > threshold
-        （top_n 候補内の相手馬 × 軸馬の組み合わせを選定）
+【Step 3】select_pattern_a_extra_bets()  ← 自動購入方式（期待値フィルタなし）
+  単勝: 複勝率が最も高い馬の単勝を1点のみ自動購入（win_oddsが存在する場合）
+  馬連: Step2のワイドと同じ組み合わせを自動購入
 
          ↓
 【Step 4】_allocate_bets()
@@ -94,31 +94,49 @@
 
 ### 実装: `classify_race_pattern(probs, p1)`
 
-```python
-sorted_probs = sorted(probs, reverse=True)
-top1, top2, top3 = sorted_probs[0], sorted_probs[1], sorted_probs[2]
-gap_12 = top1 - top2
+#### ジニ係数の計算
 
-if gap_12 > p1:
-    pattern = "one_dominant"   # 突出型
-else:
-    pattern = "standard"       # 標準型
+```python
+def _gini_coefficient(probs: list[float]) -> float:
+    """
+    複勝率分布のジニ係数を計算する
+    G = (2 * Σ(i * x_i)) / (n * Σ x_i) - (n+1)/n
+    where x_i は昇順ソート後の値, i は 1-indexed
+    """
+    n = len(probs)
+    sorted_p = sorted(probs)          # 昇順ソート
+    total = sum(sorted_p)
+    cumsum = sum((i + 1) * p for i, p in enumerate(sorted_p))
+    return (2 * cumsum) / (n * total) - (n + 1) / n
 ```
 
-### パターン判定表
+#### パターン判定
 
-| 条件 | パターン | 意味 |
-|---|---|---|
-| `top1の複勝率 − top2の複勝率 > p1` | `one_dominant` | 1頭が突出した本命レース |
-| それ以外 | `standard` | 実力伯仲のレース |
+```python
+gini = _gini_coefficient(probs)
+
+if gini > p1:
+    pattern = "one_dominant"   # 確率が1頭に集中 = 突出型
+else:
+    pattern = "standard"       # 分布が均等に近い = 標準型
+```
+
+### ジニ係数の意味
+
+| ジニ係数 | 意味 |
+|---|---|
+| 0.0 | 全馬の複勝率が均等（例: 全馬 1/8 = 12.5%） |
+| 0.2〜0.3 | 本命馬がいる程度の偏り（一般的なレース） |
+| 0.4〜0.6 | 1頭が明確に突出したレース |
+| 1.0 | 1頭に全確率が集中（極端な本命） |
 
 ### パラメータ p1 の影響
 
 | p1 値 | 影響 |
 |---|---|
-| 小さい（例: 0.05） | one_dominant と判定されやすい → 馬連・単勝購入が増える |
-| 大きい（例: 0.3） | 差が0.3超えないと one_dominant にならない → standard が増える |
-| **現在設定値: 0.1** | top1が top2 を10ポイント超えると突出型 |
+| 小さい（例: 0.2） | ジニ係数が小さくても突出型と判定 → one_dominant が増える |
+| 大きい（例: 0.5） | 強い偏りがないと突出型にならない → standard が増える |
+| **現在設定値: 0.3** | 典型的な本命馬がいるレースで突出型と判定 |
 
 ### 戻り値: RacePattern
 
@@ -131,6 +149,7 @@ class RacePattern:
     top3_prob: float     # 3位馬の複勝率
     gap_top1_top2: float # top1 - top2
     gap_top1_top3: float # top1 - top3
+    gini_coefficient: float  # 複勝率分布のジニ係数
 ```
 
 ---
@@ -139,7 +158,7 @@ class RacePattern:
 
 ### 実装: `select_base_bets(race_df, combo_odds_df, expected_return_threshold, top_n, min_prob_threshold, prob_weight_r)`
 
-**両パターン（one_dominant / standard）で共通して実行される。**
+**両パターン（one_dominant / standard）で実行されるが、パターンに応じて `top_n` と `threshold` が異なる。**
 
 ---
 
@@ -151,6 +170,8 @@ selection_score = place_odds × win_place_prob ^ prob_weight_r
 
 全馬をこのスコアの**降順**にソートし、上位 `top_n` 頭を「候補馬」とする。
 
+`top_n` はパターンによって異なる（`top_n_dominant` / `top_n_standard`）。
+
 #### prob_weight_r の意味
 
 | r 値 | 式のイメージ | 高スコアになる馬 |
@@ -158,8 +179,6 @@ selection_score = place_odds × win_place_prob ^ prob_weight_r
 | 0.5（現在値） | `odds × √prob` | **高オッズ × 中確率**の馬（穴馬寄り） |
 | 1.0 | `odds × prob` | 通常の期待値と同等 |
 | 2.0 | `odds × prob²` | 高確率（本命）の馬が有利 |
-
-> **設計上の重要な特性**: prob_weight_r=0.5 では、複勝率が高い（本命）馬は低オッズになるため選定スコアが低くなりがち。逆に低確率・高オッズの穴馬がスコア上位に入る傾向がある。
 
 ---
 
@@ -170,114 +189,99 @@ selection_score = place_odds × win_place_prob ^ prob_weight_r
 ```python
 for each horse in sorted_df（スコア降順）:
     if win_place_prob < min_prob_threshold:
-        continue   # 複勝率が低すぎる馬はスキップ
-    if win_place_prob × place_odds > expected_return_threshold:
+        continue
+    if win_place_prob × place_odds > threshold:    ← パターン別 threshold を使用
         ✓ 複勝を選定
 ```
-
-**期待回収率フィルタ式**: `複勝率 × 複勝オッズ > threshold`
 
 ---
 
 ### 4-3. ワイド（wide）の選定
 
-候補は**スコア上位 top_n 頭の中の2頭組み合わせ**のみ。
+候補は**スコア上位 `top_n` 頭の中の2頭組み合わせ**のみ（`top_n` はパターン別）。
 
 ```python
 for each wide bet in combo_odds_df where bet_type == "wide":
     h1, h2 = 馬番
     if h1 not in top_n candidates or h2 not in top_n candidates:
-        continue   # top_n 外はスキップ
-    if prob(h1) × prob(h2) × wide_odds > expected_return_threshold:
+        continue
+    if prob(h1) × prob(h2) × wide_odds > threshold:    ← パターン別 threshold
         ✓ ワイドを選定
 ```
-
-**期待回収率フィルタ式**: `複勝率(h1) × 複勝率(h2) × ワイドオッズ > threshold`
 
 ---
 
 ### 4-4. 三連複（sanrenpuku）の選定
 
-候補は**スコア上位 top_n 頭の中の3頭組み合わせ**のみ。
-
 ```python
 for each sanrenpuku bet in combo_odds_df where bet_type == "sanrenpuku":
     h1, h2, h3 = 馬番
     if any(h not in top_n candidates for h in [h1, h2, h3]):
-        continue   # top_n 外はスキップ
-    if prob(h1) × prob(h2) × prob(h3) × san_odds > expected_return_threshold:
+        continue
+    if prob(h1) × prob(h2) × prob(h3) × san_odds > threshold:    ← パターン別 threshold
         ✓ 三連複を選定
 ```
 
-**期待回収率フィルタ式**: `複勝率(h1) × 複勝率(h2) × 複勝率(h3) × 三連複オッズ > threshold`
-
 ---
 
-### 4-5. top_n の役割
+### 4-5. パターン別パラメータの適用
 
-`top_n` は**ワイド・三連複・馬連の相手候補馬数**を制限する。
+`select_bets_for_race()` 内でパターンに応じてパラメータを切り替える:
 
-- `top_n=5` → スコア上位5頭の間でのみ組み合わせを探す
-- 複勝の選定には top_n は無関係（全馬が対象）
-- `min_prob_threshold` は複勝の軸馬選定のみに適用（流し馬券の相手馬には適用されない）
+```python
+if race_pattern.pattern == "one_dominant":
+    active_threshold = threshold_dominant
+    active_top_n = top_n_dominant
+else:
+    active_threshold = threshold_standard
+    active_top_n = top_n_standard
+```
 
 ---
 
 ## 5. ステップ3: パターンA追加馬券選定
 
-### 実装: `select_pattern_a_extra_bets(race_df, combo_odds_df, expected_return_threshold, top_n)`
+### 実装: `select_pattern_a_extra_bets(race_df, combo_odds_df, base_bets)`
 
-**`one_dominant` パターンのときのみ実行**。Step2 のベース馬券に加えて単勝・馬連を追加する。
+**`one_dominant` パターンのときのみ実行**。Step2 のベース馬券に加えて単勝・馬連を**自動購入**する。
 
-ここでの候補馬は**選定スコア順ではなく複勝率降順**で選ぶ。
-
-```python
-sorted_df = race_df.sort_values("win_place_prob", ascending=False)
-top1_horse = sorted_df.iloc[0]   # 複勝率1位 = 軸馬
-```
+> **重要**: Step3 は期待値フィルタを使用しない。自動購入方式。
 
 ---
 
-### 5-1. 単勝（win）の選定
+### 5-1. 単勝（win）の選定: 自動購入
 
 ```python
-if "win_odds" in race_df.columns:                          # win_oddsカラムが存在する場合のみ
+if "win_odds" in race_df.columns:                     # win_oddsカラムが存在する場合のみ
+    top1_horse = race_df.sort_values("win_place_prob").iloc[-1]   # 複勝率1位
     win_odds = top1_horse["win_odds"]
-    if top1_prob × win_odds > expected_return_threshold:
-        ✓ 軸馬の単勝を選定
+    if not pd.isna(win_odds):
+        ✓ 軸馬の単勝を1点自動購入（期待値フィルタなし）
 ```
 
-**条件**:
-1. `win_odds` カラムが `race_df` に存在すること（`fetch_place_odds()` で取得・マージ済みであること）
-2. `軸馬の複勝率 × 単勝オッズ > threshold`
-
-> **注意**: Issue #176 修正前は `win_odds` カラムが `predictions_df` に渡されておらず、単勝が一切購入されていなかった。
+**特性**:
+- 期待値フィルタなし → オッズが低くても必ず1点購入
+- 常に複勝率最高馬（軸馬）の単勝のみ購入
 
 ---
 
-### 5-2. 馬連（umaren）の選定
+### 5-2. 馬連（umaren）の選定: Step2のワイドと同一組み合わせ
 
 ```python
-# 複勝率上位 top_n 頭 が相手候補
-top_candidates = sorted_df.head(top_n)   # 複勝率降順
+# Step2 で選ばれたワイドの馬番ペアを抽出
+wide_pairs = [bet["horse_numbers"] for bet in base_bets if bet["bet_type"] == "wide"]
 
-for each umaren bet in combo_odds_df where bet_type == "umaren":
-    h1, h2 = 馬番
-    if top1_horse_number not in (h1, h2):
-        continue   # 軸馬が含まれていない組み合わせはスキップ
-    other = h2 if h1 == top1 else h1
-    if other not in top_n candidates:
-        continue   # 相手馬が top_n 候補外はスキップ
-    if top1_prob × prob(other) × umaren_odds > expected_return_threshold:
-        ✓ 馬連を選定
+# ワイドと同じ馬番ペアの馬連を購入
+for (h1, h2) in wide_pairs:
+    umaren_row = combo_odds_df[bet_type=="umaren" AND horse_numbers==(h1, h2)]
+    if found:
+        ✓ 馬連を1点自動購入（期待値フィルタなし）
 ```
 
-**期待回収率フィルタ式**: `軸馬の複勝率 × 相手馬の複勝率 × 馬連オッズ > threshold`
-
-**設計上の特性**:
-- 馬連は**必ず軸馬（複勝率1位）が入る**
-- 相手は**複勝率順 top_n 頭**から選ぶ（選定スコード順ではない）
-- 軸馬は複勝率が高いためこの式が通りやすく、**馬連が最も多く購入される傾向**がある
+**特性**:
+- Step2でワイドが0件 → 馬連も0件
+- Step2でワイドがn件 → 馬連も最大n件
+- ワイドと馬連は**常に同じ馬番ペア** → 戦略の一貫性が保たれる
 
 ---
 
@@ -286,9 +290,10 @@ for each umaren bet in combo_odds_df where bet_type == "umaren":
 | 観点 | ベース馬券（Step2） | パターンA馬券（Step3） |
 |---|---|---|
 | 実行条件 | 両パターン共通 | one_dominant のみ |
-| 候補馬の選び方 | **選定スコア順** top_n | **複勝率順** top_n |
+| 候補馬の選び方 | **選定スコア順** top_n | — |
 | 馬券種 | 複勝 / ワイド / 三連複 | 単勝 / 馬連 |
-| 軸馬 | 期待回収率フィルタ次第 | 必ず複勝率1位 |
+| 購入条件 | 期待回収率フィルタあり | **期待値フィルタなし（自動購入）** |
+| 馬連との整合性 | — | **ワイドと同じ組み合わせ** |
 
 ---
 
@@ -384,16 +389,19 @@ profit = return_amount - bet_amount
 
 ### 実装: `StrategyOptimizer.run_grid_search()`
 
-以下の3パラメータをグリッドサーチで探索し、最も評価指標が高いパラメータセットを `config/strategy_config.yaml` に保存する。
+以下の6パラメータをグリッドサーチで探索し、最も評価指標が高いパラメータセットを `config/strategy_config.yaml` に保存する。
 
 ### デフォルト探索範囲
 
 ```python
-p1_range        = [0.1, 0.15, 0.2, 0.25, 0.3]    # 5値
-threshold_range = [1.0, 1.1, 1.2, 1.3, 1.5]       # 5値
-r_range         = [0.5, 1.0, 1.5, 2.0]            # 4値
+p1_range              = [0.2, 0.3, 0.4, 0.5]    # 4値（ジニ係数の閾値）
+threshold_dominant_range = [1.0, 1.2, 1.5]         # 3値（突出型の期待回収率閾値）
+threshold_standard_range = [1.0, 1.2, 1.5]         # 3値（標準型の期待回収率閾値）
+top_n_dominant_range  = [3, 4, 5]                  # 3値（突出型の候補馬数）
+top_n_standard_range  = [3, 4, 5]                  # 3値（標準型の候補馬数）
+r_range               = [0.5, 1.0, 2.0]            # 3値（prob_weight_r）
 
-# 総組み合わせ数: 5 × 5 × 4 = 100通り
+# 総組み合わせ数: 4 × 3 × 3 × 3 × 3 × 3 = 972通り
 ```
 
 ### 固定パラメータ
@@ -404,7 +412,6 @@ r_range         = [0.5, 1.0, 1.5, 2.0]            # 4値
 |---|---|
 | `min_prob_threshold` | 複勝軸馬の最低複勝率 |
 | `min_bet_amount` | 最低賭け金（100円） |
-| `top_n` | 候補馬数（5頭） |
 | `budget_per_race` | 1レース予算（3,000円） |
 
 ### 評価指標
@@ -445,26 +452,28 @@ pattern_stats = {
 
 | パラメータ | 現在値 | 型 | 探索対象 | 説明 |
 |---|---|---|---|---|
-| `p1` | `0.1` | float | ✅ | 突出型判定閾値。top1−top2 がこれを超えると `one_dominant` |
-| `expected_return_threshold` | `1.5` | float | ✅ | 期待回収率の下限。この値を超える馬券のみ購入 |
+| `p1` | `0.3` | float | ✅ | 突出型判定のジニ係数閾値。超えると `one_dominant` |
+| `threshold_dominant` | `1.5` | float | ✅ | 突出型レースの期待回収率の下限 |
+| `threshold_standard` | `1.5` | float | ✅ | 標準型レースの期待回収率の下限 |
+| `top_n_dominant` | `5` | int | ✅ | 突出型: ワイド/三連複/馬連の候補馬数 |
+| `top_n_standard` | `5` | int | ✅ | 標準型: ワイド/三連複/馬連の候補馬数 |
 | `prob_weight_r` | `0.5` | float | ✅ | 選定スコアの複勝率べき乗係数（`odds × prob^r`）|
 | `budget_per_race` | `3000` | int | — | 1レースあたりの固定予算（円）|
 | `min_bet_amount` | `100` | int | — | 最低賭け金（円）。これ未満は除外 |
 | `min_prob_threshold` | `0.1` | float | — | 複勝単体買いの最低複勝率 |
-| `top_n` | `5` | int | — | ワイド/三連複/馬連の候補馬数 |
 
 ### optimization セクション（最適化結果の記録）
 
 ```yaml
 optimization:
-  last_run: '2026-03-28T15:11:39'  # 最終実行日時
+  last_run: '2026-03-28T21:47:25'  # 最終実行日時
   metric: recovery_rate             # 最適化した評価指標
   start_date: '2023-01-01'          # 最適化に使用した期間
   end_date: '2023-12-31'
-  recovery_rate: 198.79             # 最良パラメータの回収率(%)
-  hit_rate: 21.25                   # 最良パラメータの的中率(%)
-  max_drawdown: 12.0                # 最良パラメータの最大ドローダウン(%)
-  total_bets: 11937                 # 最良パラメータの総賭け数
+  recovery_rate: 156.42             # 最良パラメータの回収率(%)
+  hit_rate: 24.72                   # 最良パラメータの的中率(%)
+  max_drawdown: 23.58               # 最良パラメータの最大ドローダウン(%)
+  total_bets: 13456                 # 最良パラメータの総賭け数
 ```
 
 ---
@@ -473,66 +482,60 @@ optimization:
 
 ### 例1: one_dominant パターン（福島10R 2024-04-13）
 
-**入力データ（上位5頭）**
-
-| 馬番 | 複勝率 | 複勝オッズ | 選定スコア（r=0.5） |
-|---|---|---|---|
-| 15 | 56.8% | 1.7 | 1.7 × √0.568 = **1.28** |
-| 13 | 44.7% | 2.3 | 2.3 × √0.447 = **1.54** |
-| 11 |  5.3% | 38.6 | 38.6 × √0.053 = **8.91** |
-| 6  |  5.0% | 10.5 | 10.5 × √0.050 = **2.35** |
-
 **Step 1: パターン分類**
 ```
-gap_12 = 0.568 - 0.447 = 0.121 > p1(0.1)  →  one_dominant
+複勝率: [56.8%, 44.7%, 5.3%, 5.0%, ...] → ジニ係数を計算
+gini = 0.42 > p1(0.3) → one_dominant
 ```
 
-**Step 2: ベース馬券（選定スコア上位5頭：11・他4頭）**
+**Step 2: ベース馬券（threshold_dominant=1.5, top_n_dominant=5）**
 ```
 複勝率がいずれも5%前後のため:
-  0.053 × 38.6 = 2.046 > 1.5  → 馬番11の複勝 ✓
+  0.053 × 38.6 = 2.046 > 1.5 → 馬番11の複勝 ✓
   ワイド: 0.053 × 0.050 × wide_odds → 積が0.003未満 → どのオッズでもフィルタ不通過
+  ワイド[15, 13]: 0.568 × 0.447 × 5.8 = 1.47 < 1.5 → 不通過
 ```
 
-**Step 3: パターンA馬券（複勝率順：15・13・3・7・14）**
+> ワイドが0件のため、Step3の馬連も0件。
+
+**Step 3: パターンA馬券（自動購入）**
 ```
-馬連 [13, 15]: 0.568 × 0.447 × 19.9 = 5.05 > 1.5  ✓
-馬連 [7, 15]:  0.568 × 0.280 × 34.1 = 5.43 > 1.5  ✓
-馬連 [3, 15]:  0.568 × 0.423 × 15.1 = 3.62 > 1.5  ✓
-馬連 [14, 15]: 0.568 × 0.255 × 31.7 = 4.59 > 1.5  ✓
+単勝 [15]: win_odds=3.2 → 自動購入 ✓
+馬連: ワイド0件 → 馬連も0件
 ```
 
 **Step 4: 賭け金配分（budget=3,000円）**
 
 | 馬券 | オッズ | 1/オッズ | 比率 | 配分 |
 |---|---|---|---|---|
-| 複勝 11 | 38.6 | 0.026 | 5% | ¥100 |
-| 馬連 [13,15] | 19.9 | 0.050 | 10% | ¥800 |
-| 馬連 [7,15] | 34.1 | 0.029 | 6% | ¥400 |
-| 馬連 [3,15] | 15.1 | 0.066 | 13% | ¥1,100 |
-| 馬連 [14,15] | 31.7 | 0.032 | 6% | ¥500 |
-
-**結果**: 1着13番・2着15番・3着7番 → 馬連[13,15] ✅（¥800 × 19.9 = ¥15,920）、馬連[7,15] ✅（¥400 × 34.1 = ¥13,640）
+| 複勝 11 | 38.6 | 0.026 | 18% | ¥500 |
+| 単勝 15 | 3.2 | 0.313 | 82% | ¥2,400 |
 
 ---
 
-### 例2: standard パターン（東京6R 2024-06-02）
+### 例2: one_dominant パターン（ワイドあり）
 
-**Step 1**: gap_12 = 0.000 ≤ p1 → standard
+**Step 2: ワイドが選定される場合**
+```
+ワイド[13, 15]: 0.568 × 0.447 × 7.1 = 1.80 > 1.5 → ✓
+```
 
-**Step 2（選定スコア上位5頭）**
+**Step 3: パターンA馬券（自動購入）**
+```
+単勝 [15]: win_odds=3.2 → 自動購入 ✓
+馬連 [13, 15]: ワイド[13, 15]と同じ組み合わせ → 自動購入 ✓
+```
 
-| 馬番 | 複勝率 | 複勝オッズ | 選定スコア |
-|---|---|---|---|
-| 7 | 6.0% | 9.3 | 2.29 |
-| 6 | 100.0% | 1.1 | 1.10 |
-| 3 | 100.0% | 1.1 | 1.10 |
-| 9 | 9.1% | 3.0 | 0.90 |
-| 5 | 7.8% | 5.7 | 1.59 |
+---
+
+### 例3: standard パターン（東京6R 2024-06-02）
+
+**Step 1**: ジニ係数 = 0.12 ≤ p1(0.3) → standard
+
+**Step 2（threshold_standard=1.5, top_n_standard=5）**
 
 ```
-ワイド [3, 7]: 1.000 × 0.060 × 27.2 = 1.632 > 1.5  ✓
-ワイド [6, 7]: 1.000 × 0.060 × ？倍 → オッズ次第
+ワイド [3, 7]: 1.000 × 0.060 × 27.2 = 1.632 > 1.5 ✓
 ```
 
 **Step 3**: standard なので実行されない
