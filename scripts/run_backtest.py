@@ -144,12 +144,14 @@ def fetch_place_odds(
         race_ids: オッズを取得するレース ID のリスト
 
     Returns:
-        複勝オッズ DataFrame (race_id, horse_number, place_odds)
+        複勝・単勝オッズ DataFrame (race_id, horse_number, place_odds, win_odds)
+        win_odds は predictions.daily_odds または raw.odds に存在する場合のみ付与される。
+        存在しない場合は NaN となる。
     """
     if not race_ids:
         return pd.DataFrame()
 
-    _SCHEMA = ["race_id", "horse_number", "place_odds"]
+    _BASE_SCHEMA = ["race_id", "horse_number", "place_odds"]
     client = bigquery.Client(project=project_id)
     ids_str = ", ".join(f"'{r}'" for r in race_ids)
 
@@ -157,15 +159,17 @@ def fetch_place_odds(
     remaining_ids = list(race_ids)
 
     # Stage 1: predictions.daily_odds（netkeibaスクレイプ）
+    # win_odds も取得する（単勝が一切購入されないバグを修正: Issue #176）
     try:
         query1 = f"""
-        SELECT race_id, horse_number, place_odds_min AS place_odds
+        SELECT race_id, horse_number, place_odds_min AS place_odds, win_odds
         FROM `{project_id}.predictions.daily_odds`
         WHERE race_id IN ({ids_str})
         """
         df1 = client.query(query1).to_dataframe()
         if len(df1) > 0:
-            all_results.append(df1[_SCHEMA])
+            select_cols = [c for c in _BASE_SCHEMA + ["win_odds"] if c in df1.columns]
+            all_results.append(df1[select_cols])
             covered_ids = set(df1["race_id"].unique())
             remaining_ids = [r for r in remaining_ids if r not in covered_ids]
             logger.info(
@@ -181,25 +185,31 @@ def fetch_place_odds(
         return pd.concat(all_results, ignore_index=True)
 
     # Stage 2: raw.odds（JRDB基準オッズ）
+    # place と win を同時に取得してピボットする（Issue #176）
     rem_ids_str = ", ".join(f"'{r}'" for r in remaining_ids)
     query2 = f"""
-    SELECT race_id, horse_number, odds_value AS place_odds
+    SELECT
+        race_id, horse_number,
+        MAX(CASE WHEN odds_type = 'place' THEN odds_value END) AS place_odds,
+        MAX(CASE WHEN odds_type = 'win'   THEN odds_value END) AS win_odds
     FROM (
-        SELECT race_id, horse_number, odds_value,
+        SELECT race_id, horse_number, odds_type, odds_value,
                ROW_NUMBER() OVER (
-                   PARTITION BY race_id, horse_number
+                   PARTITION BY race_id, horse_number, odds_type
                    ORDER BY odds_timestamp DESC
                ) AS rn
         FROM `{project_id}.raw.odds`
-        WHERE odds_type = 'place'
+        WHERE odds_type IN ('place', 'win')
           AND race_id IN ({rem_ids_str})
     )
     WHERE rn = 1
+    GROUP BY race_id, horse_number
     """
     try:
         df2 = client.query(query2).to_dataframe()
         if len(df2) > 0:
-            all_results.append(df2[_SCHEMA])
+            select_cols = [c for c in _BASE_SCHEMA + ["win_odds"] if c in df2.columns]
+            all_results.append(df2[select_cols])
             logger.info(f"raw.odds から {len(df2)} 件取得")
         else:
             logger.info("raw.odds にもデータなし")
@@ -207,7 +217,7 @@ def fetch_place_odds(
         logger.warning(f"raw.odds からのオッズ取得に失敗しました: {e}")
 
     if not all_results:
-        return pd.DataFrame(columns=_SCHEMA)
+        return pd.DataFrame(columns=_BASE_SCHEMA)
     return pd.concat(all_results, ignore_index=True)
 
 
@@ -878,12 +888,16 @@ def run_full_strategy_backtest_pipeline(
     race_ids = predictions_df["race_id"].unique().tolist()
     odds_df = fetch_place_odds(project_id=project_id, race_ids=race_ids)
     if len(odds_df) > 0:
+        merge_odds_cols = ["race_id", "horse_number", "place_odds"]
+        if "win_odds" in odds_df.columns:
+            merge_odds_cols.append("win_odds")
         predictions_df = predictions_df.merge(
-            odds_df[["race_id", "horse_number", "place_odds"]],
+            odds_df[merge_odds_cols],
             on=["race_id", "horse_number"],
             how="left",
         )
-        logger.info("複勝オッズを place_odds としてマージしました")
+        n_win_odds = predictions_df["win_odds"].notna().sum() if "win_odds" in predictions_df.columns else 0
+        logger.info(f"複勝オッズを place_odds、単勝オッズを win_odds としてマージしました（win_odds付与: {n_win_odds}件）")
     else:
         logger.error(
             "predictions.daily_odds・raw.odds のどちらにも複勝オッズデータがありません。バックテストを中断します。\n"

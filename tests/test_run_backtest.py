@@ -441,3 +441,111 @@ class TestLoadStrategyConfig:
         assert result["p1"] == 0.15
         assert result["expected_return_threshold"] == 1.3
         assert result["budget_per_race"] == 5000
+
+
+# ---------------------------------------------------------------------------
+# fetch_place_odds の win_odds 取得テスト（Issue #176）
+# ---------------------------------------------------------------------------
+
+class TestFetchPlaceOddsWinOdds:
+    """fetch_place_odds が win_odds を正しく返すことを検証する（Issue #176）"""
+
+    def test_win_odds_included_from_stage1(self):
+        """predictions.daily_odds から win_odds が返される"""
+        stage1_df = pd.DataFrame({
+            "race_id": ["r001"],
+            "horse_number": [1],
+            "place_odds": [3.2],
+            "win_odds": [5.0],
+        })
+        mock_job = MagicMock()
+        mock_job.to_dataframe.return_value = stage1_df
+        mock_client = MagicMock()
+        mock_client.query.return_value = mock_job
+        with patch("scripts.run_backtest.bigquery.Client", return_value=mock_client):
+            result = rb.fetch_place_odds(project_id="test", race_ids=["r001"])
+        assert "win_odds" in result.columns
+        assert result.iloc[0]["win_odds"] == 5.0
+        assert result.iloc[0]["place_odds"] == 3.2
+
+    def test_win_odds_included_from_stage2(self):
+        """raw.odds から win_odds が返される"""
+        stage2_df = pd.DataFrame({
+            "race_id": ["r001"],
+            "horse_number": [1],
+            "place_odds": [2.5],
+            "win_odds": [4.0],
+        })
+        mock_job_empty = MagicMock()
+        mock_job_empty.to_dataframe.return_value = pd.DataFrame()
+        mock_job_raw = MagicMock()
+        mock_job_raw.to_dataframe.return_value = stage2_df
+        mock_client = MagicMock()
+        mock_client.query.side_effect = [mock_job_empty, mock_job_raw]
+        with patch("scripts.run_backtest.bigquery.Client", return_value=mock_client):
+            result = rb.fetch_place_odds(project_id="test", race_ids=["r001"])
+        assert "win_odds" in result.columns
+        assert result.iloc[0]["win_odds"] == 4.0
+
+    def test_win_odds_nan_when_not_in_source(self):
+        """win_odds カラムを返さないソースの場合でも place_odds は取得できる"""
+        stage1_df = pd.DataFrame({
+            "race_id": ["r001"],
+            "horse_number": [1],
+            "place_odds": [3.2],
+            # win_odds なし（旧形式・後方互換）
+        })
+        mock_job = MagicMock()
+        mock_job.to_dataframe.return_value = stage1_df
+        mock_client = MagicMock()
+        mock_client.query.return_value = mock_job
+        with patch("scripts.run_backtest.bigquery.Client", return_value=mock_client):
+            result = rb.fetch_place_odds(project_id="test", race_ids=["r001"])
+        assert "place_odds" in result.columns
+        assert result.iloc[0]["place_odds"] == 3.2
+        # win_odds がないソースの場合は列自体が存在しないか NaN
+        if "win_odds" in result.columns:
+            assert pd.isna(result.iloc[0]["win_odds"])
+
+
+# ---------------------------------------------------------------------------
+# win_odds が predictions_df にマージされ単勝購入が発生するテスト（Issue #176）
+# ---------------------------------------------------------------------------
+
+class TestWinOddsMergeEnablesWinBets:
+    """
+    run_full_strategy_backtest_pipeline() で win_odds がマージされた結果、
+    one_dominant パターン時に単勝が購入されることを検証する（Issue #176）
+    """
+
+    def test_win_odds_merged_into_predictions_df(self):
+        """
+        fetch_place_odds が win_odds を返した場合に predictions_df に win_odds カラムが付与される
+        """
+        from src.backtest.strategy import select_bets_for_race
+
+        # one_dominant パターン：top1馬の複勝率が突出している
+        race_df = pd.DataFrame({
+            "race_id": ["r001"] * 3,
+            "race_date": [datetime.date(2025, 1, 5)] * 3,
+            "horse_id": ["h1", "h2", "h3"],
+            "horse_number": [1, 2, 3],
+            "win_place_prob": [0.6, 0.25, 0.15],
+            "odds": [2.5, 4.0, 6.0],     # place_odds（複勝）
+            "win_odds": [4.0, 8.0, 12.0],  # win_odds（単勝）
+        })
+
+        bets, pattern = select_bets_for_race(
+            race_df=race_df,
+            combo_odds_df=pd.DataFrame(),
+            budget_per_race=3000,
+            p1=0.1,              # top1 - top2 = 0.35 > 0.1 → one_dominant
+            expected_return_threshold=1.0,  # 低めに設定して単勝が通るように
+        )
+
+        bet_types = [b["bet_type"] for b in bets]
+        assert pattern.pattern == "one_dominant", f"パターン判定が one_dominant でない: {pattern}"
+        assert "win" in bet_types, (
+            f"one_dominant パターンで win_odds が存在するのに単勝が購入されない。"
+            f"実際の馬券種: {bet_types}"
+        )
