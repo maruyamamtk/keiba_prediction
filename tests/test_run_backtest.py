@@ -285,3 +285,159 @@ class TestOddsMergeInPipeline:
 
         assert len(history_df) == 0
         assert metrics == {}
+
+
+# ---------------------------------------------------------------------------
+# run_full_strategy_backtest_pipeline のテスト
+# ---------------------------------------------------------------------------
+
+class TestRunFullStrategyBacktestPipeline:
+    """run_full_strategy_backtest_pipeline の動作を検証する"""
+
+    def _make_preds_with_odds(self, n_horses: int = 4) -> pd.DataFrame:
+        rows = []
+        for i in range(1, n_horses + 1):
+            rows.append({
+                "race_id": "race_001",
+                "race_date": datetime.date(2025, 1, 5),
+                "horse_id": f"horse_{i:03d}",
+                "horse_number": i,
+                "win_place_prob": 0.4,
+                "pred_score": float(i),
+                "finish_position": i,
+                "place_odds": 2.5,
+            })
+        return pd.DataFrame(rows)
+
+    def test_full_strategy_mode_calls_strategy_optimizer(self):
+        """フル戦略モードで StrategyOptimizer._run_simulation が呼ばれることを検証"""
+        preds = self._make_preds_with_odds(n_horses=4)
+        odds_df = _make_odds_df(n_horses=4, odds_val=2.5)
+        payouts_df = _make_payouts_df(n_horses=3)
+        config = {
+            "data": {
+                "dataset": "features",
+                "table": "training_data",
+                "exclude_columns": [],
+                "categorical_columns": [],
+            }
+        }
+        strategy_params = {
+            "p1": 0.1,
+            "expected_return_threshold": 1.2,
+            "prob_weight_r": 1.0,
+            "min_prob_threshold": 0.10,
+            "top_n": 5,
+            "budget_per_race": 3000,
+        }
+
+        captured_sim_calls = []
+
+        with (
+            patch("scripts.run_backtest.fetch_historical_features", return_value=preds),
+            patch("scripts.run_backtest.fetch_historical_results", return_value=pd.DataFrame()),
+            patch("scripts.run_backtest.fetch_place_payouts", return_value=payouts_df),
+            patch("scripts.run_backtest.fetch_place_odds", return_value=odds_df),
+            patch("scripts.run_backtest.fetch_combo_odds", return_value=pd.DataFrame()),
+            patch("scripts.run_backtest._fetch_all_payouts", return_value=payouts_df),
+            patch("scripts.run_backtest.generate_predictions", return_value=preds.copy()),
+            patch("scripts.run_backtest.StrategyOptimizer") as MockOptimizer,
+        ):
+            mock_instance = MockOptimizer.return_value
+            mock_instance._run_simulation.side_effect = lambda **kw: (
+                captured_sim_calls.append(kw) or (pd.DataFrame(), {})
+            )
+
+            rb.run_full_strategy_backtest_pipeline(
+                project_id="test",
+                model_path="dummy.txt",
+                start_date=datetime.date(2025, 1, 1),
+                end_date=datetime.date(2025, 12, 31),
+                config=config,
+                p1=strategy_params["p1"],
+                expected_return_threshold=strategy_params["expected_return_threshold"],
+                budget_per_race=strategy_params["budget_per_race"],
+                min_prob_threshold=strategy_params["min_prob_threshold"],
+                prob_weight_r=strategy_params["prob_weight_r"],
+                top_n=strategy_params["top_n"],
+            )
+
+        assert len(captured_sim_calls) == 1, "StrategyOptimizer._run_simulation が呼ばれていない"
+        call_kwargs = captured_sim_calls[0]
+        assert call_kwargs["p1"] == 0.1
+        assert call_kwargs["expected_return_threshold"] == 1.2
+
+    def test_full_strategy_aborts_when_no_odds(self):
+        """place_odds が空の場合はフル戦略モードも空結果を返す"""
+        preds = _make_predictions(n_horses=3)
+        config = {
+            "data": {
+                "dataset": "features",
+                "table": "training_data",
+                "exclude_columns": [],
+                "categorical_columns": [],
+            }
+        }
+        strategy_params = {
+            "p1": 0.1,
+            "expected_return_threshold": 1.2,
+            "prob_weight_r": 1.0,
+            "min_prob_threshold": 0.10,
+            "top_n": 5,
+            "budget_per_race": 3000,
+        }
+
+        with (
+            patch("scripts.run_backtest.fetch_historical_features", return_value=preds),
+            patch("scripts.run_backtest.fetch_historical_results", return_value=pd.DataFrame()),
+            patch("scripts.run_backtest.fetch_place_payouts", return_value=pd.DataFrame()),
+            patch("scripts.run_backtest.fetch_place_odds", return_value=pd.DataFrame()),
+            patch("scripts.run_backtest.fetch_combo_odds", return_value=pd.DataFrame()),
+            patch("scripts.run_backtest._fetch_all_payouts", return_value=pd.DataFrame()),
+            patch("scripts.run_backtest.generate_predictions", return_value=preds.copy()),
+        ):
+            history_df, metrics = rb.run_full_strategy_backtest_pipeline(
+                project_id="test",
+                model_path="dummy.txt",
+                start_date=datetime.date(2025, 1, 1),
+                end_date=datetime.date(2025, 12, 31),
+                config=config,
+                p1=strategy_params["p1"],
+                expected_return_threshold=strategy_params["expected_return_threshold"],
+                budget_per_race=strategy_params["budget_per_race"],
+                min_prob_threshold=strategy_params["min_prob_threshold"],
+                prob_weight_r=strategy_params["prob_weight_r"],
+                top_n=strategy_params["top_n"],
+            )
+
+        assert len(history_df) == 0
+        assert metrics == {}
+
+
+# ---------------------------------------------------------------------------
+# _load_strategy_config のテスト
+# ---------------------------------------------------------------------------
+
+class TestLoadStrategyConfig:
+    """_load_strategy_config の動作を検証する"""
+
+    def test_returns_empty_when_file_not_found(self, tmp_path):
+        """存在しないファイルパスを渡した場合は空 dict を返す"""
+        result = rb._load_strategy_config(tmp_path / "nonexistent.yaml")
+        assert result == {}
+
+    def test_loads_yaml_values(self, tmp_path):
+        """有効な YAML ファイルから値を読み込めることを検証"""
+        import yaml as _yaml
+        config_data = {
+            "p1": 0.15,
+            "expected_return_threshold": 1.3,
+            "budget_per_race": 5000,
+        }
+        config_file = tmp_path / "strategy_config.yaml"
+        config_file.write_text(_yaml.dump(config_data))
+
+        result = rb._load_strategy_config(config_file)
+        assert result["p1"] == 0.15
+        assert result["expected_return_threshold"] == 1.3
+        assert result["budget_per_race"] == 5000
