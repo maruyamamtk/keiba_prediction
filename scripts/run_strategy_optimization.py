@@ -204,7 +204,7 @@ def main() -> None:
         project_id=args.project_id,
     )
 
-    # place_odds を raw.odds から取得（事前オッズ優先）
+    # place_odds を取得（predictions.daily_odds 優先 → raw.odds フォールバック）
     race_ids = predictions_df["race_id"].unique().tolist()
     odds_df = fetch_place_odds(args.project_id, race_ids)
 
@@ -219,7 +219,7 @@ def main() -> None:
         n_with_odds = predictions_df["place_odds"].notna().sum()
         logger.info(f"place_oddsをraw.oddsから付与: {n_with_odds}/{len(predictions_df)}件")
     else:
-        logger.warning("raw.oddsが空のため、payouts_dfからplace_oddsを推算します")
+        logger.warning("predictions.daily_odds と raw.odds が空のため、payouts_dfからplace_oddsを推算します")
         predictions_df["place_odds"] = float("nan")
 
     # raw.odds で取得できなかった馬は payouts_df（実際の払戻）で補完
