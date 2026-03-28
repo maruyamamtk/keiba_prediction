@@ -590,6 +590,7 @@ class TestSaveOddsToBq:
         assert result == 1
         mock_client.load_table_from_dataframe.assert_called_once()
         mock_load_job.result.assert_called_once()
+        mock_client.query.assert_called()
 
 
 # ---------------------------------------------------------------------------
