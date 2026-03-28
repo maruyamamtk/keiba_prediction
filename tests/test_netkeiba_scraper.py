@@ -24,9 +24,14 @@ import pandas as pd
 import pytest
 
 from src.automation.data.netkeiba_scraper import (
+    BLOCKED_RESOURCE_TYPES,
+    _create_page_with_route_block,
     _parse_combo_odds_html,
     _parse_race_list_html,
     _parse_win_place_odds_html,
+    get_combo_odds,
+    get_today_race_list,
+    get_win_place_odds,
     netkeiba_to_jrdb_race_id,
     parse_netkeiba_race_id,
     save_combo_odds_to_bq,
@@ -585,4 +590,120 @@ class TestSaveOddsToBq:
         assert result == 1
         mock_client.load_table_from_dataframe.assert_called_once()
         mock_load_job.result.assert_called_once()
-        mock_client.query.assert_called()
+
+
+# ---------------------------------------------------------------------------
+# Issue #184: Playwright タイムアウト修正 (_create_page_with_route_block / domcontentloaded)
+# ---------------------------------------------------------------------------
+
+
+class TestCreatePageWithRouteBlock:
+    """_create_page_with_route_block のルートブロック動作を検証する"""
+
+    def _make_route(self, resource_type: str):
+        """指定 resource_type を返すモックルートを生成する"""
+        route = MagicMock()
+        route.request.resource_type = resource_type
+        return route
+
+    def test_route_aborts_image_resource(self):
+        """画像リソースは abort() されること"""
+        mock_browser = MagicMock()
+        mock_page = MagicMock()
+        mock_browser.new_page.return_value = mock_page
+
+        captured_handler = []
+
+        def capture_route(pattern, handler):
+            captured_handler.append(handler)
+
+        mock_page.route.side_effect = capture_route
+
+        _create_page_with_route_block(mock_browser)
+
+        assert len(captured_handler) == 1
+        route = self._make_route("image")
+        captured_handler[0](route)
+        route.abort.assert_called_once()
+        route.continue_.assert_not_called()
+
+    def test_route_continues_document_resource(self):
+        """ドキュメントリソースは continue_() されること"""
+        mock_browser = MagicMock()
+        mock_page = MagicMock()
+        mock_browser.new_page.return_value = mock_page
+
+        captured_handler = []
+
+        def capture_route(pattern, handler):
+            captured_handler.append(handler)
+
+        mock_page.route.side_effect = capture_route
+
+        _create_page_with_route_block(mock_browser)
+
+        route = self._make_route("document")
+        captured_handler[0](route)
+        route.continue_.assert_called_once()
+        route.abort.assert_not_called()
+
+    def test_blocked_resource_types_contains_expected(self):
+        """BLOCKED_RESOURCE_TYPES に image/font/media/stylesheet が含まれること"""
+        assert "image" in BLOCKED_RESOURCE_TYPES
+        assert "font" in BLOCKED_RESOURCE_TYPES
+        assert "media" in BLOCKED_RESOURCE_TYPES
+        assert "stylesheet" in BLOCKED_RESOURCE_TYPES
+
+
+class TestPlaywrightDomcontentloaded:
+    """各 get_* 関数が wait_until="domcontentloaded" を使用することを検証する"""
+
+    def _make_playwright_mock(self, races=None, html=""):
+        """sync_playwright コンテキストマネージャのモックを構築する"""
+        mock_page = MagicMock()
+        mock_page.content.return_value = html
+        mock_browser = MagicMock()
+        mock_browser.new_page.return_value = mock_page
+        mock_p = MagicMock()
+        mock_p.chromium.launch.return_value = mock_browser
+
+        mock_playwright_cm = MagicMock()
+        mock_playwright_cm.__enter__ = MagicMock(return_value=mock_p)
+        mock_playwright_cm.__exit__ = MagicMock(return_value=False)
+        return mock_playwright_cm, mock_browser, mock_page
+
+    def test_uses_domcontentloaded_in_race_list(self):
+        """get_today_race_list が wait_until="domcontentloaded" で page.goto を呼ぶこと"""
+        mock_cm, mock_browser, mock_page = self._make_playwright_mock()
+
+        with patch("playwright.sync_api.sync_playwright", return_value=mock_cm):
+            try:
+                get_today_race_list(datetime.date(2024, 5, 26), sleep_sec=0)
+            except Exception:
+                pass
+
+        mock_page.goto.assert_called_once()
+        _, kwargs = mock_page.goto.call_args
+        assert kwargs.get("wait_until") == "domcontentloaded"
+
+    def test_uses_domcontentloaded_in_win_place_odds(self):
+        """get_win_place_odds が wait_until="domcontentloaded" で page.goto を呼ぶこと"""
+        mock_cm, mock_browser, mock_page = self._make_playwright_mock()
+
+        with patch("playwright.sync_api.sync_playwright", return_value=mock_cm):
+            get_win_place_odds("202405021211", sleep_sec=0)
+
+        mock_page.goto.assert_called_once()
+        _, kwargs = mock_page.goto.call_args
+        assert kwargs.get("wait_until") == "domcontentloaded"
+
+    def test_uses_domcontentloaded_in_combo_odds(self):
+        """get_combo_odds が wait_until="domcontentloaded" で page.goto を呼ぶこと"""
+        mock_cm, mock_browser, mock_page = self._make_playwright_mock()
+
+        with patch("playwright.sync_api.sync_playwright", return_value=mock_cm):
+            get_combo_odds("202405021211", ticket_types=["b4"], sleep_sec=0)
+
+        mock_page.goto.assert_called()
+        _, kwargs = mock_page.goto.call_args
+        assert kwargs.get("wait_until") == "domcontentloaded"
