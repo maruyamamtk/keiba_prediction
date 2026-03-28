@@ -208,16 +208,20 @@ def main() -> None:
     race_ids = predictions_df["race_id"].unique().tolist()
     odds_df = fetch_place_odds(args.project_id, race_ids)
 
-    predictions_df = predictions_df.drop(columns=["place_odds"], errors="ignore")
+    predictions_df = predictions_df.drop(columns=["place_odds", "win_odds"], errors="ignore")
 
     if not odds_df.empty:
+        merge_odds_cols = ["race_id", "horse_number", "place_odds"]
+        if "win_odds" in odds_df.columns:
+            merge_odds_cols.append("win_odds")
         predictions_df = predictions_df.merge(
-            odds_df[["race_id", "horse_number", "place_odds"]],
+            odds_df[merge_odds_cols],
             on=["race_id", "horse_number"],
             how="left",
         )
         n_with_odds = predictions_df["place_odds"].notna().sum()
-        logger.info(f"place_oddsをraw.oddsから付与: {n_with_odds}/{len(predictions_df)}件")
+        n_win_odds = predictions_df["win_odds"].notna().sum() if "win_odds" in predictions_df.columns else 0
+        logger.info(f"place_oddsを付与: {n_with_odds}/{len(predictions_df)}件、win_odds付与: {n_win_odds}件")
     else:
         logger.warning("predictions.daily_odds と raw.odds が空のため、payouts_dfからplace_oddsを推算します")
         predictions_df["place_odds"] = float("nan")
