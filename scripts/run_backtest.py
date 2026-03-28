@@ -856,15 +856,25 @@ def run_full_strategy_backtest_pipeline(
         end_date=end_date,
     )
 
-    # 2. 予測生成
+    # 2. GCS URI の場合はモデルをローカルにダウンロード
+    local_model_path = model_path
+    if model_path.startswith("gs://"):
+        import tempfile
+        from google.cloud import storage as gcs_storage
+        bucket_name, blob_path = model_path[5:].split("/", 1)
+        local_model_path = str(Path(tempfile.mkdtemp()) / Path(blob_path).name)
+        gcs_storage.Client(project=project_id).bucket(bucket_name).blob(blob_path).download_to_filename(local_model_path)
+        logger.info(f"GCSからモデルをダウンロード: {local_model_path}")
+
+    # 3. 予測生成
     predictions_df = generate_predictions(
         features_df=features_df,
         results_df=results_df,
-        model_path=model_path,
+        model_path=local_model_path,
         config=config,
     )
 
-    # 3. 単複オッズ取得（predictions.daily_odds → raw.odds）
+    # 4. 単複オッズ取得（predictions.daily_odds → raw.odds）
     race_ids = predictions_df["race_id"].unique().tolist()
     odds_df = fetch_place_odds(project_id=project_id, race_ids=race_ids)
     if len(odds_df) > 0:
@@ -881,7 +891,7 @@ def run_full_strategy_backtest_pipeline(
         )
         return pd.DataFrame(), {}
 
-    # 4. コンボオッズ取得（predictions.daily_odds_combo → raw.combo_odds → raw.payouts）
+    # 5. コンボオッズ取得（predictions.daily_odds_combo → raw.combo_odds → raw.payouts）
     combo_odds_df = fetch_combo_odds(project_id=project_id, race_ids=race_ids)
     logger.info(f"コンボオッズ取得: {len(combo_odds_df)} 件")
 
