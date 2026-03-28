@@ -659,7 +659,7 @@ class TestCreatePageWithRouteBlock:
 class TestPlaywrightDomcontentloaded:
     """各 get_* 関数が wait_until="domcontentloaded" を使用することを検証する"""
 
-    def _make_playwright_mock(self, races=None, html=""):
+    def _make_playwright_mock(self, html=""):
         """sync_playwright コンテキストマネージャのモックを構築する"""
         mock_page = MagicMock()
         mock_page.content.return_value = html
@@ -678,10 +678,7 @@ class TestPlaywrightDomcontentloaded:
         mock_cm, mock_browser, mock_page = self._make_playwright_mock()
 
         with patch("playwright.sync_api.sync_playwright", return_value=mock_cm):
-            try:
-                get_today_race_list(datetime.date(2024, 5, 26), sleep_sec=0)
-            except Exception:
-                pass
+            get_today_race_list(datetime.date(2024, 5, 26), sleep_sec=0)
 
         mock_page.goto.assert_called_once()
         _, kwargs = mock_page.goto.call_args
