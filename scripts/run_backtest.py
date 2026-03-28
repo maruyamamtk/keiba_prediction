@@ -126,11 +126,14 @@ def fetch_place_odds(
     race_ids: list[str],
 ) -> pd.DataFrame:
     """
-    複勝オッズを raw.odds から取得する
+    複勝オッズを以下の優先順位で取得する
 
-    各 (race_id, horse_number) ごとに最新タイムスタンプのオッズを1行に集約する。
-    OZ ファイルには horse_id が含まれないため horse_number をキーとして使用する。
-    raw.odds にデータがない場合は空 DataFrame を返す。
+    優先順位:
+      1. predictions.daily_odds（netkeibaスクレイプ）: 精度が高い。スクレイプ開始日以降のみ有効
+      2. raw.odds（JRDB基準オッズ）: 過去データを含む事前オッズ
+
+    レースIDでカバー済みのレースは後段のステージをスキップする。
+    両ソースにデータがない場合は空 DataFrame を返す。
 
     Args:
         project_id: GCP プロジェクト ID
@@ -142,9 +145,40 @@ def fetch_place_odds(
     if not race_ids:
         return pd.DataFrame()
 
+    _SCHEMA = ["race_id", "horse_number", "place_odds"]
     client = bigquery.Client(project=project_id)
     ids_str = ", ".join(f"'{r}'" for r in race_ids)
-    query = f"""
+
+    all_results: list[pd.DataFrame] = []
+    remaining_ids = list(race_ids)
+
+    # Stage 1: predictions.daily_odds（netkeibaスクレイプ）
+    try:
+        query1 = f"""
+        SELECT race_id, horse_number, place_odds_min AS place_odds
+        FROM `{project_id}.predictions.daily_odds`
+        WHERE race_id IN ({ids_str})
+        """
+        df1 = client.query(query1).to_dataframe()
+        if len(df1) > 0:
+            all_results.append(df1[_SCHEMA])
+            covered_ids = set(df1["race_id"].unique())
+            remaining_ids = [r for r in remaining_ids if r not in covered_ids]
+            logger.info(
+                f"predictions.daily_odds から {len(df1)} 件取得"
+                f"（カバー: {len(covered_ids)} レース）"
+            )
+        else:
+            logger.info("predictions.daily_odds にデータなし → raw.odds へ")
+    except Exception as e:
+        logger.info(f"predictions.daily_odds が存在しないか取得失敗: {e} → raw.odds へ")
+
+    if not remaining_ids:
+        return pd.concat(all_results, ignore_index=True)
+
+    # Stage 2: raw.odds（JRDB基準オッズ）
+    rem_ids_str = ", ".join(f"'{r}'" for r in remaining_ids)
+    query2 = f"""
     SELECT race_id, horse_number, odds_value AS place_odds
     FROM (
         SELECT race_id, horse_number, odds_value,
@@ -154,17 +188,23 @@ def fetch_place_odds(
                ) AS rn
         FROM `{project_id}.raw.odds`
         WHERE odds_type = 'place'
-          AND race_id IN ({ids_str})
+          AND race_id IN ({rem_ids_str})
     )
     WHERE rn = 1
     """
     try:
-        df = client.query(query).to_dataframe()
-        logger.info(f"Fetched {len(df)} place odds rows from raw.odds")
-        return df
+        df2 = client.query(query2).to_dataframe()
+        if len(df2) > 0:
+            all_results.append(df2[_SCHEMA])
+            logger.info(f"raw.odds から {len(df2)} 件取得")
+        else:
+            logger.info("raw.odds にもデータなし")
     except Exception as e:
         logger.warning(f"raw.odds からのオッズ取得に失敗しました: {e}")
-        return pd.DataFrame()
+
+    if not all_results:
+        return pd.DataFrame(columns=_SCHEMA)
+    return pd.concat(all_results, ignore_index=True)
 
 
 def fetch_place_payouts(
@@ -607,9 +647,9 @@ def run_backtest_pipeline(
     )
 
     # 3. オッズの取得とマージ
-    # まず raw.odds（事前オッズ）から取得を試みる。
-    # データがない場合は raw.payouts の払戻額/100 を代替として使用する
-    # （払戻額はレース後確定値のため、厳密なバックテストでは前者が望ましい）
+    # predictions.daily_odds（netkeibaスクレイプ）を優先し、不足分を raw.odds（JRDB）で補完する。
+    # どちらにもデータがない場合はバックテストを中断する。
+    # （raw.payouts は3着以内の確定払戻データのため、オッズ代替に使うと先読みバイアスが生じる）
     race_ids = predictions_df["race_id"].unique().tolist()
     odds_df = fetch_place_odds(project_id=project_id, race_ids=race_ids)
 
@@ -619,14 +659,14 @@ def run_backtest_pipeline(
             on=["race_id", "horse_number"],
             how="left",
         )
-        logger.info("raw.odds の複勝オッズを place_odds としてマージしました")
+        logger.info("複勝オッズを place_odds としてマージしました")
     else:
         logger.error(
-            "raw.odds に複勝オッズデータがありません。バックテストを中断します。\n"
+            "predictions.daily_odds・raw.odds のどちらにも複勝オッズデータがありません。バックテストを中断します。\n"
             "※ raw.payouts（払戻データ）は3着以内の馬のデータしか持たないため、\n"
             "  オッズ代替として使用すると「3着以内の馬しか賭け対象にならない」という\n"
             "  先読みバイアスが生じ、的中率が不当に100%になります。\n"
-            "  バックテストには raw.odds（レース前のオッズ）が必須です。"
+            "  バックテストには事前オッズ（predictions.daily_odds または raw.odds）が必須です。"
         )
         return pd.DataFrame(), {}
 

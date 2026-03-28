@@ -75,7 +75,7 @@ class TestFetchPlaceOdds:
         assert len(result) == 0
 
     def test_bq_error_returns_empty(self):
-        """BigQuery クエリが失敗した場合は空 DataFrame を返す"""
+        """両ステージの BigQuery クエリが失敗した場合は空 DataFrame を返す"""
         mock_client = MagicMock()
         mock_client.query.side_effect = Exception("BQ error")
         with patch("scripts.run_backtest.bigquery.Client", return_value=mock_client):
@@ -83,22 +83,66 @@ class TestFetchPlaceOdds:
         assert isinstance(result, pd.DataFrame)
         assert len(result) == 0
 
-    def test_returns_place_odds_column(self):
-        """正常取得時は place_odds カラムを持つ DataFrame を返す"""
-        mock_df = pd.DataFrame({
+    def test_stage1_predictions_daily_odds_is_prioritized(self):
+        """predictions.daily_odds にデータがある場合はそれを優先して返す"""
+        predictions_df = pd.DataFrame({
             "race_id": ["r001"],
-            "horse_id": ["h001"],
             "horse_number": [1],
-            "place_odds": [2.5],
+            "place_odds": [3.2],
         })
         mock_job = MagicMock()
-        mock_job.to_dataframe.return_value = mock_df
+        mock_job.to_dataframe.return_value = predictions_df
         mock_client = MagicMock()
         mock_client.query.return_value = mock_job
         with patch("scripts.run_backtest.bigquery.Client", return_value=mock_client):
             result = rb.fetch_place_odds(project_id="test", race_ids=["r001"])
         assert "place_odds" in result.columns
         assert len(result) == 1
+        assert result.iloc[0]["place_odds"] == 3.2
+        # Stage 1 でカバーできたので Stage 2 (raw.odds) は呼ばれない（query 呼び出しは1回）
+        assert mock_client.query.call_count == 1
+
+    def test_stage2_raw_odds_used_when_stage1_empty(self):
+        """predictions.daily_odds が空の場合は raw.odds にフォールバックする"""
+        raw_odds_df = pd.DataFrame({
+            "race_id": ["r001"],
+            "horse_number": [1],
+            "place_odds": [2.5],
+        })
+        mock_job_empty = MagicMock()
+        mock_job_empty.to_dataframe.return_value = pd.DataFrame()
+        mock_job_raw = MagicMock()
+        mock_job_raw.to_dataframe.return_value = raw_odds_df
+        mock_client = MagicMock()
+        mock_client.query.side_effect = [mock_job_empty, mock_job_raw]
+        with patch("scripts.run_backtest.bigquery.Client", return_value=mock_client):
+            result = rb.fetch_place_odds(project_id="test", race_ids=["r001"])
+        assert "place_odds" in result.columns
+        assert len(result) == 1
+        assert result.iloc[0]["place_odds"] == 2.5
+
+    def test_stage1_and_stage2_combined_for_different_races(self):
+        """レースごとに predictions.daily_odds と raw.odds を補完合成する"""
+        stage1_df = pd.DataFrame({
+            "race_id": ["r001"],
+            "horse_number": [1],
+            "place_odds": [3.2],
+        })
+        stage2_df = pd.DataFrame({
+            "race_id": ["r002"],
+            "horse_number": [2],
+            "place_odds": [4.0],
+        })
+        mock_job1 = MagicMock()
+        mock_job1.to_dataframe.return_value = stage1_df
+        mock_job2 = MagicMock()
+        mock_job2.to_dataframe.return_value = stage2_df
+        mock_client = MagicMock()
+        mock_client.query.side_effect = [mock_job1, mock_job2]
+        with patch("scripts.run_backtest.bigquery.Client", return_value=mock_client):
+            result = rb.fetch_place_odds(project_id="test", race_ids=["r001", "r002"])
+        assert len(result) == 2
+        assert set(result["race_id"]) == {"r001", "r002"}
 
 
 # ---------------------------------------------------------------------------
