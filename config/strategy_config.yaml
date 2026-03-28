@@ -1,16 +1,18 @@
 p1: 0.3
-expected_return_threshold: 1.5
 prob_weight_r: 0.5
 budget_per_race: 3000
 min_bet_amount: 100
 min_prob_threshold: 0.1
-top_n: 5
+top_n_dominant: 5
+top_n_standard: 5
+threshold_dominant: 1.5
+threshold_standard: 1.5
 optimization:
-  last_run: '2026-03-18T23:28:42'
+  last_run: '2026-03-28T21:47:25'
   metric: recovery_rate
-  start_date: '2020-01-01'
-  end_date: '2020-12-31'
-  recovery_rate: 231.59
-  hit_rate: 25.81
-  max_drawdown: 40.89
-  total_bets: 5300
+  start_date: '2023-01-01'
+  end_date: '2023-12-31'
+  recovery_rate: 156.42
+  hit_rate: 24.72
+  max_drawdown: 23.58
+  total_bets: 13456
