@@ -364,13 +364,13 @@ class StrategyOptimizer:
         グリッドサーチを実行し、全パラメータ組み合わせのバックテスト結果を返す
 
         デフォルト探索範囲:
-          - p1:                  [0.2, 0.3, 0.4, 0.5]        （ジニ係数の閾値）
+          - p1:                  [0.4, 0.45, 0.5]             （ジニ係数の閾値）
           - threshold_dominant:  [1.0, 1.2, 1.5]             （突出型の期待回収率閾値）
           - threshold_standard:  [1.0, 1.2, 1.5]             （標準型の期待回収率閾値）
-          - top_n_dominant:      [3, 4, 5]                    （突出型の候補馬数）
-          - top_n_standard:      [3, 4, 5]                    （標準型の候補馬数）
-          - r:                   [0.5, 1.0, 2.0]              （prob_weight_r）
-        総組み合わせ数: 4×3×3×3×3×3 = 972通り
+          - top_n_dominant:      [4, 5, 6]                    （突出型の候補馬数）
+          - top_n_standard:      [5, 6, 7]                    （標準型の候補馬数）
+          - r:                   [0.8, 1.0, 1.2]              （prob_weight_r）
+        総組み合わせ数: 3×3×3×3×3×3 = 729通り
 
         Args:
             p1_range: p1 の探索値リスト（ジニ係数の閾値）
@@ -386,7 +386,7 @@ class StrategyOptimizer:
             OptimizationResult のリスト（全パラメータ組み合わせ分）
         """
         if p1_range is None:
-            p1_range = [0.2, 0.3, 0.4, 0.5]
+            p1_range = [0.4, 0.45, 0.5]
 
         # 後方互換: threshold_range が指定された場合は dominant/standard 両方に適用
         if threshold_range is not None:
@@ -398,11 +398,11 @@ class StrategyOptimizer:
         if threshold_standard_range is None:
             threshold_standard_range = [1.0, 1.2, 1.5]
         if top_n_dominant_range is None:
-            top_n_dominant_range = [3, 4, 5]
+            top_n_dominant_range = [4, 5, 6]
         if top_n_standard_range is None:
-            top_n_standard_range = [3, 4, 5]
+            top_n_standard_range = [5, 6, 7]
         if r_range is None:
-            r_range = [0.5, 1.0, 2.0]
+            r_range = [0.8, 1.0, 1.2]
 
         # 全パラメータ組み合わせを生成
         param_grid = list(product(
