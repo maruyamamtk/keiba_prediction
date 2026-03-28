@@ -4,6 +4,116 @@
 
 ---
 
+## 投資戦略の3フェーズ
+
+投資戦略は以下の3フェーズで構成されます。各フェーズで参照するテーブルと実行するコードは以下のとおりです。
+
+---
+
+### フェーズ1: パラメータ最適化
+
+`scripts/run_strategy_optimization.py` を使い、グリッドサーチで最適なハイパーパラメータを探索して `config/strategy_config.yaml` に保存します。
+
+| ステップ | 処理内容 | 参照テーブル |
+|---------|---------|------------|
+| 1 | 指定期間の特徴量を取得し、MLモデルで複勝率 (`win_place_prob`) を予測 | `features.training_data` |
+| 2a | 単複オッズ取得（2段フォールバック） | ① `predictions.daily_odds` → ② `raw.odds` |
+| 2b | コンボオッズ取得（3段フォールバック） | ① `predictions.daily_odds_combo` → ② `raw.combo_odds` → ③ `raw.payouts` |
+| 3 | グリッドサーチで各パラメータ組み合わせの回収率を集計 | — |
+| 4 | 払い戻し金額の算出 | `raw.payouts` |
+| 5 | 回収率が最大となるパラメータを `config/strategy_config.yaml` に保存 | — |
+
+**最適化対象パラメータ:**
+
+| パラメータ | 説明 |
+|-----------|------|
+| `p1` | トップ1馬の突出度閾値（one_dominant パターン判定） |
+| `expected_return_threshold` | 期待回収率フィルタ閾値（`win_place_prob × odds > threshold` で馬券選定） |
+| `prob_weight_r` | 馬選定スコア係数（スコア = `odds × prob^r`） |
+
+**実行コマンド:**
+
+```bash
+python3 scripts/run_strategy_optimization.py \
+    --project-id <PROJECT_ID> \
+    --model-path gs://<PROJECT_ID>-keiba-models/lgbm_ranker/20260301/model.txt \
+    --start-date 2024-01-01 \
+    --end-date 2024-12-31
+```
+
+---
+
+### フェーズ2: バックテスト
+
+`scripts/run_backtest.py` を使い、フェーズ1で決定したパラメータを用いて指定期間の馬券購入をシミュレーションします。回収率・的中率・最大ドローダウン等をログ・CSV・BQに記録します。
+
+| ステップ | 処理内容 | 参照テーブル |
+|---------|---------|------------|
+| 1 | 指定期間の特徴量・着順データを取得 | `features.training_data`, `raw.race_results` |
+| 2 | MLモデルで複勝率を予測 | — |
+| 3a | 単複オッズ取得（2段フォールバック） | ① `predictions.daily_odds` → ② `raw.odds` |
+| 3b | コンボオッズ取得（3段フォールバック） | ① `predictions.daily_odds_combo` → ② `raw.combo_odds` → ③ `raw.payouts` |
+| 4 | 全レースに対して馬券購入シミュレーションを実行 | — |
+| 5 | 払い戻し金額を算出 | `raw.payouts` |
+| 6 | 回収率・的中率・最大ドローダウン・シャープレシオを集計 | — |
+| 7 | 結果をCSV・BQ・グラフに保存（任意） | `backtests.backtest_results` |
+
+> フェーズ1と同じテーブル参照・同じオッズ取得ロジックを使用するため、最適化時と同条件でシミュレーションが行われます。
+
+**実行コマンド:**
+
+```bash
+python scripts/run_backtest.py \
+    --project-id <PROJECT_ID> \
+    --model-path <MODEL_PATH> \
+    --start-date 2023-01-01 \
+    --end-date 2023-12-31
+```
+
+---
+
+### フェーズ3: 当日投資戦略策定
+
+`scripts/run_strategy.py` を使い、フェーズ1で決定したパラメータを用いて当日レースの推奨馬券を提示します。Cloud Scheduler から `POST /api/v1/strategy/daily` で毎朝 AM 9:00 に自動実行されます。
+
+| ステップ | 処理内容 | 参照テーブル |
+|---------|---------|------------|
+| 1 | 当日の予測結果（複勝率）を取得 | `predictions.daily_predictions` |
+| 2 | 単複オッズ取得 | `predictions.daily_odds`（当日スクレイプ済みデータのみ） |
+| 3 | コンボオッズ取得（2段フォールバック） | ① `predictions.daily_odds_combo` → ② `raw.combo_odds` |
+| 4 | 推奨馬券を選定し賭け金を配分 | — |
+| 5 | 投資判断結果をBQに保存 | `predictions.investment_decisions` |
+
+> **前提条件（Cloud Scheduler の実行順序）:**
+> - AM 8:00 `POST /api/v1/predict/daily` → `predictions.daily_predictions` に当日データが格納済み
+> - AM 8:30 `POST /api/v1/odds/scrape` → `predictions.daily_odds` / `predictions.daily_odds_combo` に当日データが格納済み
+> - AM 9:00 `POST /api/v1/strategy/daily` → 上記2テーブルを参照して投資判断を実行
+>
+> `predictions.daily_odds` は当日スクレイプしたオッズのみ保持します。フェーズ1・2とは異なり `raw.odds`（JRDB）へのフォールバックはありません。スクレイプが未完了の場合、単複オッズが取得できない馬は馬券選定からスキップされます。
+
+**実行コマンド:**
+
+```bash
+# 当日分（Cloud Schedulerと同等の手動実行）
+python3 scripts/run_strategy.py --project-id <PROJECT_ID>
+
+# 結果確認のみ（BQ保存をスキップ）
+python3 scripts/run_strategy.py --project-id <PROJECT_ID> --dry-run
+```
+
+---
+
+### オッズ取得ロジックのフェーズ比較
+
+| フェーズ | 単複オッズ（place_odds） | コンボオッズ（ワイド/三連複/馬連） |
+|---------|----------------------|-------------------------------|
+| フェーズ1・2（最適化・バックテスト） | ① `predictions.daily_odds` → ② `raw.odds` | ① `predictions.daily_odds_combo` → ② `raw.combo_odds` → ③ `raw.payouts` |
+| フェーズ3（当日戦略） | `predictions.daily_odds` のみ（フォールバックなし） | ① `predictions.daily_odds_combo` → ② `raw.combo_odds` |
+
+`predictions.*` テーブルは netkeba からスクレイプしたリアルタイムオッズ、`raw.*` テーブルは JRDB から取得した基準オッズです。詳細は [BigQueryテーブル構成](../../README.md#オッズテーブルの設計意図jrdb系-vs-netkeiba系) を参照してください。
+
+---
+
 ## 投資戦略の概要
 
 ### 対象馬券
