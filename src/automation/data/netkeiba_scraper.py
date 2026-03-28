@@ -72,6 +72,32 @@ _COMBO_TYPE_CODE: dict[str, str] = {
 
 _EMPTY_COMBO_COLUMNS = ["ticket_type", "horse_number_1", "horse_number_2", "horse_number_3", "odds"]
 
+# ブロックするリソースタイプ（広告・トラッキング系を除外してタイムアウトを防ぐ）
+BLOCKED_RESOURCE_TYPES = {"image", "font", "media", "stylesheet"}
+
+
+def _create_page_with_route_block(browser):
+    """
+    ブラウザページを作成し、不要なリソースタイプをブロックするルートを設定する。
+
+    画像・フォント・メディア・スタイルシートをインターセプトして中断することで、
+    Cloud Run 環境での広告系外部ドメインへの TCP タイムアウトを防ぐ。
+
+    Args:
+        browser: Playwright の Browser インスタンス
+
+    Returns:
+        ルートブロックが設定された Page インスタンス
+    """
+    page = browser.new_page()
+    page.route(
+        "**/*",
+        lambda route: route.abort()
+        if route.request.resource_type in BLOCKED_RESOURCE_TYPES
+        else route.continue_(),
+    )
+    return page
+
 
 def parse_netkeiba_race_id(netkeiba_race_id: str) -> dict:
     """
@@ -283,8 +309,8 @@ def get_today_race_list(date: datetime.date, sleep_sec: float = 1.0) -> list[dic
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu"])
         try:
-            page = browser.new_page()
-            page.goto(url, wait_until="load", timeout=60_000)
+            page = _create_page_with_route_block(browser)
+            page.goto(url, wait_until="domcontentloaded", timeout=60_000)
             if sleep_sec > 0:
                 time.sleep(sleep_sec)
             html = page.content()
@@ -335,8 +361,8 @@ def get_win_place_odds(
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu"])
         try:
-            page = browser.new_page()
-            page.goto(url, wait_until="load", timeout=60_000)
+            page = _create_page_with_route_block(browser)
+            page.goto(url, wait_until="domcontentloaded", timeout=60_000)
 
             # JavaScriptによるオッズテーブルの描画を待つ
             try:
@@ -754,8 +780,8 @@ def get_combo_odds(
                     time.sleep(sleep_sec)
 
                 try:
-                    page = browser.new_page()
-                    page.goto(url, wait_until="load", timeout=15_000)
+                    page = _create_page_with_route_block(browser)
+                    page.goto(url, wait_until="domcontentloaded", timeout=30_000)
                     time.sleep(sleep_sec)
                     html = page.content()
                     page.close()
