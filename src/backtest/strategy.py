@@ -4,7 +4,7 @@
 レースの複勝率分布パターンを分析し、パターンに応じた最適な投資戦略を選定する。
 
 パターン分類:
-  - one_dominant（突出型）: top1 確率が top2 を大きく上回る → 単複一点買い + 馬連
+  - one_dominant（突出型）: 複勝率分布のジニ係数 > p1 → 単複一点買い + 馬連
   - standard（標準型）: それ以外 → 期待回収率フィルタによる複勝選定
 """
 
@@ -32,6 +32,7 @@ class RacePattern:
         top3_prob: 3位馬の複勝率
         gap_top1_top2: top1 と top2 の複勝率差
         gap_top1_top3: top1 と top3 の複勝率差
+        gini_coefficient: 複勝率分布のジニ係数（0=均等, 1=集中）
     """
 
     pattern: str
@@ -40,22 +41,50 @@ class RacePattern:
     top3_prob: float
     gap_top1_top2: float
     gap_top1_top3: float
+    gini_coefficient: float = 0.0
+
+
+def _gini_coefficient(probs: list[float]) -> float:
+    """
+    複勝率リストのジニ係数を計算する
+
+    ジニ係数: 0=完全均等分布, 1=完全集中（1頭に全確率）
+    離散版の公式を使用:
+        G = (2 * Σ(i * x_i)) / (n * Σ x_i) - (n+1)/n
+    where x_i は昇順ソート後の値, i は 1-indexed
+
+    Args:
+        probs: 各馬の予測複勝率リスト（合計が1になる必要はない）
+
+    Returns:
+        ジニ係数（float, 0.0〜1.0）
+    """
+    n = len(probs)
+    if n == 0:
+        return 0.0
+    sorted_p = sorted(probs)
+    total = sum(sorted_p)
+    if total == 0:
+        return 0.0
+    cumsum = sum((i + 1) * p for i, p in enumerate(sorted_p))
+    return (2 * cumsum) / (n * total) - (n + 1) / n
 
 
 def classify_race_pattern(
     probs: list[float],
-    p1: float = 0.2,
+    p1: float = 0.3,
 ) -> RacePattern:
     """
     複勝率リストからレースパターンを分類する
 
     判定ロジック:
-      1. top1 - top2 > p1 → 'one_dominant'（突出型）
-      2. それ以外         → 'standard'（標準型）
+      ジニ係数 > p1 → 'one_dominant'（突出型: 1頭に確率が集中）
+      それ以外       → 'standard'（標準型: 実力伯仲）
 
     Args:
         probs: 各馬の予測複勝率（降順ソート済みを期待するが、関数内でソートする）
-        p1: 突出型の判定閾値（top1 と top2 の差がこれを超えると突出型）
+        p1: 突出型の判定閾値（ジニ係数がこれを超えると突出型）
+            値域: 0〜1。小さいほど突出型と判定されやすい。
 
     Returns:
         RacePattern インスタンス
@@ -77,15 +106,18 @@ def classify_race_pattern(
     gap_12 = top1 - top2
     gap_13 = top1 - top3
 
-    # パターン判定
-    if gap_12 > p1:
+    # ジニ係数計算
+    gini = _gini_coefficient(probs)
+
+    # パターン判定: ジニ係数が p1 を超えると突出型
+    if gini > p1:
         pattern = "one_dominant"
     else:
         pattern = "standard"
 
     logger.debug(
         f"パターン分類: top1={top1:.3f} top2={top2:.3f} top3={top3:.3f}"
-        f" gap_12={gap_12:.3f} → {pattern}"
+        f" gini={gini:.3f} → {pattern}"
     )
 
     return RacePattern(
@@ -95,6 +127,7 @@ def classify_race_pattern(
         top3_prob=top3,
         gap_top1_top2=gap_12,
         gap_top1_top3=gap_13,
+        gini_coefficient=gini,
     )
 
 
@@ -265,19 +298,22 @@ def select_base_bets(
 def select_pattern_a_extra_bets(
     race_df: pd.DataFrame,
     combo_odds_df: pd.DataFrame | None,
-    expected_return_threshold: float,
-    top_n: int = 5,
+    base_bets: list[dict],
 ) -> list[dict]:
     """
     one_dominant 時の追加ベット（単勝 + 馬連）を選定する
 
+    Step 3 のロジック（自動購入方式）:
+      - 単勝: 複勝率が最も高い馬の単勝を1点のみ自動購入（期待値フィルタなし）
+      - 馬連: Step2（select_base_bets）で選定したワイドと同じ組み合わせを自動購入
+
     Args:
         race_df: レースの予測データ DataFrame
             必須カラム: horse_id, horse_number, win_place_prob, odds
-            オプション: win_odds（単勝オッズ）
+            オプション: win_odds（単勝オッズ。存在する場合のみ単勝選定が有効化）
         combo_odds_df: コンボオッズ DataFrame
-        expected_return_threshold: 期待回収率の最低閾値
-        top_n: 馬連の相手候補とする上位馬数
+        base_bets: select_base_bets() の戻り値。
+            ワイドの組み合わせを馬連の購入対象として流用する。
 
     Returns:
         bet dict のリスト（bet_amount は未設定）
@@ -287,56 +323,53 @@ def select_pattern_a_extra_bets(
 
     sorted_df = race_df.sort_values("win_place_prob", ascending=False)
     top1_row = sorted_df.iloc[0]
-    top1_prob = float(top1_row["win_place_prob"])
     top1_horse_number = int(top1_row["horse_number"])
     top1_horse_id = str(top1_row["horse_id"])
 
     extra_bets = []
 
-    # 単勝
+    # ── 単勝: win_odds カラムがあれば軸馬（複勝率1位）を無条件で1点購入 ──
     if "win_odds" in race_df.columns:
         win_odds_val = top1_row.get("win_odds", None)
         if win_odds_val is not None and not pd.isna(win_odds_val):
-            win_odds = float(win_odds_val)
-            if top1_prob * win_odds > expected_return_threshold:
-                extra_bets.append({
-                    "bet_type": "win",
-                    "horse_numbers": [top1_horse_number],
-                    "horse_id": top1_horse_id,
-                    "odds": win_odds,
-                })
+            extra_bets.append({
+                "bet_type": "win",
+                "horse_numbers": [top1_horse_number],
+                "horse_id": top1_horse_id,
+                "odds": float(win_odds_val),
+            })
 
-    # 馬連
+    # ── 馬連: Step2 のワイドと同じ馬番ペアを自動購入 ──
     has_combo = (
         combo_odds_df is not None
         and isinstance(combo_odds_df, pd.DataFrame)
         and len(combo_odds_df) > 0
     )
+
     if has_combo:
-        top_candidates = sorted_df.head(top_n)
-        top_horse_numbers = top_candidates["horse_number"].tolist()
-        top_prob_map = dict(zip(
-            top_candidates["horse_number"].tolist(),
-            top_candidates["win_place_prob"].tolist(),
-        ))
+        # base_bets からワイドの組み合わせを抽出
+        wide_pairs = [
+            tuple(sorted(bet["horse_numbers"]))
+            for bet in base_bets
+            if bet["bet_type"] == "wide"
+        ]
 
         umaren_df = combo_odds_df[combo_odds_df["bet_type"] == "umaren"]
-        for _, row in umaren_df.iterrows():
-            h1 = int(row["horse_number_1"])
-            h2 = int(row["horse_number_2"])
-            # top1軸が含まれているか
-            if top1_horse_number not in (h1, h2):
-                continue
-            # 相手馬がtop_n候補内か
-            other = h2 if h1 == top1_horse_number else h1
-            if other not in top_horse_numbers:
-                continue
-            prob_other = float(top_prob_map.get(other, 0))
-            umaren_odds = float(row["odds_value"])
-            if top1_prob * prob_other * umaren_odds > expected_return_threshold:
+        for h1, h2 in wide_pairs:
+            # ワイドと同じ馬番ペアの馬連を探す
+            match = umaren_df[
+                (umaren_df["horse_number_1"] == h1) & (umaren_df["horse_number_2"] == h2)
+            ]
+            if match.empty:
+                # horse_number_1/2 の順序が逆の場合も確認
+                match = umaren_df[
+                    (umaren_df["horse_number_1"] == h2) & (umaren_df["horse_number_2"] == h1)
+                ]
+            if not match.empty:
+                umaren_odds = float(match.iloc[0]["odds_value"])
                 extra_bets.append({
                     "bet_type": "umaren",
-                    "horse_numbers": sorted([top1_horse_number, other]),
+                    "horse_numbers": sorted([h1, h2]),
                     "horse_id": None,
                     "odds": umaren_odds,
                 })
@@ -348,12 +381,17 @@ def select_bets_for_race(
     race_df: pd.DataFrame,
     combo_odds_df: pd.DataFrame | None = None,
     budget_per_race: float = 3000.0,
-    p1: float = 0.2,
+    p1: float = 0.3,
     expected_return_threshold: float = 1.2,
     min_bet_amount: float = 100.0,
     top_n: int = 5,
     min_prob_threshold: float = 0.0,
     prob_weight_r: float = 1.0,
+    # パターン別パラメータ（指定時は expected_return_threshold / top_n より優先）
+    threshold_dominant: float | None = None,
+    threshold_standard: float | None = None,
+    top_n_dominant: int | None = None,
+    top_n_standard: int | None = None,
     # 後方互換性のための旧パラメータ（無視される）
     capital: float | None = None,
     max_bet_ratio: float | None = None,
@@ -366,12 +404,16 @@ def select_bets_for_race(
             必須カラム: horse_id, horse_number, win_place_prob, odds
         combo_odds_df: コンボオッズ DataFrame（None の場合は複勝のみ）
         budget_per_race: 1レースあたりの固定予算 (円)
-        p1: 突出型の判定閾値（top1 と top2 の複勝率差）
-        expected_return_threshold: 期待回収率閾値
+        p1: 突出型の判定閾値（ジニ係数がこれを超えると one_dominant）
+        expected_return_threshold: 期待回収率閾値（両パターン共通のデフォルト値）
         min_bet_amount: 最低賭け金 (円)
-        top_n: ワイド/三連複/馬連の候補数
+        top_n: ワイド/三連複/馬連の候補数（両パターン共通のデフォルト値）
         min_prob_threshold: 軸馬の最低複勝率（複勝単体買いの最低条件）
         prob_weight_r: 選定スコアの確率ウェイト係数（odds * prob^r）
+        threshold_dominant: 突出型の期待回収率閾値（指定時は expected_return_threshold より優先）
+        threshold_standard: 標準型の期待回収率閾値（指定時は expected_return_threshold より優先）
+        top_n_dominant: 突出型の候補馬数（指定時は top_n より優先）
+        top_n_standard: 標準型の候補馬数（指定時は top_n より優先）
 
     Returns:
         (bets, pattern) のタプル:
@@ -411,27 +453,34 @@ def select_bets_for_race(
     logger.debug(
         f"レースパターン: {race_pattern.pattern}"
         f" (top1={race_pattern.top1_prob:.3f}, top2={race_pattern.top2_prob:.3f},"
-        f" top3={race_pattern.top3_prob:.3f})"
+        f" top3={race_pattern.top3_prob:.3f}, gini={race_pattern.gini_coefficient:.3f})"
     )
+
+    # パターン別パラメータの解決（指定なしの場合は共通値にフォールバック）
+    if race_pattern.pattern == "one_dominant":
+        active_threshold = threshold_dominant if threshold_dominant is not None else expected_return_threshold
+        active_top_n = top_n_dominant if top_n_dominant is not None else top_n
+    else:
+        active_threshold = threshold_standard if threshold_standard is not None else expected_return_threshold
+        active_top_n = top_n_standard if top_n_standard is not None else top_n
 
     # ベースベット選定
     base_bets = select_base_bets(
         race_df=valid_df,
         combo_odds_df=combo_odds_df,
-        expected_return_threshold=expected_return_threshold,
-        top_n=top_n,
+        expected_return_threshold=active_threshold,
+        top_n=active_top_n,
         min_prob_threshold=min_prob_threshold,
         prob_weight_r=prob_weight_r,
     )
 
-    # one_dominant ならパターンA追加ベット
+    # one_dominant ならパターンA追加ベット（自動購入方式）
     extra_bets = []
     if race_pattern.pattern == "one_dominant":
         extra_bets = select_pattern_a_extra_bets(
             race_df=valid_df,
             combo_odds_df=combo_odds_df,
-            expected_return_threshold=expected_return_threshold,
-            top_n=top_n,
+            base_bets=base_bets,
         )
 
     all_bets = base_bets + extra_bets

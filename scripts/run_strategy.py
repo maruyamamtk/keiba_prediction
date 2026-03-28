@@ -403,19 +403,28 @@ def run_daily_strategy(
         投資判断リスト（1行/馬券形式）
     """
     config = load_strategy_config()
-    p1 = config["p1"]
-    threshold = config["expected_return_threshold"]
+    p1 = float(config.get("p1", 0.3))
+    # パターン別パラメータ（旧 expected_return_threshold / top_n は後方互換フォールバック）
+    _legacy_threshold = float(config.get("expected_return_threshold", 1.5))
+    threshold_dominant = float(config.get("threshold_dominant", _legacy_threshold))
+    threshold_standard = float(config.get("threshold_standard", _legacy_threshold))
+    _legacy_top_n = int(config.get("top_n", 5))
+    top_n_dominant = int(config.get("top_n_dominant", _legacy_top_n))
+    top_n_standard = int(config.get("top_n_standard", _legacy_top_n))
     budget_per_race = float(config.get("budget_per_race", 3000.0))
     min_bet_amount = config.get("min_bet_amount", 100.0)
     min_prob_threshold = config.get("min_prob_threshold", 0.10)
-    prob_weight_r = config.get("prob_weight_r", 1.0)
-    top_n = config.get("top_n", 5)
+    prob_weight_r = float(config.get("prob_weight_r", 1.0))
 
     opt = config.get("optimization", {})
     logger.info(f"=== 日次投資戦略策定 ({target_date}) ===")
-    logger.info(f"パラメータ: p1={p1}, threshold={threshold}, "
-                f"budget_per_race={budget_per_race}, min_bet_amount={min_bet_amount}, "
-                f"min_prob_threshold={min_prob_threshold}, prob_weight_r={prob_weight_r}, top_n={top_n}")
+    logger.info(
+        f"パラメータ: p1={p1}, threshold_dominant={threshold_dominant}, "
+        f"threshold_standard={threshold_standard}, top_n_dominant={top_n_dominant}, "
+        f"top_n_standard={top_n_standard}, budget_per_race={budget_per_race}, "
+        f"min_bet_amount={min_bet_amount}, min_prob_threshold={min_prob_threshold}, "
+        f"prob_weight_r={prob_weight_r}"
+    )
     if opt.get("last_run"):
         logger.info(f"最終最適化: {opt['last_run']} "
                     f"(回収率={opt.get('recovery_rate')}%, 的中率={opt.get('hit_rate')}%)")
@@ -458,11 +467,13 @@ def run_daily_strategy(
                 combo_odds_df=race_combo_df if not race_combo_df.empty else None,
                 budget_per_race=budget_per_race,
                 p1=p1,
-                expected_return_threshold=threshold,
                 min_bet_amount=min_bet_amount,
-                top_n=top_n,
                 min_prob_threshold=min_prob_threshold,
                 prob_weight_r=prob_weight_r,
+                threshold_dominant=threshold_dominant,
+                threshold_standard=threshold_standard,
+                top_n_dominant=top_n_dominant,
+                top_n_standard=top_n_standard,
             )
         except ValueError as e:
             logger.debug(f"レース {race_id} スキップ: {e}")

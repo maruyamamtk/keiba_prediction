@@ -18,6 +18,7 @@ import numpy as np
 
 from src.backtest.strategy import (
     RacePattern,
+    _gini_coefficient,
     classify_race_pattern,
     select_bets_for_race,
     select_base_bets,
@@ -94,28 +95,60 @@ def _make_combo_odds_df(entries: list[dict]) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 
 
-class TestClassifyRacePattern:
-    """パターン分類のテスト（2パターン版）"""
+class TestGiniCoefficient:
+    """ジニ係数計算のテスト"""
 
-    def test_one_dominant(self):
-        """top1 - top2 > p1 → one_dominant"""
-        # gap_12 = 0.5 - 0.2 = 0.3 > 0.2
+    def test_uniform_distribution_near_zero(self):
+        """均等分布 → ジニ係数 ≈ 0"""
+        n = 8
+        probs = [1.0 / n] * n
+        gini = _gini_coefficient(probs)
+        assert abs(gini) < 1e-9
+
+    def test_concentrated_distribution_high(self):
+        """1頭に集中 → ジニ係数が高い（1に近い）"""
+        probs = [0.9, 0.05, 0.05]
+        gini = _gini_coefficient(probs)
+        assert gini > 0.5
+
+    def test_empty_list(self):
+        """空リスト → 0.0"""
+        assert _gini_coefficient([]) == 0.0
+
+    def test_all_zero(self):
+        """全ゼロ → 0.0（ゼロ除算しない）"""
+        assert _gini_coefficient([0.0, 0.0, 0.0]) == 0.0
+
+    def test_typical_racing_distribution(self):
+        """典型的な競馬レース分布 → 0 < gini < 1"""
         probs = [0.5, 0.2, 0.15, 0.1, 0.05]
-        result = classify_race_pattern(probs, p1=0.2)
+        gini = _gini_coefficient(probs)
+        assert 0.0 < gini < 1.0
+
+
+class TestClassifyRacePattern:
+    """パターン分類のテスト（ジニ係数ベース）"""
+
+    def test_one_dominant_high_gini(self):
+        """ジニ係数 > p1 → one_dominant"""
+        # [0.5, 0.2, 0.15, 0.1, 0.05] のジニ係数は約0.4 > p1=0.3
+        probs = [0.5, 0.2, 0.15, 0.1, 0.05]
+        result = classify_race_pattern(probs, p1=0.3)
         assert result.pattern == "one_dominant"
 
-    def test_standard(self):
-        """top1 - top2 <= p1 → standard"""
-        # gap_12 = 0.4 - 0.25 = 0.15 ≤ 0.2 → standard
-        probs = [0.4, 0.25, 0.2, 0.15]
-        result = classify_race_pattern(probs, p1=0.2)
+    def test_standard_low_gini(self):
+        """ジニ係数 <= p1 → standard"""
+        # [0.35, 0.3, 0.2, 0.15] のジニ係数は約0.175 < p1=0.3
+        probs = [0.35, 0.3, 0.2, 0.15]
+        result = classify_race_pattern(probs, p1=0.3)
         assert result.pattern == "standard"
 
-    def test_boundary_exactly_p1(self):
-        """gap_12 = p1（境界値）→ standard（> p1 なので突出型にならない）"""
-        # gap_12 = 0.5 - 0.3 = 0.2 = p1 → standard
-        probs = [0.5, 0.3, 0.15, 0.05]
-        result = classify_race_pattern(probs, p1=0.2)
+    def test_boundary_exactly_p1_is_standard(self):
+        """ジニ係数 = p1（境界値）→ standard（> p1 なので突出型にならない）"""
+        # ジニ係数が p1 に等しい場合は standard
+        probs = [0.5, 0.2, 0.15, 0.1, 0.05]
+        gini = _gini_coefficient(probs)
+        result = classify_race_pattern(probs, p1=gini)
         assert result.pattern == "standard"
 
     def test_insufficient_probs(self):
@@ -134,6 +167,14 @@ class TestClassifyRacePattern:
         assert hasattr(result, "top3_prob")
         assert hasattr(result, "gap_top1_top2")
         assert hasattr(result, "gap_top1_top3")
+        assert hasattr(result, "gini_coefficient")
+
+    def test_gini_coefficient_stored_in_result(self):
+        """gini_coefficient が結果に格納されること"""
+        probs = [0.5, 0.2, 0.15, 0.1, 0.05]
+        result = classify_race_pattern(probs, p1=0.3)
+        expected_gini = _gini_coefficient(probs)
+        assert abs(result.gini_coefficient - expected_gini) < 1e-9
 
 
 # ---------------------------------------------------------------------------
@@ -289,21 +330,21 @@ class TestSelectBaseBets:
 
 
 class TestSelectPatternAExtraBets:
-    """one_dominant 追加ベットのテスト"""
+    """one_dominant 追加ベットのテスト（自動購入方式）"""
 
-    def test_win_added_when_win_odds_present(self):
-        """win_odds カラムがあれば単勝追加"""
+    def test_win_added_automatically_when_win_odds_present(self):
+        """win_odds カラムがあれば期待値に関わらず自動で単勝追加"""
         race_df = _make_race_df(
             n_horses=5,
             probs=[0.5, 0.2, 0.15, 0.1, 0.05],
             odds=[3.0] * 5,
-            win_odds=[5.0, 10.0, 15.0, 20.0, 30.0],
+            win_odds=[1.2, 10.0, 15.0, 20.0, 30.0],  # 単勝オッズが低くても購入
         )
-        # top1_prob=0.5, win_odds=5.0 → 0.5×5.0=2.5 > 1.2
-        bets = select_pattern_a_extra_bets(race_df, None, expected_return_threshold=1.2)
+        # 期待値フィルタなし: win_oddsがあれば自動購入
+        bets = select_pattern_a_extra_bets(race_df, None, base_bets=[])
         win_bets = [b for b in bets if b["bet_type"] == "win"]
-        assert len(win_bets) >= 1
-        assert win_bets[0]["horse_numbers"] == [1]
+        assert len(win_bets) == 1
+        assert win_bets[0]["horse_numbers"] == [1]  # 複勝率1位（馬番1）
 
     def test_win_not_added_without_win_odds(self):
         """win_odds カラムがなければ単勝なし"""
@@ -313,25 +354,66 @@ class TestSelectPatternAExtraBets:
             odds=[3.0] * 5,
             win_odds=None,
         )
-        bets = select_pattern_a_extra_bets(race_df, None, expected_return_threshold=1.2)
+        bets = select_pattern_a_extra_bets(race_df, None, base_bets=[])
         win_bets = [b for b in bets if b["bet_type"] == "win"]
         assert len(win_bets) == 0
 
-    def test_umaren_added_for_top1(self):
-        """top1 軸の馬連が追加される"""
+    def test_umaren_follows_wide_pairs_from_base_bets(self):
+        """馬連はStep2のワイドと同じ組み合わせを自動購入"""
         race_df = _make_race_df(
             n_horses=5,
             probs=[0.5, 0.3, 0.2, 0.1, 0.05],
             odds=[3.0] * 5,
         )
-        # top1_prob=0.5, prob_other=0.3, umaren_odds=8.0 → 0.5×0.3×8.0=1.2 > 1.2はFalse
-        # umaren_odds=10.0 → 0.5×0.3×10.0=1.5 > 1.2 → 追加
+        # Step2のワイドが [1, 2] の組み合わせだった場合
+        base_bets = [
+            {"bet_type": "wide", "horse_numbers": [1, 2], "horse_id": None, "odds": 8.0},
+        ]
         combo_df = _make_combo_odds_df([
-            {"bet_type": "umaren", "horse_number_1": 1, "horse_number_2": 2, "odds_value": 10.0},
+            {"bet_type": "umaren", "horse_number_1": 1, "horse_number_2": 2, "odds_value": 12.0},
+            {"bet_type": "umaren", "horse_number_1": 1, "horse_number_2": 3, "odds_value": 20.0},
         ])
-        bets = select_pattern_a_extra_bets(race_df, combo_df, expected_return_threshold=1.2)
+        bets = select_pattern_a_extra_bets(race_df, combo_df, base_bets=base_bets)
         umaren_bets = [b for b in bets if b["bet_type"] == "umaren"]
-        assert len(umaren_bets) >= 1
+        # [1, 2] のワイドに対応する馬連のみ購入（[1, 3] は選ばれない）
+        assert len(umaren_bets) == 1
+        assert umaren_bets[0]["horse_numbers"] == [1, 2]
+
+    def test_umaren_not_added_when_no_wide_in_base_bets(self):
+        """Step2にワイドが0件の場合、馬連も0件"""
+        race_df = _make_race_df(
+            n_horses=5,
+            probs=[0.5, 0.3, 0.2, 0.1, 0.05],
+            odds=[3.0] * 5,
+        )
+        base_bets = [
+            {"bet_type": "place", "horse_numbers": [1], "horse_id": "h1", "odds": 3.0},
+        ]
+        combo_df = _make_combo_odds_df([
+            {"bet_type": "umaren", "horse_number_1": 1, "horse_number_2": 2, "odds_value": 12.0},
+        ])
+        bets = select_pattern_a_extra_bets(race_df, combo_df, base_bets=base_bets)
+        umaren_bets = [b for b in bets if b["bet_type"] == "umaren"]
+        assert len(umaren_bets) == 0
+
+    def test_umaren_multiple_wide_pairs(self):
+        """複数ワイド組み合わせがある場合、対応する馬連を全て購入"""
+        race_df = _make_race_df(
+            n_horses=5,
+            probs=[0.5, 0.3, 0.2, 0.1, 0.05],
+            odds=[3.0] * 5,
+        )
+        base_bets = [
+            {"bet_type": "wide", "horse_numbers": [1, 2], "horse_id": None, "odds": 8.0},
+            {"bet_type": "wide", "horse_numbers": [1, 3], "horse_id": None, "odds": 15.0},
+        ]
+        combo_df = _make_combo_odds_df([
+            {"bet_type": "umaren", "horse_number_1": 1, "horse_number_2": 2, "odds_value": 12.0},
+            {"bet_type": "umaren", "horse_number_1": 1, "horse_number_2": 3, "odds_value": 25.0},
+        ])
+        bets = select_pattern_a_extra_bets(race_df, combo_df, base_bets=base_bets)
+        umaren_bets = [b for b in bets if b["bet_type"] == "umaren"]
+        assert len(umaren_bets) == 2
 
 
 # ---------------------------------------------------------------------------
@@ -348,7 +430,7 @@ class TestSelectBetsForRace:
             probs=[0.5, 0.2, 0.15, 0.1, 0.05],
             odds=[3.0] * 5,
         )
-        result = select_bets_for_race(race_df, capital=100_000.0)
+        result = select_bets_for_race(race_df)
         assert isinstance(result, tuple)
         assert len(result) == 2
         bets, pattern = result
@@ -362,14 +444,14 @@ class TestSelectBetsForRace:
             probs=[0.5, 0.3, 0.2, 0.1, 0.05],
             odds=[3.0] * 5,
         )
-        bets, pattern = select_bets_for_race(race_df, combo_odds_df=None, capital=100_000.0)
+        bets, pattern = select_bets_for_race(race_df, combo_odds_df=None)
         # エラーなく動作し、複勝のみ選定される
         bet_types = {b["bet_type"] for b in bets}
         assert bet_types <= {"place"}
 
     def test_one_dominant_triggers_pattern_a(self):
-        """one_dominant 時にパターンAのベット（win/umaren）が選定される可能性がある"""
-        # gap_12 = 0.6 - 0.1 = 0.5 > 0.2 → one_dominant
+        """one_dominant 時に単勝が自動購入される"""
+        # [0.6, 0.1, 0.1, 0.1, 0.1] のジニ係数は約0.4 > p1=0.3 → one_dominant
         race_df = _make_race_df(
             n_horses=5,
             probs=[0.6, 0.1, 0.1, 0.1, 0.1],
@@ -378,15 +460,37 @@ class TestSelectBetsForRace:
         )
         combo_df = _make_combo_odds_df([
             {"bet_type": "umaren", "horse_number_1": 1, "horse_number_2": 2, "odds_value": 10.0},
+            {"bet_type": "wide", "horse_number_1": 1, "horse_number_2": 2, "odds_value": 5.0},
         ])
         bets, pattern = select_bets_for_race(
-            race_df, combo_odds_df=combo_df, capital=100_000.0, p1=0.2
+            race_df, combo_odds_df=combo_df, p1=0.3
         )
         assert pattern.pattern == "one_dominant"
-        # one_dominant 時は win/umaren が追加される可能性がある
         bet_types = {b["bet_type"] for b in bets}
-        # 少なくともパターンAが呼ばれること自体を確認（エラーなし）
-        assert isinstance(bets, list)
+        # win_oddsがあるので単勝が自動追加される
+        assert "win" in bet_types
+
+    def test_pattern_specific_params_applied(self):
+        """パターン別パラメータ（threshold_dominant/standard）が正しく適用される"""
+        # one_dominant: [0.5, 0.2, 0.15, 0.1, 0.05] → gini ≈ 0.4 > p1=0.3
+        race_df = _make_race_df(
+            n_horses=5,
+            probs=[0.5, 0.2, 0.15, 0.1, 0.05],
+            odds=[3.0, 3.0, 3.0, 3.0, 3.0],
+        )
+        # threshold_dominant=2.0 (厳しい) → place も選ばれにくい
+        # threshold_standard=1.0 (緩い) → パターンがstandardなら複勝が選ばれる
+        bets_strict, pattern = select_bets_for_race(
+            race_df,
+            threshold_dominant=2.0,
+            threshold_standard=1.0,
+            p1=0.3,
+        )
+        # one_dominantのため threshold_dominant=2.0 が適用される
+        assert pattern.pattern == "one_dominant"
+        place_bets = [b for b in bets_strict if b["bet_type"] == "place"]
+        # 0.5 × 3.0 = 1.5 < 2.0 → 複勝は選ばれない
+        assert len(place_bets) == 0
 
     def test_insufficient_horses_raises(self):
         """3頭未満で ValueError"""
@@ -473,13 +577,11 @@ class TestMinProbThreshold:
         )
         bets_filtered, _ = select_bets_for_race(
             race_df,
-            capital=100_000.0,
             expected_return_threshold=1.0,
             min_prob_threshold=0.10,
         )
         bets_unfiltered, _ = select_bets_for_race(
             race_df,
-            capital=100_000.0,
             expected_return_threshold=1.0,
             min_prob_threshold=0.0,
         )
@@ -557,7 +659,7 @@ class TestProbWeightR:
         )
         for r in [0.5, 1.0, 1.5, 2.0]:
             bets, pattern = select_bets_for_race(
-                race_df, capital=100_000.0, prob_weight_r=r
+                race_df, prob_weight_r=r
             )
             assert isinstance(bets, list)
             assert isinstance(pattern, RacePattern)
