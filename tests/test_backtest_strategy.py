@@ -453,6 +453,57 @@ class TestSelectPatternAExtraBets:
         umaren_bets = [b for b in bets if b["bet_type"] == "umaren"]
         assert len(umaren_bets) == 2
 
+    def test_place_always_added_for_top1(self):
+        """top1馬の複勝はthreshold無関係に必ず1点追加される"""
+        race_df = _make_race_df(
+            n_horses=5,
+            probs=[0.5, 0.2, 0.15, 0.1, 0.05],
+            odds=[1.1, 3.0, 4.0, 5.0, 6.0],  # top1のodds=1.1: threshold=1.2を下回る
+        )
+        bets = select_pattern_a_extra_bets(race_df, None, base_bets=[])
+        place_bets = [b for b in bets if b["bet_type"] == "place"]
+        assert len(place_bets) == 1
+        assert place_bets[0]["horse_numbers"] == [1]  # 複勝率1位（馬番1）
+
+    def test_place_not_duplicated_when_already_in_base_bets(self):
+        """base_betsに既にtop1の複勝があれば重複して追加しない"""
+        race_df = _make_race_df(
+            n_horses=5,
+            probs=[0.5, 0.2, 0.15, 0.1, 0.05],
+            odds=[3.0, 3.0, 4.0, 5.0, 6.0],
+        )
+        # base_betsに既にhorse_number=1の複勝が含まれている
+        base_bets = [
+            {"bet_type": "place", "horse_numbers": [1], "horse_id": "horse_001", "odds": 3.0},
+        ]
+        bets = select_pattern_a_extra_bets(race_df, None, base_bets=base_bets)
+        place_bets = [b for b in bets if b["bet_type"] == "place"]
+        # base_betsに既にあるので extra_bets には追加されない（重複なし）
+        assert len(place_bets) == 0
+
+    def test_place_for_top1_even_below_threshold_in_select_bets_for_race(self):
+        """select_bets_for_race経由でも突出型では複勝が必ず含まれる"""
+        from src.backtest.strategy import select_bets_for_race
+
+        race_df = _make_race_df(
+            n_horses=5,
+            probs=[0.5, 0.2, 0.15, 0.1, 0.05],
+            odds=[1.0, 3.0, 4.0, 5.0, 6.0],  # top1のodds=1.0: prob*odds=0.5<threshold
+        )
+        # threshold=1.2 のままなら select_base_bets では top1 の複勝は選ばれない
+        bets, pattern = select_bets_for_race(
+            race_df,
+            combo_odds_df=None,
+            budget_per_race=3000,
+            p1=0.3,  # probs[0]=0.5 > 0.3 → one_dominant
+            expected_return_threshold=1.2,
+        )
+        place_bets = [b for b in bets if b["bet_type"] == "place"]
+        assert pattern.pattern == "one_dominant"
+        # 突出型なので top1 の複勝が必ず含まれている
+        top1_place = [b for b in place_bets if b["horse_numbers"] == [1]]
+        assert len(top1_place) >= 1
+
 
 # ---------------------------------------------------------------------------
 # select_bets_for_race のテスト（統合テスト）
@@ -516,7 +567,7 @@ class TestSelectBetsForRace:
             probs=[0.5, 0.2, 0.15, 0.1, 0.05],
             odds=[3.0, 3.0, 3.0, 3.0, 3.0],
         )
-        # threshold_dominant=2.0 (厳しい) → place も選ばれにくい
+        # threshold_dominant=2.0 (厳しい): select_base_bets では複勝が選ばれにくい
         # threshold_standard=1.0 (緩い) → パターンがstandardなら複勝が選ばれる
         bets_strict, pattern = select_bets_for_race(
             race_df,
@@ -527,8 +578,11 @@ class TestSelectBetsForRace:
         # one_dominantのため threshold_dominant=2.0 が適用される
         assert pattern.pattern == "one_dominant"
         place_bets = [b for b in bets_strict if b["bet_type"] == "place"]
-        # 0.5 × 3.0 = 1.5 < 2.0 → 複勝は選ばれない
-        assert len(place_bets) == 0
+        # 突出型では top1 の複勝は threshold 無関係に必ず含まれる（Issue #193）
+        # 0.5 × 3.0 = 1.5 < 2.0 → select_base_bets では選ばれないが
+        # select_pattern_a_extra_bets で top1 の複勝が追加される
+        assert len(place_bets) == 1
+        assert place_bets[0]["horse_numbers"] == [1]
 
     def test_insufficient_horses_raises(self):
         """3頭未満で ValueError"""

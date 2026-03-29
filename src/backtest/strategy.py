@@ -301,10 +301,11 @@ def select_pattern_a_extra_bets(
     base_bets: list[dict],
 ) -> list[dict]:
     """
-    one_dominant 時の追加ベット（単勝 + 馬連）を選定する
+    one_dominant 時の追加ベット（単勝 + 複勝 + 馬連）を選定する
 
     Step 3 のロジック（自動購入方式）:
       - 単勝: 複勝率が最も高い馬の単勝を1点のみ自動購入（期待値フィルタなし）
+      - 複勝: 単勝対象馬（top1）の複勝を期待値フィルタなしで1点自動購入
       - 馬連: Step2（select_base_bets）で選定したワイドと同じ組み合わせを自動購入
 
     Args:
@@ -327,6 +328,21 @@ def select_pattern_a_extra_bets(
     top1_horse_id = str(top1_row["horse_id"])
 
     extra_bets = []
+
+    # ── 複勝: 軸馬（複勝率1位）を期待値フィルタなしで1点購入 ──
+    # base_bets に既に top1 の複勝が含まれている場合は追加しない（重複防止）
+    top1_place_already_in_base = any(
+        bet["bet_type"] == "place" and bet["horse_numbers"] == [top1_horse_number]
+        for bet in base_bets
+    )
+    if not top1_place_already_in_base:
+        place_odds_val = float(top1_row["odds"])
+        extra_bets.append({
+            "bet_type": "place",
+            "horse_numbers": [top1_horse_number],
+            "horse_id": top1_horse_id,
+            "odds": place_odds_val,
+        })
 
     # ── 単勝: win_odds カラムがあれば軸馬（複勝率1位）を無条件で1点購入 ──
     if "win_odds" in race_df.columns:
