@@ -518,8 +518,7 @@ class TestFormatPushNotification:
                 "win_place_prob": 0.25,
                 "place_odds": 4.5,
                 "expected_return": 1.125,
-                "max_expected_return": 1.125,
-            },
+                            },
             {
                 "venue_code": "09",
                 "race_number": 5,
@@ -531,8 +530,7 @@ class TestFormatPushNotification:
                 "win_place_prob": None,
                 "place_odds": 8.2,
                 "expected_return": None,
-                "max_expected_return": 1.125,
-            },
+                            },
             {
                 "venue_code": "06",
                 "race_number": 3,
@@ -544,8 +542,7 @@ class TestFormatPushNotification:
                 "win_place_prob": 0.40,
                 "place_odds": 3.0,
                 "expected_return": 1.20,
-                "max_expected_return": 1.20,
-            },
+                            },
         ]
 
     def test_returns_at_least_two_messages(self):
@@ -590,3 +587,65 @@ class TestFormatPushNotification:
         full_text = "\n".join(m["text"] for m in format_push_notification(date(2026, 3, 16), self._make_decisions()))
         assert "標準型" in full_text
         assert "突出型" in full_text
+
+    def test_races_sorted_by_venue_then_race_number(self):
+        """競馬場コード順 → レース番号順でソートされる"""
+        decisions = [
+            {"venue_code": "09", "race_number": 10, "race_pattern": "standard",
+             "horse_numbers": "1", "horse_names": "A", "bet_type": "place",
+             "bet_amount": 100.0, "win_place_prob": 0.3, "place_odds": 3.0, "expected_return": 0.9},
+            {"venue_code": "06", "race_number": 5, "race_pattern": "standard",
+             "horse_numbers": "2", "horse_names": "B", "bet_type": "place",
+             "bet_amount": 100.0, "win_place_prob": 0.3, "place_odds": 3.0, "expected_return": 0.9},
+            {"venue_code": "06", "race_number": 2, "race_pattern": "standard",
+             "horse_numbers": "3", "horse_names": "C", "bet_type": "place",
+             "bet_amount": 100.0, "win_place_prob": 0.3, "place_odds": 3.0, "expected_return": 0.9},
+        ]
+        full_text = "\n".join(m["text"] for m in format_push_notification(date(2026, 3, 16), decisions))
+        # 06（中山）2R → 06 5R → 09（阪神）10R の順
+        pos_06_2 = full_text.index("中山 2R")
+        pos_06_5 = full_text.index("中山 5R")
+        pos_09_10 = full_text.index("阪神 10R")
+        assert pos_06_2 < pos_06_5 < pos_09_10
+
+    def _make_many_decisions(self, n_races: int) -> list[dict]:
+        """n_races レース分のテストデータを生成する"""
+        decisions = []
+        for i in range(1, n_races + 1):
+            decisions.append({
+                "venue_code": "09",
+                "race_number": i,
+                "race_pattern": "standard",
+                "horse_numbers": "1",
+                "horse_names": "テストホース",
+                "bet_type": "place",
+                "bet_amount": 1000.0,
+                "win_place_prob": 0.3,
+                "place_odds": 3.5,
+                "expected_return": 1.05,
+            })
+        return decisions
+
+    def test_10_races_fit_in_one_content_message(self):
+        """10レースは1通のコンテンツメッセージに収まる（ヘッダー含め2件）"""
+        result = format_push_notification(date(2026, 3, 16), self._make_many_decisions(10))
+        assert len(result) == 2  # header + 1 content
+
+    def test_11_races_split_into_two_content_messages(self):
+        """11レースは2通のコンテンツメッセージに分割される（ヘッダー含め3件）"""
+        result = format_push_notification(date(2026, 3, 16), self._make_many_decisions(11))
+        assert len(result) == 3  # header + 2 content
+
+    def test_all_races_included_no_cutoff(self):
+        """15レースが全て送信される（10レース打ち切りなし）"""
+        result = format_push_notification(date(2026, 3, 16), self._make_many_decisions(15))
+        full_text = "\n".join(m["text"] for m in result)
+        # 15Rまで全て含まれる
+        for i in range(1, 16):
+            assert f"阪神 {i}R" in full_text
+
+    def test_header_shows_correct_race_count(self):
+        """ヘッダーに正確なレース数が表示される"""
+        result = format_push_notification(date(2026, 3, 16), self._make_many_decisions(15))
+        assert "15" in result[0]["text"]  # レース数: 15
+
