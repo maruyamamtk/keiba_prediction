@@ -572,6 +572,70 @@ class TestSelectBetsForRace:
         total = sum(b["bet_amount"] for b in bets)
         assert total <= budget_per_race
 
+    def test_one_dominant_total_within_budget(self):
+        """突出型レースで単勝+ワイド+馬連の合計が budget_per_race 以内"""
+        # gini ≈ 0.45 > p1=0.3 → one_dominant
+        # 単勝オッズ=3.0（低オッズ → inv_oddsが高い）でも合計はbudget以内
+        race_df = _make_race_df(
+            n_horses=5,
+            probs=[0.65, 0.1, 0.1, 0.1, 0.05],
+            odds=[2.5, 10.0, 10.0, 10.0, 20.0],
+            win_odds=[3.0, 20.0, 20.0, 20.0, 40.0],
+        )
+        combo_df = _make_combo_odds_df([
+            {"bet_type": "wide", "horse_number_1": 1, "horse_number_2": 2, "odds_value": 6.0},
+            {"bet_type": "umaren", "horse_number_1": 1, "horse_number_2": 2, "odds_value": 12.0},
+        ])
+        budget_per_race = 3000.0
+        bets, pattern = select_bets_for_race(
+            race_df,
+            combo_odds_df=combo_df,
+            budget_per_race=budget_per_race,
+            p1=0.3,
+            expected_return_threshold=1.0,
+        )
+        assert pattern.pattern == "one_dominant"
+        bet_types = {b["bet_type"] for b in bets}
+        assert "win" in bet_types, "突出型レースで単勝が含まれるべき"
+        total = sum(b["bet_amount"] for b in bets)
+        assert total <= budget_per_race, (
+            f"合計賭け金 {total} が budget_per_race {budget_per_race} を超えている"
+        )
+
+    def test_one_dominant_win_not_full_budget(self):
+        """突出型レースで単勝が budget_per_race 全額を占めない（他の馬券と共有）"""
+        # 単勝オッズ=4.0のみ → 単勝が全額を占めてしまう問題の防止を確認
+        # 複勝/ワイドも期待値フィルタを通過するなら単勝は全額を占めない
+        race_df = _make_race_df(
+            n_horses=5,
+            probs=[0.65, 0.1, 0.1, 0.1, 0.05],
+            odds=[2.5, 10.0, 10.0, 10.0, 20.0],
+            win_odds=[4.0, 20.0, 20.0, 20.0, 40.0],
+        )
+        combo_df = _make_combo_odds_df([
+            {"bet_type": "wide", "horse_number_1": 1, "horse_number_2": 2, "odds_value": 6.0},
+            {"bet_type": "umaren", "horse_number_1": 1, "horse_number_2": 2, "odds_value": 12.0},
+        ])
+        budget_per_race = 3000.0
+        bets, pattern = select_bets_for_race(
+            race_df,
+            combo_odds_df=combo_df,
+            budget_per_race=budget_per_race,
+            p1=0.3,
+            expected_return_threshold=1.0,
+        )
+        assert pattern.pattern == "one_dominant"
+        win_bets = [b for b in bets if b["bet_type"] == "win"]
+        non_win_bets = [b for b in bets if b["bet_type"] != "win"]
+        # 単勝以外の馬券（ワイド/馬連/複勝）も選定されているはず
+        assert len(non_win_bets) > 0, "単勝以外の馬券も選定されるべき"
+        if win_bets:
+            win_amount = win_bets[0]["bet_amount"]
+            # 単勝が全額を占めていない（予算の95%未満）
+            assert win_amount < budget_per_race * 0.95, (
+                f"単勝の賭け金 {win_amount} が予算の95%以上を占めている"
+            )
+
 
 # ---------------------------------------------------------------------------
 # min_prob_threshold のテスト
