@@ -1018,7 +1018,6 @@ async def run_strategy_daily(request: StrategyDailyRequest):
             project_id=project_id,
             target_date=execution_date,
             dry_run=request.dry_run,
-            initial_capital=request.initial_capital,
         )
 
         total_bet = sum(d["bet_amount"] for d in decisions) if decisions else 0.0
