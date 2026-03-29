@@ -536,6 +536,28 @@ class TestSelectBetsForRace:
         with pytest.raises(ValueError):
             select_bets_for_race(race_df)
 
+    def test_standard_pattern_no_win_or_umaren(self):
+        """標準型レースでは単勝・馬連（パターンA）が推奨されない"""
+        # [0.25, 0.25, 0.2, 0.2, 0.1] のジニ係数は低い → standard
+        race_df = _make_race_df(
+            n_horses=5,
+            probs=[0.25, 0.25, 0.2, 0.2, 0.1],
+            odds=[4.0, 4.0, 5.0, 5.0, 10.0],
+            win_odds=[8.0, 8.0, 10.0, 10.0, 20.0],
+        )
+        combo_df = _make_combo_odds_df([
+            {"bet_type": "umaren", "horse_number_1": 1, "horse_number_2": 2, "odds_value": 10.0},
+            {"bet_type": "wide", "horse_number_1": 1, "horse_number_2": 2, "odds_value": 3.0},
+        ])
+        bets, pattern = select_bets_for_race(
+            race_df, combo_odds_df=combo_df, p1=0.3,
+            expected_return_threshold=1.0,
+        )
+        assert pattern.pattern == "standard"
+        bet_types = {b["bet_type"] for b in bets}
+        assert "win" not in bet_types, "標準型レースで単勝が選定されてはならない"
+        assert "umaren" not in bet_types, "標準型レースで馬連が選定されてはならない"
+
     def test_bet_amount_not_exceeds_budget(self):
         """総賭け金が budget_per_race 以内"""
         race_df = _make_race_df(
