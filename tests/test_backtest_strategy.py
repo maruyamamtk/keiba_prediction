@@ -465,6 +465,22 @@ class TestSelectPatternAExtraBets:
         assert len(place_bets) == 1
         assert place_bets[0]["horse_numbers"] == [1]  # 複勝率1位（馬番1）
 
+    def test_place_not_duplicated_when_already_in_base_bets(self):
+        """base_betsに既にtop1の複勝があれば重複して追加しない"""
+        race_df = _make_race_df(
+            n_horses=5,
+            probs=[0.5, 0.2, 0.15, 0.1, 0.05],
+            odds=[3.0, 3.0, 4.0, 5.0, 6.0],
+        )
+        # base_betsに既にhorse_number=1の複勝が含まれている
+        base_bets = [
+            {"bet_type": "place", "horse_numbers": [1], "horse_id": "horse_001", "odds": 3.0},
+        ]
+        bets = select_pattern_a_extra_bets(race_df, None, base_bets=base_bets)
+        place_bets = [b for b in bets if b["bet_type"] == "place"]
+        # base_betsに既にあるので extra_bets には追加されない（重複なし）
+        assert len(place_bets) == 0
+
     def test_place_for_top1_even_below_threshold_in_select_bets_for_race(self):
         """select_bets_for_race経由でも突出型では複勝が必ず含まれる"""
         from src.backtest.strategy import select_bets_for_race

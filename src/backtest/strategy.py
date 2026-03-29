@@ -330,13 +330,19 @@ def select_pattern_a_extra_bets(
     extra_bets = []
 
     # ── 複勝: 軸馬（複勝率1位）を期待値フィルタなしで1点購入 ──
-    place_odds_val = float(top1_row["odds"])
-    extra_bets.append({
-        "bet_type": "place",
-        "horse_numbers": [top1_horse_number],
-        "horse_id": top1_horse_id,
-        "odds": place_odds_val,
-    })
+    # base_bets に既に top1 の複勝が含まれている場合は追加しない（重複防止）
+    top1_place_already_in_base = any(
+        bet["bet_type"] == "place" and bet["horse_numbers"] == [top1_horse_number]
+        for bet in base_bets
+    )
+    if not top1_place_already_in_base:
+        place_odds_val = float(top1_row["odds"])
+        extra_bets.append({
+            "bet_type": "place",
+            "horse_numbers": [top1_horse_number],
+            "horse_id": top1_horse_id,
+            "odds": place_odds_val,
+        })
 
     # ── 単勝: win_odds カラムがあれば軸馬（複勝率1位）を無条件で1点購入 ──
     if "win_odds" in race_df.columns:
