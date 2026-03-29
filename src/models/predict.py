@@ -24,6 +24,7 @@ import pandas as pd
 import yaml
 from google.cloud import bigquery, storage
 
+from src.backtest.strategy import classify_race_pattern
 from src.models.lgbm_ranker import LGBMRanker
 from src.models.train import (
     CONFIG_PATH,
@@ -470,8 +471,6 @@ def save_predictions_to_gcs(
 
 def format_predictions(result_df: pd.DataFrame) -> str:
     """予測結果を見やすい文字列に整形する"""
-    from src.backtest.strategy import classify_race_pattern
-
     if len(result_df) == 0:
         return "推論対象データがありません"
 
