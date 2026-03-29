@@ -368,33 +368,7 @@ class TestSelectBaseBets:
 
 
 class TestSelectPatternAExtraBets:
-    """one_dominant 追加ベットのテスト（自動購入方式）"""
-
-    def test_win_added_automatically_when_win_odds_present(self):
-        """win_odds カラムがあれば期待値に関わらず自動で単勝追加"""
-        race_df = _make_race_df(
-            n_horses=5,
-            probs=[0.5, 0.2, 0.15, 0.1, 0.05],
-            odds=[3.0] * 5,
-            win_odds=[1.2, 10.0, 15.0, 20.0, 30.0],  # 単勝オッズが低くても購入
-        )
-        # 期待値フィルタなし: win_oddsがあれば自動購入
-        bets = select_pattern_a_extra_bets(race_df, None, base_bets=[])
-        win_bets = [b for b in bets if b["bet_type"] == "win"]
-        assert len(win_bets) == 1
-        assert win_bets[0]["horse_numbers"] == [1]  # 複勝率1位（馬番1）
-
-    def test_win_not_added_without_win_odds(self):
-        """win_odds カラムがなければ単勝なし"""
-        race_df = _make_race_df(
-            n_horses=5,
-            probs=[0.5, 0.2, 0.15, 0.1, 0.05],
-            odds=[3.0] * 5,
-            win_odds=None,
-        )
-        bets = select_pattern_a_extra_bets(race_df, None, base_bets=[])
-        win_bets = [b for b in bets if b["bet_type"] == "win"]
-        assert len(win_bets) == 0
+    """one_dominant 追加ベットのテスト（馬連のみ）"""
 
     def test_umaren_follows_wide_pairs_from_base_bets(self):
         """馬連はStep2のワイドと同じ組み合わせを自動購入"""
@@ -453,54 +427,16 @@ class TestSelectPatternAExtraBets:
         umaren_bets = [b for b in bets if b["bet_type"] == "umaren"]
         assert len(umaren_bets) == 2
 
-    def test_place_always_added_for_top1(self):
-        """top1馬の複勝はthreshold無関係に必ず1点追加される"""
+    def test_no_win_or_place_added(self):
+        """単勝・複勝は追加されない（馬連のみ）"""
         race_df = _make_race_df(
             n_horses=5,
             probs=[0.5, 0.2, 0.15, 0.1, 0.05],
-            odds=[1.1, 3.0, 4.0, 5.0, 6.0],  # top1のodds=1.1: threshold=1.2を下回る
+            odds=[3.0] * 5,
+            win_odds=[2.0, 10.0, 15.0, 20.0, 30.0],
         )
         bets = select_pattern_a_extra_bets(race_df, None, base_bets=[])
-        place_bets = [b for b in bets if b["bet_type"] == "place"]
-        assert len(place_bets) == 1
-        assert place_bets[0]["horse_numbers"] == [1]  # 複勝率1位（馬番1）
-
-    def test_place_not_duplicated_when_already_in_base_bets(self):
-        """base_betsに既にtop1の複勝があれば重複して追加しない"""
-        race_df = _make_race_df(
-            n_horses=5,
-            probs=[0.5, 0.2, 0.15, 0.1, 0.05],
-            odds=[3.0, 3.0, 4.0, 5.0, 6.0],
-        )
-        # base_betsに既にhorse_number=1の複勝が含まれている
-        base_bets = [
-            {"bet_type": "place", "horse_numbers": [1], "horse_id": "horse_001", "odds": 3.0},
-        ]
-        bets = select_pattern_a_extra_bets(race_df, None, base_bets=base_bets)
-        place_bets = [b for b in bets if b["bet_type"] == "place"]
-        # base_betsに既にあるので extra_bets には追加されない（重複なし）
-        assert len(place_bets) == 0
-
-    def test_place_for_top1_even_below_threshold_in_select_bets_for_race(self):
-        """select_bets_for_race経由でも突出型では複勝が必ず含まれる"""
-        race_df = _make_race_df(
-            n_horses=5,
-            probs=[0.5, 0.2, 0.15, 0.1, 0.05],
-            odds=[1.0, 3.0, 4.0, 5.0, 6.0],  # top1のodds=1.0: prob*odds=0.5<threshold
-        )
-        # threshold=1.2 のままなら select_base_bets では top1 の複勝は選ばれない
-        bets, pattern = select_bets_for_race(
-            race_df,
-            combo_odds_df=None,
-            budget_per_race=3000,
-            p1=0.3,  # probs[0]=0.5 > 0.3 → one_dominant
-            expected_return_threshold=1.2,
-        )
-        place_bets = [b for b in bets if b["bet_type"] == "place"]
-        assert pattern.pattern == "one_dominant"
-        # 突出型なので top1 の複勝が必ず含まれている
-        top1_place = [b for b in place_bets if b["horse_numbers"] == [1]]
-        assert len(top1_place) >= 1
+        assert all(b["bet_type"] not in {"win", "place"} for b in bets)
 
 
 # ---------------------------------------------------------------------------
@@ -537,7 +473,7 @@ class TestSelectBetsForRace:
         assert bet_types <= {"place"}
 
     def test_one_dominant_triggers_pattern_a(self):
-        """one_dominant 時に単勝が自動購入される"""
+        """one_dominant 時に馬連が自動購入され、単勝は購入されない"""
         # [0.6, 0.1, 0.1, 0.1, 0.1] のジニ係数は約0.4 > p1=0.3 → one_dominant
         race_df = _make_race_df(
             n_horses=5,
@@ -549,13 +485,17 @@ class TestSelectBetsForRace:
             {"bet_type": "umaren", "horse_number_1": 1, "horse_number_2": 2, "odds_value": 10.0},
             {"bet_type": "wide", "horse_number_1": 1, "horse_number_2": 2, "odds_value": 5.0},
         ])
+        # threshold=0.1 でワイドも期待値フィルタを通過させる
         bets, pattern = select_bets_for_race(
-            race_df, combo_odds_df=combo_df, p1=0.3
+            race_df, combo_odds_df=combo_df, p1=0.3,
+            expected_return_threshold=0.1,
         )
         assert pattern.pattern == "one_dominant"
         bet_types = {b["bet_type"] for b in bets}
-        # win_oddsがあるので単勝が自動追加される
-        assert "win" in bet_types
+        # 単勝は自動追加されない（win_oddsがあっても）
+        assert "win" not in bet_types
+        # ワイドが通過したので馬連が追加される
+        assert "umaren" in bet_types
 
     def test_pattern_specific_params_applied(self):
         """パターン別パラメータ（threshold_dominant/standard）が正しく適用される"""
@@ -565,7 +505,7 @@ class TestSelectBetsForRace:
             probs=[0.5, 0.2, 0.15, 0.1, 0.05],
             odds=[3.0, 3.0, 3.0, 3.0, 3.0],
         )
-        # threshold_dominant=2.0 (厳しい): select_base_bets では複勝が選ばれにくい
+        # threshold_dominant=2.0 (厳しい): select_base_bets では複勝が選ばれない
         # threshold_standard=1.0 (緩い) → パターンがstandardなら複勝が選ばれる
         bets_strict, pattern = select_bets_for_race(
             race_df,
@@ -576,11 +516,9 @@ class TestSelectBetsForRace:
         # one_dominantのため threshold_dominant=2.0 が適用される
         assert pattern.pattern == "one_dominant"
         place_bets = [b for b in bets_strict if b["bet_type"] == "place"]
-        # 突出型では top1 の複勝は threshold 無関係に必ず含まれる（Issue #193）
-        # 0.5 × 3.0 = 1.5 < 2.0 → select_base_bets では選ばれないが
-        # select_pattern_a_extra_bets で top1 の複勝が追加される
-        assert len(place_bets) == 1
-        assert place_bets[0]["horse_numbers"] == [1]
+        # threshold_dominant=2.0 のため 0.5 × 3.0 = 1.5 < 2.0 → 複勝は選ばれない
+        # （突出型でも top1 の複勝を自動追加しなくなった）
+        assert len(place_bets) == 0
 
     def test_insufficient_horses_raises(self):
         """3頭未満で ValueError"""
@@ -625,9 +563,8 @@ class TestSelectBetsForRace:
         assert total <= budget_per_race
 
     def test_one_dominant_total_within_budget(self):
-        """突出型レースで単勝+ワイド+馬連の合計が budget_per_race 以内"""
+        """突出型レースで複勝+ワイド+馬連の合計が budget_per_race 以内"""
         # gini ≈ 0.45 > p1=0.3 → one_dominant
-        # 単勝オッズ=3.0（低オッズ → inv_oddsが高い）でも合計はbudget以内
         race_df = _make_race_df(
             n_horses=5,
             probs=[0.65, 0.1, 0.1, 0.1, 0.05],
@@ -648,16 +585,14 @@ class TestSelectBetsForRace:
         )
         assert pattern.pattern == "one_dominant"
         bet_types = {b["bet_type"] for b in bets}
-        assert "win" in bet_types, "突出型レースで単勝が含まれるべき"
+        assert "win" not in bet_types, "突出型レースでも単勝は購入されない"
         total = sum(b["bet_amount"] for b in bets)
         assert total <= budget_per_race, (
             f"合計賭け金 {total} が budget_per_race {budget_per_race} を超えている"
         )
 
-    def test_one_dominant_win_not_full_budget(self):
-        """突出型レースで単勝が budget_per_race 全額を占めない（他の馬券と共有）"""
-        # 単勝オッズ=4.0のみ → 単勝が全額を占めてしまう問題の防止を確認
-        # 複勝/ワイドも期待値フィルタを通過するなら単勝は全額を占めない
+    def test_one_dominant_umaren_added_with_wide(self):
+        """突出型レースでワイドが通過した場合、同組み合わせの馬連が追加される"""
         race_df = _make_race_df(
             n_horses=5,
             probs=[0.65, 0.1, 0.1, 0.1, 0.05],
@@ -674,19 +609,17 @@ class TestSelectBetsForRace:
             combo_odds_df=combo_df,
             budget_per_race=budget_per_race,
             p1=0.3,
-            expected_return_threshold=1.0,
+            expected_return_threshold=0.1,  # 低い閾値でワイドを通過させる
         )
         assert pattern.pattern == "one_dominant"
-        win_bets = [b for b in bets if b["bet_type"] == "win"]
-        non_win_bets = [b for b in bets if b["bet_type"] != "win"]
-        # 単勝以外の馬券（ワイド/馬連/複勝）も選定されているはず
-        assert len(non_win_bets) > 0, "単勝以外の馬券も選定されるべき"
-        if win_bets:
-            win_amount = win_bets[0]["bet_amount"]
-            # 単勝が全額を占めていない（予算の95%未満）
-            assert win_amount < budget_per_race * 0.95, (
-                f"単勝の賭け金 {win_amount} が予算の95%以上を占めている"
-            )
+        bet_types = {b["bet_type"] for b in bets}
+        # 単勝は購入されない
+        assert "win" not in bet_types
+        # ワイドが通過しているので馬連も追加される
+        assert "umaren" in bet_types
+        # 合計が予算以内
+        total = sum(b["bet_amount"] for b in bets)
+        assert total <= budget_per_race
 
 
 # ---------------------------------------------------------------------------
