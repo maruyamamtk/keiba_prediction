@@ -1,15 +1,17 @@
 """
-run_strategy.py の build_race_df のユニットテスト
+run_strategy.py の build_race_df と _build_decision_row のユニットテスト
 
 Issue #166: win_odds が race_df に渡されないため単勝が常に0件になるバグの修正検証。
+Issue #194: 単勝の expected_return に複勝率を使っているため誤った値になる問題の修正検証。
 """
 
 from __future__ import annotations
 
+import datetime
 import pandas as pd
 import pytest
 
-from scripts.run_strategy import build_race_df
+from scripts.run_strategy import build_race_df, _build_decision_row
 
 
 # ---------------------------------------------------------------------------
@@ -108,3 +110,72 @@ class TestBuildRaceDf:
 
         for col in ["horse_id", "horse_number", "win_place_prob", "odds"]:
             assert col in result.columns, f"{col} カラムが必要"
+
+
+# ---------------------------------------------------------------------------
+# _build_decision_row のテスト（Issue #194）
+# ---------------------------------------------------------------------------
+
+
+def _make_race_group(horse_number: int = 1, win_place_prob: float = 0.5) -> pd.DataFrame:
+    return pd.DataFrame([{
+        "race_id": "race_001",
+        "horse_id": "horse_001",
+        "horse_number": horse_number,
+        "horse_name": "テストホース",
+        "win_place_prob": win_place_prob,
+    }])
+
+
+def _make_meta_row() -> pd.Series:
+    return pd.Series({"venue_code": "09", "race_number": 5})
+
+
+class TestBuildDecisionRow:
+    """_build_decision_row の単勝/複勝 expected_return 計算テスト（Issue #194）"""
+
+    def test_place_bet_has_expected_return(self):
+        """複勝は expected_return が計算される"""
+        race_group = _make_race_group(horse_number=1, win_place_prob=0.4)
+        bet = {"bet_type": "place", "horse_numbers": [1], "horse_id": "horse_001", "odds": 3.0, "bet_amount": 1000.0}
+        row = _build_decision_row(
+            race_id="race_001",
+            target_date=datetime.date(2026, 3, 29),
+            meta_row=_make_meta_row(),
+            race_group=race_group,
+            bet=bet,
+            race_pattern_str="standard",
+            created_at=datetime.datetime(2026, 3, 29, 9, 0, 0),
+        )
+        assert row["expected_return"] is not None
+        assert abs(row["expected_return"] - 0.4 * 3.0) < 1e-6
+
+    def test_win_bet_expected_return_is_none(self):
+        """単勝は expected_return が None（win_prob がないため計算しない）"""
+        race_group = _make_race_group(horse_number=1, win_place_prob=0.733)
+        bet = {"bet_type": "win", "horse_numbers": [1], "horse_id": "horse_001", "odds": 5.8, "bet_amount": 1000.0}
+        row = _build_decision_row(
+            race_id="race_001",
+            target_date=datetime.date(2026, 3, 29),
+            meta_row=_make_meta_row(),
+            race_group=race_group,
+            bet=bet,
+            race_pattern_str="one_dominant",
+            created_at=datetime.datetime(2026, 3, 29, 9, 0, 0),
+        )
+        assert row["expected_return"] is None, "単勝の expected_return は None であるべき"
+
+    def test_win_bet_still_has_win_place_prob(self):
+        """単勝でも win_place_prob は保存される（参考表示用）"""
+        race_group = _make_race_group(horse_number=1, win_place_prob=0.733)
+        bet = {"bet_type": "win", "horse_numbers": [1], "horse_id": "horse_001", "odds": 5.8, "bet_amount": 1000.0}
+        row = _build_decision_row(
+            race_id="race_001",
+            target_date=datetime.date(2026, 3, 29),
+            meta_row=_make_meta_row(),
+            race_group=race_group,
+            bet=bet,
+            race_pattern_str="one_dominant",
+            created_at=datetime.datetime(2026, 3, 29, 9, 0, 0),
+        )
+        assert abs(row["win_place_prob"] - 0.733) < 1e-6

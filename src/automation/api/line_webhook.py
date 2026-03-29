@@ -606,14 +606,22 @@ def _format_single_bet_line(bet: dict[str, Any]) -> str:
     horse_str = " / ".join(horse_parts)
 
     if len(horse_numbers) == 1:
-        # 単複: 複勝率・期待値を表示
         prob = float(bet.get("win_place_prob", 0) or 0) * 100
-        ev = float(bet.get("expected_return", 0) or 0)
-        return (
-            f"  [{bet_label}] {horse_str}\n"
-            f"    複勝率:{prob:.1f}% / オッズ:{odds:.1f}倍 / 期待値:{ev:.2f}\n"
-            f"    推奨: ¥{amount:,.0f}"
-        )
+        if bet_type == "win":
+            # 単勝: win_prob がないため複勝率を参考表示。期待値は表示しない
+            return (
+                f"  [{bet_label}] {horse_str}\n"
+                f"    複勝率(参考):{prob:.1f}% / オッズ:{odds:.1f}倍\n"
+                f"    推奨: ¥{amount:,.0f}"
+            )
+        else:
+            # 複勝: 複勝率・期待値を表示
+            ev = float(bet.get("expected_return", 0) or 0)
+            return (
+                f"  [{bet_label}] {horse_str}\n"
+                f"    複勝率:{prob:.1f}% / オッズ:{odds:.1f}倍 / 期待値:{ev:.2f}\n"
+                f"    推奨: ¥{amount:,.0f}"
+            )
     else:
         # マルチ馬券: 馬番・馬名・オッズのみ
         return (
