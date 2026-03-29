@@ -288,6 +288,13 @@ def save_decisions_to_bq(
     )
     client.load_table_from_dataframe(df, temp_table, job_config=job_config).result()
 
+    # 対象 race_id の既存行を削除してから MERGE（BigQuery は WHEN 句での相関サブクエリ非対応）
+    delete_query = f"""
+    DELETE FROM `{table_ref}`
+    WHERE race_id IN (SELECT DISTINCT race_id FROM `{temp_table}`)
+    """
+    client.query(delete_query).result()
+
     merge_query = f"""
     MERGE `{table_ref}` AS target
     USING `{temp_table}` AS source
@@ -307,9 +314,6 @@ def save_decisions_to_bq(
         expected_return = source.expected_return,
         created_at = source.created_at
     WHEN NOT MATCHED BY TARGET THEN INSERT ROW
-    WHEN NOT MATCHED BY SOURCE
-      AND target.race_id IN (SELECT DISTINCT race_id FROM `{temp_table}`)
-      THEN DELETE
     """
     client.query(merge_query).result()
     client.delete_table(temp_table, not_found_ok=True)
