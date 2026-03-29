@@ -470,6 +470,8 @@ def save_predictions_to_gcs(
 
 def format_predictions(result_df: pd.DataFrame) -> str:
     """予測結果を見やすい文字列に整形する"""
+    from src.backtest.strategy import classify_race_pattern
+
     if len(result_df) == 0:
         return "推論対象データがありません"
 
@@ -480,8 +482,12 @@ def format_predictions(result_df: pd.DataFrame) -> str:
         venue_name = VENUE_MAP.get(str(venue_code), f"不明({venue_code})")
         race_num = group.get("race_number", pd.Series(["?"])).iloc[0]
 
+        race_pattern = classify_race_pattern(group["win_place_prob"].tolist())
+        label = "突出型" if race_pattern.pattern == "one_dominant" else "標準型"
+        gini_str = f"Gini={race_pattern.gini_coefficient:.3f}"
+
         lines.append(f"\n{'='*60}")
-        lines.append(f"Race: {venue_name} {race_num}R ({race_date})")
+        lines.append(f"Race: {venue_name} {race_num}R ({race_date})  [{label}  {gini_str}]")
         lines.append(f"{'='*60}")
         lines.append(
             f"{'予測順':>6} {'馬番':>4} {'馬名':<10} {'スコア':>10} {'複勝率':>8} {'着順':>6}"
