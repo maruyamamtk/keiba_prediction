@@ -483,8 +483,6 @@ class TestSelectPatternAExtraBets:
 
     def test_place_for_top1_even_below_threshold_in_select_bets_for_race(self):
         """select_bets_for_race経由でも突出型では複勝が必ず含まれる"""
-        from src.backtest.strategy import select_bets_for_race
-
         race_df = _make_race_df(
             n_horses=5,
             probs=[0.5, 0.2, 0.15, 0.1, 0.05],
