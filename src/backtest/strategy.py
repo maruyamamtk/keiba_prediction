@@ -4,7 +4,7 @@
 レースの複勝率分布パターンを分析し、パターンに応じた最適な投資戦略を選定する。
 
 パターン分類:
-  - one_dominant（突出型）: 複勝率分布のジニ係数 > p1 → 単複一点買い + 馬連
+  - one_dominant（突出型）: 複勝率分布のジニ係数 > p1 → ワイドと同じ組み合わせの馬連を追加購入
   - standard（標準型）: それ以外 → 期待回収率フィルタによる複勝選定
 """
 
@@ -301,17 +301,14 @@ def select_pattern_a_extra_bets(
     base_bets: list[dict],
 ) -> list[dict]:
     """
-    one_dominant 時の追加ベット（単勝 + 複勝 + 馬連）を選定する
+    one_dominant 時の追加ベット（馬連）を選定する
 
     Step 3 のロジック（自動購入方式）:
-      - 単勝: 複勝率が最も高い馬の単勝を1点のみ自動購入（期待値フィルタなし）
-      - 複勝: 単勝対象馬（top1）の複勝を期待値フィルタなしで1点自動購入
       - 馬連: Step2（select_base_bets）で選定したワイドと同じ組み合わせを自動購入
 
     Args:
         race_df: レースの予測データ DataFrame
             必須カラム: horse_id, horse_number, win_place_prob, odds
-            オプション: win_odds（単勝オッズ。存在する場合のみ単勝選定が有効化）
         combo_odds_df: コンボオッズ DataFrame
         base_bets: select_base_bets() の戻り値。
             ワイドの組み合わせを馬連の購入対象として流用する。
@@ -322,36 +319,7 @@ def select_pattern_a_extra_bets(
     if len(race_df) == 0:
         return []
 
-    sorted_df = race_df.sort_values("win_place_prob", ascending=False)
-    top1_row = sorted_df.iloc[0]
-    top1_horse_number = int(top1_row["horse_number"])
-    top1_horse_id = str(top1_row["horse_id"])
-
     extra_bets = []
-
-    # ── 複勝: 軸馬（複勝率1位）を期待値フィルタなしで1点購入 ──
-    has_top1_place = any(
-        bet["bet_type"] == "place" and bet["horse_numbers"] == [top1_horse_number]
-        for bet in base_bets
-    )
-    if not has_top1_place:
-        extra_bets.append({
-            "bet_type": "place",
-            "horse_numbers": [top1_horse_number],
-            "horse_id": top1_horse_id,
-            "odds": float(top1_row["odds"]),
-        })
-
-    # ── 単勝: win_odds カラムがあれば軸馬（複勝率1位）を無条件で1点購入 ──
-    if "win_odds" in race_df.columns:
-        win_odds_val = top1_row.get("win_odds", None)
-        if win_odds_val is not None and not pd.isna(win_odds_val):
-            extra_bets.append({
-                "bet_type": "win",
-                "horse_numbers": [top1_horse_number],
-                "horse_id": top1_horse_id,
-                "odds": float(win_odds_val),
-            })
 
     # ── 馬連: Step2 のワイドと同じ馬番ペアを自動購入 ──
     has_combo = (
