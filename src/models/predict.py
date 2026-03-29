@@ -469,7 +469,7 @@ def save_predictions_to_gcs(
     return gcs_uri
 
 
-def format_predictions(result_df: pd.DataFrame) -> str:
+def format_predictions(result_df: pd.DataFrame, p1: float = 0.3) -> str:
     """予測結果を見やすい文字列に整形する"""
     if len(result_df) == 0:
         return "推論対象データがありません"
@@ -481,7 +481,7 @@ def format_predictions(result_df: pd.DataFrame) -> str:
         venue_name = VENUE_MAP.get(str(venue_code), f"不明({venue_code})")
         race_num = group.get("race_number", pd.Series(["?"])).iloc[0]
 
-        race_pattern = classify_race_pattern(group["win_place_prob"].tolist())
+        race_pattern = classify_race_pattern(group["win_place_prob"].tolist(), p1=p1)
         label = "突出型" if race_pattern.pattern == "one_dominant" else "標準型"
         gini_str = f"Gini={race_pattern.gini_coefficient:.3f}"
 
@@ -590,6 +590,13 @@ def main():
     config = load_config(args.config)
     execution_date = datetime.date.fromisoformat(args.execution_date)
 
+    strategy_config_path = Path(__file__).resolve().parents[2] / "config" / "strategy_config.yaml"
+    p1 = 0.3
+    if strategy_config_path.exists():
+        with open(strategy_config_path) as f:
+            strategy_cfg = yaml.safe_load(f)
+        p1 = float(strategy_cfg.get("p1", 0.3))
+
     parsed_target_dates = None
     if args.target_dates:
         try:
@@ -609,7 +616,7 @@ def main():
     )
 
     # 結果表示
-    print(format_predictions(result_df))
+    print(format_predictions(result_df, p1=p1))
 
     # CSV出力
     if args.output_csv and len(result_df) > 0:
