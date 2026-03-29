@@ -141,6 +141,8 @@ def _allocate_bets(
 
     総予算 = budget_per_race を各betのオッズ逆数の比率で割り当てる。
     100円単位に切り捨て後、min_bet_amount 未満のbetは除外する。
+    除外が発生した場合は残ったbetに対して予算を再配分し、
+    追加の除外が発生しなくなるまで繰り返す（収束まで反復）。
 
     Args:
         selected_bets: betの候補リスト。各要素は少なくとも 'odds' キーを持つ dict
@@ -153,31 +155,47 @@ def _allocate_bets(
     if not selected_bets:
         return []
 
-    total_budget = budget_per_race
+    # 除外後の残りbetに予算を再配分するため、収束するまでループ
+    active_bets = list(selected_bets)
 
-    # オッズ逆数を計算
-    inv_odds = []
-    for bet in selected_bets:
-        odds = float(bet.get("odds", 1.0))
-        inv_odds.append(1.0 / max(odds, 0.01))
+    while active_bets:
+        # オッズ逆数を計算
+        inv_odds = [1.0 / max(float(bet.get("odds", 1.0)), 0.01) for bet in active_bets]
+        total_inv = sum(inv_odds)
+        if total_inv <= 0:
+            return []
 
-    total_inv = sum(inv_odds)
-    if total_inv <= 0:
-        return []
+        # 各betの賭け金を計算（100円単位切り捨て）
+        amounts = []
+        for inv in inv_odds:
+            ratio = inv / total_inv
+            raw_amount = budget_per_race * ratio
+            amounts.append(float(np.floor(raw_amount / 100.0) * 100.0))
 
-    result = []
-    for bet, inv in zip(selected_bets, inv_odds):
-        ratio = inv / total_inv
-        raw_amount = total_budget * ratio
-        # 100円単位切り捨て
-        bet_amount = float(np.floor(raw_amount / 100.0) * 100.0)
-        if bet_amount < min_bet_amount:
-            continue
-        bet_copy = dict(bet)
-        bet_copy["bet_amount"] = bet_amount
-        result.append(bet_copy)
+        # min_bet_amount 以上のbetのみ残す
+        kept = [
+            (bet, amt)
+            for bet, amt in zip(active_bets, amounts)
+            if amt >= min_bet_amount
+        ]
 
-    return result
+        if len(kept) == len(active_bets):
+            # 除外されたbetなし → 収束
+            result = []
+            for bet, amt in kept:
+                bet_copy = dict(bet)
+                bet_copy["bet_amount"] = amt
+                result.append(bet_copy)
+            return result
+
+        if not kept:
+            # 全bet除外
+            return []
+
+        # 除外されたbetがある → 残ったbetで予算を再配分
+        active_bets = [bet for bet, _ in kept]
+
+    return []
 
 
 def select_base_bets(

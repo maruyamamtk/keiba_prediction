@@ -229,6 +229,44 @@ class TestAllocateBets:
         result = _allocate_bets([], 3000.0, min_bet_amount=100.0)
         assert result == []
 
+    def test_redistribution_after_exclusion(self):
+        """高オッズbet除外後に残ったbetへ予算が再配分される"""
+        # odds=4.6 と odds=765.4 の2点。
+        # 高オッズ側は逆数が極めて小さいため最初の計算では < 100円 → 除外。
+        # 除外後に残った odds=4.6 だけで予算3000を再配分すると 3000円 になる。
+        bets = [
+            {"bet_type": "wide", "horse_numbers": [5, 14], "horse_id": None, "odds": 4.6},
+            {"bet_type": "wide", "horse_numbers": [12, 15], "horse_id": None, "odds": 765.4},
+        ]
+        result = _allocate_bets(bets, budget_per_race=3000.0, min_bet_amount=100.0)
+        # 高オッズ側は除外され、1件のみ残る
+        assert len(result) == 1
+        assert result[0]["horse_numbers"] == [5, 14]
+        # 残ったbetが予算全額 (3000円) を受け取る
+        assert result[0]["bet_amount"] == 3000.0
+
+    def test_redistribution_total_within_budget(self):
+        """除外後再配分しても合計が budget_per_race 以内"""
+        bets = [
+            {"bet_type": "wide", "horse_numbers": [1, 2], "horse_id": None, "odds": 5.0},
+            {"bet_type": "wide", "horse_numbers": [1, 3], "horse_id": None, "odds": 8.0},
+            {"bet_type": "wide", "horse_numbers": [1, 4], "horse_id": None, "odds": 1000.0},
+        ]
+        result = _allocate_bets(bets, budget_per_race=3000.0, min_bet_amount=100.0)
+        total = sum(b["bet_amount"] for b in result)
+        assert total <= 3000.0
+        # 高オッズ(1000倍)は除外され2件のみ残る
+        assert len(result) == 2
+
+    def test_single_high_odds_excluded_when_below_min(self):
+        """単独bet でも計算額が min_bet_amount 未満なら除外される"""
+        bets = [
+            {"bet_type": "wide", "horse_numbers": [1, 2], "horse_id": None, "odds": 5.0},
+        ]
+        # 予算30円 → 計算額=30円 < 100円 → 除外
+        result = _allocate_bets(bets, budget_per_race=30.0, min_bet_amount=100.0)
+        assert len(result) == 0
+
 
 # ---------------------------------------------------------------------------
 # select_base_bets のテスト
