@@ -311,6 +311,12 @@ def get_today_race_list(date: datetime.date, sleep_sec: float = 1.0) -> list[dic
         try:
             page = _create_page_with_route_block(browser)
             page.goto(url, wait_until="domcontentloaded", timeout=60_000)
+            # race_id リンクが描画されるまで待機（JSによる動的レンダリング対応）
+            # レースがない日はタイムアウトになるため TimeoutError は無視する
+            try:
+                page.wait_for_selector("a[href*='race_id=']", timeout=10_000)
+            except Exception:
+                pass
             if sleep_sec > 0:
                 time.sleep(sleep_sec)
             html = page.content()
