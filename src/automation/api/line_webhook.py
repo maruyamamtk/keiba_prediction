@@ -652,7 +652,7 @@ def format_push_notification(
     messages: list[dict[str, str]] = [{"type": "text", "text": header}]
 
     # 競馬場コード順・レース番号順でレースブロックを生成
-    sorted_races = sorted(races.items(), key=lambda x: (x[0][0], x[0][1]))
+    sorted_races = sorted(races.items(), key=lambda x: x[0])
     race_blocks: list[str] = []
     for (venue_code, race_number), bets in sorted_races:
         venue_name = VENUE_CODE_TO_NAME.get(venue_code, venue_code)
@@ -693,7 +693,7 @@ def send_daily_push_notification(
     Returns:
         {"status": "sent"|"skipped"|"no_decisions", "messages_sent": int}
     """
-    from src.utils.line_notify import push_messages
+    from src.utils.line_notify import push_messages, _MAX_MESSAGES_PER_CALL
 
     if not is_weekend_in_jst(target_date):
         logger.info(f"平日のためLINE通知をスキップ: {target_date} (weekday={target_date.weekday()})")
@@ -705,8 +705,8 @@ def send_daily_push_notification(
         return {"status": "no_decisions", "messages_sent": 0}
 
     messages = format_push_notification(target_date, decisions)
-    # LINE API は1回の呼び出しで最大5件のため、5件ずつ分割して送信
-    for i in range(0, len(messages), 5):
-        push_messages(channel_access_token, user_id, messages[i:i + 5])
+    # LINE API の上限に合わせて分割して送信
+    for i in range(0, len(messages), _MAX_MESSAGES_PER_CALL):
+        push_messages(channel_access_token, user_id, messages[i:i + _MAX_MESSAGES_PER_CALL])
     logger.info(f"LINE プッシュ通知送信完了: {len(messages)}件")
     return {"status": "sent", "messages_sent": len(messages)}

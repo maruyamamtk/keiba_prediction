@@ -19,6 +19,9 @@ logger = logging.getLogger(__name__)
 LINE_REPLY_URL = "https://api.line.me/v2/bot/message/reply"
 LINE_PUSH_URL = "https://api.line.me/v2/bot/message/push"
 
+# LINE Messaging API の1回の呼び出しで送信できる最大メッセージ数
+_MAX_MESSAGES_PER_CALL = 5
+
 
 def _headers(channel_access_token: str) -> dict[str, str]:
     return {
@@ -42,7 +45,7 @@ def reply_messages(
     """
     payload: dict[str, Any] = {
         "replyToken": reply_token,
-        "messages": messages[:5],
+        "messages": messages[:_MAX_MESSAGES_PER_CALL],
     }
     resp = requests.post(
         LINE_REPLY_URL,
@@ -73,7 +76,7 @@ def push_messages(
     """
     payload: dict[str, Any] = {
         "to": to,
-        "messages": messages[:5],
+        "messages": messages[:_MAX_MESSAGES_PER_CALL],
     }
     resp = requests.post(
         LINE_PUSH_URL,

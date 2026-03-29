@@ -518,7 +518,7 @@ class TestFormatPushNotification:
                 "win_place_prob": 0.25,
                 "place_odds": 4.5,
                 "expected_return": 1.125,
-                            },
+            },
             {
                 "venue_code": "09",
                 "race_number": 5,
@@ -530,7 +530,7 @@ class TestFormatPushNotification:
                 "win_place_prob": None,
                 "place_odds": 8.2,
                 "expected_return": None,
-                            },
+            },
             {
                 "venue_code": "06",
                 "race_number": 3,
@@ -542,7 +542,7 @@ class TestFormatPushNotification:
                 "win_place_prob": 0.40,
                 "place_odds": 3.0,
                 "expected_return": 1.20,
-                            },
+            },
         ]
 
     def test_returns_at_least_two_messages(self):
