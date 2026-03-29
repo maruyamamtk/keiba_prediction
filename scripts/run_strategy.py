@@ -306,7 +306,10 @@ def save_decisions_to_bq(
         place_odds = source.place_odds,
         expected_return = source.expected_return,
         created_at = source.created_at
-    WHEN NOT MATCHED THEN INSERT ROW
+    WHEN NOT MATCHED BY TARGET THEN INSERT ROW
+    WHEN NOT MATCHED BY SOURCE
+      AND target.race_id IN (SELECT DISTINCT race_id FROM `{temp_table}`)
+      THEN DELETE
     """
     client.query(merge_query).result()
     client.delete_table(temp_table, not_found_ok=True)
