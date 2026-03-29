@@ -525,50 +525,34 @@ def process_webhook_events(
 def _fetch_investment_decisions(
     project_id: str,
     target_date: date,
-    max_races: int = 10,
 ) -> list[dict[str, Any]]:
     """
     predictions.investment_decisions から当日の投資判断を取得する。
 
-    レースごとに最大期待回収率（単複のみ）でレースをランク付けし、
-    上位 max_races レースのみを返す。
+    推奨馬券が存在するレースを競馬場コード順・レース番号順で全件返す。
 
     Args:
         project_id: GCP プロジェクト ID
         target_date: 対象日
-        max_races: 通知対象の最大レース数（デフォルト10）
     """
     from google.cloud import bigquery
 
     client = bigquery.Client(project=project_id)
     query = f"""
-    WITH race_rank AS (
-      -- 単複の期待回収率でレースをランク付け（マルチ馬券は expected_return が NULL のため MAX で除外）
-      SELECT
-        race_id,
-        MAX(COALESCE(expected_return, 0)) AS max_expected_return
-      FROM `{project_id}.predictions.investment_decisions`
-      WHERE race_date = '{target_date.isoformat()}'
-      GROUP BY race_id
-      ORDER BY max_expected_return DESC
-      LIMIT {max_races}
-    )
     SELECT
-      d.venue_code,
-      d.race_number,
-      d.race_pattern,
-      d.horse_numbers,
-      d.horse_names,
-      d.bet_type,
-      d.bet_amount,
-      d.win_place_prob,
-      d.place_odds,
-      d.expected_return,
-      r.max_expected_return
-    FROM `{project_id}.predictions.investment_decisions` d
-    JOIN race_rank r ON d.race_id = r.race_id
-    WHERE d.race_date = '{target_date.isoformat()}'
-    ORDER BY r.max_expected_return DESC, d.venue_code, d.race_number, d.bet_type, d.horse_numbers
+      venue_code,
+      race_number,
+      race_pattern,
+      horse_numbers,
+      horse_names,
+      bet_type,
+      bet_amount,
+      win_place_prob,
+      place_odds,
+      expected_return
+    FROM `{project_id}.predictions.investment_decisions`
+    WHERE race_date = '{target_date.isoformat()}'
+    ORDER BY venue_code ASC, race_number ASC, bet_type, horse_numbers
     """
     rows = client.query(query).result()
     return [dict(row) for row in rows]
@@ -626,6 +610,9 @@ def _format_single_bet_line(bet: dict[str, Any]) -> str:
         )
 
 
+_RACES_PER_MESSAGE = 10
+
+
 def format_push_notification(
     target_date: date,
     decisions: list[dict[str, Any]],
@@ -635,14 +622,16 @@ def format_push_notification(
 
     全馬券種（複勝/ワイド/三連複/単勝/馬連）に対応し、
     1馬券を1行のデータとして扱う。
-    レース数が多い場合は最大 4 メッセージ（LINE上限 5 件のうち 1 件はヘッダー）に収める。
+    競馬場コード順・レース番号順でソートし、
+    10レースごとに1メッセージに分割する。
+    11レース以上の場合は複数メッセージを返す（LINE 5件制限は呼び出し側で対応）。
 
     Args:
         target_date: 対象日
         decisions: investment_decisions の行リスト（1行/馬券形式）
 
     Returns:
-        LINE メッセージオブジェクトのリスト
+        LINE メッセージオブジェクトのリスト（先頭がヘッダー）
     """
     if not decisions:
         return [{"type": "text", "text": f"🏇 {target_date.isoformat()} の推奨馬券はありません。"}]
@@ -662,9 +651,10 @@ def format_push_notification(
     )
     messages: list[dict[str, str]] = [{"type": "text", "text": header}]
 
-    # レースブロックを最大 4 メッセージに分割
+    # 競馬場コード順・レース番号順でレースブロックを生成
+    sorted_races = sorted(races.items(), key=lambda x: (x[0][0], x[0][1]))
     race_blocks: list[str] = []
-    for (venue_code, race_number), bets in races.items():
+    for (venue_code, race_number), bets in sorted_races:
         venue_name = VENUE_CODE_TO_NAME.get(venue_code, venue_code)
         pattern_label = PATTERN_LABELS.get(str(bets[0].get("race_pattern", "")), "")
         lines = [f"【{venue_name} {race_number}R】{pattern_label}"]
@@ -672,21 +662,9 @@ def format_push_notification(
             lines.append(_format_single_bet_line(bet))
         race_blocks.append("\n".join(lines))
 
-    # 4 メッセージに収まるよう複数ブロックをまとめる
-    chunk: list[str] = []
-    chunk_len = 0
-    for block in race_blocks:
-        if chunk_len + len(block) > 4500 or len(messages) + 1 > 4:
-            if chunk:
-                messages.append({"type": "text", "text": "\n\n".join(chunk)})
-                chunk = []
-                chunk_len = 0
-            if len(messages) >= 5:
-                break
-        chunk.append(block)
-        chunk_len += len(block)
-
-    if chunk and len(messages) < 5:
+    # 10レースごとに1メッセージに分割
+    for i in range(0, len(race_blocks), _RACES_PER_MESSAGE):
+        chunk = race_blocks[i:i + _RACES_PER_MESSAGE]
         messages.append({"type": "text", "text": "\n\n".join(chunk)})
 
     return messages
@@ -721,12 +699,14 @@ def send_daily_push_notification(
         logger.info(f"平日のためLINE通知をスキップ: {target_date} (weekday={target_date.weekday()})")
         return {"status": "skipped", "messages_sent": 0}
 
-    decisions = _fetch_investment_decisions(project_id, target_date, max_races=10)
+    decisions = _fetch_investment_decisions(project_id, target_date)
     if not decisions:
         logger.info(f"投資判断なし: {target_date}")
         return {"status": "no_decisions", "messages_sent": 0}
 
     messages = format_push_notification(target_date, decisions)
-    push_messages(channel_access_token, user_id, messages)
+    # LINE API は1回の呼び出しで最大5件のため、5件ずつ分割して送信
+    for i in range(0, len(messages), 5):
+        push_messages(channel_access_token, user_id, messages[i:i + 5])
     logger.info(f"LINE プッシュ通知送信完了: {len(messages)}件")
     return {"status": "sent", "messages_sent": len(messages)}
