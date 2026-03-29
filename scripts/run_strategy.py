@@ -360,6 +360,7 @@ def _build_decision_row(
     horse_names_str = ",".join(horse_names_list)
 
     # 単複（単一馬番）のみ win_place_prob / expected_return を設定
+    # 単勝（win）は win_prob がないため expected_return を計算しない（複勝率ベースの計算は誤り）
     win_place_prob = None
     expected_return = None
     if len(horse_numbers) == 1:
@@ -367,7 +368,8 @@ def _build_decision_row(
         if not rows.empty:
             prob = float(rows.iloc[0]["win_place_prob"])
             win_place_prob = prob
-            expected_return = round(prob * odds, 4)
+            if bet_type != "win":
+                expected_return = round(prob * odds, 4)
 
     return {
         "race_id": str(race_id),

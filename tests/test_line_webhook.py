@@ -404,6 +404,17 @@ class TestFormatSingleBetLine:
             "bet_amount": 1000.0,
         }
 
+    def _make_win_bet(self) -> dict:
+        return {
+            "bet_type": "win",
+            "horse_numbers": "6",
+            "horse_names": "オールザワールド",
+            "win_place_prob": 0.733,
+            "place_odds": 5.8,
+            "expected_return": None,  # 単勝は expected_return なし
+            "bet_amount": 1000.0,
+        }
+
     def _make_wide_bet(self) -> dict:
         return {
             "bet_type": "wide",
@@ -463,6 +474,30 @@ class TestFormatSingleBetLine:
     def test_wide_shows_bet_amount(self):
         result = _format_single_bet_line(self._make_wide_bet())
         assert "500" in result
+
+    def test_win_shows_place_prob_as_reference(self):
+        """単勝は「複勝率(参考)」ラベルで確率を表示する"""
+        result = _format_single_bet_line(self._make_win_bet())
+        assert "複勝率(参考)" in result
+        assert "73.3%" in result
+
+    def test_win_does_not_show_expected_return(self):
+        """単勝は期待値を表示しない（win_probがないため計算不可）"""
+        result = _format_single_bet_line(self._make_win_bet())
+        assert "期待値" not in result
+
+    def test_win_shows_odds_and_amount(self):
+        """単勝はオッズと推奨額を表示する"""
+        result = _format_single_bet_line(self._make_win_bet())
+        assert "5.8倍" in result
+        assert "1,000" in result
+
+    def test_place_still_shows_expected_return(self):
+        """複勝は引き続き期待値を表示する（回帰テスト）"""
+        result = _format_single_bet_line(self._make_place_bet())
+        assert "期待値" in result
+        assert "複勝率(参考)" not in result  # 複勝は "(参考)" なし
+        assert "複勝率:" in result
 
 
 # ---------------------------------------------------------------------------
