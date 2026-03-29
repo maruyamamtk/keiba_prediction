@@ -363,27 +363,35 @@ def _run_strategy_for_race(
         with open(config_path) as f:
             cfg = yaml.safe_load(f)
         p1 = float(cfg.get("p1", 0.2))
-        threshold = float(cfg.get("expected_return_threshold", 1.2))
-        max_bet_ratio = float(cfg.get("max_bet_ratio", 0.05))
+        _legacy_threshold = float(cfg.get("expected_return_threshold", 1.2))
+        budget_per_race = float(cfg.get("budget_per_race", 3000.0))
         min_bet_amount = float(cfg.get("min_bet_amount", 100.0))
         min_prob_threshold = float(cfg.get("min_prob_threshold", 0.10))
         prob_weight_r = float(cfg.get("prob_weight_r", 1.0))
-        top_n = int(cfg.get("top_n", 5))
+        _legacy_top_n = int(cfg.get("top_n", 5))
+        threshold_dominant = float(cfg.get("threshold_dominant", _legacy_threshold))
+        threshold_standard = float(cfg.get("threshold_standard", _legacy_threshold))
+        top_n_dominant = int(cfg.get("top_n_dominant", _legacy_top_n))
+        top_n_standard = int(cfg.get("top_n_standard", _legacy_top_n))
     else:
-        p1, threshold, max_bet_ratio, min_bet_amount = 0.2, 1.2, 0.05, 100.0
-        min_prob_threshold, prob_weight_r, top_n = 0.10, 1.0, 5
+        p1, budget_per_race, min_bet_amount = 0.2, 3000.0, 100.0
+        min_prob_threshold, prob_weight_r = 0.10, 1.0
+        threshold_dominant, threshold_standard = 1.2, 1.2
+        top_n_dominant, top_n_standard = 5, 5
 
     try:
         bets, pattern = select_bets_for_race(
             race_df=race_df,
             combo_odds_df=combo_odds_df if not combo_odds_df.empty else None,
+            budget_per_race=budget_per_race,
             p1=p1,
-            expected_return_threshold=threshold,
-            max_bet_ratio=max_bet_ratio,
             min_bet_amount=min_bet_amount,
-            top_n=top_n,
             min_prob_threshold=min_prob_threshold,
             prob_weight_r=prob_weight_r,
+            threshold_dominant=threshold_dominant,
+            threshold_standard=threshold_standard,
+            top_n_dominant=top_n_dominant,
+            top_n_standard=top_n_standard,
         )
         return bets, pattern.pattern
     except ValueError as e:
