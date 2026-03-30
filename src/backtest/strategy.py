@@ -33,6 +33,8 @@ class RacePattern:
         gap_top1_top2: top1 と top2 の複勝率差
         gap_top1_top3: top1 と top3 の複勝率差
         gini_coefficient: 複勝率分布のジニ係数（0=均等, 1=集中）
+        gini_coefficient_adjusted: 出走頭数 N で補正したジニ係数（G × N/(N-1)）
+            少頭数レースで生じる過小推定バイアスを補正する。パターン判定に使用する値。
     """
 
     pattern: str
@@ -42,6 +44,7 @@ class RacePattern:
     gap_top1_top2: float
     gap_top1_top3: float
     gini_coefficient: float = 0.0
+    gini_coefficient_adjusted: float = 0.0
 
 
 def _gini_coefficient(probs: list[float]) -> float:
@@ -109,15 +112,20 @@ def classify_race_pattern(
     # ジニ係数計算
     gini = _gini_coefficient(probs)
 
-    # パターン判定: ジニ係数が p1 を超えると突出型
-    if gini > p1:
+    # 出走頭数補正: G × N/(N-1)
+    # 少頭数レースではジニ係数が小さく推定されるバイアスを補正する
+    N = len(probs)
+    gini_adjusted = gini * N / (N - 1) if N > 1 else gini
+
+    # パターン判定: 補正後ジニ係数が p1 を超えると突出型
+    if gini_adjusted > p1:
         pattern = "one_dominant"
     else:
         pattern = "standard"
 
     logger.debug(
         f"パターン分類: top1={top1:.3f} top2={top2:.3f} top3={top3:.3f}"
-        f" gini={gini:.3f} → {pattern}"
+        f" gini={gini:.3f} gini_adj={gini_adjusted:.3f} (N={N}) → {pattern}"
     )
 
     return RacePattern(
@@ -128,6 +136,7 @@ def classify_race_pattern(
         gap_top1_top2=gap_12,
         gap_top1_top3=gap_13,
         gini_coefficient=gini,
+        gini_coefficient_adjusted=gini_adjusted,
     )
 
 

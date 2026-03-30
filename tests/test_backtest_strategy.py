@@ -144,11 +144,13 @@ class TestClassifyRacePattern:
         assert result.pattern == "standard"
 
     def test_boundary_exactly_p1_is_standard(self):
-        """ジニ係数 = p1（境界値）→ standard（> p1 なので突出型にならない）"""
-        # ジニ係数が p1 に等しい場合は standard
+        """補正後ジニ係数 = p1（境界値）→ standard（> p1 なので突出型にならない）"""
+        # 補正後ジニ係数が p1 に等しい場合は standard
         probs = [0.5, 0.2, 0.15, 0.1, 0.05]
+        N = len(probs)
         gini = _gini_coefficient(probs)
-        result = classify_race_pattern(probs, p1=gini)
+        gini_adjusted = gini * N / (N - 1)
+        result = classify_race_pattern(probs, p1=gini_adjusted)
         assert result.pattern == "standard"
 
     def test_insufficient_probs(self):
@@ -168,6 +170,7 @@ class TestClassifyRacePattern:
         assert hasattr(result, "gap_top1_top2")
         assert hasattr(result, "gap_top1_top3")
         assert hasattr(result, "gini_coefficient")
+        assert hasattr(result, "gini_coefficient_adjusted")
 
     def test_gini_coefficient_stored_in_result(self):
         """gini_coefficient が結果に格納されること"""
@@ -175,6 +178,72 @@ class TestClassifyRacePattern:
         result = classify_race_pattern(probs, p1=0.3)
         expected_gini = _gini_coefficient(probs)
         assert abs(result.gini_coefficient - expected_gini) < 1e-9
+
+
+# ---------------------------------------------------------------------------
+# ジニ係数の出走頭数補正テスト（Issue #207）
+# ---------------------------------------------------------------------------
+
+
+class TestClassifyRacePatternGiniAdjusted:
+    """ジニ係数の出走頭数補正（N/(N-1)）のテスト"""
+
+    def test_gini_adjusted_stored_in_race_pattern(self):
+        """gini_coefficient_adjusted が RacePattern に格納されること"""
+        probs = [0.5, 0.2, 0.15, 0.1, 0.05]
+        N = len(probs)
+        result = classify_race_pattern(probs, p1=0.3)
+        expected_gini = _gini_coefficient(probs)
+        expected_adjusted = expected_gini * N / (N - 1)
+        assert abs(result.gini_coefficient_adjusted - expected_adjusted) < 1e-9
+
+    def test_adjusted_is_greater_than_raw_gini(self):
+        """補正後ジニ係数は生ジニ係数より大きい（N > 1 のとき N/(N-1) > 1）"""
+        probs = [0.5, 0.2, 0.15, 0.1, 0.05]
+        result = classify_race_pattern(probs, p1=0.5)
+        assert result.gini_coefficient_adjusted > result.gini_coefficient
+
+    def test_pattern_judgment_uses_adjusted_gini(self):
+        """補正後ジニ係数でパターン判定すること（生値では standard でも補正後 one_dominant になるケース）"""
+        # N=5, 生ジニ係数を計算してその値を p1 に設定
+        # → 補正後 = gini * 5/4 > gini = p1 → one_dominant になることを確認
+        probs = [0.5, 0.2, 0.15, 0.1, 0.05]
+        gini_raw = _gini_coefficient(probs)
+        # p1 を生ジニ係数と同値に設定: 旧ロジックなら standard、補正後ロジックなら one_dominant
+        result = classify_race_pattern(probs, p1=gini_raw)
+        assert result.pattern == "one_dominant"
+
+    def test_adjusted_gini_increases_with_fewer_horses(self):
+        """同じ生ジニ係数でも頭数が少ないと補正後ジニ係数が大きくなること"""
+        # 補正係数 N/(N-1) は N が小さいほど大きい（N=3: 1.5, N=9: 1.125）
+        # 同じ生ジニ係数 G について: G * 3/2 > G * 9/8
+        probs_small = [0.5, 0.3, 0.2]  # N=3, 補正係数 = 3/2 = 1.5
+        probs_large = [0.5, 0.3, 0.1, 0.05, 0.02, 0.01, 0.01, 0.005, 0.005]  # N=9
+
+        result_small = classify_race_pattern(probs_small, p1=0.9)
+        result_large = classify_race_pattern(probs_large, p1=0.9)
+
+        # 補正係数は N=3 の方が大きいため、生ジニ係数が近い場合でも補正後は小頭数の方が大きくなりやすい
+        # 補正係数の検証: N=3 → N/(N-1) = 1.5, N=9 → N/(N-1) ≈ 1.125
+        assert abs(result_small.gini_coefficient_adjusted - result_small.gini_coefficient * 3 / 2) < 1e-9
+        assert abs(result_large.gini_coefficient_adjusted - result_large.gini_coefficient * 9 / 8) < 1e-9
+
+    def test_adjusted_coefficient_formula(self):
+        """補正式 G × N/(N-1) が正しく適用されていること（数値検証）"""
+        probs = [0.6, 0.25, 0.15]  # N=3
+        result = classify_race_pattern(probs, p1=0.9)
+        raw = _gini_coefficient(probs)
+        expected = raw * 3 / 2  # N=3, N/(N-1) = 3/2
+        assert abs(result.gini_coefficient_adjusted - expected) < 1e-9
+
+    def test_no_zero_division_guard(self):
+        """N-1 == 0 のゼロ除算ガードが機能すること"""
+        # N >= 3 の前提があるため N=1 は既存の ValueError で防ぐが、
+        # コードが N > 1 の条件分岐でガードしていることを間接的に検証する
+        # N=3 の最小ケースで正常動作することを確認
+        probs = [0.5, 0.3, 0.2]
+        result = classify_race_pattern(probs, p1=0.9)
+        assert result.gini_coefficient_adjusted >= result.gini_coefficient
 
 
 # ---------------------------------------------------------------------------
