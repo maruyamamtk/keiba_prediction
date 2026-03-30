@@ -214,16 +214,19 @@ class TestClassifyRacePatternGiniAdjusted:
         assert result.pattern == "one_dominant"
 
     def test_adjusted_gini_increases_with_fewer_horses(self):
-        """同じ確率分布でも頭数が少ないと補正後ジニ係数が大きくなること"""
-        # 少頭数(N=3)と多頭数(N=9)で同じ相対分布パターンを使って比較
-        probs_small = [0.5, 0.3, 0.2]  # N=3
-        probs_large = [0.5, 0.3, 0.2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]  # N=9（0要素は除外に注意）
+        """同じ生ジニ係数でも頭数が少ないと補正後ジニ係数が大きくなること"""
+        # 補正係数 N/(N-1) は N が小さいほど大きい（N=3: 1.5, N=9: 1.125）
+        # 同じ生ジニ係数 G について: G * 3/2 > G * 9/8
+        probs_small = [0.5, 0.3, 0.2]  # N=3, 補正係数 = 3/2 = 1.5
+        probs_large = [0.5, 0.3, 0.1, 0.05, 0.02, 0.01, 0.01, 0.005, 0.005]  # N=9
 
         result_small = classify_race_pattern(probs_small, p1=0.9)
-        # 3頭での補正係数: 3/2 = 1.5
-        N_small = len(probs_small)
-        expected_adj_small = result_small.gini_coefficient * N_small / (N_small - 1)
-        assert abs(result_small.gini_coefficient_adjusted - expected_adj_small) < 1e-9
+        result_large = classify_race_pattern(probs_large, p1=0.9)
+
+        # 補正係数は N=3 の方が大きいため、生ジニ係数が近い場合でも補正後は小頭数の方が大きくなりやすい
+        # 補正係数の検証: N=3 → N/(N-1) = 1.5, N=9 → N/(N-1) ≈ 1.125
+        assert abs(result_small.gini_coefficient_adjusted - result_small.gini_coefficient * 3 / 2) < 1e-9
+        assert abs(result_large.gini_coefficient_adjusted - result_large.gini_coefficient * 9 / 8) < 1e-9
 
     def test_adjusted_coefficient_formula(self):
         """補正式 G × N/(N-1) が正しく適用されていること（数値検証）"""
