@@ -115,7 +115,7 @@ def classify_race_pattern(
     # 出走頭数補正: G × N/(N-1)
     # 少頭数レースではジニ係数が小さく推定されるバイアスを補正する
     N = len(probs)
-    gini_adjusted = gini * N / (N - 1) if N > 1 else gini
+    gini_adjusted = gini * N / (N - 1)
 
     # パターン判定: 補正後ジニ係数が p1 を超えると突出型
     if gini_adjusted > p1:

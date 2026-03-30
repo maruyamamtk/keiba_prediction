@@ -213,18 +213,19 @@ class TestClassifyRacePatternGiniAdjusted:
         result = classify_race_pattern(probs, p1=gini_raw)
         assert result.pattern == "one_dominant"
 
-    def test_adjusted_gini_increases_with_fewer_horses(self):
-        """同じ生ジニ係数でも頭数が少ないと補正後ジニ係数が大きくなること"""
-        # 補正係数 N/(N-1) は N が小さいほど大きい（N=3: 1.5, N=9: 1.125）
-        # 同じ生ジニ係数 G について: G * 3/2 > G * 9/8
-        probs_small = [0.5, 0.3, 0.2]  # N=3, 補正係数 = 3/2 = 1.5
-        probs_large = [0.5, 0.3, 0.1, 0.05, 0.02, 0.01, 0.01, 0.005, 0.005]  # N=9
+    def test_correction_factor_is_larger_for_fewer_horses(self):
+        """頭数が少ないほど補正係数 N/(N-1) が大きくなること（N=3: 1.5 > N=9: 1.125）"""
+        # 補正係数 N/(N-1) の数学的性質: N が大きいほど 1 に近づく
+        gini = 0.4  # 任意の生ジニ係数
+        adjusted_n3 = gini * 3 / 2   # N=3: 補正係数 = 1.5
+        adjusted_n9 = gini * 9 / 8   # N=9: 補正係数 ≈ 1.125
+        assert adjusted_n3 > adjusted_n9
 
+        # 実際の計算結果でも同様に検証
+        probs_small = [0.5, 0.3, 0.2]  # N=3
+        probs_large = [0.5, 0.3, 0.1, 0.05, 0.02, 0.01, 0.01, 0.005, 0.005]  # N=9
         result_small = classify_race_pattern(probs_small, p1=0.9)
         result_large = classify_race_pattern(probs_large, p1=0.9)
-
-        # 補正係数は N=3 の方が大きいため、生ジニ係数が近い場合でも補正後は小頭数の方が大きくなりやすい
-        # 補正係数の検証: N=3 → N/(N-1) = 1.5, N=9 → N/(N-1) ≈ 1.125
         assert abs(result_small.gini_coefficient_adjusted - result_small.gini_coefficient * 3 / 2) < 1e-9
         assert abs(result_large.gini_coefficient_adjusted - result_large.gini_coefficient * 9 / 8) < 1e-9
 
@@ -236,14 +237,14 @@ class TestClassifyRacePatternGiniAdjusted:
         expected = raw * 3 / 2  # N=3, N/(N-1) = 3/2
         assert abs(result.gini_coefficient_adjusted - expected) < 1e-9
 
-    def test_no_zero_division_guard(self):
-        """N-1 == 0 のゼロ除算ガードが機能すること"""
-        # N >= 3 の前提があるため N=1 は既存の ValueError で防ぐが、
-        # コードが N > 1 の条件分岐でガードしていることを間接的に検証する
-        # N=3 の最小ケースで正常動作することを確認
+    def test_minimum_n_horses_produces_valid_adjusted_gini(self):
+        """最小出走頭数（N=3）で補正後ジニ係数が有効な値を持つこと"""
+        # N >= 3 は既存の ValueError ガードで保証されているため N=1 は到達しない
+        # N=3 の最小ケースで補正係数 3/2 が正しく適用されることを検証
         probs = [0.5, 0.3, 0.2]
         result = classify_race_pattern(probs, p1=0.9)
-        assert result.gini_coefficient_adjusted >= result.gini_coefficient
+        expected = result.gini_coefficient * 3 / 2
+        assert abs(result.gini_coefficient_adjusted - expected) < 1e-9
 
 
 # ---------------------------------------------------------------------------
