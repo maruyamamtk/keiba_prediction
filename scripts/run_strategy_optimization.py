@@ -121,13 +121,15 @@ def save_best_params_to_yaml(
         config = yaml.safe_load(f)
 
     config["p1"] = best.params["p1"]
-    config["threshold_dominant"] = best.params["threshold_dominant"]
-    config["threshold_standard"] = best.params["threshold_standard"]
+    config["expected_return_threshold"] = best.params["expected_return_threshold"]
     config["top_n_dominant"] = best.params["top_n_dominant"]
     config["top_n_standard"] = best.params["top_n_standard"]
-    config["prob_weight_r"] = best.params.get("prob_weight_r", 1.0)
+    config["prob_weight_r_dominant"] = best.params["prob_weight_r_dominant"]
+    config["prob_weight_r_standard"] = best.params["prob_weight_r_standard"]
     # 旧パラメータを削除（存在する場合）
-    config.pop("expected_return_threshold", None)
+    config.pop("threshold_dominant", None)
+    config.pop("threshold_standard", None)
+    config.pop("prob_weight_r", None)
     config.pop("top_n", None)
     config["optimization"] = {
         "last_run": datetime.datetime.now().isoformat(timespec="seconds"),
@@ -146,11 +148,11 @@ def save_best_params_to_yaml(
     logger.info(f"最適パラメータを保存: {STRATEGY_CONFIG_PATH}")
     logger.info(
         f"  p1={best.params['p1']}, "
-        f"threshold_dominant={best.params['threshold_dominant']}, "
-        f"threshold_standard={best.params['threshold_standard']}, "
+        f"expected_return_threshold={best.params['expected_return_threshold']}, "
         f"top_n_dominant={best.params['top_n_dominant']}, "
         f"top_n_standard={best.params['top_n_standard']}, "
-        f"prob_weight_r={best.params.get('prob_weight_r', 1.0)}"
+        f"prob_weight_r_dominant={best.params['prob_weight_r_dominant']}, "
+        f"prob_weight_r_standard={best.params['prob_weight_r_standard']}"
     )
     logger.info(f"  回収率={best.recovery_rate:.2f}%, 的中率={best.hit_rate:.2f}%, "
                 f"最大ドローダウン={best.max_drawdown:.2f}%")
@@ -296,11 +298,11 @@ def main() -> None:
     for i, res in enumerate(sorted_results[: args.top_n]):
         logger.info(
             f"  #{i + 1}: p1={res.params['p1']} "
-            f"th_dom={res.params.get('threshold_dominant', '?')} "
-            f"th_std={res.params.get('threshold_standard', '?')} "
+            f"th={res.params.get('expected_return_threshold', '?')} "
             f"tn_dom={res.params.get('top_n_dominant', '?')} "
             f"tn_std={res.params.get('top_n_standard', '?')} "
-            f"r={res.params.get('prob_weight_r', 1.0)} "
+            f"r_dom={res.params.get('prob_weight_r_dominant', 1.0)} "
+            f"r_std={res.params.get('prob_weight_r_standard', 1.0)} "
             f"→ 回収率={res.recovery_rate:.1f}% 的中率={res.hit_rate:.1f}% "
             f"ドローダウン={res.max_drawdown:.1f}%"
         )

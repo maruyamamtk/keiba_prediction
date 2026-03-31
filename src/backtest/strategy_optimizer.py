@@ -145,8 +145,8 @@ class StrategyOptimizer:
         min_bet_amount: float = 100.0,
         min_prob_threshold: float = 0.0,
         prob_weight_r: float = 1.0,
-        threshold_dominant: float | None = None,
-        threshold_standard: float | None = None,
+        prob_weight_r_dominant: float | None = None,
+        prob_weight_r_standard: float | None = None,
         top_n_dominant: int | None = None,
         top_n_standard: int | None = None,
     ) -> tuple[pd.DataFrame, dict[str, dict]]:
@@ -155,12 +155,12 @@ class StrategyOptimizer:
 
         Args:
             p1: 突出型判定閾値（ジニ係数の閾値）
-            expected_return_threshold: 期待回収率閾値（共通デフォルト値）
+            expected_return_threshold: 期待回収率閾値（両パターン共通）
             min_bet_amount: 最低賭け金 (円)
             min_prob_threshold: 軸馬の最低複勝率
-            prob_weight_r: 選定スコアの確率ウェイト係数
-            threshold_dominant: 突出型の期待回収率閾値（Noneなら expected_return_threshold を使用）
-            threshold_standard: 標準型の期待回収率閾値（Noneなら expected_return_threshold を使用）
+            prob_weight_r: 選定スコアの確率ウェイト係数のデフォルト値
+            prob_weight_r_dominant: 突出型の確率ウェイト係数（Noneなら prob_weight_r を使用）
+            prob_weight_r_standard: 標準型の確率ウェイト係数（Noneなら prob_weight_r を使用）
             top_n_dominant: 突出型の候補馬数（Noneなら self.top_n を使用）
             top_n_standard: 標準型の候補馬数（Noneなら self.top_n を使用）
 
@@ -230,8 +230,8 @@ class StrategyOptimizer:
                     min_bet_amount=min_bet_amount,
                     min_prob_threshold=min_prob_threshold,
                     prob_weight_r=prob_weight_r,
-                    threshold_dominant=threshold_dominant,
-                    threshold_standard=threshold_standard,
+                    prob_weight_r_dominant=prob_weight_r_dominant,
+                    prob_weight_r_standard=prob_weight_r_standard,
                     top_n_dominant=top_n_dominant,
                     top_n_standard=top_n_standard,
                 )
@@ -351,67 +351,58 @@ class StrategyOptimizer:
     def run_grid_search(
         self,
         p1_range: list[float] | None = None,
-        threshold_dominant_range: list[float] | None = None,
-        threshold_standard_range: list[float] | None = None,
+        threshold_range: list[float] | None = None,
         top_n_dominant_range: list[int] | None = None,
         top_n_standard_range: list[int] | None = None,
-        r_range: list[float] | None = None,
+        r_dominant_range: list[float] | None = None,
+        r_standard_range: list[float] | None = None,
         min_prob_threshold: float = 0.0,
-        # 後方互換性のための旧パラメータ
-        threshold_range: list[float] | None = None,
     ) -> list[OptimizationResult]:
         """
         グリッドサーチを実行し、全パラメータ組み合わせのバックテスト結果を返す
 
         デフォルト探索範囲:
-          - p1:                  [0.4, 0.45, 0.5]             （ジニ係数の閾値）
-          - threshold_dominant:  [1.0, 1.2, 1.5]             （突出型の期待回収率閾値）
-          - threshold_standard:  [1.0, 1.2, 1.5]             （標準型の期待回収率閾値）
-          - top_n_dominant:      [4, 5, 6]                    （突出型の候補馬数）
-          - top_n_standard:      [5, 6, 7]                    （標準型の候補馬数）
-          - r:                   [0.8, 1.0, 1.2]              （prob_weight_r）
-        総組み合わせ数: 3×3×3×3×3×3 = 729通り
+          - p1:              [0.4, 0.45, 0.5]      （ジニ係数の閾値）
+          - threshold:       [1.0, 1.2, 1.5]       （期待回収率閾値・両パターン共通）
+          - top_n_dominant:  [4, 5, 6]             （突出型の候補馬数）
+          - top_n_standard:  [5, 6, 7]             （標準型の候補馬数）
+          - r_dominant:      [0.8, 1.0, 1.2, 1.5]  （突出型の prob_weight_r）
+          - r_standard:      [0.8, 1.0, 1.2, 1.5]  （標準型の prob_weight_r）
+        総組み合わせ数: 3×3×3×3×4×4 = 1296通り
 
         Args:
             p1_range: p1 の探索値リスト（ジニ係数の閾値）
-            threshold_dominant_range: 突出型の期待回収率閾値の探索値リスト
-            threshold_standard_range: 標準型の期待回収率閾値の探索値リスト
+            threshold_range: 期待回収率閾値の探索値リスト（両パターン共通）
             top_n_dominant_range: 突出型の候補馬数の探索値リスト
             top_n_standard_range: 標準型の候補馬数の探索値リスト
-            r_range: prob_weight_r の探索値リスト
+            r_dominant_range: 突出型の prob_weight_r 探索値リスト
+            r_standard_range: 標準型の prob_weight_r 探索値リスト
             min_prob_threshold: 軸馬の最低複勝率（固定パラメータ。全組み合わせで共通適用）
-            threshold_range: 後方互換性のための旧パラメータ（指定時は dominant/standard 両方に適用）
 
         Returns:
             OptimizationResult のリスト（全パラメータ組み合わせ分）
         """
         if p1_range is None:
             p1_range = [0.4, 0.45, 0.5]
-
-        # 後方互換: threshold_range が指定された場合は dominant/standard 両方に適用
-        if threshold_range is not None:
-            threshold_dominant_range = threshold_dominant_range or threshold_range
-            threshold_standard_range = threshold_standard_range or threshold_range
-
-        if threshold_dominant_range is None:
-            threshold_dominant_range = [1.0, 1.2, 1.5]
-        if threshold_standard_range is None:
-            threshold_standard_range = [1.0, 1.2, 1.5]
+        if threshold_range is None:
+            threshold_range = [1.0, 1.2, 1.5]
         if top_n_dominant_range is None:
             top_n_dominant_range = [4, 5, 6]
         if top_n_standard_range is None:
             top_n_standard_range = [5, 6, 7]
-        if r_range is None:
-            r_range = [0.8, 1.0, 1.2]
+        if r_dominant_range is None:
+            r_dominant_range = [0.8, 1.0, 1.2, 1.5]
+        if r_standard_range is None:
+            r_standard_range = [0.8, 1.0, 1.2, 1.5]
 
         # 全パラメータ組み合わせを生成
         param_grid = list(product(
             p1_range,
-            threshold_dominant_range,
-            threshold_standard_range,
+            threshold_range,
             top_n_dominant_range,
             top_n_standard_range,
-            r_range,
+            r_dominant_range,
+            r_standard_range,
         ))
 
         total = len(param_grid)
@@ -419,28 +410,28 @@ class StrategyOptimizer:
 
         results: list[OptimizationResult] = []
 
-        for i, (p1, th_dom, th_std, tn_dom, tn_std, r) in enumerate(param_grid):
+        for i, (p1, th, tn_dom, tn_std, r_dom, r_std) in enumerate(param_grid):
             params = {
                 "p1": p1,
-                "threshold_dominant": th_dom,
-                "threshold_standard": th_std,
+                "expected_return_threshold": th,
                 "top_n_dominant": tn_dom,
                 "top_n_standard": tn_std,
-                "prob_weight_r": r,
+                "prob_weight_r_dominant": r_dom,
+                "prob_weight_r_standard": r_std,
             }
 
-            if (i + 1) % 50 == 0 or (i + 1) == total:
+            if (i + 1) % 100 == 0 or (i + 1) == total:
                 logger.info(
-                    f"  [{i + 1}/{total}] p1={p1} th_dom={th_dom} th_std={th_std}"
-                    f" tn_dom={tn_dom} tn_std={tn_std} r={r}"
+                    f"  [{i + 1}/{total}] p1={p1} th={th}"
+                    f" tn_dom={tn_dom} tn_std={tn_std} r_dom={r_dom} r_std={r_std}"
                 )
 
             history_df, pattern_stats = self._run_simulation(
                 p1=p1,
-                prob_weight_r=r,
+                expected_return_threshold=th,
                 min_prob_threshold=min_prob_threshold,
-                threshold_dominant=th_dom,
-                threshold_standard=th_std,
+                prob_weight_r_dominant=r_dom,
+                prob_weight_r_standard=r_std,
                 top_n_dominant=tn_dom,
                 top_n_standard=tn_std,
             )

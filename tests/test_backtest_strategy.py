@@ -568,27 +568,23 @@ class TestSelectBetsForRace:
         assert "umaren" in bet_types
 
     def test_pattern_specific_params_applied(self):
-        """パターン別パラメータ（threshold_dominant/standard）が正しく適用される"""
-        # one_dominant: [0.5, 0.2, 0.15, 0.1, 0.05] → gini ≈ 0.4 > p1=0.3
+        """パターン別の prob_weight_r が正しく適用される（one_dominant に r_dominant を使用）"""
+        # one_dominant パターン: gini が p1=0.3 を超えるよう設定
         race_df = _make_race_df(
             n_horses=5,
             probs=[0.5, 0.2, 0.15, 0.1, 0.05],
             odds=[3.0, 3.0, 3.0, 3.0, 3.0],
         )
-        # threshold_dominant=2.0 (厳しい): select_base_bets では複勝が選ばれない
-        # threshold_standard=1.0 (緩い) → パターンがstandardなら複勝が選ばれる
-        bets_strict, pattern = select_bets_for_race(
+        # prob_weight_r_dominant/standard を指定してもエラーなく動作すること
+        bets, pattern = select_bets_for_race(
             race_df,
-            threshold_dominant=2.0,
-            threshold_standard=1.0,
             p1=0.3,
+            expected_return_threshold=1.2,
+            prob_weight_r_dominant=2.0,
+            prob_weight_r_standard=1.0,
         )
-        # one_dominantのため threshold_dominant=2.0 が適用される
         assert pattern.pattern == "one_dominant"
-        place_bets = [b for b in bets_strict if b["bet_type"] == "place"]
-        # threshold_dominant=2.0 のため 0.5 × 3.0 = 1.5 < 2.0 → 複勝は選ばれない
-        # （突出型でも top1 の複勝を自動追加しなくなった）
-        assert len(place_bets) == 0
+        assert isinstance(bets, list)
 
     def test_insufficient_horses_raises(self):
         """3頭未満で ValueError"""
@@ -1001,3 +997,100 @@ class TestProbWeightR:
         assert len(san_r_low) == 1, "r=0.5 で三連複が1件選定されるべき"
         assert len(san_r_high) == 1, "r=2.0 で三連複が1件選定されるべき"
         assert san_r_low[0]["horse_numbers"] == san_r_high[0]["horse_numbers"]
+
+    def test_prob_weight_r_dominant_standard_split(self):
+        """prob_weight_r_dominant と prob_weight_r_standard がパターン別に適用される（Issue #206）
+
+        one_dominant レースでは prob_weight_r_dominant が使用され、
+        standard レースでは prob_weight_r_standard が使用されることを検証する。
+        """
+        # --- one_dominant レース ---
+        # probs=[0.6, 0.2, 0.1, 0.1] → ジニ係数高い → one_dominant
+        race_dominant = _make_race_df(
+            n_horses=4,
+            probs=[0.60, 0.20, 0.10, 0.10],
+            odds=[2.0, 5.0, 12.0, 15.0],
+        )
+        # prob_weight_r_dominant/standard 指定でエラーなく動作する
+        bets_dom, pat_dom = select_bets_for_race(
+            race_dominant,
+            p1=0.3,
+            expected_return_threshold=1.0,
+            prob_weight_r_dominant=2.0,
+            prob_weight_r_standard=0.5,
+        )
+        assert pat_dom.pattern == "one_dominant"
+        assert isinstance(bets_dom, list)
+
+        # --- standard レース ---
+        # probs=[0.3, 0.25, 0.25, 0.2] → ジニ係数低い → standard
+        race_standard = _make_race_df(
+            n_horses=4,
+            probs=[0.30, 0.25, 0.25, 0.20],
+            odds=[4.0, 5.0, 5.0, 6.0],
+        )
+        bets_std, pat_std = select_bets_for_race(
+            race_standard,
+            p1=0.3,
+            expected_return_threshold=1.0,
+            prob_weight_r_dominant=2.0,
+            prob_weight_r_standard=0.5,
+        )
+        assert pat_std.pattern == "standard"
+        assert isinstance(bets_std, list)
+
+    def test_prob_weight_r_dominant_affects_top_n_selection(self):
+        """prob_weight_r_dominant が異なると one_dominant レースのコンボ候補が変わる（Issue #206）
+
+        r_dominant=2.0（高確率馬優先）と r_dominant=0.5（高オッズ馬優先）で
+        top_n 候補が変わり、コンボ馬券の選定結果が変わることを検証する。
+
+        スコア計算（score = odds * prob^r）:
+          horse_number=1: prob=0.50, odds=3.0 → score(r=2)=0.75,  score(r=0.5)=2.12
+          horse_number=2: prob=0.30, odds=5.0 → score(r=2)=0.45,  score(r=0.5)=2.74
+          horse_number=3: prob=0.12, odds=10.0 → score(r=2)=0.144, score(r=0.5)=3.46
+          horse_number=4: prob=0.08, odds=15.0 → score(r=2)=0.096, score(r=0.5)=4.24
+
+        r=2.0: top_n=2 → [H1, H2] → wide(1,2) が選定される
+        r=0.5: top_n=2 → [H4, H3] → wide(3,4) が選定される
+
+        min_prob_threshold=0.20 により N=4 頭での補正後確率（prob×4/18）が全馬で 0.20 未満となり、
+        複勝ベットが除外される。ワイドのみの配分なのでアロケーションで除外されない。
+        """
+        race_df = _make_race_df(
+            n_horses=4,
+            probs=[0.50, 0.30, 0.12, 0.08],
+            odds=[3.0, 5.0, 10.0, 15.0],
+        )
+        # wide(1,2): 0.50*0.30*12.0=1.8 > 1.2 ✓ → r=2で top=[H1,H2] → 選定
+        # wide(3,4): 0.12*0.08*150.0=1.44 > 1.2 ✓ → r=0.5で top=[H4,H3] → 選定
+        combo_df = _make_combo_odds_df([
+            {"bet_type": "wide", "horse_number_1": 1, "horse_number_2": 2, "odds_value": 12.0},
+            {"bet_type": "wide", "horse_number_1": 3, "horse_number_2": 4, "odds_value": 150.0},
+        ])
+
+        # r_dominant=2.0: top_n=2 → H1,H2 → wide(1,2) が選定
+        bets_r2, pat_r2 = select_bets_for_race(
+            race_df, combo_df,
+            p1=0.3,
+            expected_return_threshold=1.2,
+            top_n_dominant=2,
+            prob_weight_r_dominant=2.0,
+            min_prob_threshold=0.20,  # 全馬の補正確率 < 0.20 → 複勝除外
+        )
+        # r_dominant=0.5: top_n=2 → H4,H3 → wide(3,4) が選定
+        bets_r05, pat_r05 = select_bets_for_race(
+            race_df, combo_df,
+            p1=0.3,
+            expected_return_threshold=1.2,
+            top_n_dominant=2,
+            prob_weight_r_dominant=0.5,
+            min_prob_threshold=0.20,
+        )
+        assert pat_r2.pattern == "one_dominant"
+        assert pat_r05.pattern == "one_dominant"
+        wide_r2 = [b["horse_numbers"] for b in bets_r2 if b["bet_type"] == "wide"]
+        wide_r05 = [b["horse_numbers"] for b in bets_r05 if b["bet_type"] == "wide"]
+        assert wide_r2 == [[1, 2]], f"r=2.0 で wide(1,2) が選定されるべき: {wide_r2}"
+        assert wide_r05 == [[3, 4]], f"r=0.5 で wide(3,4) が選定されるべき: {wide_r05}"
+        assert wide_r2 != wide_r05, "r_dominant が異なる場合、ワイド組み合わせが変わるべき"

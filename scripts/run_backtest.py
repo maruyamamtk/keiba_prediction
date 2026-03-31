@@ -802,9 +802,9 @@ def run_full_strategy_backtest_pipeline(
     p1: float,
     budget_per_race: float,
     min_prob_threshold: float,
-    prob_weight_r: float,
-    threshold_dominant: float = 1.5,
-    threshold_standard: float = 1.5,
+    expected_return_threshold: float = 1.2,
+    prob_weight_r_dominant: float = 1.0,
+    prob_weight_r_standard: float = 1.0,
     top_n_dominant: int = 5,
     top_n_standard: int = 5,
     initial_capital: float = 100_000.0,
@@ -812,8 +812,6 @@ def run_full_strategy_backtest_pipeline(
     save_bq: bool = False,
     output_chart: str | None = None,
     run_id: str | None = None,
-    # 後方互換性のための旧パラメータ
-    expected_return_threshold: float | None = None,
     top_n: int | None = None,
 ) -> tuple[pd.DataFrame, dict]:
     """
@@ -832,9 +830,9 @@ def run_full_strategy_backtest_pipeline(
         p1: 突出型判定閾値（ジニ係数の閾値）
         budget_per_race: 1レースあたりの固定予算 (円)
         min_prob_threshold: 軸馬の最低複勝率
-        prob_weight_r: 選定スコア係数 (score = odds * prob^r)
-        threshold_dominant: 突出型の期待回収率閾値
-        threshold_standard: 標準型の期待回収率閾値
+        expected_return_threshold: 期待回収率閾値（両パターン共通）
+        prob_weight_r_dominant: 突出型の選定スコア係数 (score = odds * prob^r)
+        prob_weight_r_standard: 標準型の選定スコア係数
         top_n_dominant: 突出型の候補馬数
         top_n_standard: 標準型の候補馬数
         initial_capital: 初期資金 (円)
@@ -842,14 +840,11 @@ def run_full_strategy_backtest_pipeline(
         save_bq: BigQuery 保存フラグ
         output_chart: グラフ出力パス (None でスキップ)
         run_id: 実行 ID (BigQuery 保存時に使用)
+        top_n: 後方互換: 指定時は top_n_dominant/standard 両方に適用
 
     Returns:
         (history_df, metrics) のタプル
     """
-    # 後方互換: 旧パラメータが指定された場合は dominant/standard 両方に適用
-    if expected_return_threshold is not None:
-        threshold_dominant = threshold_dominant if threshold_dominant != 1.5 else expected_return_threshold
-        threshold_standard = threshold_standard if threshold_standard != 1.5 else expected_return_threshold
     if top_n is not None:
         top_n_dominant = top_n_dominant if top_n_dominant != 5 else top_n
         top_n_standard = top_n_standard if top_n_standard != 5 else top_n
@@ -934,10 +929,10 @@ def run_full_strategy_backtest_pipeline(
 
     history_df, pattern_stats = optimizer._run_simulation(
         p1=p1,
+        expected_return_threshold=expected_return_threshold,
         min_prob_threshold=min_prob_threshold,
-        prob_weight_r=prob_weight_r,
-        threshold_dominant=threshold_dominant,
-        threshold_standard=threshold_standard,
+        prob_weight_r_dominant=prob_weight_r_dominant,
+        prob_weight_r_standard=prob_weight_r_standard,
         top_n_dominant=top_n_dominant,
         top_n_standard=top_n_standard,
     )
@@ -1149,32 +1144,30 @@ def main() -> int:
             float(strategy_cfg.get("budget_per_race", 3000.0))
         min_prob = args.min_prob_threshold if args.min_prob_threshold is not None else \
             float(strategy_cfg.get("min_prob_threshold", 0.0))
-        r = args.prob_weight_r if args.prob_weight_r is not None else \
-            float(strategy_cfg.get("prob_weight_r", 1.0))
-
         # パターン別パラメータ（CLIで top_n が指定された場合は両方に適用）
-        _legacy_threshold = float(strategy_cfg.get("expected_return_threshold", 1.5))
-        threshold_dominant = float(strategy_cfg.get("threshold_dominant", _legacy_threshold))
-        threshold_standard = float(strategy_cfg.get("threshold_standard", _legacy_threshold))
+        expected_return_threshold = float(strategy_cfg.get("expected_return_threshold", 1.2))
         _legacy_top_n = int(strategy_cfg.get("top_n", 5))
         top_n_dominant = int(strategy_cfg.get("top_n_dominant", _legacy_top_n))
         top_n_standard = int(strategy_cfg.get("top_n_standard", _legacy_top_n))
         if args.top_n is not None:
             top_n_dominant = args.top_n
             top_n_standard = args.top_n
+        r_dominant = args.prob_weight_r if args.prob_weight_r is not None else \
+            float(strategy_cfg.get("prob_weight_r_dominant", 1.0))
+        r_standard = float(strategy_cfg.get("prob_weight_r_standard", r_dominant))
 
         print(f"\nバックテスト設定（フル戦略モード）:")
-        print(f"  期間:                    {start_date} ~ {end_date}")
-        print(f"  モデル:                  {args.model_path}")
-        print(f"  初期資金:                ¥{args.initial_capital:,.0f}")
-        print(f"  p1（ジニ係数閾値）:      {p1}")
-        print(f"  threshold_dominant:      {threshold_dominant}")
-        print(f"  threshold_standard:      {threshold_standard}")
-        print(f"  top_n_dominant:          {top_n_dominant}")
-        print(f"  top_n_standard:          {top_n_standard}")
-        print(f"  1レースあたり予算:       ¥{budget:,.0f}")
-        print(f"  min_prob_threshold:      {min_prob}")
-        print(f"  prob_weight_r:           {r}")
+        print(f"  期間:                          {start_date} ~ {end_date}")
+        print(f"  モデル:                        {args.model_path}")
+        print(f"  初期資金:                      ¥{args.initial_capital:,.0f}")
+        print(f"  p1（ジニ係数閾値）:            {p1}")
+        print(f"  expected_return_threshold:     {expected_return_threshold}")
+        print(f"  top_n_dominant:                {top_n_dominant}")
+        print(f"  top_n_standard:                {top_n_standard}")
+        print(f"  1レースあたり予算:             ¥{budget:,.0f}")
+        print(f"  min_prob_threshold:            {min_prob}")
+        print(f"  prob_weight_r_dominant:        {r_dominant}")
+        print(f"  prob_weight_r_standard:        {r_standard}")
 
         history_df, metrics = run_full_strategy_backtest_pipeline(
             project_id=args.project_id,
@@ -1185,9 +1178,9 @@ def main() -> int:
             p1=p1,
             budget_per_race=budget,
             min_prob_threshold=min_prob,
-            prob_weight_r=r,
-            threshold_dominant=threshold_dominant,
-            threshold_standard=threshold_standard,
+            expected_return_threshold=expected_return_threshold,
+            prob_weight_r_dominant=r_dominant,
+            prob_weight_r_standard=r_standard,
             top_n_dominant=top_n_dominant,
             top_n_standard=top_n_standard,
             initial_capital=args.initial_capital,

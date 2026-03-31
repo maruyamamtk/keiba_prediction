@@ -383,11 +383,11 @@ def select_bets_for_race(
     top_n: int = 5,
     min_prob_threshold: float = 0.0,
     prob_weight_r: float = 1.0,
-    # パターン別パラメータ（指定時は expected_return_threshold / top_n より優先）
-    threshold_dominant: float | None = None,
-    threshold_standard: float | None = None,
+    # パターン別パラメータ（指定時は top_n / prob_weight_r より優先）
     top_n_dominant: int | None = None,
     top_n_standard: int | None = None,
+    prob_weight_r_dominant: float | None = None,
+    prob_weight_r_standard: float | None = None,
     # 後方互換性のための旧パラメータ（無視される）
     capital: float | None = None,
     max_bet_ratio: float | None = None,
@@ -401,15 +401,15 @@ def select_bets_for_race(
         combo_odds_df: コンボオッズ DataFrame（None の場合は複勝のみ）
         budget_per_race: 1レースあたりの固定予算 (円)
         p1: 突出型の判定閾値（ジニ係数がこれを超えると one_dominant）
-        expected_return_threshold: 期待回収率閾値（両パターン共通のデフォルト値）
+        expected_return_threshold: 期待回収率閾値（両パターン共通）
         min_bet_amount: 最低賭け金 (円)
         top_n: ワイド/三連複/馬連の候補数（両パターン共通のデフォルト値）
         min_prob_threshold: 軸馬の最低複勝率（複勝単体買いの最低条件）
-        prob_weight_r: 選定スコアの確率ウェイト係数（odds * prob^r）
-        threshold_dominant: 突出型の期待回収率閾値（指定時は expected_return_threshold より優先）
-        threshold_standard: 標準型の期待回収率閾値（指定時は expected_return_threshold より優先）
+        prob_weight_r: 選定スコアの確率ウェイト係数のデフォルト値（odds * prob^r）
         top_n_dominant: 突出型の候補馬数（指定時は top_n より優先）
         top_n_standard: 標準型の候補馬数（指定時は top_n より優先）
+        prob_weight_r_dominant: 突出型の確率ウェイト係数（指定時は prob_weight_r より優先）
+        prob_weight_r_standard: 標準型の確率ウェイト係数（指定時は prob_weight_r より優先）
 
     Returns:
         (bets, pattern) のタプル:
@@ -454,20 +454,20 @@ def select_bets_for_race(
 
     # パターン別パラメータの解決（指定なしの場合は共通値にフォールバック）
     if race_pattern.pattern == "one_dominant":
-        active_threshold = threshold_dominant if threshold_dominant is not None else expected_return_threshold
         active_top_n = top_n_dominant if top_n_dominant is not None else top_n
+        active_r = prob_weight_r_dominant if prob_weight_r_dominant is not None else prob_weight_r
     else:
-        active_threshold = threshold_standard if threshold_standard is not None else expected_return_threshold
         active_top_n = top_n_standard if top_n_standard is not None else top_n
+        active_r = prob_weight_r_standard if prob_weight_r_standard is not None else prob_weight_r
 
     # ベースベット選定
     base_bets = select_base_bets(
         race_df=valid_df,
         combo_odds_df=combo_odds_df,
-        expected_return_threshold=active_threshold,
+        expected_return_threshold=expected_return_threshold,
         top_n=active_top_n,
         min_prob_threshold=min_prob_threshold,
-        prob_weight_r=prob_weight_r,
+        prob_weight_r=active_r,
     )
 
     # one_dominant ならパターンA追加ベット（自動購入方式）
