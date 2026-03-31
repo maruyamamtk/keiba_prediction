@@ -208,7 +208,9 @@ def select_base_bets(
             None または空の場合は複勝のみ選定
         expected_return_threshold: 期待回収率の最低閾値
         top_n: 組み合わせ候補とする上位馬数
-        min_prob_threshold: 軸馬の最低複勝率。これ未満の馬は軸馬（複勝単体買い）から除外
+        min_prob_threshold: 軸馬の最低複勝率フィルタ基準（出走頭数18頭換算）。
+            実際の比較値: prob × N/18 >= min_prob_threshold（N = 出走頭数）
+            少頭数レースでは理論複勝率が高くなるため、頭数で補正した上で基準と比較する。
         prob_weight_r: 選定スコアの確率ウェイト係数。スコア = odds * prob^r
             r=1 で通常の期待値と同等。r>1 で高確率馬が有利になる
 
@@ -228,11 +230,14 @@ def select_base_bets(
     )
 
     # 複勝候補選定（min_prob_threshold 以上の馬のみ軸馬として選定）
+    # 出走頭数補正: prob × N/18 >= min_prob_threshold
+    # 少頭数レースほど理論複勝率が高くなるバイアスを除去するため、18頭基準に換算して比較する
+    N = len(race_df)
     place_bets = []
     for _, row in sorted_df.iterrows():
         prob = float(row["win_place_prob"])
         place_odds = float(row["odds"])
-        if prob < min_prob_threshold:
+        if prob * N / 18 < min_prob_threshold:
             continue
         if prob * place_odds > expected_return_threshold:
             place_bets.append({
