@@ -701,14 +701,14 @@ class TestMinProbThreshold:
     """min_prob_threshold（軸馬フィルタ）のテスト"""
 
     def test_low_prob_horse_excluded_as_pivot(self):
-        """min_prob_threshold 未満の馬は複勝単体買いから除外される"""
-        # 馬番1: prob=0.07 (< 0.10), odds=15.0 → 期待値=1.05 > 1.0 だがフィルタされる
-        # 馬番2: prob=0.30, odds=4.0 → 期待値=1.20 > 1.0 → 選定される
-        race_df = _make_race_df(
-            n_horses=3,
-            probs=[0.07, 0.30, 0.20],
-            odds=[15.0, 4.0, 5.0],
-        )
+        """min_prob_threshold 未満の馬は複勝単体買いから除外される（N=18で補正係数=1.0）"""
+        # N=18 を使用することで補正係数 N/18=1.0 となり、補正なしと同等の動作を検証する
+        # 馬番1: prob=0.07 → 補正後 0.07×18/18=0.07 < 0.10 → フィルタされる
+        # 馬番2: prob=0.30 → 補正後 0.30×18/18=0.30 >= 0.10 → 選定される
+        n = 18
+        probs = [0.07, 0.30] + [0.04] * (n - 2)
+        odds = [15.0, 4.0] + [5.0] * (n - 2)
+        race_df = _make_race_df(n_horses=n, probs=probs, odds=odds)
         bets = select_base_bets(
             race_df,
             None,
@@ -717,9 +717,9 @@ class TestMinProbThreshold:
         )
         place_bets = [b for b in bets if b["bet_type"] == "place"]
         horse_numbers = [b["horse_numbers"][0] for b in place_bets]
-        # 馬番1（prob=0.07 < 0.10）は除外される
+        # 馬番1（補正後 0.07 < 0.10）は除外される
         assert 1 not in horse_numbers
-        # 馬番2（prob=0.30 >= 0.10）は選定される
+        # 馬番2（補正後 0.30 >= 0.10）は選定される
         assert 2 in horse_numbers
 
     def test_zero_threshold_allows_all(self):
@@ -745,15 +745,12 @@ class TestMinProbThreshold:
         assert 3 in horse_numbers
 
     def test_select_bets_for_race_passes_min_prob_threshold(self):
-        """select_bets_for_race が min_prob_threshold を正しく渡す"""
-        # 馬番1: prob=0.07, odds=20.0 → 低確率高オッズ馬（フィルタ対象）
-        # 馬番2: prob=0.40, odds=3.0 → 高確率馬
-        # 馬番3: prob=0.30, odds=4.0
-        race_df = _make_race_df(
-            n_horses=3,
-            probs=[0.07, 0.40, 0.30],
-            odds=[20.0, 3.0, 4.0],
-        )
+        """select_bets_for_race が min_prob_threshold を正しく渡す（N=18で補正係数=1.0）"""
+        # N=18 を使用することで補正係数 N/18=1.0 となり、補正なしと同等の動作を検証する
+        n = 18
+        probs = [0.07, 0.40, 0.30] + [0.03] * (n - 3)
+        odds = [20.0, 3.0, 4.0] + [10.0] * (n - 3)
+        race_df = _make_race_df(n_horses=n, probs=probs, odds=odds)
         bets_filtered, _ = select_bets_for_race(
             race_df,
             expected_return_threshold=1.0,
@@ -768,10 +765,99 @@ class TestMinProbThreshold:
         place_unfiltered = [b for b in bets_unfiltered if b["bet_type"] == "place"]
         hn_filtered = [b["horse_numbers"][0] for b in place_filtered]
         hn_unfiltered = [b["horse_numbers"][0] for b in place_unfiltered]
-        # フィルタあり: 馬番1（prob=0.07）は除外
+        # フィルタあり: 馬番1（補正後 0.07 < 0.10）は除外
         assert 1 not in hn_filtered
         # フィルタなし: 馬番1も選定される（期待値1.4 > 1.0）
         assert 1 in hn_unfiltered
+
+
+# ---------------------------------------------------------------------------
+# 複勝率フィルタの出走頭数補正テスト（Issue #208）
+# ---------------------------------------------------------------------------
+
+
+class TestMinProbThresholdNCorrection:
+    """複勝率フィルタの出走頭数補正（N/18）のテスト"""
+
+    def test_correction_reduces_effective_threshold_for_small_fields(self):
+        """少頭数（N<18）では実効閾値が下がり、より多くの馬が通過する"""
+        # N=9 のとき補正後 = prob × 9/18 = prob/2
+        # min_prob_threshold=0.10 に対して prob=0.15 の馬:
+        #   補正後 = 0.15 × 9/18 = 0.075 < 0.10 → 除外される
+        # min_prob_threshold=0.10 に対して prob=0.25 の馬:
+        #   補正後 = 0.25 × 9/18 = 0.125 >= 0.10 → 通過する
+        n = 9
+        probs = [0.25, 0.15] + [0.08] * (n - 2)
+        odds = [4.0, 7.0] + [5.0] * (n - 2)
+        race_df = _make_race_df(n_horses=n, probs=probs, odds=odds)
+        bets = select_base_bets(
+            race_df,
+            None,
+            expected_return_threshold=0.5,  # 期待値フィルタを緩くして確率フィルタのみ検証
+            min_prob_threshold=0.10,
+        )
+        place_bets = [b for b in bets if b["bet_type"] == "place"]
+        horse_numbers = [b["horse_numbers"][0] for b in place_bets]
+        # 馬番1: prob=0.25 → 補正後 0.125 >= 0.10 → 通過
+        assert 1 in horse_numbers
+        # 馬番2: prob=0.15 → 補正後 0.075 < 0.10 → 除外
+        assert 2 not in horse_numbers
+
+    def test_n18_correction_factor_is_neutral(self):
+        """N=18 のとき補正係数 18/18=1.0 で補正なしと同等の動作"""
+        # prob * 18/18 = prob なので min_prob_threshold と直接比較する旧動作と同じ
+        n = 18
+        probs = [0.07, 0.12] + [0.05] * (n - 2)
+        odds = [15.0, 9.0] + [5.0] * (n - 2)
+        race_df = _make_race_df(n_horses=n, probs=probs, odds=odds)
+        bets = select_base_bets(
+            race_df,
+            None,
+            expected_return_threshold=0.5,
+            min_prob_threshold=0.10,
+        )
+        place_bets = [b for b in bets if b["bet_type"] == "place"]
+        horse_numbers = [b["horse_numbers"][0] for b in place_bets]
+        # 馬番1: prob=0.07 → 補正後 0.07 < 0.10 → 除外
+        assert 1 not in horse_numbers
+        # 馬番2: prob=0.12 → 補正後 0.12 >= 0.10 → 通過
+        assert 2 in horse_numbers
+
+    def test_zero_threshold_no_filter_regardless_of_n(self):
+        """min_prob_threshold=0.0 なら出走頭数に関わらずフィルタなし"""
+        for n_horses in [3, 9, 18]:
+            probs = [0.01] * n_horses  # 極めて低い確率
+            odds = [50.0] * n_horses
+            race_df = _make_race_df(n_horses=n_horses, probs=probs, odds=odds)
+            bets = select_base_bets(
+                race_df,
+                None,
+                expected_return_threshold=0.0,  # 期待値フィルタもオフ
+                min_prob_threshold=0.0,
+            )
+            place_bets = [b for b in bets if b["bet_type"] == "place"]
+            # 全馬が通過すること
+            assert len(place_bets) == n_horses
+
+    def test_correction_boundary_value(self):
+        """補正後ちょうど閾値に等しい場合は除外（> でなく >= なので）"""
+        # N=9, min_prob_threshold=0.10
+        # prob × 9/18 = 0.10 となる prob = 0.10 × 18/9 = 0.20
+        # 0.20 × 9/18 = 0.10 → 厳密に等しい → 通過（>= min_prob_threshold）
+        n = 9
+        probs = [0.20] + [0.05] * (n - 1)
+        odds = [5.5] + [5.0] * (n - 1)
+        race_df = _make_race_df(n_horses=n, probs=probs, odds=odds)
+        bets = select_base_bets(
+            race_df,
+            None,
+            expected_return_threshold=0.5,
+            min_prob_threshold=0.10,
+        )
+        place_bets = [b for b in bets if b["bet_type"] == "place"]
+        horse_numbers = [b["horse_numbers"][0] for b in place_bets]
+        # 補正後ちょうど 0.10 = min_prob_threshold → 通過
+        assert 1 in horse_numbers
 
 
 # ---------------------------------------------------------------------------
