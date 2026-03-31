@@ -481,6 +481,16 @@ def select_bets_for_race(
 
     all_bets = base_bets + extra_bets
 
+    # 同一 (bet_type, horse_numbers) の重複排除（先着優先）
+    seen: set[tuple] = set()
+    deduped_bets = []
+    for bet in all_bets:
+        key = (bet["bet_type"], frozenset(bet["horse_numbers"]))
+        if key not in seen:
+            seen.add(key)
+            deduped_bets.append(bet)
+    all_bets = deduped_bets
+
     # 賭け金配分
     bets = _allocate_bets(
         selected_bets=all_bets,
