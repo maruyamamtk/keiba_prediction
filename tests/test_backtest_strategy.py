@@ -840,7 +840,7 @@ class TestMinProbThresholdNCorrection:
             assert len(place_bets) == n_horses
 
     def test_correction_boundary_value(self):
-        """補正後ちょうど閾値に等しい場合は除外（> でなく >= なので）"""
+        """補正後ちょうど閾値に等しい場合は通過する（< min_prob_threshold のみ除外）"""
         # N=9, min_prob_threshold=0.10
         # prob × 9/18 = 0.10 となる prob = 0.10 × 18/9 = 0.20
         # 0.20 × 9/18 = 0.10 → 厳密に等しい → 通過（>= min_prob_threshold）
