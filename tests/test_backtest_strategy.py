@@ -1094,3 +1094,100 @@ class TestProbWeightR:
         assert wide_r2 == [[1, 2]], f"r=2.0 で wide(1,2) が選定されるべき: {wide_r2}"
         assert wide_r05 == [[3, 4]], f"r=0.5 で wide(3,4) が選定されるべき: {wide_r05}"
         assert wide_r2 != wide_r05, "r_dominant が異なる場合、ワイド組み合わせが変わるべき"
+
+
+# ---------------------------------------------------------------------------
+# 重複排除のテスト（Issue #204）
+# ---------------------------------------------------------------------------
+
+
+class TestDeduplication:
+    """select_bets_for_race の重複排除テスト"""
+
+    def test_no_duplicate_wide_in_output(self):
+        """同一ワイド組み合わせが重複して出力されない（Issue #204）
+
+        one_dominant レースで base_bets と extra_bets に同じワイドが含まれる
+        状況を模擬し、重複が除去されることを検証する。
+        """
+        # H1 が突出した one_dominant レース
+        race_df = _make_race_df(
+            n_horses=5,
+            probs=[0.65, 0.15, 0.10, 0.05, 0.05],
+            odds=[2.0, 6.0, 10.0, 15.0, 20.0],
+        )
+        # wide(1,2) と umaren(1,2) を含む combo_df
+        combo_df = _make_combo_odds_df([
+            {"bet_type": "wide",   "horse_number_1": 1, "horse_number_2": 2, "odds_value": 5.0},
+            {"bet_type": "wide",   "horse_number_1": 1, "horse_number_2": 2, "odds_value": 5.0},  # 重複エントリ
+            {"bet_type": "umaren", "horse_number_1": 1, "horse_number_2": 2, "odds_value": 8.0},
+        ])
+        bets, _ = select_bets_for_race(
+            race_df,
+            combo_odds_df=combo_df,
+            budget_per_race=3000.0,
+            p1=0.3,
+            expected_return_threshold=0.1,
+        )
+        wide_bets = [b for b in bets if b["bet_type"] == "wide"]
+        wide_pairs = [tuple(b["horse_numbers"]) for b in wide_bets]
+        # 同一ペアが複数存在しないこと
+        assert len(wide_pairs) == len(set(wide_pairs)), (
+            f"ワイド馬券に重複がある: {wide_pairs}"
+        )
+
+    def test_no_duplicate_umaren_in_output(self):
+        """同一馬連組み合わせが重複して出力されない（Issue #204）
+
+        one_dominant レースでの extra_bets 追加時に馬連が重複しないことを検証する。
+        """
+        race_df = _make_race_df(
+            n_horses=5,
+            probs=[0.65, 0.15, 0.10, 0.05, 0.05],
+            odds=[2.0, 6.0, 10.0, 15.0, 20.0],
+        )
+        combo_df = _make_combo_odds_df([
+            {"bet_type": "wide",   "horse_number_1": 1, "horse_number_2": 2, "odds_value": 5.0},
+            {"bet_type": "umaren", "horse_number_1": 1, "horse_number_2": 2, "odds_value": 8.0},
+            {"bet_type": "umaren", "horse_number_1": 1, "horse_number_2": 2, "odds_value": 8.0},  # 重複エントリ
+        ])
+        bets, _ = select_bets_for_race(
+            race_df,
+            combo_odds_df=combo_df,
+            budget_per_race=3000.0,
+            p1=0.3,
+            expected_return_threshold=0.1,
+        )
+        umaren_bets = [b for b in bets if b["bet_type"] == "umaren"]
+        umaren_pairs = [tuple(b["horse_numbers"]) for b in umaren_bets]
+        assert len(umaren_pairs) == len(set(umaren_pairs)), (
+            f"馬連馬券に重複がある: {umaren_pairs}"
+        )
+
+    def test_first_occurrence_preserved_on_duplicate(self):
+        """重複排除は先着優先（最初のエントリが残る）（Issue #204）
+
+        同一 (bet_type, horse_numbers) が 2 件ある場合、
+        先に登録されたエントリ（オッズ 5.0）が保持されることを確認する。
+        """
+        race_df = _make_race_df(
+            n_horses=3,
+            probs=[0.65, 0.20, 0.15],
+            odds=[2.0, 4.0, 6.0],
+        )
+        combo_df = _make_combo_odds_df([
+            {"bet_type": "wide", "horse_number_1": 1, "horse_number_2": 2, "odds_value": 5.0},
+            {"bet_type": "wide", "horse_number_1": 1, "horse_number_2": 2, "odds_value": 99.0},  # 2件目（除去される）
+        ])
+        bets, _ = select_bets_for_race(
+            race_df,
+            combo_odds_df=combo_df,
+            budget_per_race=3000.0,
+            p1=0.3,
+            expected_return_threshold=0.1,
+        )
+        wide_bets = [b for b in bets if b["bet_type"] == "wide" and b["horse_numbers"] == [1, 2]]
+        assert len(wide_bets) == 1, f"wide(1,2) は 1 件のみであるべき: {wide_bets}"
+        assert wide_bets[0]["odds"] == 5.0, (
+            f"先着優先なのでオッズ 5.0 が保持されるべき: {wide_bets[0]['odds']}"
+        )
