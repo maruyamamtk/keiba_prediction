@@ -176,11 +176,18 @@ def main() -> None:
     parser.add_argument("--output-csv", help="全グリッドサーチ結果のCSV保存先")
     parser.add_argument("--top-n", type=int, default=10, help="上位N件の結果を表示")
     parser.add_argument(
-        "--r-range",
+        "--r-dominant-range",
         type=float,
         nargs="+",
         default=None,
-        help="prob_weight_r の探索値（複数指定可、デフォルト: 0.5 1.0 1.5 2.0）",
+        help="prob_weight_r_dominant の探索値（複数指定可、デフォルト: 0.8 1.0 1.2 1.5）",
+    )
+    parser.add_argument(
+        "--r-standard-range",
+        type=float,
+        nargs="+",
+        default=None,
+        help="prob_weight_r_standard の探索値（複数指定可、デフォルト: 0.8 1.0 1.2 1.5）",
     )
     args = parser.parse_args()
 
@@ -282,7 +289,11 @@ def main() -> None:
         combo_odds_df=combo_odds_df,
         budget_per_race=3000.0,
     )
-    results = optimizer.run_grid_search(r_range=args.r_range, min_prob_threshold=min_prob_threshold)
+    results = optimizer.run_grid_search(
+        r_dominant_range=args.r_dominant_range,
+        r_standard_range=args.r_standard_range,
+        min_prob_threshold=min_prob_threshold,
+    )
 
     if not results:
         logger.error("グリッドサーチ結果が空です。データを確認してください。")
