@@ -362,8 +362,8 @@ class StrategyOptimizer:
         グリッドサーチを実行し、全パラメータ組み合わせのバックテスト結果を返す
 
         デフォルト探索範囲:
-          - p1:              [0.4, 0.45, 0.5]      （ジニ係数の閾値）
-          - threshold:       [1.0, 1.2, 1.5]       （期待回収率閾値・両パターン共通）
+          - p1:              [0.5, 0.55, 0.6]       （ジニ係数の閾値）
+          - threshold:       [1.2, 1.35, 1.5]      （期待回収率閾値・両パターン共通）
           - top_n_dominant:  [4, 5, 6]             （突出型の候補馬数）
           - top_n_standard:  [5, 6, 7]             （標準型の候補馬数）
           - r_dominant:      [0.8, 1.0, 1.2, 1.5]  （突出型の prob_weight_r）
@@ -383,9 +383,9 @@ class StrategyOptimizer:
             OptimizationResult のリスト（全パラメータ組み合わせ分）
         """
         if p1_range is None:
-            p1_range = [0.4, 0.45, 0.5]
+            p1_range = [0.5, 0.55, 0.6]
         if threshold_range is None:
-            threshold_range = [1.0, 1.2, 1.5]
+            threshold_range = [1.2, 1.35, 1.5]
         if top_n_dominant_range is None:
             top_n_dominant_range = [4, 5, 6]
         if top_n_standard_range is None:
