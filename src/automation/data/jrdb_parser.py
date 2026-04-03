@@ -235,6 +235,7 @@ class JRDBParser:
                 'prize_1st': prize_1st,
                 'prize_2nd': prize_2nd,
                 'prize_3rd': prize_3rd,
+                'start_time': start_time if start_time else None,
                 'created_at': datetime.utcnow().isoformat(),
                 'updated_at': datetime.utcnow().isoformat()
             }
