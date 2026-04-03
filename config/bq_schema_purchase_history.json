@@ -1,0 +1,56 @@
+[
+  {
+    "name": "purchase_id",
+    "type": "STRING",
+    "mode": "REQUIRED",
+    "description": "購入ID（UUID）"
+  },
+  {
+    "name": "race_date",
+    "type": "DATE",
+    "mode": "REQUIRED",
+    "description": "レース日（パーティションキー）"
+  },
+  {
+    "name": "race_id",
+    "type": "STRING",
+    "mode": "REQUIRED",
+    "description": "JRDBレースID"
+  },
+  {
+    "name": "bet_type",
+    "type": "STRING",
+    "mode": "REQUIRED",
+    "description": "馬券種（place/win/wide/umaren/umatan/sanrenpuku）"
+  },
+  {
+    "name": "horse_numbers",
+    "type": "INT64",
+    "mode": "REPEATED",
+    "description": "馬番リスト"
+  },
+  {
+    "name": "amount",
+    "type": "INT64",
+    "mode": "REQUIRED",
+    "description": "購入金額（円）"
+  },
+  {
+    "name": "status",
+    "type": "STRING",
+    "mode": "REQUIRED",
+    "description": "購入ステータス（success / failed / skipped_budget）"
+  },
+  {
+    "name": "error_message",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "エラーメッセージ（失敗時のみ）"
+  },
+  {
+    "name": "purchased_at",
+    "type": "TIMESTAMP",
+    "mode": "REQUIRED",
+    "description": "購入日時（UTC）"
+  }
+]
