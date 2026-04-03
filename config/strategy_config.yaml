@@ -1,18 +1,18 @@
 p1: 0.5
-expected_return_threshold: 1.2
-prob_weight_r_dominant: 1.2
-prob_weight_r_standard: 1.2
+expected_return_threshold: 1.35 ## 最適化の結果は1.5
+prob_weight_r_dominant: 1.5 ## 最適化の結果は1.0
+prob_weight_r_standard: 1.0 ## 最適化の結果は1.5
 budget_per_race: 3000
 min_bet_amount: 100
 min_prob_threshold: 0.1
-top_n_dominant: 4
+top_n_dominant: 6 ## 最適化の結果は5
 top_n_standard: 5
 optimization:
-  last_run: '2026-03-28T21:47:25'
+  last_run: '2026-04-03T10:54:13'
   metric: recovery_rate
-  start_date: '2023-01-01'
-  end_date: '2023-12-31'
-  recovery_rate: 156.42
-  hit_rate: 24.72
-  max_drawdown: 23.58
-  total_bets: 13456
+  start_date: '2025-01-01'
+  end_date: '2025-12-31'
+  recovery_rate: 142.51
+  hit_rate: 6.34
+  max_drawdown: 44.94
+  total_bets: 17208
