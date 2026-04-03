@@ -1167,6 +1167,295 @@ async def line_webhook(request: Request):
     return LineWebhookResponse(status="ok")
 
 
+class PurchaseDailyRequest(BaseModel):
+    """IPAT日次自動購入リクエスト"""
+
+    target_date: Optional[str] = Field(
+        default=None,
+        description="対象日付（YYYY-MM-DD形式、省略時は当日）",
+    )
+
+
+class PurchaseRaceResult(BaseModel):
+    """1レース分の購入結果"""
+
+    race_id: str
+    bets_purchased: int
+    bets_failed: int
+    bets_skipped_budget: int
+    amount: int
+    status: str
+
+
+class PurchaseDailyResponse(BaseModel):
+    """IPAT日次自動購入レスポンス"""
+
+    status: str = Field(description="処理ステータス (success/skipped/error)")
+    execution_date: str = Field(description="対象日付")
+    purchased_races: int = Field(default=0, description="購入処理を行ったレース数")
+    total_amount: int = Field(default=0, description="当日累計購入金額（円）")
+    results: list[PurchaseRaceResult] = Field(default_factory=list)
+
+
+@app.post("/api/v1/purchase/daily", response_model=PurchaseDailyResponse)
+async def purchase_daily(request: PurchaseDailyRequest):
+    """
+    発走5分前のレースの推奨馬券を JRA IPAT で自動購入する。
+
+    Cloud Scheduler から土日 8:00〜17:00 の5分おきに呼び出されることを想定。
+    現在時刻の5〜10分後に発走するレースを対象とし、
+    predictions.investment_decisions の推奨馬券を購入する。
+
+    前提条件:
+      - predictions.investment_decisions に当日分のデータが存在すること
+        （POST /api/v1/strategy/daily 完了後）
+      - raw.race_info に start_time カラムが存在すること（Issue #214）
+      - scripts/create_purchase_history_table.py でBQテーブルが作成済みであること
+
+    環境変数:
+      IPAT_MEMBER_ID          : JRA IPAT 加入者番号
+      IPAT_PIN                : JRA IPAT 暗証番号（4桁）
+      IPAT_PAT_NUMBER         : JRA IPAT PAT番号
+      GCP_PROJECT_ID          : BigQuery プロジェクト ID
+      LINE_CHANNEL_ACCESS_TOKEN : LINE プッシュ通知用アクセストークン（失敗通知用）
+      LINE_USER_ID            : LINE 通知先ユーザーID
+    """
+    target_date = (
+        datetime.date.fromisoformat(request.target_date)
+        if request.target_date
+        else datetime.date.today()
+    )
+    execution_date_str = target_date.isoformat()
+    logger.info(f"IPAT日次購入リクエスト受信: execution_date={execution_date_str}")
+
+    project_id = os.environ.get("GCP_PROJECT_ID")
+    member_id = os.environ.get("IPAT_MEMBER_ID", "")
+    pin = os.environ.get("IPAT_PIN", "")
+    pat_number = os.environ.get("IPAT_PAT_NUMBER", "")
+    channel_access_token = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN", "")
+    line_user_id = os.environ.get("LINE_USER_ID", "")
+
+    if not project_id:
+        raise HTTPException(status_code=500, detail="GCP_PROJECT_IDが未設定です")
+    if not member_id or not pin or not pat_number:
+        raise HTTPException(
+            status_code=500,
+            detail="IPAT認証情報が未設定です（IPAT_MEMBER_ID / IPAT_PIN / IPAT_PAT_NUMBER）",
+        )
+
+    try:
+        result = await asyncio.to_thread(
+            _run_purchase_pipeline,
+            project_id=project_id,
+            target_date=target_date,
+            member_id=member_id,
+            pin=pin,
+            pat_number=pat_number,
+            channel_access_token=channel_access_token,
+            line_user_id=line_user_id,
+        )
+        return PurchaseDailyResponse(
+            status=result["status"],
+            execution_date=execution_date_str,
+            purchased_races=result["purchased_races"],
+            total_amount=result["total_amount"],
+            results=[PurchaseRaceResult(**r) for r in result["results"]],
+        )
+    except Exception as e:
+        logger.error(f"IPAT日次購入エラー: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+def _run_purchase_pipeline(
+    project_id: str,
+    target_date: datetime.date,
+    member_id: str,
+    pin: str,
+    pat_number: str,
+    channel_access_token: str,
+    line_user_id: str,
+) -> dict:
+    """
+    IPAT自動購入パイプラインの同期ラッパー（asyncio.to_thread で実行）。
+    """
+    import asyncio as _asyncio
+
+    return _asyncio.run(
+        _purchase_pipeline_async(
+            project_id=project_id,
+            target_date=target_date,
+            member_id=member_id,
+            pin=pin,
+            pat_number=pat_number,
+            channel_access_token=channel_access_token,
+            line_user_id=line_user_id,
+        )
+    )
+
+
+async def _purchase_pipeline_async(
+    project_id: str,
+    target_date: datetime.date,
+    member_id: str,
+    pin: str,
+    pat_number: str,
+    channel_access_token: str,
+    line_user_id: str,
+) -> dict:
+    """
+    IPAT自動購入パイプラインの非同期実装。
+
+    フロー:
+      1. raw.race_info から当日の発走時刻を取得
+      2. 現在時刻の5〜10分後に発走するレースを特定
+      3. 対象レースが0件なら skipped を返す
+      4. IPAT ログイン
+      5. 各レースの推奨馬券を取得し購入
+         - 予算上限チェック → 超過なら以降のレースをスキップ & LINE通知
+         - 購入失敗なら LINE通知して当該レースをスキップ
+      6. ログアウト
+      7. 購入結果を返す
+    """
+    from src.automation.data.ipat_purchaser import (
+        IpatLoginError,
+        IpatPurchaser,
+        fetch_daily_spent_amount,
+        fetch_recommended_bets,
+        fetch_today_races_with_start_time,
+        fetch_target_races,
+        save_purchase_record,
+        DAILY_BUDGET_LIMIT,
+    )
+    from src.utils.line_notify import push_messages, text_message
+
+    def _send_line(msg: str) -> None:
+        if channel_access_token and line_user_id:
+            try:
+                push_messages(channel_access_token, line_user_id, [text_message(msg)])
+            except Exception as e:
+                logger.warning(f"LINE通知失敗（無視します）: {e}")
+
+    # 1. 発走時刻付きレース一覧取得
+    all_races = fetch_today_races_with_start_time(project_id, target_date)
+    if not all_races:
+        logger.info(f"{target_date}: start_time付きレースが存在しません")
+        return {"status": "skipped", "purchased_races": 0, "total_amount": 0, "results": []}
+
+    # 2. 対象レースを抽出（現在時刻の5〜10分後）
+    now = datetime.datetime.now()
+    target_races = fetch_target_races(all_races, now, window_minutes_before=10, window_minutes_after=5)
+
+    if not target_races:
+        logger.info(f"{target_date}: 現在時刻 {now.strftime('%H:%M')} に対象レースなし")
+        return {"status": "skipped", "purchased_races": 0, "total_amount": 0, "results": []}
+
+    logger.info(f"対象レース {len(target_races)}件: {[r['race_id'] for r in target_races]}")
+
+    race_results = []
+
+    # 3. IPAT ログイン
+    async with IpatPurchaser(member_id, pin, pat_number) as purchaser:
+        try:
+            logged_in = await purchaser.login()
+        except IpatLoginError as e:
+            msg = f"IPATログインに失敗しました: {e}"
+            logger.error(msg)
+            _send_line(msg)
+            return {"status": "error", "purchased_races": 0, "total_amount": 0, "results": []}
+
+        if not logged_in:
+            msg = "IPATログインに失敗しました（認証情報を確認してください）"
+            logger.error(msg)
+            _send_line(msg)
+            return {"status": "error", "purchased_races": 0, "total_amount": 0, "results": []}
+
+        # 4. 各レースの購入処理
+        for race in target_races:
+            race_id = race["race_id"]
+            venue_name = race.get("venue_name", "")
+            race_number = race.get("race_number", "")
+
+            # 推奨馬券取得
+            bets = fetch_recommended_bets(project_id, race_id, target_date)
+            if not bets:
+                logger.info(f"race_id={race_id}: 推奨馬券なし → スキップ")
+                continue
+
+            bets_purchased = 0
+            bets_failed = 0
+            bets_skipped_budget = 0
+            race_amount = 0
+            budget_exceeded = False
+
+            for bet in bets:
+                bet_type = bet["bet_type"]
+                horse_numbers = bet["horse_numbers"]
+                amount = int(bet["bet_amount"])
+
+                # 予算上限チェック
+                spent = fetch_daily_spent_amount(project_id, target_date)
+                if spent + amount > DAILY_BUDGET_LIMIT:
+                    msg = f"本日の購入上限（{DAILY_BUDGET_LIMIT:,}円）に達しました（累計: {spent:,}円）"
+                    logger.warning(msg)
+                    _send_line(msg)
+                    save_purchase_record(
+                        project_id, target_date, race_id,
+                        bet_type, horse_numbers, amount, "skipped_budget",
+                    )
+                    bets_skipped_budget += 1
+                    budget_exceeded = True
+                    break
+
+                # 馬券購入
+                result = await purchaser.purchase_bet(bet_type, horse_numbers, amount)
+                status = result["status"]
+                error_message = result.get("error_message")
+
+                save_purchase_record(
+                    project_id, target_date, race_id,
+                    bet_type, horse_numbers, amount, status, error_message,
+                )
+
+                if status == "success":
+                    bets_purchased += 1
+                    race_amount += amount
+                else:
+                    bets_failed += 1
+                    horse_str = "-".join(str(h) for h in horse_numbers)
+                    msg = (
+                        f"馬券購入失敗: {venue_name}{race_number}R "
+                        f"{bet_type} {horse_str} {amount}円 - {error_message}"
+                    )
+                    logger.warning(msg)
+                    _send_line(msg)
+
+            race_results.append({
+                "race_id": race_id,
+                "bets_purchased": bets_purchased,
+                "bets_failed": bets_failed,
+                "bets_skipped_budget": bets_skipped_budget,
+                "amount": race_amount,
+                "status": "skipped_budget" if budget_exceeded else "processed",
+            })
+
+            if budget_exceeded:
+                logger.warning("予算上限到達のため以降のレースをスキップします")
+                break
+
+    total_spent = fetch_daily_spent_amount(project_id, target_date)
+    purchased_races = sum(1 for r in race_results if r["bets_purchased"] > 0)
+
+    logger.info(
+        f"IPAT日次購入完了: 購入レース={purchased_races}件, 当日累計={total_spent:,}円"
+    )
+    return {
+        "status": "success",
+        "purchased_races": purchased_races,
+        "total_amount": total_spent,
+        "results": race_results,
+    }
+
+
 def create_app() -> FastAPI:
     """アプリケーションファクトリ"""
     return app
