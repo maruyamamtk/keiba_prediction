@@ -1174,6 +1174,10 @@ class PurchaseDailyRequest(BaseModel):
         default=None,
         description="対象日付（YYYY-MM-DD形式、省略時は当日）",
     )
+    dry_run: bool = Field(
+        default=True,
+        description="Trueの場合、実際の購入をせず推奨馬券内容をLINE通知のみ行う（デフォルト: True）",
+    )
 
 
 class PurchaseRaceResult(BaseModel):
@@ -1192,6 +1196,7 @@ class PurchaseDailyResponse(BaseModel):
 
     status: str = Field(description="処理ステータス (success/skipped/error)")
     execution_date: str = Field(description="対象日付")
+    dry_run: bool = Field(default=True, description="ドライランモードか")
     purchased_races: int = Field(default=0, description="購入処理を行ったレース数")
     total_amount: int = Field(default=0, description="当日累計購入金額（円）")
     results: list[PurchaseRaceResult] = Field(default_factory=list)
@@ -1226,7 +1231,8 @@ async def purchase_daily(request: PurchaseDailyRequest):
         else datetime.date.today()
     )
     execution_date_str = target_date.isoformat()
-    logger.info(f"IPAT日次購入リクエスト受信: execution_date={execution_date_str}")
+    dry_run = request.dry_run
+    logger.info(f"IPAT日次購入リクエスト受信: execution_date={execution_date_str}, dry_run={dry_run}")
 
     project_id = os.environ.get("GCP_PROJECT_ID")
     member_id = os.environ.get("IPAT_MEMBER_ID", "")
@@ -1237,7 +1243,8 @@ async def purchase_daily(request: PurchaseDailyRequest):
 
     if not project_id:
         raise HTTPException(status_code=500, detail="GCP_PROJECT_IDが未設定です")
-    if not member_id or not pin or not pat_number:
+    # dry_run=False の場合のみ IPAT 認証情報を必須チェック
+    if not dry_run and (not member_id or not pin or not pat_number):
         raise HTTPException(
             status_code=500,
             detail="IPAT認証情報が未設定です（IPAT_MEMBER_ID / IPAT_PIN / IPAT_PAT_NUMBER）",
@@ -1253,10 +1260,12 @@ async def purchase_daily(request: PurchaseDailyRequest):
             pat_number=pat_number,
             channel_access_token=channel_access_token,
             line_user_id=line_user_id,
+            dry_run=dry_run,
         )
         return PurchaseDailyResponse(
             status=result["status"],
             execution_date=execution_date_str,
+            dry_run=dry_run,
             purchased_races=result["purchased_races"],
             total_amount=result["total_amount"],
             results=[PurchaseRaceResult(**r) for r in result["results"]],
@@ -1274,6 +1283,7 @@ def _run_purchase_pipeline(
     pat_number: str,
     channel_access_token: str,
     line_user_id: str,
+    dry_run: bool = True,
 ) -> dict:
     """
     IPAT自動購入パイプラインの同期ラッパー（asyncio.to_thread で実行）。
@@ -1289,6 +1299,7 @@ def _run_purchase_pipeline(
             pat_number=pat_number,
             channel_access_token=channel_access_token,
             line_user_id=line_user_id,
+            dry_run=dry_run,
         )
     )
 
@@ -1301,20 +1312,27 @@ async def _purchase_pipeline_async(
     pat_number: str,
     channel_access_token: str,
     line_user_id: str,
+    dry_run: bool = True,
 ) -> dict:
     """
     IPAT自動購入パイプラインの非同期実装。
+
+    dry_run=True（デフォルト）:
+      - IPATへのログイン・購入を一切行わない
+      - 発走5分前レースの推奨馬券内容をLINEに通知するのみ
+
+    dry_run=False:
+      - 通常フロー（IPAT購入 + 履歴BQ保存）
 
     フロー:
       1. raw.race_info から当日の発走時刻を取得
       2. 現在時刻の5〜10分後に発走するレースを特定
       3. 対象レースが0件なら skipped を返す
-      4. IPAT ログイン
-      5. 各レースの推奨馬券を取得し購入
-         - 予算上限チェック → 超過なら以降のレースをスキップ & LINE通知
-         - 購入失敗なら LINE通知して当該レースをスキップ
-      6. ログアウト
-      7. 購入結果を返す
+      4. [dry_run=False] IPAT ログイン
+      5. 各レースの推奨馬券を取得
+         [dry_run=True]  LINE通知のみ
+         [dry_run=False] 予算チェック → 購入 → 履歴保存
+      6. [dry_run=False] ログアウト
     """
     from src.automation.data.ipat_purchaser import (
         IpatLoginError,
@@ -1349,10 +1367,58 @@ async def _purchase_pipeline_async(
         logger.info(f"{target_date}: 現在時刻 {now.strftime('%H:%M')} に対象レースなし")
         return {"status": "skipped", "purchased_races": 0, "total_amount": 0, "results": []}
 
-    logger.info(f"対象レース {len(target_races)}件: {[r['race_id'] for r in target_races]}")
+    logger.info(
+        f"対象レース {len(target_races)}件: {[r['race_id'] for r in target_races]}"
+        f" [{'ドライラン' if dry_run else '本番購入'}]"
+    )
 
     race_results = []
 
+    # --- ドライランモード ---
+    if dry_run:
+        for race in target_races:
+            race_id = race["race_id"]
+            venue_name = race.get("venue_name", "")
+            race_number = race.get("race_number", "")
+
+            bets = fetch_recommended_bets(project_id, race_id, target_date)
+            if not bets:
+                logger.info(f"[DRY RUN] race_id={race_id}: 推奨馬券なし → スキップ")
+                continue
+
+            # 推奨馬券をLINE通知
+            lines = [f"【ドライラン】{venue_name}{race_number}R 購入予定馬券"]
+            total_amount = 0
+            for bet in bets:
+                bet_type = bet["bet_type"]
+                horse_numbers = bet["horse_numbers"]
+                amount = int(bet["bet_amount"])
+                horse_str = "-".join(str(h) for h in horse_numbers)
+                lines.append(f"  {bet_type} {horse_str} {amount:,}円")
+                total_amount += amount
+            lines.append(f"  合計: {total_amount:,}円")
+            _send_line("\n".join(lines))
+            logger.info(f"[DRY RUN] race_id={race_id}: {len(bets)}件通知")
+
+            race_results.append({
+                "race_id": race_id,
+                "bets_purchased": 0,
+                "bets_failed": 0,
+                "bets_skipped_budget": 0,
+                "amount": 0,
+                "status": "dry_run",
+            })
+
+        notified_races = len(race_results)
+        logger.info(f"ドライラン完了: {notified_races}レース分をLINE通知")
+        return {
+            "status": "success",
+            "purchased_races": 0,
+            "total_amount": 0,
+            "results": race_results,
+        }
+
+    # --- 本番購入モード ---
     # 3. IPAT ログイン
     async with IpatPurchaser(member_id, pin, pat_number) as purchaser:
         try:
