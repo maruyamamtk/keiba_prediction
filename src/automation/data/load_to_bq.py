@@ -417,27 +417,29 @@ class BigQueryLoader:
                 )
             schema = target_table.schema
 
-            # 一時テーブルを作成（1時間後に自動削除される有効期限を設定）
-            temp_table = bigquery.Table(temp_table_ref, schema=schema)
-            temp_table.expires = datetime.utcnow() + timedelta(hours=1)
-            temp_table = self.bq_client.create_table(temp_table)
-            logger.debug(f"一時テーブルを作成しました: {temp_table_ref}")
-
             try:
-                # 一時テーブルにデータをStreaming Insert
-                errors = self.bq_client.insert_rows_json(temp_table, rows)
-                if errors:
-                    error_msgs = [str(e) for e in errors[:5]]
+                # 一時テーブルにデータをLoad Job（非Streaming）で挿入
+                # Streaming Insert は Streaming Buffer 内のデータに対して MERGE/UPDATE/DELETE が
+                # 実行できないという BQ の仕様制限があるため、Load Job を使用する
+                job_config = bigquery.LoadJobConfig(
+                    schema=schema,
+                    source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
+                    write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
+                )
+                load_job = self.bq_client.load_table_from_json(
+                    rows, temp_table_ref, job_config=job_config
+                )
+                load_job.result()  # 完了を待つ
+
+                if load_job.errors:
+                    error_msgs = [str(e) for e in load_job.errors[:5]]
                     logger.error(
-                        f"BigQuery Streaming Insert エラー (テーブル: {table_id}, "
+                        f"BigQuery Load Job エラー (テーブル: {table_id}, "
                         f"データタイプ: {data_type}): {error_msgs}"
                     )
-                    raise GoogleCloudError(f"Insert errors: {error_msgs}")
+                    raise GoogleCloudError(f"Load job errors: {error_msgs}")
 
                 logger.debug(f"一時テーブルに {len(rows)} 行を挿入しました")
-
-                # Streaming Insertのバッファ反映を待つ
-                time.sleep(5)
 
                 # MERGE文を構築
                 unique_keys = TABLE_UNIQUE_KEYS.get(table_id, ["race_id"])

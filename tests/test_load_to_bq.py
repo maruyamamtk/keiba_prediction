@@ -553,11 +553,10 @@ class TestBigQueryLoaderMerge:
         mock_table.schema = [mock_field_1, mock_field_2]
         mock_client.get_table.return_value = mock_table
 
-        # 一時テーブル作成
-        mock_client.create_table.return_value = MagicMock()
-
-        # insert_rows_json成功
-        mock_client.insert_rows_json.return_value = []
+        # load_table_from_json成功（Load Job）
+        mock_load_job = MagicMock()
+        mock_load_job.errors = None
+        mock_client.load_table_from_json.return_value = mock_load_job
 
         # クエリ成功
         mock_query_job = MagicMock()
@@ -570,8 +569,7 @@ class TestBigQueryLoaderMerge:
 
         assert result == 1
         mock_client.get_table.assert_called()
-        mock_client.create_table.assert_called()
-        mock_client.insert_rows_json.assert_called()
+        mock_client.load_table_from_json.assert_called()
         mock_client.query.assert_called()
         mock_client.delete_table.assert_called()
 
@@ -587,10 +585,11 @@ class TestBigQueryLoaderMerge:
         mock_table = MagicMock()
         mock_table.schema = [mock_field]
         mock_client.get_table.return_value = mock_table
-        mock_client.create_table.return_value = MagicMock()
 
-        # insert_rows_jsonがエラーを返す
-        mock_client.insert_rows_json.return_value = [{"error": "test error"}]
+        # load_table_from_jsonがエラーを返す（Load Job）
+        mock_load_job = MagicMock()
+        mock_load_job.errors = [{"message": "test error"}]
+        mock_client.load_table_from_json.return_value = mock_load_job
 
         rows = [{"race_id": "12345678"}]
 
