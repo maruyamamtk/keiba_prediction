@@ -636,6 +636,7 @@ keiba_prediction/
 │   │   │   ├── __init__.py
 │   │   │   ├── jrdb_downloader.py    # JRDBダウンローダー
 │   │   │   ├── jrdb_parser.py        # JRDBデータパーサー
+│   │   │   ├── ipat_purchaser.py     # JRA IPAT自動馬券購入（Playwright）
 │   │   │   ├── load_to_bq.py         # BigQueryロード（MERGE+重複スキップ）
 │   │   │   ├── netkeiba_scraper.py   # netkeibaリアルタイムオッズスクレイパー
 │   │   │   └── upload_to_gcs.py      # GCSアップロード
@@ -676,9 +677,11 @@ keiba_prediction/
 │           ├── backtest.py           # バックテスト（累積損益推移グラフ・月次集計テーブル）
 │           └── model_info.py         # モデル情報（GCS最新モデルから特徴量重要度を可視化）
 ├── scripts/                           # ユーティリティスクリプト
+│   ├── add_start_time_to_race_info.py    # raw.race_infoにstart_timeカラム追加（Issue #214）
 │   ├── create_daily_odds_combo_table.py  # predictions.daily_odds_comboテーブル作成
 │   ├── create_daily_odds_table.py    # predictions.daily_oddsテーブル作成
 │   ├── create_predictions_table.py   # predictions.daily_predictionsテーブル作成
+│   ├── create_purchase_history_table.py  # predictions.purchase_historyテーブル作成（Issue #213）
 │   ├── create_raw_combo_odds_table.py  # raw.combo_oddsテーブル作成（Issue #140）
 │   ├── generate_features.py
 │   ├── reload_gcs_to_bq.py
@@ -861,6 +864,7 @@ Cloud RunにデプロイされたFastAPIアプリケーションは以下のエ�
 | POST | `/api/v1/odds/scrape` | netkeibaから当日オッズを取得し `predictions.daily_odds` にUPSERT保存。`include_combo=true` で組み合わせ馬券オッズも取得し `predictions.daily_odds_combo` に保存。 |
 | POST | `/api/v1/strategy/daily` | 当日の投資戦略を策定し `predictions.investment_decisions` にUPSERT保存。`config/strategy_config.yaml` のパラメータを使用。 |
 | POST | `/api/v1/line/webhook` | LINE Messaging API Webhook受信。「日付 競馬場名 レース番号」形式のメッセージに対して予測テーブルと推奨馬券リストを返信。 |
+| POST | `/api/v1/purchase/daily` | 発走5分前JRA IPAT自動馬券購入。`dry_run=true`（デフォルト）の場合はIPATログイン・購入をスキップし推奨馬券をLINE通知のみ実行。結果は `predictions.purchase_history` に保存。 |
 
 ---
 
@@ -921,13 +925,17 @@ Cloud RunにデプロイされたFastAPIアプリケーションは以下のエ�
 - 時系列分割・推論パイプライン ✅
 - バックテストシミュレーター（Kelly基準・回収率評価） ✅ ← Issue #17
 
-**Phase 5: 運用システム構築 🔧 一部実装済み**
+**Phase 5: 運用システム構築 ✅ 完了**
 - ✅ 日次予測パイプライン（Cloud Schedulerからの自動推論・BQ/GCS保存） - Issue #117
   - `POST /api/v1/predict/daily`: `model_path` 未指定時はGCSから最新モデルを自動取得
   - `predictions.daily_predictions` テーブルへのUPSERT保存
   - GCS保存（`gs://{project}-keiba-predictions/{date}/predictions.csv`）
-- ⬜ Webダッシュボード
-- ⬜ 通知システム
+- ✅ `raw.race_info` に `start_time` カラム追加 - Issue #214
+- ✅ 発走5分前JRA IPAT自動馬券購入 - Issue #213
+  - `POST /api/v1/purchase/daily`: `dry_run`（デフォルト: true）で本番切り替え可能
+  - `predictions.purchase_history` テーブルへの購入履歴保存
+- ✅ Webダッシュボード（Streamlit） - Issue #24
+- ✅ LINE Messaging API Webhook Bot - Issue #25
 
 ### 実行方法
 
@@ -1063,6 +1071,44 @@ curl -X POST http://localhost:8080/api/v1/predict/daily \
 }
 ```
 
+**IPAT自動馬券購入（Cloud Scheduler用）**
+
+`dry_run` のデフォルトは `true` です。IPATへの実際の購入なしに推奨馬券をLINE通知だけ行います。
+
+```bash
+# dry_run モード（IPATログイン・購入なし。推奨馬券をLINE通知のみ）
+curl -X POST http://localhost:8080/api/v1/purchase/daily \
+  -H "Content-Type: application/json" \
+  -d '{"target_date": "2026-04-05", "dry_run": true}'
+
+# 本番モード（実際にIPATで馬券購入）
+curl -X POST http://localhost:8080/api/v1/purchase/daily \
+  -H "Content-Type: application/json" \
+  -d '{"target_date": "2026-04-05", "dry_run": false}'
+```
+
+**レスポンス例（IPAT自動購入）**
+
+```json
+{
+  "status": "success",
+  "execution_date": "2026-04-05",
+  "dry_run": true,
+  "purchased_races": 0,
+  "total_amount": 0,
+  "results": [...]
+}
+```
+
+> **本番切り替え**: Cloud Schedulerジョブのリクエストボディを `{"dry_run": false}` に更新することで本番購入に切り替えできます。
+>
+> ```bash
+> gcloud scheduler jobs update http race-day-purchase \
+>   --location=asia-northeast1 \
+>   --message-body='{"dry_run": false}' \
+>   --project=<PROJECT_ID>
+> ```
+
 **ヘルスチェック**
 
 ```bash
@@ -1096,6 +1142,14 @@ curl http://localhost:8080/health
 gcloud scheduler jobs run daily-data-pipeline --location=asia-northeast1
 ```
 
+主なジョブ一覧:
+
+| ジョブ名 | スケジュール | 用途 |
+|---------|------------|------|
+| `daily-data-pipeline` | 毎日 AM 6:00 JST | 日次データロード |
+| `race-day-predict` | 毎日 AM 8:00 JST | レース予測 |
+| `race-day-purchase` | 土日 8:00〜17:00 の5分おき | 発走5分前IPAT自動馬券購入（Issue #213） |
+
 詳細な設定内容は [infrastructure/README.md](./infrastructure/README.md#7-cloud-schedulerの設定) を参照してください。
 
 ---
@@ -1106,7 +1160,7 @@ gcloud scheduler jobs run daily-data-pipeline --location=asia-northeast1
 
 | テーブル | データソース | 説明 | 行数 |
 |---------|-------------|------|------|
-| `race_info` | BAA (番組データ) | レース基本情報 | ~33,400 |
+| `race_info` | BAA (番組データ) | レース基本情報（`start_time` STRING: HHMM形式、例: "1015" = 10:15）| ~33,400 |
 | `horse_results` | KYF (競走馬データ) | 出馬表・予測指数 | ~486,500 |
 | `race_results` | SEC (成績データ) | レース結果 | ~486,500 |
 | `horse_extended` | KKA (拡張馬データ) | 条件別成績 | ~486,500 |
@@ -1125,6 +1179,12 @@ gcloud scheduler jobs run daily-data-pipeline --location=asia-northeast1
 python3 scripts/create_raw_combo_odds_table.py --project-id <PROJECT_ID>
 ```
 
+`raw.race_info` への `start_time` カラム追加（Issue #214。初回のみ実行）:
+
+```bash
+python3 scripts/add_start_time_to_race_info.py --project-id <PROJECT_ID>
+```
+
 ### featuresデータセット
 
 | テーブル | 説明 | カラム数 | 行数 |
@@ -1141,6 +1201,7 @@ python3 scripts/create_raw_combo_odds_table.py --project-id <PROJECT_ID>
 | `predictions.daily_odds` | netkeibaリアルタイム単複オッズ | 実装済み（Issue #131） |
 | `predictions.daily_odds_combo` | netkeibaリアルタイム組み合わせ馬券オッズ | 実装済み（Issue #134） |
 | `predictions.investment_decisions` | 日次投資判断結果（`horse_numbers` STRING型・カンマ区切り） | 実装済み（Issue #105 / スキーマ変更 Issue #161） |
+| `predictions.purchase_history` | IPAT馬券購入履歴（パーティション: `race_date`） | 実装済み（Issue #213） |
 
 テーブル作成コマンド:
 
@@ -1151,6 +1212,7 @@ python3 scripts/create_predictions_table.py
 python3 scripts/create_daily_odds_table.py --project-id <PROJECT_ID>
 python3 scripts/create_daily_odds_combo_table.py --project-id <PROJECT_ID>
 python3 scripts/create_investment_decisions_table.py --project-id <PROJECT_ID>
+python3 scripts/create_purchase_history_table.py --project-id <PROJECT_ID>
 ```
 
 各テーブルのスキーマ詳細は `config/bq_schema_*.json` を参照してください。
@@ -1312,6 +1374,18 @@ python -m pytest tests/ --cov=src --cov-report=html
   - `src/dashboard/components/`: 各画面コンポーネント（Plotly グラフ対応）
   - `Dockerfile.dashboard`: Playwright不要の軽量Cloud Runコンテナ（`dashboard-service`）
   - ローカル起動: `GCP_PROJECT_ID=your-project streamlit run src/dashboard/app.py`
+- ✅ `raw.race_info` に `start_time` カラム追加 - Issue #214
+  - `src/automation/data/jrdb_parser.py`: `parse_baa_line()` の return dict に `start_time`（HHMM形式）追加
+  - `scripts/add_start_time_to_race_info.py`: BQ ALTER TABLE スクリプト（初回のみ実行）
+- ✅ 発走5分前JRA IPAT自動馬券購入パイプライン - Issue #213
+  - `POST /api/v1/purchase/daily`: 対象レースを順次処理し、発走5分前にIPATで馬券購入
+  - `dry_run=true`（デフォルト）: IPATログイン・購入をスキップし推奨馬券をLINE通知のみ
+  - `dry_run=false`: 実際にIPATへログインして馬券を購入（本番切り替えは Cloud Scheduler ジョブ更新で行う）
+  - `predictions.purchase_history` テーブルへの購入履歴保存
+  - Cloud Scheduler ジョブ `race-day-purchase`（土日 8:00〜17:00 の5分おき）で自動実行
+  - 本番切り替えコマンド: `gcloud scheduler jobs update http race-day-purchase --message-body='{"dry_run": false}'`
+  - `src/automation/data/ipat_purchaser.py`: IpatPurchaserクラス（Playwright自動化）
+  - 必要な環境変数（Secret Manager経由）: `IPAT_MEMBER_ID`（加入者番号）・`IPAT_PIN`（暗証番号4桁）・`IPAT_PAT_NUMBER`（PAT番号）
 
 ---
 
@@ -1342,3 +1416,4 @@ python -m pytest tests/ --cov=src --cov-report=html
 | 2026-03-15 | Issue #24（Streamlit Webダッシュボード）の実装を反映。src/dashboard/追加、Dockerfile.dashboard追加、技術スタックにStreamlit/Plotly追記、Phase 5 Webダッシュボードを実装済みに更新 |
 | 2026-03-17 | Issue #161（investment_decisions スキーマ変更: horse_number INTEGER → horse_numbers STRING カンマ区切り）・Issue #162（馬選定スコアに prob_weight_r 導入、min_prob_threshold フィルタ追加、グリッドサーチ3次元化 100通り）の実装を反映 |
 | 2026-03-20 | Issue #167（netkeibaスクレイパー COMBO_TICKET_TYPESマッピング修正: b5=ワイド/b6=馬単/b7=三連複）・Issue #168（1レースあたり投資予算を capital×max_bet_ratio 方式から budget_per_race=3000円固定方式に変更: `--max-bet-ratio` → `--budget-per-race`、strategy_config.yaml更新）・Issue #165（prob_weight_r が期待値フィルタに影響しないことを検証するテスト追加）・Issue #166（build_race_df の win_odds JOIN 動作を検証する tests/test_run_strategy.py 新規作成）の実装を反映 |
+| 2026-04-04 | Issue #214（raw.race_info に start_time カラム追加: HHMM形式、jrdb_parser.py + scripts/add_start_time_to_race_info.py 追加）・Issue #213（発走5分前JRA IPAT自動馬券購入パイプライン: POST /api/v1/purchase/daily 追加、ipat_purchaser.py・predictions.purchase_history・scripts/create_purchase_history_table.py 追加、Cloud Scheduler ジョブ race-day-purchase 追加、dry_run フラグで本番切り替え可能）の実装を反映 |
