@@ -86,6 +86,10 @@ NOTIFY_SCHEDULE="0 9 * * 0,6"
 # "0 8 1-7 * 1" = 月の1〜7日かつ月曜日の 8:00 = 毎月第1月曜日
 RETRAIN_JOB_NAME="monthly-model-retrain"
 RETRAIN_SCHEDULE="0 8 1-7 * 1"
+# IPAT自動購入ジョブ（土日 8:00〜17:00 の5分おき）
+# race-day-strategy(AM 8:30) 完了後に稼働し、発走5分前のレースを自動購入する
+PURCHASE_JOB_NAME="race-day-purchase"
+PURCHASE_SCHEDULE="*/5 8-17 * * 6,0"
 TIME_ZONE="Asia/Tokyo"
 
 # サービスアカウントのメールアドレス
@@ -102,6 +106,7 @@ log_info "オッズ取得ジョブ: ${ODDS_SCRAPE_JOB_NAME} (${ODDS_SCRAPE_SCHED
 log_info "投資戦略ジョブ: ${STRATEGY_JOB_NAME} (${STRATEGY_SCHEDULE})"
 log_info "LINE通知ジョブ: ${NOTIFY_JOB_NAME} (${NOTIFY_SCHEDULE}) ※土日のみ"
 log_info "月次再学習ジョブ: ${RETRAIN_JOB_NAME} (${RETRAIN_SCHEDULE}) ※毎月第1月曜日"
+log_info "IPAT自動購入ジョブ: ${PURCHASE_JOB_NAME} (${PURCHASE_SCHEDULE}) ※土日のみ"
 log_info "タイムゾーン: ${TIME_ZONE}"
 log_info "サービスアカウント: ${PIPELINE_SA_EMAIL}"
 log_info "=========================================="
@@ -146,6 +151,9 @@ log_info "LINE通知URI: ${NOTIFY_TARGET_URI}"
 # /async を使用して Cloud Scheduler の attempt-deadline 超過を防ぐ
 RETRAIN_TARGET_URI="${SERVICE_URL}/api/v1/model/retrain/async"
 log_info "月次再学習URI: ${RETRAIN_TARGET_URI}"
+# ターゲットURL（IPAT自動購入: 発走5分前レースを自動購入）
+PURCHASE_TARGET_URI="${SERVICE_URL}/api/v1/purchase/daily"
+log_info "IPAT自動購入URI: ${PURCHASE_TARGET_URI}"
 
 # ========================================
 # 2. Cloud Scheduler APIの有効化確認
@@ -303,6 +311,17 @@ create_or_update_job \
     "${RETRAIN_TARGET_URI}" \
     "60s"
 
+# 4-7. IPAT自動購入ジョブ（race-day-purchase）
+# 土日 8:00〜17:00 の5分おきに /api/v1/purchase/daily を呼び出す
+# race-day-strategy(AM 8:30) 完了後に稼働し、発走5〜10分前のレースを investment_decisions から取得して自動購入する
+# attempt-deadline=180s: IPAT ログイン + 購入処理の余裕を確保
+log_info "--- IPAT自動購入ジョブの設定 ---"
+create_or_update_job \
+    "${PURCHASE_JOB_NAME}" \
+    "${PURCHASE_SCHEDULE}" \
+    "${PURCHASE_TARGET_URI}" \
+    "180s"
+
 # ========================================
 # 5. ジョブの確認
 # ========================================
@@ -355,6 +374,12 @@ log_info "  手動実行:    gcloud scheduler jobs run ${RETRAIN_JOB_NAME} --loc
 log_info "  一時停止:    gcloud scheduler jobs pause ${RETRAIN_JOB_NAME} --location=${GCP_REGION}"
 log_info "  再開:        gcloud scheduler jobs resume ${RETRAIN_JOB_NAME} --location=${GCP_REGION}"
 log_info "  実行履歴:    gcloud logging read 'resource.type=\"cloud_scheduler_job\" AND resource.labels.job_id=\"${RETRAIN_JOB_NAME}\"' --limit=10"
+log_info ""
+log_info "【IPAT自動購入ジョブ (${PURCHASE_JOB_NAME})】 ※土日 8:00〜17:00 の5分おき"
+log_info "  手動実行:    gcloud scheduler jobs run ${PURCHASE_JOB_NAME} --location=${GCP_REGION}"
+log_info "  一時停止:    gcloud scheduler jobs pause ${PURCHASE_JOB_NAME} --location=${GCP_REGION}"
+log_info "  再開:        gcloud scheduler jobs resume ${PURCHASE_JOB_NAME} --location=${GCP_REGION}"
+log_info "  実行履歴:    gcloud logging read 'resource.type=\"cloud_scheduler_job\" AND resource.labels.job_id=\"${PURCHASE_JOB_NAME}\"' --limit=10"
 log_info ""
 
 # ========================================
