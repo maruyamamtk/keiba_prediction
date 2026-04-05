@@ -10,12 +10,12 @@ Usage:
                              X_valid, y_valid, groups_valid, config)
 """
 
-from __future__ import annotations
+
 
 import json
 import logging
 from pathlib import Path
-from typing import Optional
+
 
 import lightgbm as lgb
 import numpy as np
@@ -63,7 +63,7 @@ def create_objective(
     base_params: dict,
     training_config: dict,
     search_space: dict,
-    categorical_feature: Optional[list[str]] = None,
+    categorical_feature: list[str] | None = None,
 ):
     """
     Optuna の目的関数を生成する（クロージャ）
@@ -147,7 +147,7 @@ def run_tuning(
     y_valid: np.ndarray,
     groups_valid: list[int],
     config: dict,
-    categorical_feature: Optional[list[str]] = None,
+    categorical_feature: list[str] | None = None,
 ) -> dict:
     """
     Optuna でハイパーパラメータ調整を実行する

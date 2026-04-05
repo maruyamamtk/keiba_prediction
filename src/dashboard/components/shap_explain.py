@@ -9,7 +9,7 @@ SHAPの解釈:
   - SHAP値 < 0: その特徴量がスコアを押し下げている（複勝率DOWNに寄与）
 """
 
-from __future__ import annotations
+
 
 import logging
 

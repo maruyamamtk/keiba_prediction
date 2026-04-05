@@ -19,7 +19,6 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +46,7 @@ class JRDBDownloader:
         self,
         username: str,
         password: str,
-        output_dir: Optional[Path] = None,
+        output_dir: Path | None = None,
     ):
         """
         初期化
@@ -155,7 +154,7 @@ class JRDBDownloader:
 
         return sorted(set(matches))
 
-    def _download_file(self, datatype: str, filedate: str) -> Optional[Path]:
+    def _download_file(self, datatype: str, filedate: str) -> Path | None:
         """
         ファイルをダウンロード
 
@@ -330,7 +329,7 @@ class JRDBDownloader:
         self,
         datatype: str,
         start_date: str,
-        end_date: Optional[str] = None,
+        end_date: str | None = None,
     ) -> DownloadResult:
         """
         指定日付範囲のファイルをダウンロード
@@ -406,7 +405,7 @@ class JRDBDownloader:
     def download_all_from_date(
         self,
         start_date: str,
-        end_date: Optional[str] = None,
+        end_date: str | None = None,
     ) -> dict[str, DownloadResult]:
         """
         すべてのデータタイプについて指定日付範囲のファイルをダウンロード
@@ -445,7 +444,7 @@ class JRDBDownloader:
             logger.info(f"一時ディレクトリを削除: {self.output_dir}")
 
 
-def create_downloader_from_env() -> Optional[JRDBDownloader]:
+def create_downloader_from_env() -> JRDBDownloader | None:
     """
     環境変数からJRDBDownloaderを作成
 

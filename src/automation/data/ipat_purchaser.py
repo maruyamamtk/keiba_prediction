@@ -12,12 +12,9 @@ Playwright を使って JRA インターネット投票（IPAT）に自動ログ
 Issue #213: 発走5分前JRA IPAT自動馬券購入パイプラインの実装
 """
 
-from __future__ import annotations
-
 import datetime
 import logging
 import uuid
-from typing import Optional
 
 from google.cloud import bigquery
 
@@ -409,7 +406,7 @@ def save_purchase_record(
     horse_numbers: list[int],
     amount: int,
     status: str,
-    error_message: Optional[str] = None,
+    error_message: str | None = None,
 ) -> None:
     """
     購入結果を predictions.purchase_history に INSERT する。

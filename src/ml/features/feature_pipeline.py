@@ -13,7 +13,7 @@ features.training_dataテーブルに出力する。
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Callable
+from collections.abc import Callable
 import logging
 import re
 import time
@@ -96,7 +96,7 @@ class FeaturePipeline:
     def __init__(
         self,
         project_id: str,
-        config: Optional[FeaturePipelineConfig] = None,
+        config: FeaturePipelineConfig | None = None,
     ):
         """
         Args:

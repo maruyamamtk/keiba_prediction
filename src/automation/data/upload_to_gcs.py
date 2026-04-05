@@ -19,7 +19,7 @@ import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+
 
 from google.api_core import retry
 from google.auth import default as auth_default
@@ -60,8 +60,8 @@ class GCSUploader:
         self,
         project_id: str,
         bucket_name: str,
-        local_base_dir: Optional[Path] = None,
-        credentials_path: Optional[str] = None,
+        local_base_dir: Path | None = None,
+        credentials_path: str | None = None,
     ):
         """
         初期化
@@ -85,7 +85,7 @@ class GCSUploader:
             self.local_base_dir = local_base_dir
 
     def _create_client(
-        self, project_id: str, credentials_path: Optional[str]
+        self, project_id: str, credentials_path: str | None
     ) -> storage.Client:
         """
         GCS Clientを作成
@@ -167,7 +167,7 @@ class GCSUploader:
                 hash_md5.update(chunk)
         return hash_md5.hexdigest()
 
-    def _get_gcs_blob_md5(self, blob_name: str) -> Optional[str]:
+    def _get_gcs_blob_md5(self, blob_name: str) -> str | None:
         """
         GCS上のファイルのMD5ハッシュを取得
 
@@ -428,8 +428,8 @@ def format_bytes(size: int) -> str:
 
 
 def create_uploader_from_env(
-    local_base_dir: Optional[Path] = None,
-) -> Optional[GCSUploader]:
+    local_base_dir: Path | None = None,
+) -> GCSUploader | None:
     """
     環境変数からGCSUploaderを作成
 

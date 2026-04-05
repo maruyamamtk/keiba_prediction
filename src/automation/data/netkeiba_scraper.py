@@ -22,13 +22,12 @@ Issue #131: netkeibaリアルタイムオッズスクレイパーの実装
 Issue #134: netkeibaスクレイパー拡張 - 組み合わせ馬券オッズ取得
 """
 
-from __future__ import annotations
+
 
 import datetime
 import logging
 import re
 import time
-from typing import Optional
 
 import pandas as pd
 from bs4 import BeautifulSoup
@@ -225,7 +224,7 @@ def _parse_win_place_odds_html(html: str) -> pd.DataFrame:
 
 def _extract_win_odds_cells(
     cells: list,
-) -> tuple[Optional[int], Optional[float]]:
+) -> tuple[int | None, float | None]:
     """
     単勝テーブルの1行のセルリストから馬番とオッズを抽出する
 
@@ -249,7 +248,7 @@ def _extract_win_odds_cells(
 
 def _extract_place_odds_cells(
     cells: list,
-) -> tuple[Optional[int], Optional[float], Optional[float]]:
+) -> tuple[int | None, float | None, float | None]:
     """
     複勝テーブルの1行のセルリストから馬番・最小オッズ・最大オッズを抽出する
 
@@ -402,7 +401,7 @@ def netkeiba_to_jrdb_race_id(
     race_number: int,
     bq_client: bigquery.Client,
     project_id: str,
-) -> Optional[str]:
+) -> str | None:
     """
     日付・venue_code・race_numberでBigQueryを照合してJRDB形式のrace_idを返す
 

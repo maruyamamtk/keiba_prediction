@@ -7,7 +7,7 @@ LINE Messaging API 通知ユーティリティ
   LINE_CHANNEL_ACCESS_TOKEN: Messaging API チャネルアクセストークン
 """
 
-from __future__ import annotations
+
 
 import logging
 from typing import Any

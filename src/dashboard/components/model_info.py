@@ -4,7 +4,7 @@
 特徴量重要度とモデル性能指標を表示する。
 """
 
-from __future__ import annotations
+
 
 import streamlit as st
 

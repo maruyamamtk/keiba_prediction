@@ -10,14 +10,14 @@ Usage:
     python src/models/predict.py --project-id <PROJECT_ID> --model-path <MODEL_PATH> --save-to-bq
 """
 
-from __future__ import annotations
+
 
 import argparse
 import datetime
 import logging
 import os
 from pathlib import Path
-from typing import Optional
+
 
 import numpy as np
 import pandas as pd
@@ -201,7 +201,7 @@ def predict_pipeline(
     execution_date: datetime.date,
     config: dict,
     model_path: str,
-    target_dates: Optional[list[datetime.date]] = None,
+    target_dates: list[datetime.date] | None = None,
 ) -> pd.DataFrame:
     """
     推論パイプラインを実行する
@@ -426,7 +426,7 @@ def save_predictions_to_bq(
 def save_predictions_to_gcs(
     result_df: pd.DataFrame,
     project_id: str,
-    race_date: Optional[datetime.date] = None,
+    race_date: datetime.date | None = None,
     bucket_suffix: str = "keiba-predictions",
 ) -> str:
     """

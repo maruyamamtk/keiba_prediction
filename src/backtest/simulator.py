@@ -11,11 +11,11 @@
 - 最低賭け金: 100円単位に切り捨て
 """
 
-from __future__ import annotations
+
 
 import logging
 from dataclasses import asdict, dataclass
-from typing import Optional
+
 
 import numpy as np
 import pandas as pd
@@ -78,15 +78,15 @@ class BetRecord:
     race_date: object
     horse_id: str
     horse_number: int
-    horse_name: Optional[str]
+    horse_name: str | None
     win_place_prob: float
     odds: float
     expected_return: float
     kelly_frac: float
     bet_amount: float
-    finish_position: Optional[int]
+    finish_position: int | None
     is_hit: bool
-    payout_per_100: Optional[int]
+    payout_per_100: int | None
     return_amount: float
     profit: float
     capital_after: float
@@ -135,7 +135,7 @@ class BacktestSimulator:
     def run(
         self,
         predictions_df: pd.DataFrame,
-        payouts_df: Optional[pd.DataFrame] = None,
+        payouts_df: pd.DataFrame | None = None,
     ) -> pd.DataFrame:
         """
         バックテストを実行する
@@ -254,7 +254,7 @@ class BacktestSimulator:
                 # 払戻金の計算
                 horse_number = int(row["horse_number"])
                 payout_per_100 = payout_map.get((str(race_id), horse_number), None)
-                horse_name: Optional[str] = (
+                horse_name: str | None = (
                     str(row["horse_name"])
                     if has_horse_name and pd.notna(row.get("horse_name"))
                     else None

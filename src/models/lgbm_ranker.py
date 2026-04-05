@@ -5,13 +5,13 @@ LightGBM LambdaRank モデル
 レースIDをグループ単位として、各馬の相対的な順位を予測する。
 """
 
-from __future__ import annotations
+
 
 import json
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+
 
 import lightgbm as lgb
 import numpy as np
@@ -48,10 +48,10 @@ class LGBMRankerConfig:
 class LGBMRanker:
     """LightGBM LambdaRankによるランク学習モデル"""
 
-    def __init__(self, config: Optional[LGBMRankerConfig] = None):
+    def __init__(self, config: LGBMRankerConfig | None = None):
         self.config = config or LGBMRankerConfig()
-        self.model: Optional[lgb.Booster] = None
-        self.feature_names: Optional[list[str]] = None
+        self.model: lgb.Booster | None = None
+        self.feature_names: list[str] | None = None
 
     def train(
         self,
@@ -61,7 +61,7 @@ class LGBMRanker:
         X_valid: pd.DataFrame,
         y_valid: np.ndarray,
         groups_valid: list[int],
-        categorical_feature: Optional[list[str]] = None,
+        categorical_feature: list[str] | None = None,
     ) -> lgb.Booster:
         """
         モデルを学習する

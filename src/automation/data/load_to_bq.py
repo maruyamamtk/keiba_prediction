@@ -21,7 +21,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
-from typing import Dict, List, Optional
+
 
 from google.cloud import bigquery, storage
 from google.cloud.exceptions import GoogleCloudError
@@ -82,8 +82,8 @@ class LoadResult:
     file_name: str
     status: str  # "success", "skipped", "failed"
     records_processed: int = 0
-    table: Optional[str] = None
-    error: Optional[str] = None
+    table: str | None = None
+    error: str | None = None
     duration_seconds: float = 0.0
 
 
@@ -96,8 +96,8 @@ class BatchLoadResult:
     skipped_count: int = 0
     failed_count: int = 0
     total_records: int = 0
-    results: List[LoadResult] = field(default_factory=list)
-    failed_files: List[str] = field(default_factory=list)
+    results: list[LoadResult] = field(default_factory=list)
+    failed_files: list[str] = field(default_factory=list)
     duration_seconds: float = 0.0
 
     def merge(self, other: "BatchLoadResult") -> "BatchLoadResult":
@@ -114,7 +114,7 @@ class BatchLoadResult:
         )
 
 
-def _ensure_utc_aware(dt: Optional[datetime]) -> Optional[datetime]:
+def _ensure_utc_aware(dt: datetime | None) -> datetime | None:
     """timezone-naive datetime を UTC-aware に変換する。None はそのまま返す。"""
     if dt is None:
         return None
@@ -123,7 +123,7 @@ def _ensure_utc_aware(dt: Optional[datetime]) -> Optional[datetime]:
     return dt
 
 
-def extract_data_type(filename: str) -> Optional[str]:
+def extract_data_type(filename: str) -> str | None:
     """
     ファイル名からデータタイプを抽出
 
@@ -140,7 +140,7 @@ def extract_data_type(filename: str) -> Optional[str]:
     return None
 
 
-def get_table_name(data_type: str) -> Optional[str]:
+def get_table_name(data_type: str) -> str | None:
     """
     データタイプからBigQueryテーブル名を取得
 
@@ -153,7 +153,7 @@ def get_table_name(data_type: str) -> Optional[str]:
     return TABLE_MAPPING.get(data_type.upper())
 
 
-def extract_file_date(filename: str) -> Optional[str]:
+def extract_file_date(filename: str) -> str | None:
     """
     ファイル名から日付文字列 (YYYY-MM-DD) を抽出する
 
@@ -187,7 +187,7 @@ class BigQueryLoader:
         self,
         project_id: str,
         dataset_id: str = DEFAULT_DATASET_ID,
-        bucket_name: Optional[str] = None,
+        bucket_name: str | None = None,
     ):
         """
         初期化
@@ -201,10 +201,10 @@ class BigQueryLoader:
         self.dataset_id = dataset_id
         self.bucket_name = bucket_name or f"{project_id}-keiba-raw-data"
 
-        self._bq_client: Optional[bigquery.Client] = None
-        self._storage_client: Optional[storage.Client] = None
+        self._bq_client: bigquery.Client | None = None
+        self._storage_client: storage.Client | None = None
         # GCS blob の更新タイムスタンプキャッシュ (list_csv_files() が設定する)
-        self._blob_updated_cache: Dict[str, Optional[datetime]] = {}
+        self._blob_updated_cache: dict[str, datetime | None] = {}
 
     @property
     def bq_client(self) -> bigquery.Client:
@@ -222,7 +222,7 @@ class BigQueryLoader:
             logger.info("Cloud Storageクライアントを初期化しました")
         return self._storage_client
 
-    def _get_loaded_files(self) -> Dict[str, datetime]:
+    def _get_loaded_files(self) -> dict[str, datetime]:
         """
         ロード履歴テーブルから成功したファイルの最終ロード日時を取得
 
@@ -244,7 +244,7 @@ class BigQueryLoader:
         try:
             query_job = self.bq_client.query(query)
             results = query_job.result()
-            loaded_files: Dict[str, datetime] = {}
+            loaded_files: dict[str, datetime] = {}
             for row in results:
                 loaded_at = _ensure_utc_aware(row.loaded_at)
                 if loaded_at is None:
@@ -268,11 +268,11 @@ class BigQueryLoader:
         file_name: str,
         status: str,
         records_count: int = 0,
-        table_name: Optional[str] = None,
-        data_type: Optional[str] = None,
-        error_message: Optional[str] = None,
+        table_name: str | None = None,
+        data_type: str | None = None,
+        error_message: str | None = None,
         duration_seconds: float = 0.0,
-        file_size_bytes: Optional[int] = None,
+        file_size_bytes: int | None = None,
     ) -> None:
         """
         ロード履歴をBigQueryに記録
@@ -320,7 +320,7 @@ class BigQueryLoader:
         batch_result.skipped_count += 1
 
     def _is_file_already_loaded(
-        self, file_name: str, loaded_files: Optional[Dict[str, datetime]] = None
+        self, file_name: str, loaded_files: dict[str, datetime] | None = None
     ) -> bool:
         """
         ファイルが既にロード済みかどうかを確認
@@ -336,7 +336,7 @@ class BigQueryLoader:
             loaded_files = self._get_loaded_files()
         return file_name in loaded_files
 
-    def _download_file_from_gcs(self, blob_name: str) -> Optional[str]:
+    def _download_file_from_gcs(self, blob_name: str) -> str | None:
         """
         GCSからファイルをダウンロードして文字列として返す
 
@@ -380,7 +380,7 @@ class BigQueryLoader:
     def _load_to_bigquery(
         self,
         table_id: str,
-        rows: List[Dict],
+        rows: list[dict],
         data_type: str,
     ) -> int:
         """
@@ -550,7 +550,7 @@ class BigQueryLoader:
 
             # HJB/HJC/OZ/OW/OT は1レコードを複数行に展開する
             if data_type.upper() in EXPAND_DATA_TYPES:
-                expanded: List[Dict] = []
+                expanded: list[dict] = []
                 if data_type.upper() in {"HJB", "HJC"}:
                     for record in parsed_data:
                         expanded.extend(JRDBParser.expand_hjb_to_payout_rows(record))
@@ -561,7 +561,7 @@ class BigQueryLoader:
                         expanded.extend(JRDBParser.expand_oz_to_odds_rows(record, file_date))
                     empty_label = "OZ"
                     # デュアルライト: 馬連オッズを combo_odds にも書き込む
-                    combo_rows: List[Dict] = []
+                    combo_rows: list[dict] = []
                     for record in parsed_data:
                         combo_rows.extend(JRDBParser.expand_oz_to_combo_rows(record, file_date))
                     if combo_rows:
@@ -630,7 +630,7 @@ class BigQueryLoader:
 
     def load_files_batch(
         self,
-        blob_names: List[str],
+        blob_names: list[str],
         continue_on_error: bool = True,
         skip_loaded: bool = False,
         record_history: bool = True,
@@ -653,7 +653,7 @@ class BigQueryLoader:
         logger.info(f"バッチロード開始: {len(blob_names)} ファイル")
 
         # 重複スキップが有効な場合、ロード済みファイルと最終ロード日時を取得
-        loaded_files: Dict[str, datetime] = {}
+        loaded_files: dict[str, datetime] = {}
         if skip_loaded:
             loaded_files = self._get_loaded_files()
             logger.info(f"重複スキップ機能: 有効 ({len(loaded_files)} 件のロード済みファイル)")
@@ -718,11 +718,11 @@ class BigQueryLoader:
 
     def list_csv_files(
         self,
-        prefix: Optional[str] = None,
-        data_types: Optional[List[str]] = None,
-        date_filter: Optional[str] = None,
-        within_days: Optional[int] = None,
-    ) -> List[str]:
+        prefix: str | None = None,
+        data_types: list[str] | None = None,
+        date_filter: str | None = None,
+        within_days: int | None = None,
+    ) -> list[str]:
         """
         GCSバケット内のCSVファイルを一覧取得
 
@@ -740,7 +740,7 @@ class BigQueryLoader:
         blobs = bucket.list_blobs(prefix=prefix)
 
         # 日付範囲フィルタの基準日を事前計算
-        date_cutoff: Optional[str] = None
+        date_cutoff: str | None = None
         if within_days is not None:
             # ファイル日付は日本のレース日（JST）なので、基準日も JST で算出する
             cutoff = datetime.now(ZoneInfo("Asia/Tokyo")).date() - timedelta(days=within_days - 1)
@@ -777,7 +777,7 @@ class BigQueryLoader:
         logger.info(f"GCSから {len(csv_files)} 個のCSVファイルを検出しました")
         return csv_files
 
-    def check_tables_exist(self) -> Dict[str, bool]:
+    def check_tables_exist(self) -> dict[str, bool]:
         """
         TABLE_MAPPINGで定義されたBigQueryテーブルの存在を確認
 
@@ -813,7 +813,7 @@ class BigQueryLoader:
         return results
 
 
-def create_loader_from_env() -> Optional[BigQueryLoader]:
+def create_loader_from_env() -> BigQueryLoader | None:
     """
     環境変数からBigQueryLoaderを作成
 

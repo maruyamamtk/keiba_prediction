@@ -4,7 +4,7 @@
 指定日の全レースと各レースの予測 TOP3 を一覧表示する。
 """
 
-from __future__ import annotations
+
 
 import streamlit as st
 

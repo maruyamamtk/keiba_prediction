@@ -19,7 +19,7 @@ import logging
 import os
 import uuid
 from datetime import date
-from typing import Optional
+
 from zoneinfo import ZoneInfo
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
@@ -47,7 +47,7 @@ app = FastAPI(
 class DailyLoadRequest(BaseModel):
     """日次ロードリクエスト"""
 
-    target_date: Optional[str] = Field(
+    target_date: str | None = Field(
         default=None,
         description="対象日付（YYYY-MM-DD形式、省略時は当日）",
         json_schema_extra={"example": "2024-01-15"},
@@ -55,7 +55,7 @@ class DailyLoadRequest(BaseModel):
 
     @field_validator("target_date")
     @classmethod
-    def validate_date_format(cls, v: Optional[str]) -> Optional[str]:
+    def validate_date_format(cls, v: str | None) -> str | None:
         if v is None:
             return v
         try:
@@ -75,18 +75,18 @@ class DailyLoadResponse(BaseModel):
     files_loaded: int = Field(default=0, description="ロードしたファイル数")
     records_loaded: int = Field(default=0, description="ロードしたレコード数")
     duration_seconds: float = Field(default=0.0, description="処理時間（秒）")
-    error_message: Optional[str] = Field(default=None, description="エラーメッセージ")
+    error_message: str | None = Field(default=None, description="エラーメッセージ")
 
 
 class FullLoadRequest(BaseModel):
     """全件ロードリクエスト"""
 
-    start_date: Optional[str] = Field(
+    start_date: str | None = Field(
         default=None,
         description="開始日付（YYYY-MM-DD形式、省略時は全期間）",
         json_schema_extra={"example": "2020-01-01"},
     )
-    end_date: Optional[str] = Field(
+    end_date: str | None = Field(
         default=None,
         description="終了日付（YYYY-MM-DD形式、省略時は全期間）",
         json_schema_extra={"example": "2024-12-31"},
@@ -94,7 +94,7 @@ class FullLoadRequest(BaseModel):
 
     @field_validator("start_date", "end_date")
     @classmethod
-    def validate_date_format(cls, v: Optional[str]) -> Optional[str]:
+    def validate_date_format(cls, v: str | None) -> str | None:
         if v is None:
             return v
         try:
@@ -117,7 +117,7 @@ class FullLoadResponse(BaseModel):
     files_loaded: int = Field(default=0, description="ロードしたファイル数")
     records_loaded: int = Field(default=0, description="ロードしたレコード数")
     duration_seconds: float = Field(default=0.0, description="処理時間（秒）")
-    error_message: Optional[str] = Field(default=None, description="エラーメッセージ")
+    error_message: str | None = Field(default=None, description="エラーメッセージ")
 
 
 class FeatureGenerateRequest(BaseModel):
@@ -155,13 +155,13 @@ class FeatureGenerateResponse(BaseModel):
     deleted_rows: int = Field(default=0, description="削除した行数")
     inserted_rows: int = Field(default=0, description="挿入した行数")
     elapsed_time: float = Field(default=0.0, description="処理時間（秒）")
-    error_message: Optional[str] = Field(default=None, description="エラーメッセージ")
+    error_message: str | None = Field(default=None, description="エラーメッセージ")
 
 
 class PredictDailyRequest(BaseModel):
     """翌日予測リクエスト"""
 
-    model_path: Optional[str] = Field(
+    model_path: str | None = Field(
         default=None,
         description="モデルファイルパス（ローカルパスまたは gs:// URI）。未指定時はGCSから最新モデルを自動取得。",
         json_schema_extra={"example": "gs://my-project-keiba-models/lgbm_ranker/20260101/lgbm_ranker_20260101.txt"},
@@ -219,8 +219,8 @@ class PredictResponse(BaseModel):
     saved_to_bq: bool = Field(default=False, description="BigQueryに保存されたか")
     saved_rows: int = Field(default=0, description="BigQueryに保存した行数")
     saved_to_gcs: bool = Field(default=False, description="GCSに保存されたか")
-    gcs_uri: Optional[str] = Field(default=None, description="GCS保存先URI")
-    error_message: Optional[str] = Field(default=None, description="エラーメッセージ")
+    gcs_uri: str | None = Field(default=None, description="GCS保存先URI")
+    error_message: str | None = Field(default=None, description="エラーメッセージ")
 
 
 class HealthResponse(BaseModel):
@@ -233,17 +233,17 @@ class HealthResponse(BaseModel):
 class RetrainRequest(BaseModel):
     """月次モデル再学習リクエスト"""
 
-    execution_date: Optional[str] = Field(
+    execution_date: str | None = Field(
         default=None,
         description="実行日（YYYY-MM-DD形式、省略時は今日）",
         json_schema_extra={"example": "2026-04-07"},
     )
-    n_trials: Optional[int] = Field(
+    n_trials: int | None = Field(
         default=None,
         description="Optuna trial数（省略時はconfigから取得）",
         json_schema_extra={"example": 50},
     )
-    tune_timeout: Optional[int] = Field(
+    tune_timeout: int | None = Field(
         default=None,
         description="チューニングタイムアウト秒数（省略時はconfigから取得）",
         json_schema_extra={"example": 3600},
@@ -251,7 +251,7 @@ class RetrainRequest(BaseModel):
 
     @field_validator("execution_date")
     @classmethod
-    def validate_date_format(cls, v: Optional[str]) -> Optional[str]:
+    def validate_date_format(cls, v: str | None) -> str | None:
         if v is None:
             return v
         try:
@@ -268,14 +268,14 @@ class RetrainResponse(BaseModel):
 
     status: str = Field(description="処理ステータス (success/failed)")
     execution_date: str = Field(description="実行日")
-    gcs_uri: Optional[str] = Field(default=None, description="GCS保存先URI")
+    gcs_uri: str | None = Field(default=None, description="GCS保存先URI")
     metrics: dict = Field(default_factory=dict, description="検証指標（ndcg@3, recall@3, auc, num_races）")
-    tuning: Optional[dict] = Field(default=None, description="チューニング結果（best_value, n_trials 等）")
-    error_message: Optional[str] = Field(default=None, description="エラーメッセージ")
+    tuning: dict | None = Field(default=None, description="チューニング結果（best_value, n_trials 等）")
+    error_message: str | None = Field(default=None, description="エラーメッセージ")
 
 
 # グローバルパイプラインインスタンス（遅延初期化）
-_pipeline: Optional[DailyPipeline] = None
+_pipeline: DailyPipeline | None = None
 
 
 def get_pipeline() -> DailyPipeline:
@@ -634,7 +634,7 @@ def _get_latest_model_from_gcs(project_id: str, bucket_suffix: str = "keiba-mode
     return gcs_uri
 
 
-def _resolve_model_path(model_path: Optional[str], project_id: str) -> tuple[str, Optional[str]]:
+def _resolve_model_path(model_path: str | None, project_id: str) -> tuple[str, str | None]:
     """
     モデルファイルパスを解決する
 
@@ -683,7 +683,7 @@ def _resolve_model_path(model_path: Optional[str], project_id: str) -> tuple[str
 
 
 def _run_predict(
-    model_path: Optional[str],
+    model_path: str | None,
     target_dates: list[datetime.date],
     save_to_bq: bool,
     project_id: str,
@@ -863,7 +863,7 @@ async def predict_on_demand(request: PredictOnDemandRequest):
 class OddsScrapeRequest(BaseModel):
     """オッズスクレイプリクエスト"""
 
-    execution_date: Optional[str] = Field(
+    execution_date: str | None = Field(
         default=None,
         description="対象日付（YYYY-MM-DD形式、省略時は当日）",
         json_schema_extra={"example": "2026-03-07"},
@@ -875,7 +875,7 @@ class OddsScrapeRequest(BaseModel):
 
     @field_validator("execution_date")
     @classmethod
-    def validate_date_format(cls, v: Optional[str]) -> Optional[str]:
+    def validate_date_format(cls, v: str | None) -> str | None:
         if v is None:
             return v
         try:
@@ -896,13 +896,13 @@ class OddsScrapeResponse(BaseModel):
     horses_scraped: int = Field(default=0, description="取得した馬数（行数）")
     saved_rows: int = Field(default=0, description="BigQueryに保存した行数（単複）")
     combo_rows_saved: int = Field(default=0, description="BigQueryに保存した行数（組み合わせ馬券）")
-    error_message: Optional[str] = Field(default=None, description="エラーメッセージ")
+    error_message: str | None = Field(default=None, description="エラーメッセージ")
 
 
 class StrategyDailyRequest(BaseModel):
     """日次投資戦略リクエスト"""
 
-    execution_date: Optional[str] = Field(
+    execution_date: str | None = Field(
         default=None,
         description="対象日付（YYYY-MM-DD形式、省略時は当日）",
         json_schema_extra={"example": "2026-03-07"},
@@ -918,7 +918,7 @@ class StrategyDailyRequest(BaseModel):
 
     @field_validator("execution_date")
     @classmethod
-    def validate_date_format(cls, v: Optional[str]) -> Optional[str]:
+    def validate_date_format(cls, v: str | None) -> str | None:
         if v is None:
             return v
         try:
@@ -938,7 +938,7 @@ class StrategyDailyResponse(BaseModel):
     decisions_count: int = Field(default=0, description="投資判断件数")
     total_bet_amount: float = Field(default=0.0, description="総賭け金（円）")
     dry_run: bool = Field(default=False, description="ドライランモードか")
-    error_message: Optional[str] = Field(default=None, description="エラーメッセージ")
+    error_message: str | None = Field(default=None, description="エラーメッセージ")
 
 
 @app.post("/api/v1/odds/scrape", response_model=OddsScrapeResponse)
@@ -1095,7 +1095,7 @@ class LineNotifyDailyResponse(BaseModel):
 
 @app.post("/api/v1/line/notify/daily", response_model=LineNotifyDailyResponse)
 async def line_notify_daily(
-    execution_date: Optional[str] = None,
+    execution_date: str | None = None,
 ):
     """
     当日が土曜・日曜の場合のみ、推奨馬券をLINEプッシュ通知で送信する。
@@ -1215,7 +1215,7 @@ async def line_webhook(request: Request):
 class PurchaseDailyRequest(BaseModel):
     """IPAT日次自動購入リクエスト"""
 
-    target_date: Optional[str] = Field(
+    target_date: str | None = Field(
         default=None,
         description="対象日付（YYYY-MM-DD形式、省略時は当日）",
     )
@@ -1571,8 +1571,8 @@ async def _purchase_pipeline_async(
 def _run_retrain(
     project_id: str,
     execution_date: datetime.date,
-    n_trials: Optional[int],
-    tune_timeout: Optional[int],
+    n_trials: int | None,
+    tune_timeout: int | None,
 ) -> dict:
     """
     モデル再学習パイプラインを同期実行する内部関数。
