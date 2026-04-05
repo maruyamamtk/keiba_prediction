@@ -92,10 +92,7 @@ class TestRetrainEndpoint:
 
     def test_returns_500_when_project_id_missing(self):
         """GCP_PROJECT_ID が未設定のとき 500 を返す"""
-        with patch.dict("os.environ", {}, clear=True):
-            # GCP_PROJECT_ID を確実に除去
-            import os
-            os.environ.pop("GCP_PROJECT_ID", None)
+        with patch.dict("os.environ", {"GCP_PROJECT_ID": ""}):
             response = client.post("/api/v1/model/retrain", json={})
 
         assert response.status_code == 500
@@ -145,9 +142,7 @@ class TestRetrainAsyncEndpoint:
 
     def test_returns_500_when_project_id_missing(self):
         """GCP_PROJECT_ID が未設定のとき 500 を返す"""
-        import os
-        with patch.dict("os.environ", {}, clear=True):
-            os.environ.pop("GCP_PROJECT_ID", None)
+        with patch.dict("os.environ", {"GCP_PROJECT_ID": ""}):
             response = client.post("/api/v1/model/retrain/async", json={})
 
         assert response.status_code == 500
@@ -174,11 +169,7 @@ class TestRunRetrain:
         """train_pipeline が tune=True で呼び出されること"""
         mock_config = {"data": {}, "model": {}, "gcs": {}}
         with (
-            patch(
-                "src.automation.api.app.load_config" if False else
-                "src.models.train.load_config",
-                return_value=mock_config,
-            ),
+            patch("src.models.train.load_config", return_value=mock_config),
             patch(
                 "src.models.train.train_pipeline",
                 return_value=MOCK_TRAIN_RESULT,
