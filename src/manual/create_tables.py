@@ -92,7 +92,7 @@ class BigQueryTableCreator:
         dataset_id: str,
         table_id: str,
         schema_file: str,
-        partition_field: str = None,
+        partition_field: str | None = None,
         clustering_fields: list[str] | None = None,
         description: str = "",
     ) -> None:
