@@ -20,6 +20,7 @@ import sys
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from typing import Dict, List, Optional
 
 from google.cloud import bigquery, storage
@@ -290,7 +291,7 @@ class BigQueryLoader:
 
         row = {
             "file_name": file_name,
-            "loaded_at": datetime.utcnow().isoformat(),
+            "loaded_at": datetime.now(timezone.utc).isoformat(),
             "records_count": records_count,
             "table_name": table_name,
             "data_type": data_type,
@@ -401,7 +402,7 @@ class BigQueryLoader:
         table_ref = f"{self.project_id}.{self.dataset_id}.{table_id}"
         temp_table_ref = (
             f"{self.project_id}.{self.dataset_id}._temp_{table_id}_"
-            f"{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
+            f"{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
         )
 
         from google.api_core.exceptions import NotFound
@@ -741,7 +742,8 @@ class BigQueryLoader:
         # 日付範囲フィルタの基準日を事前計算
         date_cutoff: Optional[str] = None
         if within_days is not None:
-            cutoff = datetime.now().date() - timedelta(days=within_days - 1)
+            # ファイル日付は日本のレース日（JST）なので、基準日も JST で算出する
+            cutoff = datetime.now(ZoneInfo("Asia/Tokyo")).date() - timedelta(days=within_days - 1)
             date_cutoff = cutoff.strftime("%Y-%m-%d")
             logger.info(f"日付範囲フィルタ: {date_cutoff} 以降のファイルのみ対象 (直近{within_days}日間)")
 

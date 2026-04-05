@@ -18,6 +18,7 @@ import datetime
 import logging
 import uuid
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 from google.cloud import bigquery
 
@@ -310,7 +311,7 @@ def fetch_target_races(
 
     Args:
         all_races: fetch_today_races_with_start_time() の戻り値
-        now: 現在時刻（タイムゾーンなし）
+        now: 現在時刻（JST。start_time がJSTで格納されているため JST を渡すこと）
         window_minutes_before: ウィンドウ開始（now + この分数後から）
         window_minutes_after:  ウィンドウ終了（now + この分数後まで）
 
@@ -426,7 +427,7 @@ def save_purchase_record(
         "amount": amount,
         "status": status,
         "error_message": error_message,
-        "purchased_at": datetime.datetime.utcnow().isoformat(),
+        "purchased_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
     }
 
     errors = client.insert_rows_json(table_ref, [row])

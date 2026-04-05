@@ -20,6 +20,7 @@ import os
 import uuid
 from datetime import date
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -1360,7 +1361,8 @@ async def _purchase_pipeline_async(
         return {"status": "skipped", "purchased_races": 0, "total_amount": 0, "results": []}
 
     # 2. 対象レースを抽出（現在時刻の5〜10分後）
-    now = datetime.datetime.now()
+    # start_time は JST で格納されているため、now も JST で取得する
+    now = datetime.datetime.now(ZoneInfo("Asia/Tokyo"))
     target_races = fetch_target_races(all_races, now, window_minutes_before=10, window_minutes_after=5)
 
     if not target_races:
