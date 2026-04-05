@@ -15,7 +15,7 @@ BigQueryにロード可能な形式に変換します。
 
 import logging
 from itertools import combinations
-from typing import Dict, List, Optional
+
 from datetime import datetime, timezone
 import re
 
@@ -53,7 +53,7 @@ class JRDBParser:
     }
 
     @staticmethod
-    def parse_race_id(race_key: str) -> Dict[str, any]:
+    def parse_race_id(race_key: str) -> dict[str, any]:
         """
         レースキーを解析
 
@@ -89,7 +89,7 @@ class JRDBParser:
         }
 
     @staticmethod
-    def parse_date(date_str: str) -> Optional[str]:
+    def parse_date(date_str: str) -> str | None:
         """
         日付文字列を解析してISO形式に変換
 
@@ -109,7 +109,7 @@ class JRDBParser:
             return None
 
     @staticmethod
-    def safe_int(value: str, default: Optional[int] = None) -> Optional[int]:
+    def safe_int(value: str, default: int | None = None) -> int | None:
         """文字列を安全にintに変換"""
         try:
             cleaned = value.strip()
@@ -120,7 +120,7 @@ class JRDBParser:
             return default
 
     @staticmethod
-    def safe_float(value: str, default: Optional[float] = None) -> Optional[float]:
+    def safe_float(value: str, default: float | None = None) -> float | None:
         """文字列を安全にfloatに変換"""
         try:
             cleaned = value.strip()
@@ -131,7 +131,7 @@ class JRDBParser:
             return default
 
     @staticmethod
-    def parse_baa_line(line: str) -> Optional[Dict]:
+    def parse_baa_line(line: str) -> dict | None:
         """
         BAA (番組データ) を解析
 
@@ -245,7 +245,7 @@ class JRDBParser:
             return None
 
     @staticmethod
-    def parse_kyf_line(line: str) -> Optional[Dict]:
+    def parse_kyf_line(line: str) -> dict | None:
         """
         KYF (競走馬データ) を解析 - KYIスキーマ準拠
 
@@ -556,7 +556,7 @@ class JRDBParser:
             return None
 
     @staticmethod
-    def parse_sec_line(line: str) -> Optional[Dict]:
+    def parse_sec_line(line: str) -> dict | None:
         """
         SEC (成績データ) を解析 - 仕様書準拠
 
@@ -818,7 +818,7 @@ class JRDBParser:
     }
 
     @staticmethod
-    def parse_ukc_line(line: str) -> Optional[Dict]:
+    def parse_ukc_line(line: str) -> dict | None:
         """
         UKC (馬基本データ) を解析
 
@@ -925,7 +925,7 @@ class JRDBParser:
         }
 
     @staticmethod
-    def parse_kka_line(line: str) -> Optional[Dict]:
+    def parse_kka_line(line: str) -> dict | None:
         """
         KKA (競走馬拡張データ) を解析
 
@@ -1151,7 +1151,7 @@ class JRDBParser:
             return None
 
     @staticmethod
-    def parse_kaa_line(line: str) -> Optional[Dict]:
+    def parse_kaa_line(line: str) -> dict | None:
         """
         KAA (開催データ) を解析
 
@@ -1256,7 +1256,7 @@ class JRDBParser:
             return None
 
     @staticmethod
-    def parse_hjb_line(line: str) -> Optional[Dict]:
+    def parse_hjb_line(line: str) -> dict | None:
         """
         HJB/HJC (払戻情報データ) を解析
 
@@ -1399,7 +1399,7 @@ class JRDBParser:
             return None
 
     @staticmethod
-    def expand_hjb_to_payout_rows(hjb_record: Dict) -> List[Dict]:
+    def expand_hjb_to_payout_rows(hjb_record: dict) -> list[dict]:
         """
         HJBの1レース払戻レコードを、1行1払戻の形式に展開する
 
@@ -1466,7 +1466,7 @@ class JRDBParser:
         return rows
 
     @staticmethod
-    def parse_oz_line(line: str) -> Optional[Dict]:
+    def parse_oz_line(line: str) -> dict | None:
         """
         OZ（基準オッズ）の1行をパースし、win/place オッズを格納した辞書を返す。
 
@@ -1540,7 +1540,7 @@ class JRDBParser:
             return None
 
     @staticmethod
-    def expand_oz_to_odds_rows(oz_record: Dict, file_date: Optional[str] = None) -> List[Dict]:
+    def expand_oz_to_odds_rows(oz_record: dict, file_date: str | None = None) -> list[dict]:
         """
         OZの1レースレコードを raw.odds スキーマの行リストに展開する。
 
@@ -1582,7 +1582,7 @@ class JRDBParser:
         return rows
 
     @staticmethod
-    def expand_oz_to_combo_rows(oz_record: Dict, file_date: Optional[str] = None) -> List[Dict]:
+    def expand_oz_to_combo_rows(oz_record: dict, file_date: str | None = None) -> list[dict]:
         """
         OZの馬連オッズを raw.combo_odds スキーマの行リストに展開する。
 
@@ -1615,7 +1615,7 @@ class JRDBParser:
         return rows
 
     @staticmethod
-    def parse_ow_line(line: str) -> Optional[Dict]:
+    def parse_ow_line(line: str) -> dict | None:
         """
         OW（ワイド基準オッズ）の1行をパースする。
         仕様: OW第2版, レコード長780バイト
@@ -1662,7 +1662,7 @@ class JRDBParser:
             return None
 
     @staticmethod
-    def expand_ow_to_combo_rows(ow_record: Dict, file_date: Optional[str] = None) -> List[Dict]:
+    def expand_ow_to_combo_rows(ow_record: dict, file_date: str | None = None) -> list[dict]:
         """
         OWのワイドオッズを raw.combo_odds スキーマの行リストに展開する。
 
@@ -1695,7 +1695,7 @@ class JRDBParser:
         return rows
 
     @staticmethod
-    def parse_ot_line(line: str) -> Optional[Dict]:
+    def parse_ot_line(line: str) -> dict | None:
         """
         OT（三連複基準オッズ）の1行をパースする。
         仕様: OT第2版, レコード長4912バイト
@@ -1746,7 +1746,7 @@ class JRDBParser:
             return None
 
     @staticmethod
-    def expand_ot_to_combo_rows(ot_record: Dict, file_date: Optional[str] = None) -> List[Dict]:
+    def expand_ot_to_combo_rows(ot_record: dict, file_date: str | None = None) -> list[dict]:
         """
         OTの三連複オッズを raw.combo_odds スキーマの行リストに展開する。
 
@@ -1779,7 +1779,7 @@ class JRDBParser:
         return rows
 
     @staticmethod
-    def parse_file(file_content: str, data_type: str) -> List[Dict]:
+    def parse_file(file_content: str, data_type: str) -> list[dict]:
         """
         ファイル全体を解析
 

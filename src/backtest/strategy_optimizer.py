@@ -8,7 +8,7 @@
   - expected_return_threshold: 期待回収率フィルタ閾値
 """
 
-from __future__ import annotations
+
 
 import logging
 from dataclasses import dataclass, field

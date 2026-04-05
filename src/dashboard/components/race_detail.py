@@ -4,7 +4,7 @@
 指定レースの全馬予測・オッズ・期待回収率を詳細表示する。
 """
 
-from __future__ import annotations
+
 
 import pandas as pd
 import streamlit as st

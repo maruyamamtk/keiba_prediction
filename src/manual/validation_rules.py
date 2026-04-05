@@ -7,7 +7,6 @@ Issue #8: データ品質チェックスクリプトの実装
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import List, Optional
 
 
 class Severity(Enum):
@@ -25,7 +24,7 @@ class ValidationRule:
     name: str  # ルール名
     description: str  # ルールの説明
     severity: Severity  # 重要度
-    threshold: Optional[float] = None  # 閾値（必要な場合）
+    threshold: float | None = None  # 閾値（必要な場合）
 
 
 @dataclass
@@ -35,10 +34,10 @@ class TableValidationConfig:
     dataset_id: str
     table_id: str
     description: str
-    primary_key_columns: List[str]  # 重複チェック用のキー列
-    not_null_columns: List[str]  # NULL不可の列
-    date_columns: List[str]  # 日付範囲チェック用の列
-    numeric_columns: List[str]  # 数値範囲チェック用の列
+    primary_key_columns: list[str]  # 重複チェック用のキー列
+    not_null_columns: list[str]  # NULL不可の列
+    date_columns: list[str]  # 日付範囲チェック用の列
+    numeric_columns: list[str]  # 数値範囲チェック用の列
     expected_min_rows: int = 0  # 最低レコード数
 
 

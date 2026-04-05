@@ -20,7 +20,7 @@ import sys
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from dotenv import load_dotenv
 from google.cloud import bigquery
@@ -44,7 +44,7 @@ class CheckResult:
     passed: bool
     severity: str
     message: str
-    details: Dict[str, Any] = field(default_factory=dict)
+    details: dict[str, Any] = field(default_factory=dict)
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
 
 
@@ -61,9 +61,9 @@ class QualityReport:
     error_count: int
     warning_count: int
     info_count: int
-    results: List[CheckResult]
+    results: list[CheckResult]
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """辞書形式に変換"""
         return {
             "report_id": self.report_id,
@@ -93,7 +93,7 @@ class DataQualityChecker:
         """
         self.project_id = project_id
         self.client = bigquery.Client(project=project_id)
-        self.results: List[CheckResult] = []
+        self.results: list[CheckResult] = []
 
     def _table_exists(self, dataset_id: str, table_id: str) -> bool:
         """テーブルが存在するか確認"""
@@ -104,7 +104,7 @@ class DataQualityChecker:
         except NotFound:
             return False
 
-    def _run_query(self, query: str) -> List[Dict[str, Any]]:
+    def _run_query(self, query: str) -> list[dict[str, Any]]:
         """クエリを実行して結果を返す"""
         query_job = self.client.query(query)
         results = query_job.result()
@@ -117,7 +117,7 @@ class DataQualityChecker:
         passed: bool,
         severity: Severity,
         message: str,
-        details: Optional[Dict[str, Any]] = None,
+        details: dict[str, Any] | None = None,
     ) -> None:
         """チェック結果を追加"""
         self.results.append(
@@ -378,7 +378,7 @@ class DataQualityChecker:
                 )
 
     def run_all_checks(
-        self, configs: Optional[List[TableValidationConfig]] = None
+        self, configs: list[TableValidationConfig] | None = None
     ) -> QualityReport:
         """
         すべてのチェックを実行

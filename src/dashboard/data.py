@@ -4,12 +4,11 @@
 各画面で必要なデータを BigQuery から取得し、キャッシュする。
 """
 
-from __future__ import annotations
+
 
 import logging
 import os
 from datetime import date, datetime, timedelta
-from typing import Optional
 
 import pandas as pd
 import streamlit as st
@@ -289,7 +288,7 @@ def fetch_backtest_summary(start_date: str, end_date: str) -> dict:
 # ---------------------------------------------------------------------------
 
 @st.cache_data(ttl=3600)
-def fetch_feature_importance(model_path: Optional[str] = None) -> pd.DataFrame:
+def fetch_feature_importance(model_path: str | None = None) -> pd.DataFrame:
     """
     GCS から最新モデルを読み込み、特徴量重要度を返す
     """
@@ -333,7 +332,7 @@ def fetch_feature_importance(model_path: Optional[str] = None) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 
 @st.cache_resource
-def load_lgbm_ranker_for_shap(model_path: Optional[str] = None):
+def load_lgbm_ranker_for_shap(model_path: str | None = None):
     """
     GCS から最新 LGBMRanker を読み込み、モデルオブジェクトを返す。
     @st.cache_resource でプロセスライフタイム中キャッシュする。

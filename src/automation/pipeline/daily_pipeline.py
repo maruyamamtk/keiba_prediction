@@ -8,14 +8,12 @@ Issue #57: 日次パイプラインの実装
 Issue #59: 特徴量生成パイプラインのCloud Run統合
 """
 
-from __future__ import annotations
-
 import logging
 import time
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, List, Optional
+from typing import TYPE_CHECKING
 
 from src.automation.data.jrdb_downloader import JRDBDownloader, create_downloader_from_env
 from src.automation.data.load_to_bq import BigQueryLoader
@@ -35,7 +33,7 @@ class StepResult:
     status: str  # "success", "failed", "skipped"
     duration_seconds: float = 0.0
     details: dict = field(default_factory=dict)
-    error_message: Optional[str] = None
+    error_message: str | None = None
 
 
 @dataclass
@@ -50,8 +48,8 @@ class PipelineResult:
     records_loaded: int = 0
     features_inserted: int = 0
     duration_seconds: float = 0.0
-    steps: List[StepResult] = field(default_factory=list)
-    error_message: Optional[str] = None
+    steps: list[StepResult] = field(default_factory=list)
+    error_message: str | None = None
 
     def to_dict(self) -> dict:
         """辞書形式に変換"""
@@ -91,10 +89,10 @@ class DailyPipeline:
 
     def __init__(
         self,
-        downloader: Optional[JRDBDownloader] = None,
-        uploader: Optional[GCSUploader] = None,
-        bq_loader: Optional[BigQueryLoader] = None,
-        feature_pipeline: Optional[FeaturePipeline] = None,
+        downloader: JRDBDownloader | None = None,
+        uploader: GCSUploader | None = None,
+        bq_loader: BigQueryLoader | None = None,
+        feature_pipeline: "FeaturePipeline | None" = None,
     ):
         """
         初期化
@@ -156,7 +154,7 @@ class DailyPipeline:
         return self._feature_pipeline
 
     @staticmethod
-    def parse_target_date(target_date: Optional[str] = None) -> date:
+    def parse_target_date(target_date: str | None = None) -> date:
         """
         対象日付をパース
 
@@ -464,7 +462,7 @@ class DailyPipeline:
                 error_message=str(e),
             )
 
-    def run(self, target_date: Optional[str] = None) -> PipelineResult:
+    def run(self, target_date: str | None = None) -> PipelineResult:
         """
         パイプラインを実行
 
@@ -566,7 +564,7 @@ class DailyPipeline:
                     logger.warning(f"クリーンアップエラー: {e}")
 
 
-def create_pipeline_from_env() -> Optional[DailyPipeline]:
+def create_pipeline_from_env() -> DailyPipeline | None:
     """
     環境変数からDailyPipelineを作成
 

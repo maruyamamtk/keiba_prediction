@@ -8,7 +8,7 @@
   - standard（標準型）: それ以外 → 期待回収率フィルタによる複勝選定
 """
 
-from __future__ import annotations
+
 
 import logging
 from dataclasses import dataclass

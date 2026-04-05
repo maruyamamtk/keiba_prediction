@@ -1,0 +1,11 @@
+[project]
+name = "keiba-prediction"
+version = "0.1.0"
+description = "競馬予測MLシステム"
+requires-python = ">=3.13"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]

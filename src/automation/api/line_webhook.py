@@ -13,8 +13,6 @@ LINE Messaging API Webhook ハンドラー
   GCP_PROJECT_ID              : BigQuery プロジェクト ID
 """
 
-from __future__ import annotations
-
 import hashlib
 import hmac
 import logging

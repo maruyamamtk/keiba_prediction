@@ -8,15 +8,13 @@ Issue #58: 過去分全件ロード処理の実装
 Issue #59: 特徴量生成パイプラインのCloud Run統合
 """
 
-from __future__ import annotations
-
 import logging
 import re
 import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import date, datetime
-from typing import TYPE_CHECKING, List, Optional
+from typing import TYPE_CHECKING
 
 from src.automation.data.jrdb_downloader import JRDBDownloader, create_downloader_from_env
 from src.automation.data.load_to_bq import BigQueryLoader
@@ -36,7 +34,7 @@ class FullLoadStepResult:
     status: str  # "success", "failed", "partial"
     duration_seconds: float = 0.0
     details: dict = field(default_factory=dict)
-    error_message: Optional[str] = None
+    error_message: str | None = None
 
 
 @dataclass
@@ -53,8 +51,8 @@ class FullLoadResult:
     records_loaded: int = 0
     features_inserted: int = 0
     duration_seconds: float = 0.0
-    steps: List[FullLoadStepResult] = field(default_factory=list)
-    error_message: Optional[str] = None
+    steps: list[FullLoadStepResult] = field(default_factory=list)
+    error_message: str | None = None
 
     def to_dict(self) -> dict:
         """辞書形式に変換"""
@@ -96,10 +94,10 @@ class FullLoadPipeline:
 
     def __init__(
         self,
-        downloader: Optional[JRDBDownloader] = None,
-        uploader: Optional[GCSUploader] = None,
-        bq_loader: Optional[BigQueryLoader] = None,
-        feature_pipeline: Optional[FeaturePipeline] = None,
+        downloader: JRDBDownloader | None = None,
+        uploader: GCSUploader | None = None,
+        bq_loader: BigQueryLoader | None = None,
+        feature_pipeline: "FeaturePipeline | None" = None,
     ):
         self._downloader = downloader
         self._uploader = uploader
@@ -152,7 +150,7 @@ class FullLoadPipeline:
         return self._feature_pipeline
 
     @staticmethod
-    def parse_date(date_str: Optional[str]) -> Optional[date]:
+    def parse_date(date_str: str | None) -> date | None:
         """
         日付文字列をパース
 
@@ -177,7 +175,7 @@ class FullLoadPipeline:
         return d.strftime("%y%m%d")
 
     def _step_download(
-        self, start_date: Optional[date], end_date: Optional[date]
+        self, start_date: date | None, end_date: date | None
     ) -> FullLoadStepResult:
         """
         Step 1: JRDBからデータをダウンロード
@@ -273,7 +271,7 @@ class FullLoadPipeline:
             )
 
     def _step_load_to_bq(
-        self, start_date: Optional[date], end_date: Optional[date]
+        self, start_date: date | None, end_date: date | None
     ) -> FullLoadStepResult:
         """
         Step 3: BigQueryにロード
@@ -357,10 +355,10 @@ class FullLoadPipeline:
 
     @staticmethod
     def _filter_files_by_date(
-        files: List[str],
-        start_date: Optional[date],
-        end_date: Optional[date],
-    ) -> List[str]:
+        files: list[str],
+        start_date: date | None,
+        end_date: date | None,
+    ) -> list[str]:
         """
         ファイル名のyymmdd部分で日付フィルタ
 
@@ -401,8 +399,8 @@ class FullLoadPipeline:
 
     def _step_generate_features(
         self,
-        start_date: Optional[date],
-        end_date: Optional[date],
+        start_date: date | None,
+        end_date: date | None,
     ) -> FullLoadStepResult:
         """
         Step 4: 特徴量生成
@@ -465,8 +463,8 @@ class FullLoadPipeline:
 
     def run(
         self,
-        start_date: Optional[str] = None,
-        end_date: Optional[str] = None,
+        start_date: str | None = None,
+        end_date: str | None = None,
     ) -> FullLoadResult:
         """
         全件ロードパイプラインを実行

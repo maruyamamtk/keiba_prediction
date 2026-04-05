@@ -9,7 +9,7 @@ Usage:
     python src/models/train.py --project-id <PROJECT_ID> --execution-date 2026-02-15
 """
 
-from __future__ import annotations
+
 
 import argparse
 import datetime
@@ -17,7 +17,7 @@ import logging
 import os
 import tempfile
 from pathlib import Path
-from typing import Optional
+
 
 import numpy as np
 import pandas as pd
@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "model_config.yaml"
 
 
-def load_config(config_path: Optional[str] = None) -> dict:
+def load_config(config_path: str | None = None) -> dict:
     """設定ファイルを読み込む"""
     path = Path(config_path) if config_path else CONFIG_PATH
     if not path.exists():
@@ -341,11 +341,11 @@ def train_pipeline(
     project_id: str,
     execution_date: datetime.date,
     config: dict,
-    output_dir: Optional[str] = None,
+    output_dir: str | None = None,
     skip_gcs_upload: bool = False,
     tune: bool = False,
-    n_trials: Optional[int] = None,
-    tune_timeout: Optional[int] = None,
+    n_trials: int | None = None,
+    tune_timeout: int | None = None,
 ) -> dict:
     """
     学習パイプラインを実行する

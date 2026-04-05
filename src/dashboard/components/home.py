@@ -4,7 +4,7 @@
 当日のおすすめ馬券 TOP を表示する。
 """
 
-from __future__ import annotations
+
 
 import pandas as pd
 import streamlit as st

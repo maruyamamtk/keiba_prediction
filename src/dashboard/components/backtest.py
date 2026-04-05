@@ -4,7 +4,7 @@
 過去の投資シミュレーション結果を可視化する。
 """
 
-from __future__ import annotations
+
 
 from datetime import date, timedelta
 

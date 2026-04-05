@@ -5,7 +5,7 @@
 各種パフォーマンス指標を計算する。
 """
 
-from __future__ import annotations
+
 
 import numpy as np
 import pandas as pd

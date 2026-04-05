@@ -9,7 +9,6 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import List
 
 from dotenv import load_dotenv
 from google.cloud import bigquery
@@ -57,7 +56,7 @@ class BigQueryTableCreator:
         dataset = self.client.create_dataset(dataset, timeout=30)
         print(f"✓ データセット {dataset_ref} を作成しました。")
 
-    def load_schema(self, schema_file: str) -> List[bigquery.SchemaField]:
+    def load_schema(self, schema_file: str) -> list[bigquery.SchemaField]:
         """
         スキーマファイルを読み込み
 
@@ -94,7 +93,7 @@ class BigQueryTableCreator:
         table_id: str,
         schema_file: str,
         partition_field: str = None,
-        clustering_fields: List[str] = None,
+        clustering_fields: list[str] | None = None,
         description: str = "",
     ) -> None:
         """
