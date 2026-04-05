@@ -16,7 +16,7 @@ BigQueryにロード可能な形式に変換します。
 import logging
 from itertools import combinations
 from typing import Dict, List, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 import re
 
 logger = logging.getLogger(__name__)
@@ -236,8 +236,8 @@ class JRDBParser:
                 'prize_2nd': prize_2nd,
                 'prize_3rd': prize_3rd,
                 'start_time': start_time if start_time else None,
-                'created_at': datetime.utcnow().isoformat(),
-                'updated_at': datetime.utcnow().isoformat()
+                'created_at': datetime.now(timezone.utc).isoformat(),
+                'updated_at': datetime.now(timezone.utc).isoformat()
             }
 
         except Exception as e:
@@ -547,8 +547,8 @@ class JRDBParser:
                 'pasture': None,
                 'pasture_rank': None,
                 'stable_rank': None,
-                'created_at': datetime.utcnow().isoformat(),
-                'updated_at': datetime.utcnow().isoformat()
+                'created_at': datetime.now(timezone.utc).isoformat(),
+                'updated_at': datetime.now(timezone.utc).isoformat()
             }
 
         except Exception as e:
@@ -802,8 +802,8 @@ class JRDBParser:
                 'weather_code': weather_code,
                 'course_code': course_code,
                 'race_running_style': race_running_style,
-                'created_at': datetime.utcnow().isoformat(),
-                'updated_at': datetime.utcnow().isoformat()
+                'created_at': datetime.now(timezone.utc).isoformat(),
+                'updated_at': datetime.now(timezone.utc).isoformat()
             }
 
         except Exception as e:
@@ -896,8 +896,8 @@ class JRDBParser:
                 'data_date': data_date,
                 'sire_line_code': sire_line_code if sire_line_code else None,
                 'broodmare_sire_line_code': broodmare_sire_line_code if broodmare_sire_line_code else None,
-                'created_at': datetime.utcnow().isoformat(),
-                'updated_at': datetime.utcnow().isoformat()
+                'created_at': datetime.now(timezone.utc).isoformat(),
+                'updated_at': datetime.now(timezone.utc).isoformat()
             }
 
         except Exception as e:
@@ -1142,8 +1142,8 @@ class JRDBParser:
                 'broodmare_sire_dirt_place_rate': broodmare_sire_dirt_place_rate,
                 'broodmare_sire_avg_place_distance': broodmare_sire_avg_place_distance,
 
-                'created_at': datetime.utcnow().isoformat(),
-                'updated_at': datetime.utcnow().isoformat()
+                'created_at': datetime.now(timezone.utc).isoformat(),
+                'updated_at': datetime.now(timezone.utc).isoformat()
             }
 
         except Exception as e:
@@ -1247,8 +1247,8 @@ class JRDBParser:
 
                 'data_category': data_category,
 
-                'created_at': datetime.utcnow().isoformat(),
-                'updated_at': datetime.utcnow().isoformat()
+                'created_at': datetime.now(timezone.utc).isoformat(),
+                'updated_at': datetime.now(timezone.utc).isoformat()
             }
 
         except Exception as e:
@@ -1390,8 +1390,8 @@ class JRDBParser:
                 'sanrenpuku_payouts': sanrenpuku_payouts,
                 # 三連単: [(馬番組合せ, 払戻金額), ...]
                 'sanrentan_payouts': sanrentan_payouts,
-                'created_at': datetime.utcnow().isoformat(),
-                'updated_at': datetime.utcnow().isoformat(),
+                'created_at': datetime.now(timezone.utc).isoformat(),
+                'updated_at': datetime.now(timezone.utc).isoformat(),
             }
 
         except Exception as e:
@@ -1532,7 +1532,7 @@ class JRDBParser:
                 'win_odds_list': win_odds_list,
                 'place_odds_list': place_odds_list,
                 'umaren_odds_list': umaren_odds_list,
-                'created_at': datetime.utcnow().isoformat(),
+                'created_at': datetime.now(timezone.utc).isoformat(),
             }
 
         except Exception as e:
@@ -1655,7 +1655,7 @@ class JRDBParser:
                 'race_id': race_key,
                 'registered_count': registered_count,
                 'wide_odds_list': wide_odds_list,
-                'created_at': datetime.utcnow().isoformat(),
+                'created_at': datetime.now(timezone.utc).isoformat(),
             }
         except Exception as e:
             logger.error(f"Error parsing OW line: {e}", exc_info=True)
@@ -1739,7 +1739,7 @@ class JRDBParser:
                 'race_id': race_key,
                 'registered_count': registered_count,
                 'sanrenpuku_odds_list': sanrenpuku_odds_list,
-                'created_at': datetime.utcnow().isoformat(),
+                'created_at': datetime.now(timezone.utc).isoformat(),
             }
         except Exception as e:
             logger.error(f"Error parsing OT line: {e}", exc_info=True)
