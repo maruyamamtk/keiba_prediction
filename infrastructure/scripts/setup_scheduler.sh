@@ -173,12 +173,19 @@ log_info "権限設定が完了しました"
 
 # ジョブ作成/更新の共通関数
 # 引数: job_name schedule uri [deadline] [message_body]
+# --message-body に直接 JSON を渡すとシェルの引用符処理で }} が混入するため、
+# 一時ファイル経由の --message-body-from-file を使用する。
 create_or_update_job() {
     local job_name="$1"
     local schedule="$2"
     local uri="$3"
     local deadline="${4:-900s}"
     local message_body="${5:-{}}"
+
+    # 一時ファイルにリクエストボディを書き出す（シェル引用符問題を回避）
+    local tmp_body_file
+    tmp_body_file=$(mktemp /tmp/scheduler_body_XXXXXX.json)
+    printf '%s' "${message_body}" > "${tmp_body_file}"
 
     if gcloud scheduler jobs describe "${job_name}" \
         --location="${GCP_REGION}" > /dev/null 2>&1; then
@@ -191,7 +198,7 @@ create_or_update_job() {
             --uri="${uri}" \
             --http-method=POST \
             --update-headers="Content-Type=application/json" \
-            --message-body="${message_body}" \
+            --message-body-from-file="${tmp_body_file}" \
             --oidc-service-account-email="${PIPELINE_SA_EMAIL}" \
             --oidc-token-audience="${SERVICE_URL}" \
             --attempt-deadline="${deadline}" \
@@ -211,7 +218,7 @@ create_or_update_job() {
             --uri="${uri}" \
             --http-method=POST \
             --headers="Content-Type=application/json" \
-            --message-body="${message_body}" \
+            --message-body-from-file="${tmp_body_file}" \
             --oidc-service-account-email="${PIPELINE_SA_EMAIL}" \
             --oidc-token-audience="${SERVICE_URL}" \
             --attempt-deadline="${deadline}" \
@@ -222,6 +229,9 @@ create_or_update_job() {
 
         log_info "ジョブを作成しました: ${job_name}"
     fi
+
+    # 一時ファイルを削除
+    rm -f "${tmp_body_file}"
 }
 
 log_info "Cloud Schedulerジョブを設定しています..."
