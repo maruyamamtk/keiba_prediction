@@ -18,7 +18,6 @@ import datetime
 import logging
 import uuid
 from typing import Optional
-from zoneinfo import ZoneInfo
 
 from google.cloud import bigquery
 
