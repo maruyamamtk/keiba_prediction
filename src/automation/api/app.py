@@ -230,6 +230,50 @@ class HealthResponse(BaseModel):
     version: str = Field(description="APIバージョン")
 
 
+class RetrainRequest(BaseModel):
+    """月次モデル再学習リクエスト"""
+
+    execution_date: Optional[str] = Field(
+        default=None,
+        description="実行日（YYYY-MM-DD形式、省略時は今日）",
+        json_schema_extra={"example": "2026-04-07"},
+    )
+    n_trials: Optional[int] = Field(
+        default=None,
+        description="Optuna trial数（省略時はconfigから取得）",
+        json_schema_extra={"example": 50},
+    )
+    tune_timeout: Optional[int] = Field(
+        default=None,
+        description="チューニングタイムアウト秒数（省略時はconfigから取得）",
+        json_schema_extra={"example": 3600},
+    )
+
+    @field_validator("execution_date")
+    @classmethod
+    def validate_date_format(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        try:
+            datetime.date.fromisoformat(v)
+        except ValueError:
+            raise ValueError(
+                f"日付はYYYY-MM-DD形式の有効な日付で指定してください: '{v}'"
+            )
+        return v
+
+
+class RetrainResponse(BaseModel):
+    """月次モデル再学習レスポンス"""
+
+    status: str = Field(description="処理ステータス (success/failed)")
+    execution_date: str = Field(description="実行日")
+    gcs_uri: Optional[str] = Field(default=None, description="GCS保存先URI")
+    metrics: dict = Field(default_factory=dict, description="検証指標（ndcg@3, recall@3, auc, num_races）")
+    tuning: Optional[dict] = Field(default=None, description="チューニング結果（best_value, n_trials 等）")
+    error_message: Optional[str] = Field(default=None, description="エラーメッセージ")
+
+
 # グローバルパイプラインインスタンス（遅延初期化）
 _pipeline: Optional[DailyPipeline] = None
 
@@ -1521,6 +1565,129 @@ async def _purchase_pipeline_async(
         "purchased_races": purchased_races,
         "total_amount": total_spent,
         "results": race_results,
+    }
+
+
+def _run_retrain(
+    project_id: str,
+    execution_date: datetime.date,
+    n_trials: Optional[int],
+    tune_timeout: Optional[int],
+) -> dict:
+    """
+    モデル再学習パイプラインを同期実行する内部関数。
+
+    train_pipeline() を tune=True で呼び出し、GCSへ保存したモデルのURIと
+    検証指標・チューニング結果を返す。
+    """
+    from src.models.train import load_config, train_pipeline
+
+    config = load_config()
+    result = train_pipeline(
+        project_id=project_id,
+        execution_date=execution_date,
+        config=config,
+        tune=True,
+        n_trials=n_trials,
+        tune_timeout=tune_timeout,
+    )
+    return result
+
+
+@app.post("/api/v1/model/retrain", response_model=RetrainResponse)
+async def retrain_model(request: RetrainRequest):
+    """
+    LightGBMモデルを再学習してGCSに保存する（同期実行）。
+
+    Optunaによるハイパーパラメータチューニングを実施したうえでモデルを学習し、
+    GCS（gs://{project}-keiba-models/lgbm_ranker/{YYYYMMDD}/）へ保存する。
+    次回の /api/v1/predict/daily 呼び出し時に自動的に最新モデルが使用される。
+
+    実行時間の目安: 1〜2時間（チューニング込み）。
+    長時間処理が懸念される場合は /api/v1/model/retrain/async を使用すること。
+
+    Cloud Schedulerから毎月第1月曜日 AM 8:00 JST に呼び出されることを想定。
+    """
+    execution_date = (
+        datetime.date.fromisoformat(request.execution_date)
+        if request.execution_date
+        else datetime.date.today()
+    )
+    logger.info(
+        f"モデル再学習リクエスト受信: execution_date={execution_date}, "
+        f"n_trials={request.n_trials}, tune_timeout={request.tune_timeout}"
+    )
+
+    project_id = os.environ.get("GCP_PROJECT_ID")
+    if not project_id:
+        raise HTTPException(status_code=500, detail="GCP_PROJECT_IDが未設定です")
+
+    try:
+        result = await asyncio.to_thread(
+            _run_retrain,
+            project_id=project_id,
+            execution_date=execution_date,
+            n_trials=request.n_trials,
+            tune_timeout=request.tune_timeout,
+        )
+        logger.info(
+            f"モデル再学習完了: gcs_uri={result.get('gcs_uri')}, "
+            f"metrics={result.get('metrics')}"
+        )
+        return RetrainResponse(
+            status="success",
+            execution_date=str(execution_date),
+            gcs_uri=result.get("gcs_uri"),
+            metrics=result.get("metrics", {}),
+            tuning=result.get("tuning"),
+        )
+    except Exception as e:
+        logger.error(f"モデル再学習エラー: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@app.post("/api/v1/model/retrain/async")
+async def retrain_model_async(request: RetrainRequest, background_tasks: BackgroundTasks):
+    """
+    LightGBMモデルを再学習してGCSに保存する（非同期実行）。
+
+    処理はバックグラウンドで実行され、すぐに受付レスポンスを返す。
+    Cloud Schedulerから呼び出す場合はこちらを使用する（attempt-deadline超過を防ぐため）。
+    """
+    execution_date = (
+        datetime.date.fromisoformat(request.execution_date)
+        if request.execution_date
+        else datetime.date.today()
+    )
+    logger.info(
+        f"非同期モデル再学習リクエスト受付: execution_date={execution_date}"
+    )
+
+    project_id = os.environ.get("GCP_PROJECT_ID")
+    if not project_id:
+        raise HTTPException(status_code=500, detail="GCP_PROJECT_IDが未設定です")
+
+    def run_retrain_task():
+        try:
+            result = _run_retrain(
+                project_id=project_id,
+                execution_date=execution_date,
+                n_trials=request.n_trials,
+                tune_timeout=request.tune_timeout,
+            )
+            logger.info(
+                f"非同期モデル再学習完了: gcs_uri={result.get('gcs_uri')}, "
+                f"metrics={result.get('metrics')}"
+            )
+        except Exception as e:
+            logger.error(f"非同期モデル再学習エラー: {e}", exc_info=True)
+
+    background_tasks.add_task(run_retrain_task)
+
+    return {
+        "status": "accepted",
+        "execution_date": str(execution_date),
+        "message": "モデル再学習をバックグラウンドで開始しました",
     }
 
 
