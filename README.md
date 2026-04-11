@@ -994,77 +994,11 @@ curl -X POST http://localhost:8080/api/v1/features/generate/async \
 
 **日次予測（Cloud Scheduler用）**
 
-`model_path` を省略すると GCS から最新モデルを自動取得します。
-Cloud Scheduler は空のボディ `{}` を送信するため、明示的な指定は不要です。
-
-```bash
-# model_path 省略（最新モデルを自動取得）
-curl -X POST http://localhost:8080/api/v1/predict/daily \
-  -H "Content-Type: application/json" \
-  -d '{}'
-
-# model_path を明示的に指定する場合
-curl -X POST http://localhost:8080/api/v1/predict/daily \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model_path": "gs://my-project-keiba-models/models/20260201/lgbm_ranker.txt",
-    "save_to_bq": true,
-    "save_to_gcs": true
-  }'
-```
-
-**レスポンス例（日次予測）**
-
-```json
-{
-  "status": "success",
-  "target_dates": ["2026-03-07", "2026-03-08"],
-  "num_races": 24,
-  "num_horses": 384,
-  "saved_to_bq": true,
-  "saved_rows": 384,
-  "saved_to_gcs": true,
-  "gcs_uri": "gs://my-project-keiba-predictions/2026-03-07/predictions.csv"
-}
-```
+`model_path` を省略すると GCS から最新モデルを自動取得します。Cloud Scheduler は空のボディ `{}` を送信するため、明示的な指定は不要です。
 
 **IPAT自動馬券購入（Cloud Scheduler用）**
 
 `dry_run` のデフォルトは `false`（本番購入モード）です。`dry_run=true` にするとIPATログイン・購入をスキップし、推奨馬券のLINE通知だけ行います。
-
-```bash
-# dry_run モード（IPATログイン・購入なし。推奨馬券をLINE通知のみ）
-curl -X POST http://localhost:8080/api/v1/purchase/daily \
-  -H "Content-Type: application/json" \
-  -d '{"target_date": "2026-04-05", "dry_run": true}'
-
-# 本番モード（実際にIPATで馬券購入）
-curl -X POST http://localhost:8080/api/v1/purchase/daily \
-  -H "Content-Type: application/json" \
-  -d '{"target_date": "2026-04-05", "dry_run": false}'
-```
-
-**レスポンス例（IPAT自動購入）**
-
-```json
-{
-  "status": "success",
-  "execution_date": "2026-04-05",
-  "dry_run": true,
-  "purchased_races": 0,
-  "total_amount": 0,
-  "results": [...]
-}
-```
-
-> **本番切り替え**: Cloud Schedulerジョブのリクエストボディを `{"dry_run": false}` に更新することで本番購入に切り替えできます。
->
-> ```bash
-> gcloud scheduler jobs update http race-day-purchase \
->   --location=asia-northeast1 \
->   --message-body='{"dry_run": false}' \
->   --project=<PROJECT_ID>
-> ```
 
 **ヘルスチェック**
 
@@ -1127,9 +1061,8 @@ gcloud scheduler jobs run daily-data-pipeline --location=asia-northeast1
 | `horse_master` | KSA (馬マスター) | 馬基本情報 | ~21,500 |
 | `venue_info` | KAB (開催情報) | 馬場状態・天候 | ~418 |
 | `load_history` | (管理用) | ロード履歴管理 | ~3,350 |
-| `pedigree` | 血統データ | 血統情報 | 0 (未実装) |
-| `odds` | OZ (基準オッズ) | 単勝・複勝オッズ（JRDBコード表） | 実装済み |
-| `combo_odds` | OW/OT/OZ | JRDBコンボ基準オッズ（ワイド/三連複/馬連） | 実装済み（Issue #140） |
+| `odds` | OZ (基準オッズ) | 単勝・複勝オッズ（JRDBコード表） | - |
+| `combo_odds` | OW/OT/OZ | JRDBコンボ基準オッズ（ワイド/三連複/馬連） | - |
 
 詳細なスキーマは [SCHEMA.md](./SCHEMA.md) および `config/bq_schema_*.json` を参照してください。
 

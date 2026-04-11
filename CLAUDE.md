@@ -1,7 +1,7 @@
 # 競馬予測MLシステム 設計仕様書
 
-このドキュメントは、競馬予測MLシステムの設計思想、目的、および未実装機能の仕様を記載します。
-**実装済みの機能の実行手順については [README.md](./README.md) を参照してください。**
+このドキュメントは、競馬予測MLシステムの設計思想、目的、および実装方針を記載します。
+**機能の実行手順については [README.md](./README.md) を参照してください。**
 
 ---
 
@@ -68,17 +68,16 @@
   - メッセージ1: 予測テーブル（予測順・馬番・馬名・スコア・複勝率・オッズ・期待値）
   - メッセージ2: 推奨馬券リスト（馬券種・馬番・馬名・オッズ・賭け金・合計投資額）
   - `src/automation/api/line_webhook.py` + `src/utils/line_notify.py` に実装
-- Webダッシュボード（Streamlit） ⬜ 未実装
+- Webダッシュボード（Streamlit） ✅ 実装済み Issue #24
 
 詳細なアーキテクチャ図と実行手順は [README.md](./README.md) を参照してください。
 
 ### 2.2 GCPリソース構成（設計）
 
 #### 2.2.1 Cloud Storage (GCS)
-- `gs://${PROJECT_ID}-keiba-raw-data/`: JRDBダウンロード生データ（実装済み）
-- `gs://${PROJECT_ID}-keiba-processed-data/`: 加工済みデータ（未実装）
-- `gs://${PROJECT_ID}-keiba-models/`: 学習済みモデル（実装済み）
-- `gs://${PROJECT_ID}-keiba-predictions/`: 予測結果（実装済み・Issue #117）
+- `gs://${PROJECT_ID}-keiba-raw-data/`: JRDBダウンロード生データ
+- `gs://${PROJECT_ID}-keiba-models/`: 学習済みモデル
+- `gs://${PROJECT_ID}-keiba-predictions/`: 予測結果
 
 #### 2.2.2 BigQuery
 - `raw`: 生データテーブル（実装済み）
@@ -89,16 +88,13 @@
 詳細なテーブル構成は [README.md](./README.md#bigqueryテーブル構成) を参照してください。
 
 #### 2.2.3 Cloud Run
-- `keiba-pipeline`: データパイプライン・特徴量生成（実装済み）
-- `dashboard-service`: Webダッシュボード（未実装）
+- `keiba-pipeline`: データパイプライン・特徴量生成
+- `dashboard-service`: Webダッシュボード
 
 APIエンドポイントの詳細は [README.md](./README.md#apiエンドポイント) を参照してください。
 
 #### 2.2.4 Cloud Scheduler
-- `daily-data-load`: 毎日AM 6:00 データロード（設定手順は実装済み、ジョブ作成は要実施）
-- `race-day-predict`: 当日AM 8:00 推論実行（APIエンドポイント実装済み・Issue #117。Schedulerジョブ作成は要実施）
-- `race-day-strategy`: 当日AM 8:30 投資戦略策定（未実装）
-- `race-day-notify`: 廃止（Issue #229）。発走5分前通知（`/api/v1/purchase/daily`）に統合済み。
+稼働中ジョブの詳細は [SCHEDULE.md](./SCHEDULE.md) を参照してください。
 
 ---
 
@@ -188,26 +184,7 @@ JRDB → GCS → BigQuery → features.training_data の流れでデータを取
 
 ### 6.2 投資戦略
 
-#### 6.2.1 Kelly基準ベース
-```python
-def kelly_criterion(win_prob, odds):
-    """
-    Kelly基準: 最適賭け金比率
-    f* = (p * (odds - 1) - (1 - p)) / (odds - 1)
-    """
-    if odds <= 1:
-        return 0
-    kelly = (win_prob * (odds - 1) - (1 - win_prob)) / (odds - 1)
-    return max(0, kelly)  # 負の値は賭けない
-
-def fractional_kelly(win_prob, odds, fraction=0.25):
-    """
-    Fractional Kelly: リスク調整
-    """
-    return kelly_criterion(win_prob, odds) * fraction
-```
-
-#### 6.2.2 投資ルール
+#### 6.2.1 投資ルール
 1. **閾値設定**: 予測確率 > 閾値 の馬のみ購入
 2. **期待値フィルタ**: 期待回収率 = 予測確率 × オッズ > 1.2 の馬のみ
 3. **賭け金配分**: オッズ逆数比率方式（1レース合計 = `budget_per_race` 固定）
@@ -224,137 +201,23 @@ def fractional_kelly(win_prob, odds, fraction=0.25):
 ### 7.2 予測・オッズ取得パイプライン設計
 
 #### 7.2.1 実行タイミング
-- **当日AM 8:00**: 推論実行 → `predictions.daily_predictions` 保存 ✅ 実装済み
-- **当日AM 8:30**: netkeibaオッズ取得 → `predictions.daily_odds` 保存 ✅ 実装済み
-- **当日AM 9:00**: 投資戦略策定 → LINE通知 ✅ 実装済み
+- **当日AM 8:00**: 推論実行 → `predictions.daily_predictions` 保存
+- **当日AM 8:15**: netkeibaオッズ取得 → `predictions.daily_odds` 保存
+- **当日AM 8:30**: 投資戦略策定（dry_run=true、BQ保存なし）
+- **土日 8:00〜17:55 の5分おき**: 発走5分前レースの投資判断を最新オッズで上書き → IPAT購入
 
 #### 7.2.2 実装方針
 - Cloud Schedulerから Cloud Run HTTPエンドポイントをトリガー
-- 予測結果を `predictions.daily_predictions` に保存（実装済み）
-- リアルタイムオッズを `predictions.daily_odds` に保存（実装済み）
-- 期待回収率上位の馬券を抽出し LINE Messaging API で通知（実装済み・Issue #25）
+- 予測結果を `predictions.daily_predictions` に保存
+- リアルタイムオッズを `predictions.daily_odds` に保存
+- 発走直前に `_refresh_investment_decisions_for_race()` で最新オッズで投資判断を再計算しBQ保存
+- 詳細は [SCHEDULE.md](./SCHEDULE.md) を参照
 
 ---
 
-## 8. Webダッシュボード設計（未実装）
+## 8. 通知システム
 
-### 8.1 機能要件
-
-#### 8.1.1 画面構成
-1. **ホーム**: 当日・翌日のおすすめ馬券
-2. **レース一覧**: 全レースの予測結果
-3. **レース詳細**: 各馬の予測確率、オッズ、期待値
-4. **バックテスト**: 過去の成績、回収率推移
-5. **モデル情報**: 特徴量重要度、モデル性能
-
-#### 8.1.2 実装 (Streamlit)
-
-```python
-# dashboard.py
-
-import streamlit as st
-import pandas as pd
-
-def main():
-    st.title("競馬予測ダッシュボード")
-
-    # サイドバー
-    menu = st.sidebar.selectbox(
-        "メニュー",
-        ["ホーム", "レース一覧", "バックテスト", "モデル情報"]
-    )
-
-    if menu == "ホーム":
-        show_home()
-    elif menu == "レース一覧":
-        show_race_list()
-    elif menu == "バックテスト":
-        show_backtest()
-    elif menu == "モデル情報":
-        show_model_info()
-
-def show_home():
-    st.header("本日のおすすめ馬券")
-
-    # BigQueryから予測結果取得
-    predictions = fetch_today_predictions()
-
-    # TOP3表示
-    top_bets = predictions.nlargest(3, 'expected_return')
-
-    for idx, row in top_bets.iterrows():
-        with st.expander(f"{row['venue']} {row['race_number']}R - {row['horse_name']}"):
-            col1, col2, col3 = st.columns(3)
-            col1.metric("予測確率", f"{row['pred_prob']:.1%}")
-            col2.metric("オッズ", f"{row['odds']:.1f}")
-            col3.metric("期待回収率", f"{row['expected_return']:.2f}")
-
-            st.write(f"推奨投資額: ¥{row['recommended_bet']:,.0f}")
-
-def show_race_list():
-    # 実装...
-    pass
-
-if __name__ == "__main__":
-    main()
-```
-
----
-
-## 9. 通知システム
-
-### 9.1 メール通知
-
-#### 9.1.1 SendGrid実装
-```python
-# notification.py
-
-from sendgrid import SendGridAPIClient
-from sendgrid.helpers.mail import Mail
-
-def send_email_notification(predictions_df):
-    """
-    予測結果をメール通知
-    """
-    top_bets = predictions_df.nlargest(5, 'expected_return')
-
-    html_content = f"""
-    <h2>本日のおすすめ馬券</h2>
-    <table>
-        <tr>
-            <th>レース</th>
-            <th>馬名</th>
-            <th>予測確率</th>
-            <th>オッズ</th>
-            <th>期待回収率</th>
-        </tr>
-    """
-
-    for idx, row in top_bets.iterrows():
-        html_content += f"""
-        <tr>
-            <td>{row['venue']} {row['race_number']}R</td>
-            <td>{row['horse_name']}</td>
-            <td>{row['pred_prob']:.1%}</td>
-            <td>{row['odds']:.1f}</td>
-            <td>{row['expected_return']:.2f}</td>
-        </tr>
-        """
-
-    html_content += "</table>"
-
-    message = Mail(
-        from_email='noreply@keiba-prediction.com',
-        to_emails='user@example.com',
-        subject='競馬予測: 本日のおすすめ馬券',
-        html_content=html_content
-    )
-
-    sg = SendGridAPIClient(os.environ.get('SENDGRID_API_KEY'))
-    response = sg.send(message)
-```
-
-### 9.2 LINE通知（✅ 実装済み - Issue #25）
+### 8.1 LINE通知（✅ 実装済み - Issue #25）
 
 LINE Messaging APIを使った双方向Botを実装済み。
 
@@ -388,13 +251,7 @@ LINE Messaging APIを使った双方向Botを実装済み。
 
 ---
 
-## 10. 実装状況
-
-実装状況の詳細は [README.md](./README.md#実装状況) を参照してください。
-
----
-
-## 11. リスク管理
+## 9. リスク管理
 
 ### 11.1 技術的リスク
 
@@ -423,7 +280,7 @@ LINE Messaging APIを使った双方向Botを実装済み。
 
 ---
 
-## 12. モニタリング・改善
+## 10. モニタリング・改善
 
 ### 12.1 KPI
 
@@ -444,7 +301,7 @@ LINE Messaging APIを使った双方向Botを実装済み。
 
 ---
 
-## 13. 参考資料
+## 11. 参考資料
 
 ### 13.1 プロジェクトドキュメント
 - [README.md](./README.md): 実装済み機能の実行手順、APIエンドポイント、テーブル構成
