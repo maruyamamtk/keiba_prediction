@@ -2,7 +2,7 @@ p1: 0.5
 expected_return_threshold: 1.35 ## 最適化の結果は1.5
 prob_weight_r_dominant: 1.5 ## 最適化の結果は1.0
 prob_weight_r_standard: 1.0 ## 最適化の結果は1.5
-budget_per_race: 3000
+budget_per_race: 1000
 min_bet_amount: 100
 min_prob_threshold: 0.1
 top_n_dominant: 6 ## 最適化の結果は5
