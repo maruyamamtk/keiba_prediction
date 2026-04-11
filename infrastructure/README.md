@@ -160,7 +160,9 @@ GCP_PROJECT_ID=your-project-id
 
 **未実装ジョブ（依存Issueの完了後に追加予定）:**
 - `race-day-strategy`（AM 8:30）: Issue #105 完了後
-- `race-day-notify`（AM 9:00）: Issue #25 完了後
+
+**廃止ジョブ:**
+- `race-day-notify`（AM 9:00）: Issue #229 で廃止。発走5分前通知（`/api/v1/purchase/daily`）に統合済み。
 
 #### ジョブの操作
 
