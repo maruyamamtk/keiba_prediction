@@ -5,7 +5,6 @@
 """
 
 from src.backtest.metrics import compute_metrics
-from src.backtest.simulator import BacktestSimulator, fractional_kelly, kelly_criterion
 from src.backtest.strategy import (
     RacePattern,
     classify_race_pattern,
@@ -17,9 +16,6 @@ from src.backtest.strategy import (
 from src.backtest.strategy_optimizer import OptimizationResult, StrategyOptimizer
 
 __all__ = [
-    "BacktestSimulator",
-    "kelly_criterion",
-    "fractional_kelly",
     "compute_metrics",
     "RacePattern",
     "classify_race_pattern",

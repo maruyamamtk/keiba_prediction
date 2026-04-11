@@ -3,7 +3,8 @@
 バックテスト実行スクリプト
 
 指定期間の過去データに対してモデル予測を生成し、
-複勝馬券の投資シミュレーション（バックテスト）を実行する。
+複勝・ワイド・三連複・馬連を対象とした投資シミュレーション（バックテスト）を実行する。
+strategy_config.yaml と同一ロジック（select_bets_for_race）を使用する。
 
 Usage:
     python scripts/run_backtest.py \\
@@ -20,7 +21,6 @@ Usage:
         --output-csv results/backtest_2023.csv \\
         --save-to-bq \\
         --initial-capital 200000 \\
-        --kelly-fraction 0.25 \\
         --threshold 1.2
 """
 
@@ -43,7 +43,6 @@ from google.cloud import bigquery
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src.backtest.metrics import compute_metrics
-from src.backtest.simulator import BacktestSimulator
 from src.backtest.strategy_optimizer import StrategyOptimizer
 from src.models.lgbm_ranker import LGBMRanker
 from src.models.predict import _scores_to_place_prob
@@ -581,151 +580,7 @@ def plot_capital_curve(
 
 
 # ---------------------------------------------------------------------------
-# メインパイプライン
-# ---------------------------------------------------------------------------
-
-def run_backtest_pipeline(
-    project_id: str,
-    model_path: str,
-    start_date: datetime.date,
-    end_date: datetime.date,
-    config: dict,
-    initial_capital: float = 100_000.0,
-    kelly_fraction: float = 0.25,
-    expected_return_threshold: float = 1.2,
-    budget_per_race: float = 3000.0,
-    odds_column: str = "place_odds",
-    show_race_summary: bool = True,
-    output_csv: str | None = None,
-    save_bq: bool = False,
-    output_chart: str | None = None,
-    run_id: str | None = None,
-    # 後方互換性のための旧パラメータ（無視される）
-    max_bet_ratio: float | None = None,
-) -> tuple[pd.DataFrame, dict]:
-    """
-    バックテストパイプラインを実行する
-
-    Args:
-        project_id: GCP プロジェクト ID
-        model_path: 学習済みモデルのローカルパス
-        start_date: バックテスト開始日
-        end_date: バックテスト終了日
-        config: モデル設定辞書
-        initial_capital: 初期資金
-        kelly_fraction: Fractional Kelly の係数
-        expected_return_threshold: 期待回収率フィルタ閾値
-        budget_per_race: 1レースあたりの固定予算 (円)
-        odds_column: オッズカラム名
-        show_race_summary: True のときレース単位のサマリーログを出力する
-        output_csv: CSV 出力パス (None でスキップ)
-        save_bq: BigQuery 保存フラグ
-        output_chart: グラフ出力パス (None でスキップ)
-        run_id: 実行 ID (BigQuery 保存時に使用)
-
-    Returns:
-        (history_df, metrics) のタプル
-    """
-    data_config = config["data"]
-
-    # 1. データ取得
-    features_df = fetch_historical_features(
-        project_id=project_id,
-        dataset=data_config["dataset"],
-        table=data_config["table"],
-        start_date=start_date,
-        end_date=end_date,
-    )
-    if len(features_df) == 0:
-        logger.error("指定期間の特徴量データが存在しません")
-        return pd.DataFrame(), {}
-
-    results_df = fetch_historical_results(
-        project_id=project_id,
-        start_date=start_date,
-        end_date=end_date,
-    )
-
-    payouts_df = fetch_place_payouts(
-        project_id=project_id,
-        start_date=start_date,
-        end_date=end_date,
-    )
-
-    # 2. 予測生成
-    predictions_df = generate_predictions(
-        features_df=features_df,
-        results_df=results_df,
-        model_path=model_path,
-        config=config,
-    )
-
-    # 3. オッズの取得とマージ
-    # predictions.daily_odds（netkeibaスクレイプ）を優先し、不足分を raw.odds（JRDB）で補完する。
-    # どちらにもデータがない場合はバックテストを中断する。
-    # （raw.payouts は3着以内の確定払戻データのため、オッズ代替に使うと先読みバイアスが生じる）
-    race_ids = predictions_df["race_id"].unique().tolist()
-    odds_df = fetch_place_odds(project_id=project_id, race_ids=race_ids)
-
-    if len(odds_df) > 0:
-        predictions_df = predictions_df.merge(
-            odds_df[["race_id", "horse_number", "place_odds"]],
-            on=["race_id", "horse_number"],
-            how="left",
-        )
-        logger.info("複勝オッズを place_odds としてマージしました")
-    else:
-        logger.error(
-            "predictions.daily_odds・raw.odds のどちらにも複勝オッズデータがありません。バックテストを中断します。\n"
-            "※ raw.payouts（払戻データ）は3着以内の馬のデータしか持たないため、\n"
-            "  オッズ代替として使用すると「3着以内の馬しか賭け対象にならない」という\n"
-            "  先読みバイアスが生じ、的中率が不当に100%になります。\n"
-            "  バックテストには事前オッズ（predictions.daily_odds または raw.odds）が必須です。"
-        )
-        return pd.DataFrame(), {}
-
-    # 4. シミュレーション実行
-    simulator = BacktestSimulator(
-        initial_capital=initial_capital,
-        kelly_fraction=kelly_fraction,
-        expected_return_threshold=expected_return_threshold,
-        budget_per_race=budget_per_race,
-        odds_column=odds_column,
-        show_race_summary=show_race_summary,
-    )
-    history_df = simulator.run(
-        predictions_df=predictions_df,
-        payouts_df=payouts_df if len(payouts_df) > 0 else None,
-    )
-
-    # 5. 評価指標計算
-    metrics = compute_metrics(history_df, initial_capital)
-
-    # 6. 結果保存
-    if output_csv and len(history_df) > 0:
-        Path(output_csv).parent.mkdir(parents=True, exist_ok=True)
-        history_df.to_csv(output_csv, index=False)
-        logger.info(f"賭け記録を CSV に保存しました: {output_csv}")
-
-    if save_bq and len(history_df) > 0:
-        _run_id = run_id or datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        save_to_bigquery(
-            history_df=history_df,
-            metrics=metrics,
-            project_id=project_id,
-            start_date=start_date,
-            end_date=end_date,
-            run_id=_run_id,
-        )
-
-    if output_chart and len(history_df) > 0:
-        plot_capital_curve(history_df, initial_capital, output_chart)
-
-    return history_df, metrics
-
-
-# ---------------------------------------------------------------------------
-# フル戦略バックテスト（select_bets_for_race 統合）
+# バックテストパイプライン（select_bets_for_race 使用）
 # ---------------------------------------------------------------------------
 
 def _load_strategy_config(config_path: str | None = None) -> dict:
@@ -1013,28 +868,10 @@ def main() -> int:
         help="初期資金 (円)",
     )
     parser.add_argument(
-        "--kelly-fraction",
-        type=float,
-        default=0.25,
-        help="Fractional Kelly の係数 (0〜1)",
-    )
-    parser.add_argument(
-        "--threshold",
-        type=float,
-        default=1.2,
-        dest="expected_return_threshold",
-        help="期待回収率フィルタ閾値 (予測複勝率 × オッズ > 閾値)",
-    )
-    parser.add_argument(
         "--budget-per-race",
         type=float,
-        default=3000.0,
-        help="1レースあたりの固定予算 (円)。デフォルト: 3000",
-    )
-    parser.add_argument(
-        "--odds-column",
-        default="place_odds",
-        help="オッズとして使用するカラム名 (パイプラインが place_odds を自動生成)",
+        default=None,
+        help="1レースあたりの固定予算 (円)。デフォルト: strategy_config.yaml の値 (3000)",
     )
     parser.add_argument(
         "--output-csv",
@@ -1054,26 +891,9 @@ def main() -> int:
         help="資金推移グラフの PNG 出力パス",
     )
     parser.add_argument(
-        "--no-race-summary",
-        action="store_true",
-        help="レース単位のサマリーログを非表示にする",
-    )
-    parser.add_argument(
         "--config",
         default=None,
-        help="設定ファイルパス",
-    )
-    parser.add_argument("--verbose", "-v", action="store_true", help="詳細ログ")
-
-    # フル戦略オプション
-    parser.add_argument(
-        "--full-strategy",
-        action="store_true",
-        help=(
-            "フル戦略モードを有効化。"
-            "select_bets_for_race() を使い複勝・ワイド・三連複・馬連・単勝を対象にシミュレーションする。"
-            "strategy_config.yaml のパラメータを自動読み込みする。"
-        ),
+        help="モデル設定ファイルパス",
     )
     parser.add_argument(
         "--strategy-config",
@@ -1085,7 +905,7 @@ def main() -> int:
         "--p1",
         type=float,
         default=None,
-        help="突出型判定閾値 (top1 - top2 > p1)。指定時はYAMLの値より優先",
+        help="突出型判定閾値（ジニ係数閾値）。指定時はYAMLの値より優先",
     )
     parser.add_argument(
         "--prob-weight-r",
@@ -1108,6 +928,7 @@ def main() -> int:
         dest="top_n",
         help="ワイド/三連複/馬連の候補馬数。指定時はYAMLの値より優先",
     )
+    parser.add_argument("--verbose", "-v", action="store_true", help="詳細ログ")
 
     args = parser.parse_args()
 
@@ -1135,85 +956,57 @@ def main() -> int:
 
     config = load_config(args.config)
 
-    if args.full_strategy:
-        # フル戦略モード: strategy_config.yaml を読み込み、CLIオプションで上書き
-        strategy_cfg = _load_strategy_config(args.strategy_config)
+    # strategy_config.yaml を読み込み、CLIオプションで上書き
+    strategy_cfg = _load_strategy_config(args.strategy_config)
 
-        p1 = args.p1 if args.p1 is not None else float(strategy_cfg.get("p1", 0.3))
-        budget = args.budget_per_race if args.budget_per_race != 3000.0 else \
-            float(strategy_cfg.get("budget_per_race", 3000.0))
-        min_prob = args.min_prob_threshold if args.min_prob_threshold is not None else \
-            float(strategy_cfg.get("min_prob_threshold", 0.0))
-        # パターン別パラメータ（CLIで top_n が指定された場合は両方に適用）
-        expected_return_threshold = float(strategy_cfg.get("expected_return_threshold", 1.2))
-        _legacy_top_n = int(strategy_cfg.get("top_n", 5))
-        top_n_dominant = int(strategy_cfg.get("top_n_dominant", _legacy_top_n))
-        top_n_standard = int(strategy_cfg.get("top_n_standard", _legacy_top_n))
-        if args.top_n is not None:
-            top_n_dominant = args.top_n
-            top_n_standard = args.top_n
-        r_dominant = args.prob_weight_r if args.prob_weight_r is not None else \
-            float(strategy_cfg.get("prob_weight_r_dominant", 1.0))
-        r_standard = float(strategy_cfg.get("prob_weight_r_standard", r_dominant))
+    p1 = args.p1 if args.p1 is not None else float(strategy_cfg.get("p1", 0.3))
+    budget = args.budget_per_race if args.budget_per_race is not None else \
+        float(strategy_cfg.get("budget_per_race", 3000.0))
+    min_prob = args.min_prob_threshold if args.min_prob_threshold is not None else \
+        float(strategy_cfg.get("min_prob_threshold", 0.0))
+    expected_return_threshold = float(strategy_cfg.get("expected_return_threshold", 1.2))
+    _legacy_top_n = int(strategy_cfg.get("top_n", 5))
+    top_n_dominant = int(strategy_cfg.get("top_n_dominant", _legacy_top_n))
+    top_n_standard = int(strategy_cfg.get("top_n_standard", _legacy_top_n))
+    if args.top_n is not None:
+        top_n_dominant = args.top_n
+        top_n_standard = args.top_n
+    r_dominant = args.prob_weight_r if args.prob_weight_r is not None else \
+        float(strategy_cfg.get("prob_weight_r_dominant", 1.0))
+    r_standard = float(strategy_cfg.get("prob_weight_r_standard", r_dominant))
 
-        print(f"\nバックテスト設定（フル戦略モード）:")
-        print(f"  期間:                          {start_date} ~ {end_date}")
-        print(f"  モデル:                        {args.model_path}")
-        print(f"  初期資金:                      ¥{args.initial_capital:,.0f}")
-        print(f"  p1（ジニ係数閾値）:            {p1}")
-        print(f"  expected_return_threshold:     {expected_return_threshold}")
-        print(f"  top_n_dominant:                {top_n_dominant}")
-        print(f"  top_n_standard:                {top_n_standard}")
-        print(f"  1レースあたり予算:             ¥{budget:,.0f}")
-        print(f"  min_prob_threshold:            {min_prob}")
-        print(f"  prob_weight_r_dominant:        {r_dominant}")
-        print(f"  prob_weight_r_standard:        {r_standard}")
+    print(f"\nバックテスト設定:")
+    print(f"  期間:                          {start_date} ~ {end_date}")
+    print(f"  モデル:                        {args.model_path}")
+    print(f"  初期資金:                      ¥{args.initial_capital:,.0f}")
+    print(f"  p1（ジニ係数閾値）:            {p1}")
+    print(f"  expected_return_threshold:     {expected_return_threshold}")
+    print(f"  top_n_dominant:                {top_n_dominant}")
+    print(f"  top_n_standard:                {top_n_standard}")
+    print(f"  1レースあたり予算:             ¥{budget:,.0f}")
+    print(f"  min_prob_threshold:            {min_prob}")
+    print(f"  prob_weight_r_dominant:        {r_dominant}")
+    print(f"  prob_weight_r_standard:        {r_standard}")
 
-        history_df, metrics = run_full_strategy_backtest_pipeline(
-            project_id=args.project_id,
-            model_path=args.model_path,
-            start_date=start_date,
-            end_date=end_date,
-            config=config,
-            p1=p1,
-            budget_per_race=budget,
-            min_prob_threshold=min_prob,
-            expected_return_threshold=expected_return_threshold,
-            prob_weight_r_dominant=r_dominant,
-            prob_weight_r_standard=r_standard,
-            top_n_dominant=top_n_dominant,
-            top_n_standard=top_n_standard,
-            initial_capital=args.initial_capital,
-            output_csv=args.output_csv,
-            save_bq=args.save_to_bq,
-            output_chart=args.output_chart,
-        )
-    else:
-        # シンプルモード（既存: BacktestSimulator、複勝のみ）
-        print(f"\nバックテスト設定:")
-        print(f"  期間:           {start_date} ~ {end_date}")
-        print(f"  モデル:         {args.model_path}")
-        print(f"  初期資金:             ¥{args.initial_capital:,.0f}")
-        print(f"  Kelly 係数:           {args.kelly_fraction}")
-        print(f"  期待回収率閾値:       {args.expected_return_threshold}")
-        print(f"  1レースあたり予算:    ¥{args.budget_per_race:,.0f}")
-
-        history_df, metrics = run_backtest_pipeline(
-            project_id=args.project_id,
-            model_path=args.model_path,
-            start_date=start_date,
-            end_date=end_date,
-            config=config,
-            initial_capital=args.initial_capital,
-            kelly_fraction=args.kelly_fraction,
-            expected_return_threshold=args.expected_return_threshold,
-            budget_per_race=args.budget_per_race,
-            odds_column=args.odds_column,
-            show_race_summary=not args.no_race_summary,
-            output_csv=args.output_csv,
-            save_bq=args.save_to_bq,
-            output_chart=args.output_chart,
-        )
+    history_df, metrics = run_full_strategy_backtest_pipeline(
+        project_id=args.project_id,
+        model_path=args.model_path,
+        start_date=start_date,
+        end_date=end_date,
+        config=config,
+        p1=p1,
+        budget_per_race=budget,
+        min_prob_threshold=min_prob,
+        expected_return_threshold=expected_return_threshold,
+        prob_weight_r_dominant=r_dominant,
+        prob_weight_r_standard=r_standard,
+        top_n_dominant=top_n_dominant,
+        top_n_standard=top_n_standard,
+        initial_capital=args.initial_capital,
+        output_csv=args.output_csv,
+        save_bq=args.save_to_bq,
+        output_chart=args.output_chart,
+    )
 
     if not metrics:
         logger.error("バックテストが中断されたため、評価指標を表示できません。")
