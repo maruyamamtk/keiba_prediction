@@ -509,6 +509,7 @@ Cloud Run または Cloud Function のデプロイメント完了を宣言する
 | 2026-03-20 | 3.6.0 | Issue #165（prob_weight_r が期待値フィルタに影響しないことを検証するテスト2件を test_backtest_strategy.py に追加）・Issue #166（build_race_df の win_odds JOIN 動作と place_odds_min→odds リネームを検証する tests/test_run_strategy.py を新規作成、6件）・Issue #167（netkeiba_scraper.py の COMBO_TICKET_TYPESマッピング修正: 旧b5=umatan/b6=sanrenpuku/b7=wide → 新b5=wide/b6=umatan/b7=sanrenpuku。is_trio の b6→b7 修正。scrape_historical_odds.py デフォルト値 b4 b7 b6 → b4 b5 b7 に修正）・Issue #168（1レースあたり投資予算を capital×max_bet_ratio 方式から budget_per_race=3000円固定方式に変更。section 6.2.2 投資ルール更新）の実装を反映 | Claude |
 | 2026-04-05 | 3.7.0 | Issue #223（Python 3.9 → 3.13 アップグレード）: Dockerfile を python:3.13-slim に更新、requirements.txt を Python 3.13 対応バージョンに更新（numpy 2.x 等）、全ソースファイルの型ヒントを Optional/Dict/List → X\|None/dict/list にモダナイズ、from __future__ import annotations を全廃、pyproject.toml/.python-version 追加。環境情報を Python 3.13 に更新 | Claude |
 | 2026-04-11 | 3.8.0 | Issue #229（race-day-notify 廃止）: `POST /api/v1/line/notify/daily` エンドポイント・`LineNotifyDailyResponse` モデルを削除。`line_webhook.py` の `send_daily_push_notification` ほか関連関数を削除。`setup_scheduler.sh` から `race-day-notify` ジョブ設定を削除。`tests/test_line_notify_daily.py` を削除。Cloud Scheduler の `race-day-notify` を廃止済みに更新 | Claude |
+| 2026-04-11 | 3.9.0 | Issue #229（race-day-notify廃止）・Issue #230（IPAT SP版ログイン修正）・Issue #231（発走直前investment_decisions上書き、strategy/daily dry_run=Trueデフォルト化）の実装を反映。SCHEDULE.md新規作成、README.mdのPython版・スケジューラ一覧・Phase5状況・APIエンドポイント表を更新、infrastructure/README.mdのスケジューラセクションを6ジョブに更新 | Claude |
 
 ---
 

@@ -146,50 +146,24 @@ GCP_PROJECT_ID=your-project-id
 - Cloud Schedulerジョブの作成（既存なら更新）
 - 失敗時アラートポリシーの設定（Cloud Monitoring）
 
-#### ジョブ設定
+#### 稼働中ジョブ一覧
 
-| ジョブ名 | スケジュール | ターゲット | 用途 |
-|---------|------------|----------|------|
-| `daily-data-pipeline` | `0 6 * * *`（AM 6:00 JST） | `POST /api/v1/load/daily/async` | 日次データロード |
-| `race-day-predict` | `0 8 * * *`（AM 8:00 JST） | `POST /api/v1/predict/daily` | 翌日レース予測 |
+| ジョブ名 | スケジュール (JST) | ターゲット | 用途 |
+|---------|-----------------|----------|------|
+| `daily-data-pipeline` | `0 6 * * *`（AM 6:00） | `POST /api/v1/load/daily/async` | 日次データロード |
+| `race-day-predict` | `0 8 * * *`（AM 8:00） | `POST /api/v1/predict/daily` | レース予測・BQ/GCS保存 |
+| `race-day-odds-scrape` | `15 8 * * *`（AM 8:15） | `POST /api/v1/odds/scrape` | netkeibaオッズ取得 |
+| `race-day-strategy` | `30 8 * * *`（AM 8:30） | `POST /api/v1/strategy/daily` | 投資戦略策定（dry_run=true） |
+| `monthly-model-retrain` | `0 8 1-7 * 1`（毎月第1月曜AM 8:00） | `POST /api/v1/model/retrain/async` | モデル月次再学習 |
+| `race-day-purchase` | `*/5 8-17 * * 6,0`（土日5分おき） | `POST /api/v1/purchase/daily` | 発走直前IPAT自動馬券購入 |
 
 **全ジョブ共通設定:**
 - 認証: OIDCトークン（`keiba-pipeline-sa`）
 - タイムアウト: 900秒（15分）
 - リトライ: 最大3回、バックオフ5秒〜300秒
+- タイムゾーン: Asia/Tokyo
 
-**未実装ジョブ（依存Issueの完了後に追加予定）:**
-- `race-day-strategy`（AM 8:30）: Issue #105 完了後
-
-**廃止ジョブ:**
-- `race-day-notify`（AM 9:00）: Issue #229 で廃止。発走5分前通知（`/api/v1/purchase/daily`）に統合済み。
-
-#### ジョブの操作
-
-```bash
-# 【データロードジョブ】
-# 手動実行（テスト用）
-gcloud scheduler jobs run daily-data-pipeline --location=asia-northeast1
-
-# 一時停止
-gcloud scheduler jobs pause daily-data-pipeline --location=asia-northeast1
-
-# 再開
-gcloud scheduler jobs resume daily-data-pipeline --location=asia-northeast1
-
-# 【予測ジョブ】
-# 手動実行（テスト用）
-gcloud scheduler jobs run race-day-predict --location=asia-northeast1
-
-# 一時停止
-gcloud scheduler jobs pause race-day-predict --location=asia-northeast1
-
-# 再開
-gcloud scheduler jobs resume race-day-predict --location=asia-northeast1
-
-# 【共通】実行履歴の確認
-gcloud logging read 'resource.type="cloud_scheduler_job"' --limit=10
-```
+ジョブの詳細説明・操作コマンド・障害対応手順は **[SCHEDULE.md](../SCHEDULE.md)** を参照してください。
 
 #### 失敗時アラート設定
 

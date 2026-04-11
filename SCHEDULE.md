@@ -1,0 +1,343 @@
+# Cloud Scheduler ジョブ一覧
+
+このドキュメントでは、競馬予測MLシステムで稼働中のすべてのCloud Schedulerジョブを説明します。
+
+---
+
+## 稼働中ジョブ一覧
+
+| ジョブ名 | スケジュール (JST) | cron式 | ターゲットエンドポイント | 用途 |
+|---------|-----------------|--------|----------------------|------|
+| `daily-data-pipeline` | 毎日 AM 6:00 | `0 6 * * *` | `POST /api/v1/load/daily/async` | JRDBデータロード |
+| `race-day-predict` | 毎日 AM 8:00 | `0 8 * * *` | `POST /api/v1/predict/daily` | レース予測・BQ/GCS保存 |
+| `race-day-odds-scrape` | 毎日 AM 8:15 | `15 8 * * *` | `POST /api/v1/odds/scrape` | netkeibaオッズ取得 |
+| `race-day-strategy` | 毎日 AM 8:30 | `30 8 * * *` | `POST /api/v1/strategy/daily` | 投資戦略策定（dry_run=true） |
+| `monthly-model-retrain` | 毎月第1月曜 AM 8:00 | `0 8 1-7 * 1` | `POST /api/v1/model/retrain/async` | モデル月次再学習 |
+| `race-day-purchase` | 土日 8:00〜17:00 5分おき | `*/5 8-17 * * 6,0` | `POST /api/v1/purchase/daily` | 発走直前IPAT自動馬券購入 |
+
+**全ジョブ共通設定:**
+- 認証: OIDCトークン（`keiba-pipeline-sa` サービスアカウント）
+- タイムアウト: 900秒（15分）
+- リトライ: 最大3回、バックオフ 5秒〜300秒
+- タイムゾーン: Asia/Tokyo
+
+---
+
+## 各ジョブの詳細
+
+### daily-data-pipeline — 日次データロード
+
+**スケジュール**: 毎日 AM 6:00 JST
+
+**概要**: JRDBからその日のデータをダウンロードし、GCS→BigQueryへロードします。当日から直近7日間のファイルを対象とします。
+
+**処理フロー**:
+1. JRDBから当日データをダウンロード（lzh解凍・CP932→UTF-8変換）
+2. GCSへアップロード（MD5重複チェック）
+3. BigQueryへMERGE/UPSERTロード（`raw.load_history` で重複スキップ）
+4. 特徴量生成（`features.training_data` 更新）
+
+**リクエストボディ**: `{}` （空ボディ、当日日付を自動使用）
+
+---
+
+### race-day-predict — レース予測
+
+**スケジュール**: 毎日 AM 8:00 JST
+
+**概要**: GCSから最新の学習済みモデルを自動取得し、当日レースの着順予測スコアを計算してBigQueryとGCSに保存します。
+
+**処理フロー**:
+1. GCSバケット `{project}-keiba-models/lgbm_ranker/` から最新モデルを自動選択
+2. `features.training_data` から当日レースデータを取得
+3. LightGBM LambdaRankで予測スコアを計算
+4. `predictions.daily_predictions` にUPSERT保存
+5. GCS `gs://{project}-keiba-predictions/{date}/predictions.csv` にCSV保存
+
+**リクエストボディ**: `{}` （空ボディ）
+
+**前提条件**: `daily-data-pipeline` が正常完了していること。
+
+---
+
+### race-day-odds-scrape — リアルタイムオッズ取得
+
+**スケジュール**: 毎日 AM 8:15 JST
+
+**概要**: netkeibaから当日全レースの単勝・複勝オッズ、および組み合わせ馬券オッズをスクレイプしてBigQueryに保存します。
+
+**処理フロー**:
+1. `raw.race_info` から当日レースのrace_idリストを取得
+2. Playwright (Chromium) で各レースのnetkeibaオッズページを取得
+3. 単複オッズを `predictions.daily_odds` にUPSERT保存（キー: `race_id + horse_number`）
+4. `include_combo=true` により組み合わせ馬券（馬連・ワイド・馬単・三連複）を `predictions.daily_odds_combo` にUPSERT保存
+
+**リクエストボディ**: `{"include_combo": true}`
+
+**前提条件**: `daily-data-pipeline` が正常完了していること。
+
+---
+
+### race-day-strategy — 投資戦略策定
+
+**スケジュール**: 毎日 AM 8:30 JST
+
+**概要**: 予測スコアとリアルタイムオッズを組み合わせて投資判断を策定します。
+
+**重要**: このジョブは **`dry_run=true`（デフォルト）** で実行されます。BQへの保存は行われません。実際のBQ保存は、発走直前に `race-day-purchase` ジョブが `_refresh_investment_decisions_for_race()` を呼び出して最新オッズで上書き保存します（Issue #231）。
+
+**処理フロー**（dry_run=true の場合）:
+1. `predictions.daily_predictions` から当日予測スコアを取得
+2. `predictions.daily_odds` / `predictions.daily_odds_combo` からオッズを取得
+3. `config/strategy_config.yaml` のパラメータでKelly基準・期待回収率フィルタを適用
+4. 投資判断を計算（BQ保存はスキップ）
+
+**リクエストボディ**: `{}` （`dry_run` フィールドを省略するとデフォルト `true`）
+
+> **BQ保存が必要な場合**: `race-day-purchase` の発走直前処理（`_refresh_investment_decisions_for_race`）が最新オッズで `predictions.investment_decisions` を上書き保存します。手動でBQ保存する場合は `{"dry_run": false}` を指定してください。
+
+**前提条件**: `race-day-predict` と `race-day-odds-scrape` が正常完了していること。
+
+---
+
+### monthly-model-retrain — モデル月次再学習
+
+**スケジュール**: 毎月第1月曜日 AM 8:00 JST
+
+**概要**: BigQueryの学習用データを用いてLightGBM LambdaRankモデルを再学習し、GCSに保存します。
+
+**処理フロー**:
+1. `features.training_data` から学習データを取得
+2. 時系列分割（学習/検証/推論）
+3. Optuna/設定済みパラメータでLambdaRank学習
+4. NDCG@3・Recall@3・AUCを評価
+5. GCS `gs://{project}-keiba-models/lgbm_ranker/{YYYYMMDD}/` に保存
+
+**リクエストボディ**: `{}` （空ボディ）
+
+---
+
+### race-day-purchase — 発走直前IPAT自動馬券購入
+
+**スケジュール**: 土日 AM 8:00〜PM 5:55 の5分おき
+
+**概要**: 各レースの発走5分前になると `predictions.investment_decisions` の投資判断を最新オッズで更新し、JRA IPATで自動的に馬券を購入します。
+
+**処理フロー**（dry_run=false の本番モード）:
+1. 当日の未購入レースのうち発走5分前以内のレースを特定
+2. `_refresh_investment_decisions_for_race()` で最新オッズを取得して `predictions.investment_decisions` を上書き保存（Issue #231）
+3. Playwright (Chromium) でIPAT SPログイン（`https://www.ipat.jra.go.jp/sp/index.cgi`）
+4. 馬券を自動購入
+5. 購入結果を `predictions.purchase_history` に保存
+6. LINE Messaging API でpush通知（購入完了/失敗）
+
+**dry_run挙動**:
+
+| モード | IPATログイン | 馬券購入 | purchase_history保存 | LINE通知 |
+|--------|------------|--------|---------------------|---------|
+| `dry_run=true` | スキップ | スキップ | 保存（dry_run=trueフラグ付き） | 送信 |
+| `dry_run=false` | 実行 | 実行 | 保存（実際の購入結果） | 送信 |
+
+**リクエストボディ**: `{}` （`dry_run` デフォルトは `false`・本番購入モード）
+
+**必要なSecret Manager設定**:
+
+| シークレット名 | 説明 |
+|-------------|------|
+| `ipat-member-id` | 加入者番号 |
+| `ipat-pin` | 暗証番号（4桁） |
+| `ipat-pat-number` | PAT番号 |
+| `line-channel-access-token` | LINE push通知用アクセストークン |
+| `line-user-id` | LINE通知送信先ユーザーID |
+
+---
+
+## ジョブ操作コマンド
+
+### 手動実行（テスト）
+
+```bash
+# 日次データロード
+gcloud scheduler jobs run daily-data-pipeline --location=asia-northeast1
+
+# レース予測
+gcloud scheduler jobs run race-day-predict --location=asia-northeast1
+
+# オッズ取得
+gcloud scheduler jobs run race-day-odds-scrape --location=asia-northeast1
+
+# 投資戦略策定
+gcloud scheduler jobs run race-day-strategy --location=asia-northeast1
+
+# モデル再学習
+gcloud scheduler jobs run monthly-model-retrain --location=asia-northeast1
+
+# 発走前購入（dry_run=falseの本番モード）
+gcloud scheduler jobs run race-day-purchase --location=asia-northeast1
+```
+
+### 一時停止・再開
+
+```bash
+# 一時停止（例: race-day-purchase）
+gcloud scheduler jobs pause race-day-purchase --location=asia-northeast1
+
+# 再開
+gcloud scheduler jobs resume race-day-purchase --location=asia-northeast1
+```
+
+### ジョブ一覧確認
+
+```bash
+gcloud scheduler jobs list --location=asia-northeast1
+```
+
+### dry_runの本番切り替え
+
+`race-day-purchase` を本番購入モード（dry_run=false）に切り替える:
+
+```bash
+gcloud scheduler jobs update http race-day-purchase \
+  --location=asia-northeast1 \
+  --message-body='{"dry_run": false}' \
+  --project=<PROJECT_ID>
+```
+
+dry_runモードに戻す:
+
+```bash
+gcloud scheduler jobs update http race-day-purchase \
+  --location=asia-northeast1 \
+  --message-body='{}' \
+  --project=<PROJECT_ID>
+```
+
+---
+
+## ログ確認
+
+### Cloud Schedulerジョブの実行履歴
+
+```bash
+# 直近10件のスケジューラログ
+gcloud logging read 'resource.type="cloud_scheduler_job"' --limit=10
+
+# 特定ジョブのログ
+gcloud logging read 'resource.type="cloud_scheduler_job" AND resource.labels.job_id="race-day-purchase"' --limit=20
+```
+
+### Cloud Runのアプリケーションログ
+
+```bash
+# 直近50件
+gcloud run services logs read keiba-pipeline --region=asia-northeast1 --limit=50
+
+# ERRORレベルのみ
+gcloud logging read 'resource.type="cloud_run_revision" AND severity>=ERROR' --limit=20
+```
+
+---
+
+## 障害時の対応手順
+
+### 日次データロードが失敗した場合
+
+1. ログを確認し原因を特定:
+
+```bash
+gcloud logging read 'resource.type="cloud_run_revision" AND severity>=ERROR' --limit=20
+```
+
+2. 手動で再実行:
+
+```bash
+gcloud scheduler jobs run daily-data-pipeline --location=asia-northeast1
+```
+
+3. ロード状態を診断:
+
+```bash
+python3 scripts/diagnose_bq_load.py --show-errors
+```
+
+### レース予測が失敗した場合
+
+1. モデルがGCSに存在するか確認:
+
+```bash
+gcloud storage ls gs://<PROJECT_ID>-keiba-models/lgbm_ranker/
+```
+
+2. 手動でCLI実行（デバッグ用）:
+
+```bash
+python3 -m src.models.predict --project-id <PROJECT_ID> \
+  --model-path gs://<PROJECT_ID>-keiba-models/lgbm_ranker/<YYYYMMDD>/model.txt
+```
+
+### オッズ取得が失敗した場合
+
+netkeibaのHTMLDOM変更やPlaywrightの問題が原因の可能性があります。
+
+1. 手動でジョブ再実行:
+
+```bash
+gcloud scheduler jobs run race-day-odds-scrape --location=asia-northeast1
+```
+
+2. ローカルで手動スクレイプ（特定日付）:
+
+```bash
+python3 scripts/scrape_historical_odds.py \
+  --project-id <PROJECT_ID> \
+  --start-date <YYYY-MM-DD> \
+  --end-date <YYYY-MM-DD> \
+  --mode all
+```
+
+### 投資戦略策定が失敗した場合
+
+予測データまたはオッズデータが不足している可能性があります。
+
+1. BQに当日データが存在するか確認:
+
+```bash
+# 当日の予測件数確認
+bq query --nouse_legacy_sql \
+  "SELECT COUNT(*) FROM \`<PROJECT_ID>.predictions.daily_predictions\` WHERE race_date = CURRENT_DATE('Asia/Tokyo')"
+```
+
+2. 手動でスクリプト実行（dry_run=false でBQ保存）:
+
+```bash
+python3 scripts/run_strategy.py --project-id <PROJECT_ID> --target-date <YYYY-MM-DD>
+```
+
+### IPAT自動購入が失敗した場合
+
+1. IPATのログイン情報（Secret Manager）を確認:
+
+```bash
+gcloud secrets list --project=<PROJECT_ID>
+```
+
+2. dry_runモードで動作確認:
+
+```bash
+curl -X POST <CLOUD_RUN_URL>/api/v1/purchase/daily \
+  -H "Authorization: Bearer $(gcloud auth print-identity-token)" \
+  -H "Content-Type: application/json" \
+  -d '{"dry_run": true}'
+```
+
+---
+
+## ジョブ設定スクリプト
+
+ジョブの作成・更新は `infrastructure/scripts/setup_scheduler.sh` で行います:
+
+```bash
+./infrastructure/scripts/setup_scheduler.sh
+```
+
+詳細なインフラセットアップ手順は [infrastructure/README.md](./infrastructure/README.md) を参照してください。

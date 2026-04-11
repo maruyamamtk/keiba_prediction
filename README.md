@@ -14,7 +14,7 @@ JRDBデータを活用した機械学習による馬券購入支援システム
 
 ### 技術スタック
 
-- **言語**: Python 3.9+
+- **言語**: Python 3.13
 - **機械学習**: LightGBM (Learning to Rank)
 - **最適化**: Optuna (ハイパーパラメータチューニング)
 - **クラウド**: GCP (BigQuery, Cloud Storage, Cloud Run, Cloud Scheduler)
@@ -237,8 +237,8 @@ python3 scripts/run_strategy_optimization.py \
 #### B. 日次投資戦略策定（手動確認用 / Cloud Schedulerで自動実行）
 
 `config/strategy_config.yaml` のパラメータを読み込んで投資判断を実行する。
-`POST /api/v1/strategy/daily` から毎朝 AM 9:00 に Cloud Scheduler で自動実行されるが、
-スクリプトを手動実行して内容を確認することもできる。
+`POST /api/v1/strategy/daily` から毎朝 AM 8:30 に Cloud Scheduler で自動実行される（`dry_run=true` のためBQ保存なし）。
+スクリプトを手動実行して結果を確認することもできる。
 
 ```bash
 # 当日分の投資戦略を実行（BQ保存あり）
@@ -862,9 +862,9 @@ Cloud RunにデプロイされたFastAPIアプリケーションは以下のエ�
 | POST | `/api/v1/predict/daily` | 翌日レース予測 + BQ/GCS保存（Cloud Scheduler用）。`model_path` 未指定時はGCSから最新モデルを自動取得。 |
 | POST | `/api/v1/predict/on-demand` | 任意日付レース予測 + BQ/GCS保存（手動実行用） |
 | POST | `/api/v1/odds/scrape` | netkeibaから当日オッズを取得し `predictions.daily_odds` にUPSERT保存。`include_combo=true` で組み合わせ馬券オッズも取得し `predictions.daily_odds_combo` に保存。 |
-| POST | `/api/v1/strategy/daily` | 当日の投資戦略を策定し `predictions.investment_decisions` にUPSERT保存。`config/strategy_config.yaml` のパラメータを使用。 |
+| POST | `/api/v1/strategy/daily` | 当日の投資戦略を策定。`config/strategy_config.yaml` のパラメータを使用。`dry_run` のデフォルトは `true`（BQ保存なし）。実際のBQ保存は発走直前の `race-day-purchase` が最新オッズで上書き実行する（Issue #231）。 |
 | POST | `/api/v1/line/webhook` | LINE Messaging API Webhook受信。「日付 競馬場名 レース番号」形式のメッセージに対して予測テーブルと推奨馬券リストを返信。 |
-| POST | `/api/v1/purchase/daily` | 発走5分前JRA IPAT自動馬券購入。`dry_run=true`（デフォルト）の場合はIPATログイン・購入をスキップし推奨馬券をLINE通知のみ実行。結果は `predictions.purchase_history` に保存。 |
+| POST | `/api/v1/purchase/daily` | 発走5分前JRA IPAT自動馬券購入。`dry_run` のデフォルトは `false`（本番購入モード）。`dry_run=true` の場合はIPATログイン・購入をスキップし推奨馬券をLINE通知のみ実行。結果は `predictions.purchase_history` に保存。 |
 
 ---
 
@@ -932,8 +932,12 @@ Cloud RunにデプロイされたFastAPIアプリケーションは以下のエ�
   - GCS保存（`gs://{project}-keiba-predictions/{date}/predictions.csv`）
 - ✅ `raw.race_info` に `start_time` カラム追加 - Issue #214
 - ✅ 発走5分前JRA IPAT自動馬券購入 - Issue #213
-  - `POST /api/v1/purchase/daily`: `dry_run`（デフォルト: true）で本番切り替え可能
+  - `POST /api/v1/purchase/daily`: `dry_run`（デフォルト: false・本番購入モード）で実行
   - `predictions.purchase_history` テーブルへの購入履歴保存
+- ✅ 発走直前に最新オッズで investment_decisions を上書き - Issue #231
+  - `_refresh_investment_decisions_for_race()`: 各レース購入前に最新オッズで投資判断を再計算しBQ保存
+  - `POST /api/v1/strategy/daily` の `dry_run` デフォルトを `true` に変更（朝の戦略策定はBQ保存なし）
+  - 実際のBQ保存は発走直前の refresh 処理が最新オッズで担う
 - ✅ Webダッシュボード（Streamlit） - Issue #24
 - ✅ LINE Messaging API Webhook Bot - Issue #25
 
@@ -1073,7 +1077,7 @@ curl -X POST http://localhost:8080/api/v1/predict/daily \
 
 **IPAT自動馬券購入（Cloud Scheduler用）**
 
-`dry_run` のデフォルトは `true` です。IPATへの実際の購入なしに推奨馬券をLINE通知だけ行います。
+`dry_run` のデフォルトは `false`（本番購入モード）です。`dry_run=true` にするとIPATログイン・購入をスキップし、推奨馬券のLINE通知だけ行います。
 
 ```bash
 # dry_run モード（IPATログイン・購入なし。推奨馬券をLINE通知のみ）
@@ -1144,13 +1148,16 @@ gcloud scheduler jobs run daily-data-pipeline --location=asia-northeast1
 
 主なジョブ一覧:
 
-| ジョブ名 | スケジュール | 用途 |
-|---------|------------|------|
-| `daily-data-pipeline` | 毎日 AM 6:00 JST | 日次データロード |
-| `race-day-predict` | 毎日 AM 8:00 JST | レース予測 |
-| `race-day-purchase` | 土日 8:00〜17:00 の5分おき | 発走5分前IPAT自動馬券購入（Issue #213） |
+| ジョブ名 | スケジュール (JST) | 用途 |
+|---------|-----------------|------|
+| `daily-data-pipeline` | 毎日 AM 6:00 | 日次データロード |
+| `race-day-predict` | 毎日 AM 8:00 | レース予測 |
+| `race-day-odds-scrape` | 毎日 AM 8:15 | netkeibaオッズ取得 |
+| `race-day-strategy` | 毎日 AM 8:30 | 投資戦略策定（dry_run=true） |
+| `monthly-model-retrain` | 毎月第1月曜 AM 8:00 | モデル月次再学習 |
+| `race-day-purchase` | 土日 8:00〜17:55 の5分おき | 発走直前IPAT自動馬券購入 |
 
-詳細な設定内容は [infrastructure/README.md](./infrastructure/README.md#7-cloud-schedulerの設定) を参照してください。
+詳細な設定内容・操作コマンド・障害対応は [SCHEDULE.md](./SCHEDULE.md) を参照してください。
 
 ---
 
@@ -1284,6 +1291,7 @@ python -m pytest tests/ --cov=src --cov-report=html
 | ドキュメント | 内容 |
 |------------|------|
 | [CLAUDE.md](./CLAUDE.md) | システム全体の仕様書（目的、設計思想、未実装機能の設計） |
+| [SCHEDULE.md](./SCHEDULE.md) | Cloud Schedulerジョブ一覧（稼働ジョブ・操作コマンド・障害対応手順） |
 | [SCHEMA.md](./SCHEMA.md) | JRDBデータスキーマ仕様書（データタイプ、フィールド定義、コードテーブル） |
 | [ML_FEATURE.md](./ML_FEATURE.md) | 特徴量設計（特徴量リスト、Target Encoding、リーク対策） |
 | [infrastructure/README.md](./infrastructure/README.md) | インフラセットアップガイド（GCP、Cloud Run、Docker） |
@@ -1379,13 +1387,15 @@ python -m pytest tests/ --cov=src --cov-report=html
   - `scripts/add_start_time_to_race_info.py`: BQ ALTER TABLE スクリプト（初回のみ実行）
 - ✅ 発走5分前JRA IPAT自動馬券購入パイプライン - Issue #213
   - `POST /api/v1/purchase/daily`: 対象レースを順次処理し、発走5分前にIPATで馬券購入
-  - `dry_run=true`（デフォルト）: IPATログイン・購入をスキップし推奨馬券をLINE通知のみ
-  - `dry_run=false`: 実際にIPATへログインして馬券を購入（本番切り替えは Cloud Scheduler ジョブ更新で行う）
+  - `dry_run=false`（デフォルト）: 実際にIPATへログインして馬券を購入
+  - `dry_run=true`: IPATログイン・購入をスキップし推奨馬券をLINE通知のみ
   - `predictions.purchase_history` テーブルへの購入履歴保存
-  - Cloud Scheduler ジョブ `race-day-purchase`（土日 8:00〜17:00 の5分おき）で自動実行
-  - 本番切り替えコマンド: `gcloud scheduler jobs update http race-day-purchase --message-body='{"dry_run": false}'`
-  - `src/automation/data/ipat_purchaser.py`: IpatPurchaserクラス（Playwright自動化）
+  - Cloud Scheduler ジョブ `race-day-purchase`（土日 8:00〜17:55 の5分おき）で自動実行
+  - `src/automation/data/ipat_purchaser.py`: IpatPurchaserクラス（Playwright自動化・SP版URL対応）
   - 必要な環境変数（Secret Manager経由）: `IPAT_MEMBER_ID`（加入者番号）・`IPAT_PIN`（暗証番号4桁）・`IPAT_PAT_NUMBER`（PAT番号）
+- ✅ 発走直前に最新オッズで投資判断を上書き - Issue #231
+  - `_refresh_investment_decisions_for_race(project_id, race_id, target_date)`: 各レース購入直前に最新オッズを取得し `predictions.investment_decisions` をBQ保存
+  - `POST /api/v1/strategy/daily` の `dry_run` デフォルトを `false` → `true` に変更（朝の戦略策定はBQ保存なし。実際のBQ保存は発走直前の refresh 処理が担う）
 
 ---
 
