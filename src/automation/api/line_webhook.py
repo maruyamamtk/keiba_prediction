@@ -660,10 +660,21 @@ def format_push_notification(
             lines.append(_format_single_bet_line(bet))
         race_blocks.append("\n".join(lines))
 
-    # 10レースごとに1メッセージに分割
-    for i in range(0, len(race_blocks), _RACES_PER_MESSAGE):
-        chunk = race_blocks[i:i + _RACES_PER_MESSAGE]
-        messages.append({"type": "text", "text": "\n\n".join(chunk)})
+    # 5000文字制限を超えないようにレースブロックを分割してメッセージ化
+    _MAX_TEXT_LENGTH = 4800  # LINEの5000文字制限に余裕を持たせる
+    current_chunks: list[str] = []
+    current_len = 0
+    for block in race_blocks:
+        block_len = len(block) + (2 if current_chunks else 0)  # "\n\n" の分
+        if current_chunks and current_len + block_len > _MAX_TEXT_LENGTH:
+            messages.append({"type": "text", "text": "\n\n".join(current_chunks)})
+            current_chunks = [block]
+            current_len = len(block)
+        else:
+            current_chunks.append(block)
+            current_len += block_len
+    if current_chunks:
+        messages.append({"type": "text", "text": "\n\n".join(current_chunks)})
 
     return messages
 
