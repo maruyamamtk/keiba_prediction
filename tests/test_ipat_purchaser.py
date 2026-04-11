@@ -237,20 +237,20 @@ class TestIpatPurchaserPurchaseBet:
 class TestDryRunFlag:
     """PurchaseDailyRequest の dry_run フラグに関するテスト"""
 
-    def test_dry_run_default_is_true(self):
-        """dry_run のデフォルト値が True（安全側）であること"""
+    def test_dry_run_default_is_false(self):
+        """dry_run のデフォルト値が False（本番購入モード）であること"""
         import sys
         sys.path.insert(0, str(ROOT_DIR))
         # app.py の PurchaseDailyRequest を直接検査
         from pydantic import BaseModel
         from typing import Optional
 
-        # デフォルト値が True になっていることをフィールド定義で確認
+        # デフォルト値が False になっていることをフィールド定義で確認
         # （実際のリクエストオブジェクトを生成して確認）
         import importlib
         app_module = importlib.import_module("src.automation.api.app")
         req = app_module.PurchaseDailyRequest()
-        assert req.dry_run is True
+        assert req.dry_run is False
 
     def test_dry_run_can_be_set_false(self):
         """dry_run=False を明示的に指定できること"""

@@ -1226,8 +1226,8 @@ class PurchaseDailyRequest(BaseModel):
         description="対象日付（YYYY-MM-DD形式、省略時は当日）",
     )
     dry_run: bool = Field(
-        default=True,
-        description="Trueの場合、実際の購入をせず推奨馬券内容をLINE通知のみ行う（デフォルト: True）",
+        default=False,
+        description="Trueの場合、実際の購入をせず推奨馬券内容をLINE通知のみ行う（デフォルト: False）",
     )
 
 
