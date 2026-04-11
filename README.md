@@ -124,75 +124,26 @@ python3 -m src.ml.features.feature_pipeline --start-date 2024-01-01 --end-date 2
 ### 5. モデル学習・推論
 
 ```bash
-# モデル学習（GCSアップロードなし）
-python3 -m src.models.train --project-id <PROJECT_ID> --skip-gcs-upload --output-dir ./models
-
-# モデル学習（GCSアップロードあり）
+# モデル学習
 python3 -m src.models.train --project-id <PROJECT_ID>
 
-# Optunaによるハイパーパラメータチューニング
-python3 -m src.models.train --project-id <PROJECT_ID> --tune --n-trials 50
-
-# チューニング（タイムアウト付き）
-python3 -m src.models.train --project-id <PROJECT_ID> --tune --tune-timeout 3600
-
 # 推論実行（今週の土日を自動で対象とする）
-# --model-path にはローカルパスまたは gs:// URI を指定可能
-python3 -m src.models.predict --project-id <PROJECT_ID> --model-path ./models/lgbm_ranker_20260215.txt
-
-# GCS上のモデルを直接指定（自動ダウンロードされる）
-python3 -m src.models.predict --project-id <PROJECT_ID> --model-path gs://<PROJECT_ID>-keiba-models/lgbm_ranker_20260215.txt
-
-# 推論結果をCSV保存
-python3 -m src.models.predict --project-id <PROJECT_ID> --model-path ./models/lgbm_ranker_20260215.txt --output-csv predictions.csv
-
-# 特定の1日を指定して推論
-python3 -m src.models.predict --project-id <PROJECT_ID> --model-path ./models/lgbm_ranker_20260215.txt \
-  --target-dates 2026-01-10
-
-# 複数の任意日付を指定して推論
-python3 -m src.models.predict --project-id <PROJECT_ID> --model-path ./models/lgbm_ranker_20260215.txt \
-  --target-dates 2026-01-10 2026-01-11 2026-01-12
+python3 -m src.models.predict --project-id <PROJECT_ID> --model-path ./models/lgbm_ranker.txt
 ```
+
+詳細なオプションは [src/models/README.md](./src/models/README.md) を参照してください。
 
 ### 6. バックテスト
 
 ```bash
-# 基本的なバックテスト実行
 python scripts/run_backtest.py \
     --project-id <PROJECT_ID> \
-    --model-path src/models/lgbm_ranker_20260217.txt \
+    --model-path <MODEL_PATH> \
     --start-date 2023-01-01 \
     --end-date 2023-12-31
-
-# オプション付き（Kelly係数・閾値・出力先を指定）
-python scripts/run_backtest.py \
-    --project-id <PROJECT_ID> \
-    --model-path src/models/lgbm_ranker_20260217.txt \
-    --start-date 2023-01-01 \
-    --end-date 2023-12-31 \
-    --initial-capital 100000 \
-    --kelly-fraction 0.25 \
-    --threshold 1.2 \
-    --output-csv results/backtest_2023.csv \
-    --output-chart results/capital_curve.png \
-    --save-to-bq
 ```
 
-**主なオプション:**
-
-| オプション | デフォルト | 説明 |
-|-----------|-----------|------|
-| `--project-id` | 必須 | GCPプロジェクトID |
-| `--model-path` | 必須 | モデルファイルパス |
-| `--start-date` | 必須 | バックテスト開始日 (YYYY-MM-DD) |
-| `--end-date` | 必須 | バックテスト終了日 (YYYY-MM-DD) |
-| `--initial-capital` | 100000 | 初期資金（円） |
-| `--kelly-fraction` | 0.25 | Fractional Kellyの係数 |
-| `--threshold` | 1.2 | 期待回収率フィルタ閾値 |
-| `--output-csv` | なし | 結果CSV保存先パス |
-| `--output-chart` | なし | 資金推移グラフ保存先パス |
-| `--save-to-bq` | False | BigQuery保存フラグ |
+詳細なオプションは [src/backtest/README.md](./src/backtest/README.md) を参照してください。
 
 ### 7. 投資戦略策定
 
@@ -202,63 +153,22 @@ python scripts/run_backtest.py \
 **この手順を一度実行するだけで、以降の日次自動実行（手順B）が正しいパラメータで動作する。**
 
 ```bash
-# パラメータ最適化を実行（strategy_config.yamlを更新）
 python3 scripts/run_strategy_optimization.py \
     --project-id <PROJECT_ID> \
     --model-path gs://<PROJECT_ID>-keiba-models/lgbm_ranker/20260301/model.txt \
     --start-date 2024-01-01 \
     --end-date 2024-12-31
-
-# 詳細オプション指定
-python3 scripts/run_strategy_optimization.py \
-    --project-id <PROJECT_ID> \
-    --model-path gs://<PROJECT_ID>-keiba-models/lgbm_ranker/20260301/model.txt \
-    --start-date 2024-01-01 \
-    --end-date 2024-12-31 \
-    --metric recovery_rate \
-    --output-csv results/optimization_2024.csv \
-    --top-n 10
 ```
-
-**主なオプション:**
-
-| オプション | デフォルト | 説明 |
-|-----------|-----------|------|
-| `--project-id` | 必須 | GCPプロジェクトID |
-| `--model-path` | 必須 | モデルファイルパス（ローカルまたは gs://） |
-| `--start-date` | 必須 | 最適化期間開始日 (YYYY-MM-DD) |
-| `--end-date` | 必須 | 最適化期間終了日 (YYYY-MM-DD) |
-| `--metric` | recovery_rate | 最適化指標（recovery_rate / hit_rate / sharpe_ratio / max_drawdown） |
-| `--initial-capital` | 100000 | 初期資金（円） |
-| `--r-range` | `0.5 1.0 1.5 2.0` | `prob_weight_r` の探索値（複数指定可） |
-| `--output-csv` | なし | 全グリッドサーチ結果のCSV保存先 |
-| `--top-n` | 10 | 上位N件を表示 |
 
 #### B. 日次投資戦略策定（手動確認用 / Cloud Schedulerで自動実行）
 
 `config/strategy_config.yaml` のパラメータを読み込んで投資判断を実行する。
 `POST /api/v1/strategy/daily` から毎朝 AM 8:30 に Cloud Scheduler で自動実行される（`dry_run=true` のためBQ保存なし）。
-スクリプトを手動実行して結果を確認することもできる。
 
 ```bash
-# 当日分の投資戦略を実行（BQ保存あり）
-python3 scripts/run_strategy.py --project-id <PROJECT_ID>
-
-# 特定日を指定
-python3 scripts/run_strategy.py --project-id <PROJECT_ID> --target-date 2026-03-07
-
-# BQ保存をスキップして結果を確認のみ（dry-run）
+# 当日分（dry-runで結果確認）
 python3 scripts/run_strategy.py --project-id <PROJECT_ID> --dry-run
 ```
-
-**主なオプション:**
-
-| オプション | デフォルト | 説明 |
-|-----------|-----------|------|
-| `--project-id` | 必須 | GCPプロジェクトID |
-| `--target-date` | 当日 | 対象日（YYYY-MM-DD） |
-| `--dry-run` | False | BQ保存をスキップして結果表示のみ |
-| `--initial-capital` | 100000 | 初期資金（円） |
 
 > **前提条件**: `predictions.daily_predictions`（予測）と `predictions.daily_odds`（オッズ）に当日データが存在すること。
 
@@ -266,12 +176,11 @@ python3 scripts/run_strategy.py --project-id <PROJECT_ID> --dry-run
 
 ```bash
 python3 scripts/create_investment_decisions_table.py --project-id <PROJECT_ID>
-
-# スキーマ変更後に再作成する場合（Issue #161: horse_number → horse_numbers）
-python3 scripts/create_investment_decisions_table.py --project-id <PROJECT_ID> --recreate
 ```
 
 > **スキーマ注意（Issue #161）**: `horse_numbers` カラムは STRING 型（カンマ区切り）です。単勝/複勝は `"3"`、ワイド/馬連は `"1,3"`、三連複は `"1,3,7"` のように格納します。
+
+詳細なオプションは [src/backtest/README.md](./src/backtest/README.md) を参照してください。
 
 ### 8. Webダッシュボード閲覧
 
@@ -326,41 +235,7 @@ GCP_PROJECT_ID=your-project-id streamlit run src/dashboard/app.py
 学習済みモデルを使って指定期間の投資シミュレーションを行います。
 Kelly基準による賭け金計算・期待回収率フィルタを適用し、回収率・的中率・最大ドローダウン等を評価します。
 
-```bash
-# 基本的なバックテスト実行
-python scripts/run_backtest.py \
-    --project-id <PROJECT_ID> \
-    --model-path src/models/lgbm_ranker_20260217.txt \
-    --start-date 2023-01-01 \
-    --end-date 2023-12-31
-
-# 詳細オプション指定
-python scripts/run_backtest.py \
-    --project-id <PROJECT_ID> \
-    --model-path src/models/lgbm_ranker_20260217.txt \
-    --start-date 2023-01-01 \
-    --end-date 2023-12-31 \
-    --initial-capital 100000 \
-    --kelly-fraction 0.25 \
-    --threshold 1.2 \
-    --output-csv results/backtest_2023.csv \
-    --output-chart results/capital_curve.png \
-    --save-to-bq
-```
-
-| オプション | デフォルト | 説明 |
-|-----------|-----------|------|
-| `--project-id` | 必須 | GCPプロジェクトID |
-| `--model-path` | 必須 | モデルファイルパス（ローカル） |
-| `--start-date` | 必須 | バックテスト開始日 (YYYY-MM-DD) |
-| `--end-date` | 必須 | バックテスト終了日 (YYYY-MM-DD) |
-| `--initial-capital` | 100000 | 初期資金（円） |
-| `--kelly-fraction` | 0.25 | Fractional Kellyの係数 |
-| `--threshold` | 1.2 | 期待回収率フィルタ閾値 |
-| `--budget-per-race` | 3000 | 1レースあたり固定予算（円） |
-| `--output-csv` | なし | 賭け記録CSV保存先パス |
-| `--output-chart` | なし | 資金推移グラフ保存先パス |
-| `--save-to-bq` | False | `backtests.backtest_results` への保存フラグ |
+詳細は [src/backtest/README.md](./src/backtest/README.md) または `python scripts/run_backtest.py --help` を参照してください。
 
 ---
 
@@ -370,95 +245,36 @@ python scripts/run_backtest.py \
 Markdownレポートを `docs/model_evaluation_report.md` に出力します。
 
 ```bash
-# ローカルモデルを使用
 python scripts/generate_evaluation_report.py \
-    --model-path src/models/lgbm_ranker_20260217.txt \
+    --model-path src/models/lgbm_ranker.txt \
     --project-id <PROJECT_ID>
-
-# GCS上のモデルを使用
-python scripts/generate_evaluation_report.py \
-    --gcs-model-path gs://<PROJECT_ID>-keiba-models/lgbm_ranker/20260217/lgbm_ranker_20260217.txt \
-    --project-id <PROJECT_ID>
-
-# BigQueryへの接続なしでローカルCSVを使用
-python scripts/generate_evaluation_report.py \
-    --model-path src/models/lgbm_ranker_20260217.txt \
-    --local-data-path /path/to/training_data.csv
 ```
 
-| オプション | デフォルト | 説明 |
-|-----------|-----------|------|
-| `--model-path` | なし | ローカルモデルファイルパス (.txt) |
-| `--gcs-model-path` | なし | GCSモデルURI (gs://...) |
-| `--project-id` | 環境変数 | GCPプロジェクトID |
-| `--local-data-path` | なし | ローカルCSVデータパス（BQ接続をスキップ） |
-| `--output-report` | `docs/model_evaluation_report.md` | 出力レポートパス |
-| `--validation-months` | 6 | 検証期間（月数） |
-| `--test-months` | 0 | テスト期間（月数、0=スキップ） |
-| `--top-n-features` | 20 | 特徴量重要度表示数 |
-| `--skip-monthly-plot` | False | 月次推移グラフの生成をスキップ |
+詳細オプション: `python scripts/generate_evaluation_report.py --help`
 
 ---
 
 ### `scripts/generate_features.py` — 特徴量生成
 
 指定期間のレースに対して特徴量パイプラインを実行し、`features.training_data` テーブルに保存します。
-並列処理・バッチ処理に対応し、エラー時のリトライも行います。
 
 ```bash
-# 1ヶ月分の特徴量を生成
 python scripts/generate_features.py \
     --start-date 2024-01-01 \
-    --end-date 2024-01-31
-
-# 並列処理ワーカー数を指定（大量データ向け）
-python scripts/generate_features.py \
-    --start-date 2024-01-01 \
-    --end-date 2024-12-31 \
-    --max-workers 8
-
-# ドライラン（処理対象レース数の確認のみ）
-python scripts/generate_features.py \
-    --start-date 2024-01-01 \
-    --end-date 2024-01-31 \
-    --dry-run
+    --end-date 2024-12-31
 ```
 
-| オプション | デフォルト | 説明 |
-|-----------|-----------|------|
-| `--start-date` | 必須 | 開始日 (YYYY-MM-DD) |
-| `--end-date` | 必須 | 終了日 (YYYY-MM-DD) |
-| `--project-id` | 環境変数 | GCPプロジェクトID |
-| `--max-workers` | 4 | 並列処理のワーカー数 |
-| `--batch-size` | 100 | BigQueryへの一括保存レース数 |
-| `--no-parallel` | False | 並列処理を無効化（デバッグ用） |
-| `--max-retries` | 3 | エラー時の最大リトライ回数 |
-| `--dry-run` | False | 処理対象確認のみ（保存しない） |
-| `--log-file` | なし | ログファイルパス |
+詳細オプション: `python scripts/generate_features.py --help`
 
 ---
 
 ### `scripts/diagnose_bq_load.py` — BQロード状態診断
 
 BigQueryテーブルの存在確認・レコード数、GCSファイル数、`raw.load_history` のロード成否を一括診断します。
-データロードが正常に行われているか確認するときに使います。
 
 ```bash
-# 基本診断
-python3 scripts/diagnose_bq_load.py
-
-# 失敗ファイルのエラー詳細も表示
 python3 scripts/diagnose_bq_load.py --show-errors
-
-# 特定テーブルのみ診断
-python3 scripts/diagnose_bq_load.py --table race_results --show-errors
 ```
-
-| オプション | デフォルト | 説明 |
-|-----------|-----------|------|
-| `--project-id` | 環境変数 | GCPプロジェクトID |
-| `--show-errors` | False | 失敗ファイルの詳細エラーを表示 |
-| `--table` | なし | 診断対象テーブルを1つに限定 |
 
 ---
 
@@ -468,31 +284,10 @@ GCS上の既存ファイルを指定データタイプでフィルタしてBigQu
 Cloud Functionはオブジェクト作成時にのみトリガーされるため、既存ファイルの手動ロードに使います。
 
 ```bash
-# SEC（レース結果）を全件再ロード
-python scripts/reload_gcs_to_bq.py \
-    --data-type SEC \
-    --prefix Sec/
-
-# ドライラン（対象ファイルの確認のみ）
-python scripts/reload_gcs_to_bq.py \
-    --data-type BAA \
-    --prefix Baa/ \
-    --dry-run
-
-# 処理件数を制限して試す
-python scripts/reload_gcs_to_bq.py \
-    --data-type KYF \
-    --prefix Kyf/ \
-    --limit 10
+python scripts/reload_gcs_to_bq.py --data-type SEC --prefix Sec/
 ```
 
-| オプション | デフォルト | 説明 |
-|-----------|-----------|------|
-| `--data-type` | 必須 | データタイプ (BAA, SEC, KYF, UKC 等) |
-| `--prefix` | `""` | GCS上のプレフィックス (例: `Sec/`) |
-| `--project-id` | 環境変数 | GCPプロジェクトID |
-| `--limit` | 0 (無制限) | 処理ファイル数上限 |
-| `--dry-run` | False | 対象ファイル一覧の表示のみ |
+詳細オプション: `python scripts/reload_gcs_to_bq.py --help`
 
 ---
 
@@ -555,19 +350,9 @@ python3 scripts/create_raw_combo_odds_table.py --project-id <PROJECT_ID>
 
 ```bash
 python3 scripts/validate_odds_consistency.py --project-id <PROJECT_ID>
-
-# 期間を指定して検証
-python3 scripts/validate_odds_consistency.py \
-    --project-id <PROJECT_ID> \
-    --start-date 2026-01-01 \
-    --end-date 2026-03-01
 ```
 
-| オプション | デフォルト | 説明 |
-|-----------|-----------|------|
-| `--project-id` | 環境変数 | GCPプロジェクトID |
-| `--start-date` | なし | 検証開始日 (YYYY-MM-DD) |
-| `--end-date` | なし | 検証終了日 (YYYY-MM-DD) |
+詳細オプション: `python3 scripts/validate_odds_consistency.py --help`
 
 ---
 
@@ -579,45 +364,16 @@ BigQueryに保存します。途中で停止しても再実行で続きから再
 JRDB race_id（8文字）を netkeiba race_id（12桁）に直接変換するため、BQ照会不要で高速です。
 
 ```bash
-# ドライラン（対象件数と推定時間の確認のみ）
+# 単複・コンボオッズを一括取得
 python3 scripts/scrape_historical_odds.py \
     --project-id <PROJECT_ID> \
     --start-date 2016-01-01 \
-    --mode all \
-    --dry-run
-
-# 単複オッズのみ取得（predictions.daily_odds に保存）
-python3 scripts/scrape_historical_odds.py \
-    --project-id <PROJECT_ID> \
-    --start-date 2016-01-01 \
-    --mode win_place
-
-# 組み合わせ馬券オッズのみ取得（predictions.daily_odds_combo に保存）
-python3 scripts/scrape_historical_odds.py \
-    --project-id <PROJECT_ID> \
-    --start-date 2016-01-01 \
-    --mode combo \
-    --ticket-types b4 b5 b7
-
-# バックグラウンド実行（長時間処理）
-nohup python3 scripts/scrape_historical_odds.py \
-    --project-id <PROJECT_ID> \
-    --start-date 2016-01-01 \
-    --mode win_place > /tmp/scrape.log 2>&1 &
+    --mode all
 ```
 
-| オプション | デフォルト | 説明 |
-|-----------|-----------|------|
-| `--project-id` | 必須 | GCPプロジェクトID |
-| `--start-date` | `2016-01-01` | 取得開始日 (YYYY-MM-DD) |
-| `--end-date` | 本日 | 取得終了日 (YYYY-MM-DD) |
-| `--mode` | `all` | 取得モード（`win_place` / `combo` / `all`） |
-| `--ticket-types` | `b4 b5 b7` | comboモードで取得する馬券種（b4=馬連 b5=ワイド b6=馬単 b7=三連複） |
-| `--sleep-sec` | `2.0` | ページ間スリープ秒数 |
-| `--batch-size` | `50` | BQへのバッチ保存間隔（レース数） |
-| `--dry-run` | False | 対象件数・推定時間の確認のみ（スクレイプなし） |
-
 > **推定時間**: 単複のみ（約25,000レース）で約28時間、コンボ3種込みで約83時間。長時間処理のため `nohup` や `tmux` での実行を推奨。
+
+詳細オプション: `python3 scripts/scrape_historical_odds.py --help`
 
 ---
 
@@ -943,134 +699,15 @@ python3 -m src.automation.data.load_to_bq --skip-loaded
 
 #### 2. FastAPI経由（ローカル/Cloud Run共通）
 
-**APIサーバーの起動（ローカル）**
-
 ```bash
 # 開発環境でサーバー起動
 uvicorn src.automation.api.app:app --reload --port 8080
-```
 
-**日次ロード**
-
-```bash
-# 同期ロード（処理完了まで待機）
-curl -X POST http://localhost:8080/api/v1/load/daily \
-  -H "Content-Type: application/json" \
-  -d '{"target_date": "2024-01-15"}'
-
-# 非同期ロード（バックグラウンド処理）
-curl -X POST http://localhost:8080/api/v1/load/daily/async \
-  -H "Content-Type: application/json" \
-  -d '{"target_date": "2024-01-15"}'
-```
-
-**全件ロード**
-
-```bash
-# 非同期実行（推奨）
-curl -X POST http://localhost:8080/api/v1/load/full \
-  -H "Content-Type: application/json" \
-  -d '{"start_date": "2020-01-01", "end_date": "2024-12-31"}'
-
-# 同期実行（テスト用）
-curl -X POST http://localhost:8080/api/v1/load/full/sync \
-  -H "Content-Type: application/json" \
-  -d '{"start_date": "2020-01-01", "end_date": "2024-12-31"}'
-```
-
-**特徴量生成**
-
-```bash
-# 同期実行
-curl -X POST http://localhost:8080/api/v1/features/generate \
-  -H "Content-Type: application/json" \
-  -d '{"start_date": "2024-01-01", "end_date": "2024-12-31"}'
-
-# 非同期実行
-curl -X POST http://localhost:8080/api/v1/features/generate/async \
-  -H "Content-Type: application/json" \
-  -d '{"start_date": "2024-01-01", "end_date": "2024-12-31"}'
-```
-
-**日次予測（Cloud Scheduler用）**
-
-`model_path` を省略すると GCS から最新モデルを自動取得します。
-Cloud Scheduler は空のボディ `{}` を送信するため、明示的な指定は不要です。
-
-```bash
-# model_path 省略（最新モデルを自動取得）
-curl -X POST http://localhost:8080/api/v1/predict/daily \
-  -H "Content-Type: application/json" \
-  -d '{}'
-
-# model_path を明示的に指定する場合
-curl -X POST http://localhost:8080/api/v1/predict/daily \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model_path": "gs://my-project-keiba-models/models/20260201/lgbm_ranker.txt",
-    "save_to_bq": true,
-    "save_to_gcs": true
-  }'
-```
-
-**レスポンス例（日次予測）**
-
-```json
-{
-  "status": "success",
-  "target_dates": ["2026-03-07", "2026-03-08"],
-  "num_races": 24,
-  "num_horses": 384,
-  "saved_to_bq": true,
-  "saved_rows": 384,
-  "saved_to_gcs": true,
-  "gcs_uri": "gs://my-project-keiba-predictions/2026-03-07/predictions.csv"
-}
-```
-
-**IPAT自動馬券購入（Cloud Scheduler用）**
-
-`dry_run` のデフォルトは `false`（本番購入モード）です。`dry_run=true` にするとIPATログイン・購入をスキップし、推奨馬券のLINE通知だけ行います。
-
-```bash
-# dry_run モード（IPATログイン・購入なし。推奨馬券をLINE通知のみ）
-curl -X POST http://localhost:8080/api/v1/purchase/daily \
-  -H "Content-Type: application/json" \
-  -d '{"target_date": "2026-04-05", "dry_run": true}'
-
-# 本番モード（実際にIPATで馬券購入）
-curl -X POST http://localhost:8080/api/v1/purchase/daily \
-  -H "Content-Type: application/json" \
-  -d '{"target_date": "2026-04-05", "dry_run": false}'
-```
-
-**レスポンス例（IPAT自動購入）**
-
-```json
-{
-  "status": "success",
-  "execution_date": "2026-04-05",
-  "dry_run": true,
-  "purchased_races": 0,
-  "total_amount": 0,
-  "results": [...]
-}
-```
-
-> **本番切り替え**: Cloud Schedulerジョブのリクエストボディを `{"dry_run": false}` に更新することで本番購入に切り替えできます。
->
-> ```bash
-> gcloud scheduler jobs update http race-day-purchase \
->   --location=asia-northeast1 \
->   --message-body='{"dry_run": false}' \
->   --project=<PROJECT_ID>
-> ```
-
-**ヘルスチェック**
-
-```bash
+# ヘルスチェック
 curl http://localhost:8080/health
 ```
+
+利用可能なエンドポイントの詳細は [APIエンドポイント](#apiエンドポイント) または `GET /docs` (Swagger UI) を参照してください。
 
 #### 3. Cloud Runデプロイと自動実行
 
@@ -1127,9 +764,8 @@ gcloud scheduler jobs run daily-data-pipeline --location=asia-northeast1
 | `horse_master` | KSA (馬マスター) | 馬基本情報 | ~21,500 |
 | `venue_info` | KAB (開催情報) | 馬場状態・天候 | ~418 |
 | `load_history` | (管理用) | ロード履歴管理 | ~3,350 |
-| `pedigree` | 血統データ | 血統情報 | 0 (未実装) |
-| `odds` | OZ (基準オッズ) | 単勝・複勝オッズ（JRDBコード表） | 実装済み |
-| `combo_odds` | OW/OT/OZ | JRDBコンボ基準オッズ（ワイド/三連複/馬連） | 実装済み（Issue #140） |
+| `odds` | OZ (基準オッズ) | 単勝・複勝オッズ（JRDBコード表） | - |
+| `combo_odds` | OW/OT/OZ | JRDBコンボ基準オッズ（ワイド/三連複/馬連） | - |
 
 詳細なスキーマは [SCHEMA.md](./SCHEMA.md) および `config/bq_schema_*.json` を参照してください。
 
