@@ -494,23 +494,4 @@ Cloud Run または Cloud Function のデプロイメント完了を宣言する
 
 ---
 
-## 変更履歴
-
-| 日付 | バージョン | 変更内容 | 担当者 |
-|------|-----------|----------|--------|
-| 2026-01-18 | 1.0.0 | 初版作成 | Claude |
-| 2026-02-10 | 2.0.0 | 実装状況を反映: データパイプライン・特徴量パイプライン完了、ディレクトリ構成・BigQueryスキーマ・実装計画を現状に合わせて全面更新 | Claude |
-| 2026-02-14 | 3.0.0 | README.mdとの重複を除外し、設計仕様書として再構成。実装済み機能の手順詳細はREADME.mdへ移行。Issue #59（特徴量生成API）とIssue #71（デプロイスクリプト整備）の内容を反映 | Claude |
-| 2026-02-17 | 3.1.0 | Issue #85（LambdaRankラベル二値化）・Issue #86（Optunaハイパーパラメータチューニング）の実装を反映。Model Training Layer実装済み、評価指標にAUC追加、KPIにAUC追加 | Claude |
-| 2026-02-22 | 3.2.0 | Issue #17（バックテストシミュレーター）の実装を反映。Backtest Layer実装済みに更新、セクション6を実装済みに変更、実装ファイル一覧を追記 | Claude |
-| 2026-03-01 | 3.3.0 | Issue #116（ロード履歴スキップロジック改善）・Issue #117（日次予測パイプライン完成）の実装を反映。Prediction & Operation Layer一部実装済みに更新、predictionsバケット/データセット実装済みに更新、race-day-predictのAPI実装済みに更新 | Claude |
-| 2026-03-07 | 3.4.0 | Issue #131（netkeibaリアルタイムオッズスクレイパー）の実装を反映。netkeibaスクレイパーLayer追加、predictions.daily_odds追加、section 7.2を実装済みに更新、section 9.2をLINE Messaging API設計に更新、strategy.py/strategy_optimizer.pyをsection 6.1に追記 | Claude |
-| 2026-03-10 | 3.5.0 | Issue #25（LINE Messaging API Webhook Bot）の実装を反映。Prediction & Operation Layer通知システムを実装済みに更新、race-day-notifyのAPI実装済みに更新、section 7.2.1のLINE通知を実装済みに更新、section 9の見出しを実装済みに変更、section 9.2を実装済み内容に書き換え（実装ファイル・環境変数・APIエンドポイント詳細追記） | Claude |
-| 2026-03-20 | 3.6.0 | Issue #165（prob_weight_r が期待値フィルタに影響しないことを検証するテスト2件を test_backtest_strategy.py に追加）・Issue #166（build_race_df の win_odds JOIN 動作と place_odds_min→odds リネームを検証する tests/test_run_strategy.py を新規作成、6件）・Issue #167（netkeiba_scraper.py の COMBO_TICKET_TYPESマッピング修正: 旧b5=umatan/b6=sanrenpuku/b7=wide → 新b5=wide/b6=umatan/b7=sanrenpuku。is_trio の b6→b7 修正。scrape_historical_odds.py デフォルト値 b4 b7 b6 → b4 b5 b7 に修正）・Issue #168（1レースあたり投資予算を capital×max_bet_ratio 方式から budget_per_race=3000円固定方式に変更。section 6.2.2 投資ルール更新）の実装を反映 | Claude |
-| 2026-04-05 | 3.7.0 | Issue #223（Python 3.9 → 3.13 アップグレード）: Dockerfile を python:3.13-slim に更新、requirements.txt を Python 3.13 対応バージョンに更新（numpy 2.x 等）、全ソースファイルの型ヒントを Optional/Dict/List → X\|None/dict/list にモダナイズ、from __future__ import annotations を全廃、pyproject.toml/.python-version 追加。環境情報を Python 3.13 に更新 | Claude |
-| 2026-04-11 | 3.8.0 | Issue #229（race-day-notify 廃止）: `POST /api/v1/line/notify/daily` エンドポイント・`LineNotifyDailyResponse` モデルを削除。`line_webhook.py` の `send_daily_push_notification` ほか関連関数を削除。`setup_scheduler.sh` から `race-day-notify` ジョブ設定を削除。`tests/test_line_notify_daily.py` を削除。Cloud Scheduler の `race-day-notify` を廃止済みに更新 | Claude |
-| 2026-04-11 | 3.9.0 | Issue #229（race-day-notify廃止）・Issue #230（IPAT SP版ログイン修正）・Issue #231（発走直前investment_decisions上書き、strategy/daily dry_run=Trueデフォルト化）の実装を反映。SCHEDULE.md新規作成、README.mdのPython版・スケジューラ一覧・Phase5状況・APIエンドポイント表を更新、infrastructure/README.mdのスケジューラセクションを6ジョブに更新 | Claude |
-
----
-
 **End of Document**
