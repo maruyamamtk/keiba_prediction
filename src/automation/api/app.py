@@ -36,6 +36,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+
+def _today_jst() -> datetime.date:
+    """JSTの今日の日付を返す（Cloud RunはUTCで動くため date.today() では日付がズレる）"""
+    return datetime.datetime.now(ZoneInfo("Asia/Tokyo")).date()
+
+
 # FastAPIアプリケーション
 app = FastAPI(
     title="JRDB Pipeline API",
@@ -366,7 +372,7 @@ async def load_daily_async(
     Returns:
         受付結果
     """
-    target_date = request.target_date or date.today().strftime("%Y-%m-%d")
+    target_date = request.target_date or _today_jst().strftime("%Y-%m-%d")
     logger.info(f"非同期日次ロードリクエスト受付: target_date={target_date}")
 
     def run_pipeline():
@@ -715,7 +721,7 @@ def _run_predict(
         config = load_config()
         result_df = predict_pipeline(
             project_id=project_id,
-            execution_date=datetime.date.today(),
+            execution_date=_today_jst(),
             config=config,
             model_path=local_model_path,
             target_dates=target_dates,
@@ -782,7 +788,7 @@ async def predict_daily(request: PredictDailyRequest):
         from src.models.train import compute_week_boundaries
 
         # 翌日を基準に今週の土日を算出
-        tomorrow = datetime.date.today() + datetime.timedelta(days=1)
+        tomorrow = _today_jst() + datetime.timedelta(days=1)
         saturday, sunday = compute_week_boundaries(tomorrow)
         target_dates = [saturday, sunday]
 
@@ -960,7 +966,7 @@ async def scrape_odds(request: OddsScrapeRequest, background_tasks: BackgroundTa
     Returns:
         スクレイプ結果（組み合わせオッズはバックグラウンドで処理継続）
     """
-    execution_date_str = request.execution_date or date.today().isoformat()
+    execution_date_str = request.execution_date or _today_jst().isoformat()
     execution_date = datetime.date.fromisoformat(execution_date_str)
 
     logger.info(f"オッズスクレイプリクエスト受信: execution_date={execution_date_str}")
@@ -1043,7 +1049,7 @@ async def run_strategy_daily(request: StrategyDailyRequest):
     Returns:
         投資判断結果
     """
-    execution_date_str = request.execution_date or date.today().isoformat()
+    execution_date_str = request.execution_date or _today_jst().isoformat()
     execution_date = datetime.date.fromisoformat(execution_date_str)
 
     logger.info(
@@ -1115,7 +1121,7 @@ async def line_notify_daily(
     target_date = (
         datetime.date.fromisoformat(execution_date)
         if execution_date
-        else datetime.date.today()
+        else _today_jst()
     )
     execution_date_str = target_date.isoformat()
 
@@ -1273,7 +1279,7 @@ async def purchase_daily(request: PurchaseDailyRequest):
     target_date = (
         datetime.date.fromisoformat(request.target_date)
         if request.target_date
-        else datetime.date.today()
+        else _today_jst()
     )
     execution_date_str = target_date.isoformat()
     dry_run = request.dry_run
@@ -1611,7 +1617,7 @@ async def retrain_model(request: RetrainRequest):
     execution_date = (
         datetime.date.fromisoformat(request.execution_date)
         if request.execution_date
-        else datetime.date.today()
+        else _today_jst()
     )
     logger.info(
         f"モデル再学習リクエスト受信: execution_date={execution_date}, "
@@ -1657,7 +1663,7 @@ async def retrain_model_async(request: RetrainRequest, background_tasks: Backgro
     execution_date = (
         datetime.date.fromisoformat(request.execution_date)
         if request.execution_date
-        else datetime.date.today()
+        else _today_jst()
     )
     logger.info(
         f"非同期モデル再学習リクエスト受付: execution_date={execution_date}"
