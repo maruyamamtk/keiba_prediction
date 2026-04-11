@@ -20,7 +20,7 @@ from google.cloud import bigquery
 
 logger = logging.getLogger(__name__)
 
-IPAT_BASE_URL = "https://www.ipat.jra.go.jp/"
+IPAT_BASE_URL = "https://www.ipat.jra.go.jp/sp/index.cgi"
 
 # 購入1件あたりのタイムアウト（秒）
 PURCHASE_TIMEOUT_MS = 30_000
@@ -108,16 +108,16 @@ class IpatPurchaser:
 
         try:
             logger.info("JRA IPAT ログイン開始")
-            await self._page.goto(IPAT_BASE_URL, timeout=PURCHASE_TIMEOUT_MS)
+            await self._page.goto(IPAT_BASE_URL, timeout=PURCHASE_TIMEOUT_MS, wait_until="domcontentloaded")
 
-            # ログインフォームへの入力
-            await self._page.fill('input[name="inetid"]', self.member_id, timeout=PURCHASE_TIMEOUT_MS)
-            await self._page.fill('input[name="umid"]', self.pin, timeout=PURCHASE_TIMEOUT_MS)
-            await self._page.fill('input[name="pat"]', self.pat_number, timeout=PURCHASE_TIMEOUT_MS)
+            # ログインフォームへの入力（SP版: id属性で識別）
+            await self._page.fill('#userid', self.member_id, timeout=PURCHASE_TIMEOUT_MS)
+            await self._page.fill('#password', self.pin, timeout=PURCHASE_TIMEOUT_MS)
+            await self._page.fill('#pars', self.pat_number, timeout=PURCHASE_TIMEOUT_MS)
 
             # ログインボタンをクリック
             await self._page.click('input[type="submit"]', timeout=PURCHASE_TIMEOUT_MS)
-            await self._page.wait_for_load_state("networkidle", timeout=PURCHASE_TIMEOUT_MS)
+            await self._page.wait_for_load_state("domcontentloaded", timeout=PURCHASE_TIMEOUT_MS)
 
             # ログイン成功の確認（ログアウトリンクの存在確認）
             logout_link = await self._page.query_selector('a[href*="logout"]')
