@@ -1031,11 +1031,15 @@ async def scrape_odds(request: OddsScrapeRequest, background_tasks: BackgroundTa
 @app.post("/api/v1/strategy/daily", response_model=StrategyDailyResponse)
 async def run_strategy_daily(request: StrategyDailyRequest):
     """
-    日次投資戦略を策定してBigQueryに保存する
+    日次投資戦略を策定する（デフォルトはBQ保存なし）
 
     config/strategy_config.yaml のパラメータを読み込み、当日の予測結果と
     リアルタイムオッズを JOIN して投資判断を実行する。
-    Cloud Schedulerから毎朝AM 9:00に呼び出されることを想定。
+    Cloud Schedulerから毎朝AM 8:30に呼び出されることを想定。
+
+    デフォルト（dry_run=True）では BQ への保存を行わない。
+    BQ への保存は発走直前の _refresh_investment_decisions_for_race() が行う。
+    dry_run=False を明示した場合のみ investment_decisions テーブルへ保存する。
 
     前提条件:
       - predictions.daily_predictions に当日の予測データが存在すること
@@ -1447,9 +1451,12 @@ async def _purchase_pipeline_async(
       2. 現在時刻の5〜10分後に発走するレースを特定
       3. 対象レースが0件なら skipped を返す
       4. [dry_run=False] IPAT ログイン
-      5. 各レースの推奨馬券を取得
-         [dry_run=True]  LINE通知のみ
-         [dry_run=False] 予算チェック → 購入 → 履歴保存
+      5. 各レースについて:
+         5a. 最新オッズで investment_decisions を上書き（_refresh_investment_decisions_for_race）
+             失敗時はフォールバック（既存の investment_decisions を使用）
+         5b. 推奨馬券を取得
+             [dry_run=True]  LINE通知のみ
+             [dry_run=False] 予算チェック → 購入 → 履歴保存
       6. [dry_run=False] ログアウト
     """
     from src.automation.data.ipat_purchaser import (
