@@ -48,11 +48,11 @@
 - モデルファイルのGCS保存・読み込み
 
 #### Backtest Layer ✅ 実装済み
-- Fractional Kelly基準による賭け金計算
 - 期待回収率フィルタ（win_place_prob × odds > threshold）
 - 評価指標: 回収率・的中率・最大ドローダウン・シャープレシオ
 - BigQuery（features.training_data, raw.race_results, raw.payouts）からの期間指定データ取得
 - 結果のCSV保存・BigQuery保存・グラフ出力
+- `select_bets_for_race()` を使用（`budget_per_race` 固定・オッズ逆数比率配分・複勝/ワイド/三連複/馬連）← **本番と同じロジック**
 
 #### Prediction & Operation Layer 🔧 一部実装済み
 - 日次予測パイプライン（Cloud Schedulerからの自動推論・BQ/GCS保存） ✅ Issue #117
