@@ -360,9 +360,11 @@ def fetch_recommended_bets(
     rows = list(client.query(query, job_config=job_config).result())
     result = []
     for row in rows:
+        hn_str = str(row["horse_numbers"] or "")
+        horse_numbers = [int(h.strip()) for h in hn_str.split(",") if h.strip()]
         result.append({
             "bet_type": row["bet_type"],
-            "horse_numbers": list(row["horse_numbers"]),
+            "horse_numbers": horse_numbers,
             "bet_amount": int(row["bet_amount"]),
         })
     logger.info(f"race_id={race_id}: 推奨馬券 {len(result)}件取得")
