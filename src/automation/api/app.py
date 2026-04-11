@@ -914,8 +914,8 @@ class StrategyDailyRequest(BaseModel):
         json_schema_extra={"example": "2026-03-07"},
     )
     dry_run: bool = Field(
-        default=False,
-        description="Trueの場合BQ保存をスキップして結果のみ返す",
+        default=True,
+        description="Trueの場合BQ保存をスキップして結果のみ返す（デフォルト: True。BQへの保存は発走直前の上書き処理で行う）",
     )
     initial_capital: float = Field(
         default=100_000.0,
@@ -1287,6 +1287,141 @@ def _run_purchase_pipeline(
     )
 
 
+def _refresh_investment_decisions_for_race(
+    project_id: str,
+    race_id: str,
+    target_date: datetime.date,
+) -> bool:
+    """
+    発走直前に最新オッズで investment_decisions を1レース分上書きする。
+
+    predictions.daily_odds / daily_odds_combo から最新オッズを取得し、
+    select_bets_for_race() で推奨馬券を再計算して predictions.investment_decisions へ
+    MERGE UPSERT する。
+
+    データが取得できない場合は既存の investment_decisions をそのまま使用（フォールバック）。
+
+    Args:
+        project_id: GCP プロジェクト ID
+        race_id: 対象レース ID
+        target_date: 対象日
+
+    Returns:
+        True: 上書き成功, False: フォールバック（既存データ使用）
+    """
+    from google.cloud import bigquery as _bq
+    from scripts.run_strategy import (
+        build_race_df,
+        fetch_combo_odds_for_date,
+        load_strategy_config,
+        save_decisions_to_bq,
+        _build_decision_row,
+    )
+    from src.backtest.strategy import select_bets_for_race
+
+    try:
+        client = _bq.Client(project=project_id)
+
+        # 対象レースの予測データを取得
+        pred_query = f"""
+        SELECT race_id, race_date, horse_id, horse_number, horse_name,
+               venue_code, race_number, win_place_prob, pred_score, rank_in_race
+        FROM `{project_id}.predictions.daily_predictions`
+        WHERE race_date = '{target_date.isoformat()}'
+          AND race_id = '{race_id}'
+        ORDER BY rank_in_race
+        """
+        import pandas as _pd
+        pred_df = client.query(pred_query).to_dataframe()
+
+        if pred_df.empty:
+            logger.warning(f"_refresh: race_id={race_id} の予測データなし → フォールバック")
+            return False
+
+        # 対象レースの単複オッズを取得
+        odds_query = f"""
+        SELECT race_id, horse_number, win_odds, place_odds_min, place_odds_max, scraped_at
+        FROM `{project_id}.predictions.daily_odds`
+        WHERE race_date = '{target_date.isoformat()}'
+          AND race_id = '{race_id}'
+        """
+        odds_df = client.query(odds_query).to_dataframe()
+
+        if odds_df.empty:
+            logger.warning(f"_refresh: race_id={race_id} のオッズデータなし → フォールバック")
+            return False
+
+        # race_df を構築（predictions + odds JOIN）
+        race_df = build_race_df(pred_df, odds_df)
+        race_df = race_df.dropna(subset=["win_place_prob", "odds"])
+        if len(race_df) < 3:
+            logger.warning(f"_refresh: race_id={race_id} の有効データ不足 → フォールバック")
+            return False
+
+        # 組み合わせオッズを取得
+        combo_df = fetch_combo_odds_for_date(client, project_id, [race_id])
+        race_combo_df = combo_df[combo_df["race_id"] == race_id] if not combo_df.empty else _pd.DataFrame()
+
+        # 戦略パラメータを読み込み
+        config = load_strategy_config()
+        p1 = float(config.get("p1", 0.3))
+        expected_return_threshold = float(config.get("expected_return_threshold", 1.2))
+        _legacy_top_n = int(config.get("top_n", 5))
+        top_n_dominant = int(config.get("top_n_dominant", _legacy_top_n))
+        top_n_standard = int(config.get("top_n_standard", _legacy_top_n))
+        budget_per_race = float(config.get("budget_per_race", 3000.0))
+        min_bet_amount = float(config.get("min_bet_amount", 100.0))
+        min_prob_threshold = float(config.get("min_prob_threshold", 0.10))
+        prob_weight_r_dominant = float(config.get("prob_weight_r_dominant", 1.0))
+        prob_weight_r_standard = float(config.get("prob_weight_r_standard", 1.0))
+
+        # 推奨馬券を再計算
+        bets, race_pattern = select_bets_for_race(
+            race_df=race_df,
+            combo_odds_df=race_combo_df if not race_combo_df.empty else None,
+            budget_per_race=budget_per_race,
+            p1=p1,
+            expected_return_threshold=expected_return_threshold,
+            min_bet_amount=min_bet_amount,
+            min_prob_threshold=min_prob_threshold,
+            prob_weight_r_dominant=prob_weight_r_dominant,
+            prob_weight_r_standard=prob_weight_r_standard,
+            top_n_dominant=top_n_dominant,
+            top_n_standard=top_n_standard,
+        )
+
+        # 投資判断 dict を構築して MERGE UPSERT 保存
+        meta_row = race_df.iloc[0]
+        created_at = datetime.datetime.now(datetime.timezone.utc)
+        decisions = [
+            _build_decision_row(
+                race_id=race_id,
+                target_date=target_date,
+                meta_row=meta_row,
+                race_group=race_df,
+                bet=bet,
+                race_pattern_str=race_pattern.pattern,
+                created_at=created_at,
+            )
+            for bet in bets
+            if bet.get("horse_numbers")
+        ]
+
+        save_decisions_to_bq(decisions, project_id)
+        logger.info(
+            f"_refresh: race_id={race_id} の investment_decisions を更新 "
+            f"({len(decisions)}件, パターン={race_pattern.pattern})"
+        )
+        return True
+
+    except Exception as e:
+        logger.warning(
+            f"_refresh: race_id={race_id} の更新失敗 → フォールバック: {e}",
+            exc_info=True,
+        )
+        return False
+
+
 async def _purchase_pipeline_async(
     project_id: str,
     target_date: datetime.date,
@@ -1365,6 +1500,13 @@ async def _purchase_pipeline_async(
             venue_name = race.get("venue_name", "")
             race_number = race.get("race_number", "")
 
+            # 最新オッズで investment_decisions を上書き
+            refreshed = _refresh_investment_decisions_for_race(project_id, race_id, target_date)
+            if refreshed:
+                logger.info(f"[DRY RUN] race_id={race_id}: 最新オッズで investment_decisions を更新済み")
+            else:
+                logger.info(f"[DRY RUN] race_id={race_id}: フォールバック（既存 investment_decisions を使用）")
+
             bets = fetch_recommended_bets(project_id, race_id, target_date)
             if not bets:
                 logger.info(f"[DRY RUN] race_id={race_id}: 推奨馬券なし → スキップ")
@@ -1424,6 +1566,13 @@ async def _purchase_pipeline_async(
             race_id = race["race_id"]
             venue_name = race.get("venue_name", "")
             race_number = race.get("race_number", "")
+
+            # 最新オッズで investment_decisions を上書き
+            refreshed = _refresh_investment_decisions_for_race(project_id, race_id, target_date)
+            if refreshed:
+                logger.info(f"race_id={race_id}: 最新オッズで investment_decisions を更新済み")
+            else:
+                logger.info(f"race_id={race_id}: フォールバック（既存 investment_decisions を使用）")
 
             # 推奨馬券取得
             bets = fetch_recommended_bets(project_id, race_id, target_date)
