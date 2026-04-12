@@ -124,26 +124,55 @@ class TestFetchTargetRaces:
 class TestIpatPurchaserLogin:
     """IpatPurchaser.login() の成功・失敗ケースのテスト"""
 
+    IPAT_BASE_URL = "https://www.ipat.jra.go.jp/sp/index.cgi"
+    IPAT_MENU_URL = "https://www.ipat.jra.go.jp/sp/pw_732_i.cgi"
+
     def _make_purchaser(self) -> IpatPurchaser:
-        p = IpatPurchaser("12345678", "1234", "87654321")
+        p = IpatPurchaser("12345678", "1234", "8765")
         p._page = AsyncMock()
+        # dialog イベントリスナー登録のモック
+        p._page.on = MagicMock()
         return p
 
     def test_login_success(self):
-        """ログインボタンクリック後にログアウトリンクが見つかれば True を返すこと"""
+        """ページが IPAT_BASE_URL 以外に遷移し、エラーなければ True を返すこと"""
         purchaser = self._make_purchaser()
-        purchaser._page.query_selector = AsyncMock(return_value=MagicMock())  # ログアウトリンク found
+        purchaser._page.url = self.IPAT_MENU_URL  # ログイン後に遷移
+        purchaser._page.text_content = AsyncMock(return_value="馬券購入メニュー")
 
         result = run_async(purchaser.login())
 
         assert result is True
         purchaser._page.goto.assert_called_once()
         purchaser._page.fill.assert_called()
+        # SP版ログインボタン（li.btnColor a）がクリックされること
+        purchaser._page.click.assert_called_once_with('li.btnColor a', timeout=30_000)
 
-    def test_login_failure_no_logout_link(self):
-        """ログアウトリンクが見つからない場合は False を返すこと"""
+    def test_login_failure_url_unchanged(self):
+        """ページが IPAT_BASE_URL のまま遷移しなかった場合は False を返すこと"""
         purchaser = self._make_purchaser()
-        purchaser._page.query_selector = AsyncMock(return_value=None)  # ログアウトリンク not found
+        purchaser._page.url = self.IPAT_BASE_URL  # ページ遷移なし
+        purchaser._page.text_content = AsyncMock(return_value="加入者番号を入力してください")
+
+        result = run_async(purchaser.login())
+
+        assert result is False
+
+    def test_login_failure_error_message_detected(self):
+        """ページにエラーキーワードがある場合は False を返すこと"""
+        purchaser = self._make_purchaser()
+        purchaser._page.url = self.IPAT_MENU_URL
+        purchaser._page.text_content = AsyncMock(return_value="暗証番号が違います。再度ご確認ください。")
+
+        result = run_async(purchaser.login())
+
+        assert result is False
+
+    def test_login_failure_member_id_error(self):
+        """加入者番号エラーのメッセージがある場合は False を返すこと"""
+        purchaser = self._make_purchaser()
+        purchaser._page.url = self.IPAT_MENU_URL
+        purchaser._page.text_content = AsyncMock(return_value="加入者番号または暗証番号が正しくありません")
 
         result = run_async(purchaser.login())
 
@@ -159,7 +188,7 @@ class TestIpatPurchaserLogin:
 
     def test_login_without_browser_raises(self):
         """_page が None の場合は IpatLoginError を送出すること"""
-        purchaser = IpatPurchaser("12345678", "1234", "87654321")
+        purchaser = IpatPurchaser("12345678", "1234", "8765")
         # _page を None のまま（コンテキストマネージャーを使わない）
 
         with pytest.raises(IpatLoginError):

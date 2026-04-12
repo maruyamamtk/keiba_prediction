@@ -108,6 +108,10 @@ class IpatPurchaser:
 
         try:
             logger.info("JRA IPAT ログイン開始")
+
+            # バリデーション失敗時に出る alert を自動 dismiss
+            self._page.on("dialog", lambda d: d.dismiss())
+
             await self._page.goto(IPAT_BASE_URL, timeout=PURCHASE_TIMEOUT_MS, wait_until="domcontentloaded")
 
             # ログインフォームへの入力（SP版: id属性で識別）
@@ -116,16 +120,37 @@ class IpatPurchaser:
             await self._page.fill('#pars', self.pat_number, timeout=PURCHASE_TIMEOUT_MS)
 
             # ログインボタンをクリック
-            await self._page.click('input[type="submit"]', timeout=PURCHASE_TIMEOUT_MS)
+            # SP版のログインボタンは input[type="submit"] ではなく
+            # ToSPMenu() を呼び出す <a> タグ（li.btnColor a）
+            await self._page.click('li.btnColor a', timeout=PURCHASE_TIMEOUT_MS)
             await self._page.wait_for_load_state("domcontentloaded", timeout=PURCHASE_TIMEOUT_MS)
 
-            # ログイン成功の確認（ログアウトリンクの存在確認）
-            logout_link = await self._page.query_selector('a[href*="logout"]')
-            if logout_link is None:
-                logger.warning("IPAT ログイン失敗: ログアウトリンクが見つかりません")
+            # ログイン成功の確認
+            # SP版にはログアウトリンクがないため、URLの遷移とエラーメッセージで判断する
+            current_url = self._page.url
+            page_text = await self._page.text_content("body") or ""
+
+            # ログイン失敗を示すエラーキーワード
+            error_keywords = [
+                "加入者番号または暗証番号",
+                "認証エラー",
+                "ログインに失敗",
+                "入力内容をご確認",
+                "暗証番号が違います",
+                "PAT番号が違います",
+                "加入者番号が違います",
+            ]
+            has_error = any(kw in page_text for kw in error_keywords)
+            if has_error:
+                logger.warning(f"IPAT ログイン失敗: エラーメッセージ検出 URL={current_url}")
                 return False
 
-            logger.info("JRA IPAT ログイン成功")
+            # ログインページのままなら失敗（ToSPMenu のバリデーションで弾かれた等）
+            if current_url == IPAT_BASE_URL:
+                logger.warning(f"IPAT ログイン失敗: ページが遷移していません URL={current_url}")
+                return False
+
+            logger.info(f"JRA IPAT ログイン成功 URL={current_url}")
             return True
 
         except Exception as e:
