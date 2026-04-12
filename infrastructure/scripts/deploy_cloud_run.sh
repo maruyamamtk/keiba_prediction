@@ -98,6 +98,7 @@ gcloud run deploy "${SERVICE_NAME}" \
     --cpu=2 \
     --timeout=900 \
     --concurrency=1 \
+    --min-instances=1 \
     --max-instances=1 \
     --no-cpu-throttling \
     --no-allow-unauthenticated \
