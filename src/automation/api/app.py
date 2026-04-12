@@ -1450,14 +1450,16 @@ async def _purchase_pipeline_async(
       1. raw.race_info から当日の発走時刻を取得
       2. 現在時刻の5〜10分後に発走するレースを特定
       3. 対象レースが0件なら skipped を返す
-      4. [dry_run=False] IPAT ログイン
-      5. 各レースについて:
-         5a. 最新オッズで investment_decisions を上書き（_refresh_investment_decisions_for_race）
+      4. 対象レースのオッズをリアルタイムスクレイピング（netkeiba）
+         失敗時はフォールバック（既存の daily_odds を使用）
+      5. [dry_run=False] IPAT ログイン
+      6. 各レースについて:
+         6a. 最新オッズで investment_decisions を上書き（_refresh_investment_decisions_for_race）
              失敗時はフォールバック（既存の investment_decisions を使用）
-         5b. 推奨馬券を取得
+         6b. 推奨馬券を取得
              [dry_run=True]  LINE通知のみ
              [dry_run=False] 予算チェック → 購入 → 履歴保存
-      6. [dry_run=False] ログアウト
+      7. [dry_run=False] ログアウト
     """
     from src.automation.data.ipat_purchaser import (
         IpatLoginError,
