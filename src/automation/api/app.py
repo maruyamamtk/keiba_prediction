@@ -767,10 +767,10 @@ def _run_predict(
 @app.post("/api/v1/predict/daily", response_model=PredictResponse)
 async def predict_daily(request: PredictDailyRequest):
     """
-    翌日レースの予測を実行してBigQueryに保存する
+    当日（および同週の土日）レースの予測を実行してBigQueryに保存する
 
-    実行日の翌日（土日）のレースを予測対象とする。
-    Cloud Schedulerから前日PM 9:00に呼び出されることを想定。
+    実行日を基準に当週の土日を予測対象とする。
+    Cloud Schedulerから当日 AM 8:00 JST に呼び出されることを想定。
 
     Args:
         request: リクエストボディ
@@ -787,9 +787,12 @@ async def predict_daily(request: PredictDailyRequest):
     try:
         from src.models.train import compute_week_boundaries
 
-        # 翌日を基準に今週の土日を算出
-        tomorrow = _today_jst() + datetime.timedelta(days=1)
-        saturday, sunday = compute_week_boundaries(tomorrow)
+        # 実行日（JST）を基準に今週の土日を算出
+        # 注意: _today_jst() を使う。UTC ベースの date.today() では日 AM 8:00 JST が
+        # 土 23:00 UTC となり日付がズレるため、JST で正しい曜日を取得する必要がある。
+        # tomorrow 基準にすると日曜に実行した場合に翌月曜を起点として来週土日を返してしまう。
+        today = _today_jst()
+        saturday, sunday = compute_week_boundaries(today)
         target_dates = [saturday, sunday]
 
         result = _run_predict(
