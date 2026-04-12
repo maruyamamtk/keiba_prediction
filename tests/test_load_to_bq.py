@@ -543,14 +543,13 @@ class TestBigQueryLoaderMerge:
         mock_client = MagicMock()
         mock_bq_client.return_value = mock_client
 
-        # テーブルスキーマ
-        mock_field_1 = MagicMock()
-        mock_field_1.name = "race_id"
-        mock_field_2 = MagicMock()
-        mock_field_2.name = "data"
-
+        # テーブルスキーマ（bigquery.SchemaFieldを使用しないとLoadJobConfigが拒否する）
+        from google.cloud import bigquery as bq_module
         mock_table = MagicMock()
-        mock_table.schema = [mock_field_1, mock_field_2]
+        mock_table.schema = [
+            bq_module.SchemaField("race_id", "STRING"),
+            bq_module.SchemaField("data", "STRING"),
+        ]
         mock_client.get_table.return_value = mock_table
 
         # load_table_from_json成功（Load Job）

@@ -277,18 +277,19 @@ class TestFormatPredictions:
 
     def test_format_position_zero_shows_dash(self):
         """finish_position=0の場合、'-'が表示されること（取消/除外/中止の馬）"""
+        # classify_race_pattern は最低3頭必要なのでダミー馬を追加
         df = pd.DataFrame({
-            "race_id": ["r1", "r1"],
-            "race_date": [datetime.date(2026, 2, 14)] * 2,
-            "horse_id": ["h1", "h2"],
-            "horse_name": ["テスト馬1", "テスト馬2"],
-            "horse_number": [1, 2],
-            "venue_code": ["05", "05"],
-            "race_number": [1, 1],
-            "pred_score": [0.8, 0.5],
-            "win_place_prob": [0.7, 0.5],
-            "pred_rank": [1, 2],
-            "finish_position": [1, 0],  # 2頭目は取消（finish_position=0）
+            "race_id": ["r1", "r1", "r1"],
+            "race_date": [datetime.date(2026, 2, 14)] * 3,
+            "horse_id": ["h1", "h2", "h3"],
+            "horse_name": ["テスト馬1", "テスト馬2", "ダミー馬3"],
+            "horse_number": [1, 2, 3],
+            "venue_code": ["05", "05", "05"],
+            "race_number": [1, 1, 1],
+            "pred_score": [0.8, 0.5, 0.2],
+            "win_place_prob": [0.7, 0.5, 0.2],
+            "pred_rank": [1, 2, 3],
+            "finish_position": [1, 0, 3],  # 2頭目は取消（finish_position=0）
         })
 
         result = format_predictions(df)
@@ -303,18 +304,19 @@ class TestFormatPredictions:
 
     def test_format_position_none_shows_dash(self):
         """finish_positionがNaNの場合（未来レース）、'-'が表示されること"""
+        # classify_race_pattern は最低3頭必要なのでダミー馬を追加
         df = pd.DataFrame({
-            "race_id": ["r1"],
-            "race_date": [datetime.date(2026, 2, 14)],
-            "horse_id": ["h1"],
-            "horse_name": ["テスト馬1"],
-            "horse_number": [1],
-            "venue_code": ["05"],
-            "race_number": [1],
-            "pred_score": [0.8],
-            "win_place_prob": [0.7],
-            "pred_rank": [1],
-            "finish_position": [float("nan")],  # 未来レースはNaN
+            "race_id": ["r1", "r1", "r1"],
+            "race_date": [datetime.date(2026, 2, 14)] * 3,
+            "horse_id": ["h1", "h2", "h3"],
+            "horse_name": ["テスト馬1", "ダミー馬2", "ダミー馬3"],
+            "horse_number": [1, 2, 3],
+            "venue_code": ["05", "05", "05"],
+            "race_number": [1, 1, 1],
+            "pred_score": [0.8, 0.5, 0.2],
+            "win_place_prob": [0.7, 0.5, 0.2],
+            "pred_rank": [1, 2, 3],
+            "finish_position": [float("nan"), float("nan"), float("nan")],  # 未来レースはNaN
         })
 
         result = format_predictions(df)

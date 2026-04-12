@@ -324,6 +324,13 @@ LINE Messaging APIを使った双方向Botを実装済み。
 - シェル設定: 改行コードは LF を使用 (CRLFは避ける)
 - プロジェクト概要: JRDB競馬データパイプライン (BigQuery, GCS, Cloud Run)
 
+### Python実行環境（重要）
+- システムのpython3は3.9のため、**必ず `.venv` の Python/pytest を使用**すること
+- テスト実行: `.venv/bin/pytest tests/`
+- Python実行: `.venv/bin/python`
+- スクリプト実行: `.venv/bin/python scripts/xxx.py`
+- `python3` や `pytest` を直接呼び出さない（システムの3.9が使われてしまう）
+
 ### 開発ワークフロー
 GitHub Issueの実装時は以下の手順を遵守してください:
 1. ブランチ作成 (feature/issue-XX)

@@ -408,13 +408,14 @@ class TestFetchPlaceOddsWinOdds:
 
 class TestWinOddsMergeEnablesWinBets:
     """
-    run_full_strategy_backtest_pipeline() で win_odds がマージされた結果、
-    one_dominant パターン時に単勝が購入されることを検証する（Issue #176）
+    one_dominant パターンの馬券選定動作を検証する。
+    ※ Issue #202 により単勝・複勝の自動追加は廃止済み。
     """
 
     def test_win_odds_merged_into_predictions_df(self):
         """
-        fetch_place_odds が win_odds を返した場合に predictions_df に win_odds カラムが付与される
+        Issue #202: one_dominant パターンで win_odds があっても単勝は自動追加されない。
+        代わりに馬連（umaren）のみが追加される。
         """
         from src.backtest.strategy import select_bets_for_race
 
@@ -434,12 +435,13 @@ class TestWinOddsMergeEnablesWinBets:
             combo_odds_df=pd.DataFrame(),
             budget_per_race=3000,
             p1=0.1,              # top1 - top2 = 0.35 > 0.1 → one_dominant
-            expected_return_threshold=1.0,  # 低めに設定して単勝が通るように
+            expected_return_threshold=1.0,  # 低めに設定して馬券が通るように
         )
 
         bet_types = [b["bet_type"] for b in bets]
         assert pattern.pattern == "one_dominant", f"パターン判定が one_dominant でない: {pattern}"
-        assert "win" in bet_types, (
-            f"one_dominant パターンで win_odds が存在するのに単勝が購入されない。"
+        # Issue #202: 単勝は自動追加されない（馬連のみ追加される）
+        assert "win" not in bet_types, (
+            f"Issue #202 で単勝自動追加は廃止済みだが、単勝が含まれている。"
             f"実際の馬券種: {bet_types}"
         )
