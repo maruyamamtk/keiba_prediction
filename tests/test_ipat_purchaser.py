@@ -455,3 +455,128 @@ class TestRealtimeScraping:
 
         # スクレイプ失敗でもパイプライン全体は成功
         assert result["status"] == "success"
+
+
+# ---------------------------------------------------------------------------
+# LINE通知が送られないことを保証するテスト（Issue #238）
+# ---------------------------------------------------------------------------
+
+class TestNoLineNotificationOnSkip:
+    """対象レースなし時に LINE 通知が送られないことを保証するテスト"""
+
+    TARGET_DATE = datetime.date(2026, 4, 12)
+
+    def test_no_races_today_does_not_send_line(self):
+        """当日レースが0件（all_races が空）の場合、LINE 通知が送られないこと"""
+        import importlib
+        app_module = importlib.import_module("src.automation.api.app")
+
+        with (
+            patch(
+                "src.automation.data.ipat_purchaser.fetch_today_races_with_start_time",
+                return_value=[],
+            ),
+            patch("src.utils.line_notify.push_messages") as mock_push,
+        ):
+            result = run_async(
+                app_module._purchase_pipeline_async(
+                    project_id="test-project",
+                    target_date=self.TARGET_DATE,
+                    member_id="12345678",
+                    pin="1234",
+                    pat_number="87654321",
+                    channel_access_token="dummy-token",
+                    line_user_id="dummy-user",
+                    dry_run=True,
+                )
+            )
+
+        assert result["status"] == "skipped"
+        mock_push.assert_not_called()
+
+    def test_no_target_races_in_window_does_not_send_line(self):
+        """レースは存在するが時間ウィンドウ内の対象レースが0件の場合、LINE 通知が送られないこと"""
+        import importlib
+        app_module = importlib.import_module("src.automation.api.app")
+
+        with (
+            patch(
+                "src.automation.data.ipat_purchaser.fetch_today_races_with_start_time",
+                return_value=[
+                    {"race_id": "06261411", "start_time": "1000", "venue_name": "東京", "race_number": 1}
+                ],
+            ),
+            patch(
+                "src.automation.data.ipat_purchaser.fetch_target_races",
+                return_value=[],
+            ),
+            patch("src.utils.line_notify.push_messages") as mock_push,
+        ):
+            result = run_async(
+                app_module._purchase_pipeline_async(
+                    project_id="test-project",
+                    target_date=self.TARGET_DATE,
+                    member_id="12345678",
+                    pin="1234",
+                    pat_number="87654321",
+                    channel_access_token="dummy-token",
+                    line_user_id="dummy-user",
+                    dry_run=True,
+                )
+            )
+
+        assert result["status"] == "skipped"
+        mock_push.assert_not_called()
+
+    def test_dry_run_no_bets_does_not_send_line(self):
+        """dry_run=True で全レースの推奨馬券が0件の場合、LINE 通知が送られないこと"""
+        import importlib
+        app_module = importlib.import_module("src.automation.api.app")
+
+        target_races = [
+            {"race_id": "06261411", "venue_name": "東京", "race_number": 11},
+            {"race_id": "05261208", "venue_name": "中山", "race_number": 8},
+        ]
+
+        with (
+            patch(
+                "src.automation.data.ipat_purchaser.fetch_today_races_with_start_time",
+                return_value=[
+                    {**r, "start_time": "1000"} for r in target_races
+                ],
+            ),
+            patch(
+                "src.automation.data.ipat_purchaser.fetch_target_races",
+                return_value=target_races,
+            ),
+            patch(
+                "src.automation.data.netkeiba_scraper.scrape_odds_for_race",
+                return_value=True,
+            ),
+            patch(
+                "src.automation.api.app._refresh_investment_decisions_for_race",
+                return_value=True,
+            ),
+            patch(
+                "src.automation.data.ipat_purchaser.fetch_recommended_bets",
+                return_value=[],
+            ),
+            patch("src.utils.line_notify.push_messages") as mock_push,
+        ):
+            result = run_async(
+                app_module._purchase_pipeline_async(
+                    project_id="test-project",
+                    target_date=self.TARGET_DATE,
+                    member_id="12345678",
+                    pin="1234",
+                    pat_number="87654321",
+                    channel_access_token="dummy-token",
+                    line_user_id="dummy-user",
+                    dry_run=True,
+                )
+            )
+
+        # 推奨馬券がないため LINE 通知は送られない
+        mock_push.assert_not_called()
+        # パイプライン自体は成功（purchase は0件）
+        assert result["status"] == "success"
