@@ -99,6 +99,7 @@ gcloud run deploy "${SERVICE_NAME}" \
     --timeout=900 \
     --concurrency=1 \
     --max-instances=1 \
+    --no-cpu-throttling \
     --no-allow-unauthenticated \
     --set-env-vars="GCP_PROJECT_ID=${GCP_PROJECT_ID},GCP_REGION=${GCP_REGION},GCS_BUCKET_RAW=${GCS_BUCKET_RAW:-keiba-raw-data},GCS_BUCKET_MODELS=${GCS_BUCKET_MODELS:-keiba-models},BQ_DATASET_RAW=raw,BQ_DATASET_FEATURES=features,BQ_DATASET_PREDICTIONS=predictions,LOG_LEVEL=INFO" \
     --set-secrets="JRDB_USER=jrdb-user:latest,JRDB_PASSWORD=jrdb-password:latest,LINE_CHANNEL_ACCESS_TOKEN=line-channel-access-token:latest,LINE_CHANNEL_SECRET=line-channel-secret:latest,LINE_USER_ID=line-user-id:latest,IPAT_MEMBER_ID=ipat-member-id:latest,IPAT_PIN=ipat-pin:latest,IPAT_PAT_NUMBER=ipat-pat-number:latest" \
@@ -115,9 +116,10 @@ gsutil iam ch \
     log_info "GCSバケット権限を設定しました: gs://${GCS_BUCKET_RAW_FULL}" || \
     log_warn "GCSバケット権限の設定をスキップしました（バケットが存在しない可能性があります）"
 
-# モデルバケットへのアクセス権限を付与（読み取りのみ）
+# モデルバケットへのアクセス権限を付与
+# objectAdmin: 月次再学習(POST /api/v1/model/retrain/async)でモデルをGCSに書き込むため書き込み権限が必要
 gsutil iam ch \
-    "serviceAccount:${PIPELINE_SA_EMAIL}:roles/storage.objectViewer" \
+    "serviceAccount:${PIPELINE_SA_EMAIL}:roles/storage.objectAdmin" \
     "gs://${GCS_BUCKET_MODELS_FULL}" 2>/dev/null && \
     log_info "モデルバケット権限を設定しました: gs://${GCS_BUCKET_MODELS_FULL}" || \
     log_warn "モデルバケット権限の設定をスキップしました（バケットが存在しない可能性があります）"
@@ -139,4 +141,15 @@ log_info "  2. 予測エンドポイントのテスト (任意日付指定):"
 log_info "     POST /api/v1/predict/on-demand"
 log_info "  3. 日次予測スケジューラーの設定:"
 log_info "     POST /api/v1/predict/daily (前日PM 9:00 に実行)"
+log_info ""
+log_warn "=========================================="
+log_warn "【重要】デプロイ後は必ず以下を実行してください"
+log_warn "=========================================="
+log_warn "Cloud Schedulerジョブを作成・更新するため setup_scheduler.sh を再実行してください:"
+log_warn "  ./infrastructure/scripts/setup_scheduler.sh"
+log_warn ""
+log_warn "これを実行しないと以下のジョブが本番環境に存在しません:"
+log_warn "  - monthly-model-retrain（毎月第1月曜 AM 8:00）"
+log_warn "  - race-day-predict、race-day-strategy 等の日次ジョブ"
+log_warn "=========================================="
 log_info ""
