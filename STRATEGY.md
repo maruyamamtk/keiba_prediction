@@ -43,7 +43,8 @@
 【Step 2】select_base_bets()         ← 両パターン（パターン別パラメータ適用）
   選定スコア = place_odds × win_place_prob ^ prob_weight_r
   スコア降順 top_n 頭を候補とする  ← パターンによって top_n・prob_weight_r が異なる
-  複勝: prob × N/18 ≥ min_prob_threshold かつ prob × place_odds > expected_return_threshold
+  min_prob_threshold フィルタ（prob × N/18 ≥ min_prob_threshold）を通過した馬のみが候補
+  複勝: さらに prob × place_odds > expected_return_threshold を満たす馬を選定
   ワイド:  prob_i × prob_j × wide_odds > expected_return_threshold
   三連複: prob_i × prob_j × prob_k × san_odds > expected_return_threshold
 
@@ -197,16 +198,31 @@ selection_score = place_odds × win_place_prob ^ prob_weight_r
 
 ---
 
-### 4-2. 複勝（place）の選定
+### 4-2. min_prob_threshold による候補馬フィルタ（全馬券種共通）
 
-候補はスコア順ではなく**全馬**が対象。ただし `min_prob_threshold` の出走頭数補正フィルタを適用。
+`min_prob_threshold` は **複勝・ワイド・三連複すべての馬券種** の候補馬に適用される。
+スコア上位 `top_n` 頭の選定前にフィルタを実施するため、低確率馬はいかなる馬券にも混入しない。
 
 ```python
 N = len(race_df)   # 出走頭数
 
+# min_prob_threshold フィルタ（PR #245: 全馬券種共通）
+# 18頭基準に換算して比較: 少頭数では理論複勝率が高くなるバイアスを補正
+if min_prob_threshold > 0:
+    candidates_df = sorted_df[sorted_df["win_place_prob"] * N / 18 >= min_prob_threshold]
+else:
+    candidates_df = sorted_df
+
+# フィルタ通過馬の上位 top_n 頭がワイド・三連複・馬連の候補となる
+top_candidates = candidates_df.head(top_n)
+```
+
+### 複勝（place）の選定
+
+候補はスコア順ではなく**全馬**が対象。ただし `min_prob_threshold` フィルタを通過した馬のみ。
+
+```python
 for each horse in sorted_df（スコア降順）:
-    # 出走頭数補正フィルタ（Issue #208）
-    # 18頭基準に換算して比較: 少頭数では理論複勝率が高くなるバイアスを補正
     if win_place_prob × N/18 < min_prob_threshold:
         continue
     if win_place_prob × place_odds > expected_return_threshold:
@@ -229,7 +245,7 @@ for each horse in sorted_df（スコア降順）:
 
 ### 4-3. ワイド（wide）の選定
 
-候補は**スコア上位 `top_n` 頭の中の2頭組み合わせ**のみ（`top_n` はパターン別）。
+候補は **`min_prob_threshold` フィルタ通過後のスコア上位 `top_n` 頭** の中の2頭組み合わせのみ（`top_n` はパターン別）。
 
 ```python
 for each wide bet in combo_odds_df where bet_type == "wide":
@@ -243,6 +259,8 @@ for each wide bet in combo_odds_df where bet_type == "wide":
 ---
 
 ### 4-4. 三連複（sanrenpuku）の選定
+
+候補は **`min_prob_threshold` フィルタ通過後のスコア上位 `top_n` 頭** の中の3頭組み合わせのみ。
 
 ```python
 for each sanrenpuku bet in combo_odds_df where bet_type == "sanrenpuku":
@@ -483,7 +501,7 @@ pattern_stats = {
 | `prob_weight_r_standard` | `1.2` | float | ✅ | 標準型の選定スコア係数（`odds × prob^r`）|
 | `budget_per_race` | `3000` | int | — | 1レースあたりの固定予算（円）|
 | `min_bet_amount` | `100` | int | — | 最低賭け金（円）。これ未満は除外 |
-| `min_prob_threshold` | `0.1` | float | — | 複勝単体買いの最低複勝率（18頭換算基準）|
+| `min_prob_threshold` | `0.1` | float | — | 全馬券種の最低複勝率（18頭換算基準）。複勝・ワイド・三連複の候補馬すべてに適用 |
 
 ### optimization セクション（最適化結果の記録）
 

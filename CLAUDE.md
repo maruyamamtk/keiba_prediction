@@ -345,6 +345,15 @@ GitHub Issueの実装時は以下の手順を遵守してください:
 - BigQueryスキーマまたは列参照を変更した後は、実際のテーブルスキーマに列名が存在することを使用前に確認すること
 - パーサーフィールド位置を変更した後は、サンプルデータでテスト解析を実行し、固定長TXTスキーマとの整合性を確認すること
 
+### 投資戦略の重要な設計メモ
+- **min_prob_threshold**: 複勝単体買いだけでなく、ワイド・三連複の top_n 候補馬にも適用（PR #245）
+  - `select_base_bets` 内で `sorted_df[prob * N/18 >= min_prob_threshold].head(top_n)` で候補馬を絞る
+  - これにより低人気馬（低確率馬）がいかなる馬券にも混入しない
+- **save_decisions_to_bq**: `target_date` 引数で2つの保存モードを持つ（PR #246）
+  - `target_date` 指定（日次全件置換）: `race_date = date` で全削除 → INSERT
+  - `target_date` 省略（1レース更新）: `race_id` で削除 → MERGE（`_refresh_investment_decisions_for_race` 向け）
+  - 過去日付の再実行時は `--target-date YYYY-MM-DD` を指定すること（ベットなしになったレースの旧データも確実に消える）
+
 ### デプロイ時のチェックリスト
 Cloud Run または Cloud Function のデプロイメント完了を宣言する前に：
 1. 必要なすべての API が有効化されていることを確認する（`gcloud services enable ...`）
