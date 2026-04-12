@@ -32,10 +32,12 @@ from src.automation.data.netkeiba_scraper import (
     get_combo_odds,
     get_today_race_list,
     get_win_place_odds,
+    jrdb_race_id_to_netkeiba,
     netkeiba_to_jrdb_race_id,
     parse_netkeiba_race_id,
     save_combo_odds_to_bq,
     save_odds_to_bq,
+    scrape_odds_for_race,
     scrape_today_odds,
 )
 
@@ -705,3 +707,187 @@ class TestPlaywrightDomcontentloaded:
         mock_page.goto.assert_called()
         _, kwargs = mock_page.goto.call_args
         assert kwargs.get("wait_until") == "domcontentloaded"
+
+
+# ---------------------------------------------------------------------------
+# jrdb_race_id_to_netkeiba
+# ---------------------------------------------------------------------------
+
+
+class TestJrdbRaceIdToNetkeiba:
+    """JRDB race_id → netkeiba race_id 変換の検証"""
+
+    def test_basic_conversion(self):
+        """東京1回4日11R（2026年）のJRDB race_idをnetkeiba形式に変換できること"""
+        # JRDB: venue=06, year=26, kai=1, day=4, race=11 → "06261411"
+        result = jrdb_race_id_to_netkeiba("06261411")
+        assert result == "202606010411"
+
+    def test_hex_kai_and_day(self):
+        """回次・日次が10以上（16進数）の場合も正しく変換できること"""
+        # venue=05, year=25→2025, kai='a'=10, day='b'=11, race=01
+        # 期待値: "2025" + "05" + "10" + "11" + "01" = "202505101101"
+        result = jrdb_race_id_to_netkeiba("0525ab01")
+        assert result == "202505101101"
+
+    def test_hex_conversion_correct(self):
+        """16進数の回次・日次が正しく10進数2桁ゼロ埋めになること"""
+        # kai=a=10, day=b=11
+        result = jrdb_race_id_to_netkeiba("0525ab01")
+        assert result[4:6] == "05"   # venue_code
+        assert result[6:8] == "10"   # kai=10
+        assert result[8:10] == "11"  # day=11
+        assert result[10:12] == "01" # race_number
+
+    def test_invalid_length_raises(self):
+        """8文字でないJRDB race_idはValueErrorを送出すること"""
+        with pytest.raises(ValueError):
+            jrdb_race_id_to_netkeiba("0626141")  # 7文字
+
+    def test_round_trip_components(self):
+        """変換後のnetkeiba race_idをparse_netkeiba_race_idで逆解析すると元の情報に一致すること"""
+        jrdb_id = "06261411"
+        netkeiba_id = jrdb_race_id_to_netkeiba(jrdb_id)
+        parsed = parse_netkeiba_race_id(netkeiba_id)
+
+        assert parsed["year"] == "2026"
+        assert parsed["venue_code"] == "06"
+        assert parsed["kai"] == "01"
+        assert parsed["nichi"] == "04"
+        assert parsed["race_number"] == 11
+
+    def test_output_is_12_digits(self):
+        """変換結果は必ず12桁の文字列であること"""
+        result = jrdb_race_id_to_netkeiba("06261411")
+        assert len(result) == 12
+        assert result.isdigit()
+
+
+# ---------------------------------------------------------------------------
+# scrape_odds_for_race
+# ---------------------------------------------------------------------------
+
+
+class TestScrapeOddsForRace:
+    """scrape_odds_for_race() の動作検証"""
+
+    RACE_DATE = datetime.date(2026, 4, 12)
+    JRDB_RACE_ID = "06261411"
+    PROJECT_ID = "test-project"
+
+    def _make_win_place_df(self) -> pd.DataFrame:
+        return pd.DataFrame([
+            {"horse_number": 1, "win_odds": 3.5, "place_odds_min": 1.5, "place_odds_max": 2.0},
+            {"horse_number": 2, "win_odds": 5.0, "place_odds_min": 2.0, "place_odds_max": 3.0},
+        ])
+
+    def _make_combo_df(self) -> pd.DataFrame:
+        return pd.DataFrame([
+            {"ticket_type": "umaren", "horse_number_1": 1, "horse_number_2": 2, "horse_number_3": None, "odds": 10.0},
+        ])
+
+    def test_returns_true_on_success(self):
+        """単複・組み合わせオッズの取得・保存が成功した場合 True を返すこと"""
+        with (
+            patch(
+                "src.automation.data.netkeiba_scraper.get_win_place_odds",
+                return_value=self._make_win_place_df(),
+            ),
+            patch(
+                "src.automation.data.netkeiba_scraper.save_odds_to_bq",
+                return_value=2,
+            ),
+            patch(
+                "src.automation.data.netkeiba_scraper.get_combo_odds",
+                return_value=self._make_combo_df(),
+            ),
+            patch(
+                "src.automation.data.netkeiba_scraper.save_combo_odds_to_bq",
+                return_value=1,
+            ),
+        ):
+            result = scrape_odds_for_race(
+                self.JRDB_RACE_ID, self.RACE_DATE, self.PROJECT_ID, sleep_sec=0
+            )
+
+        assert result is True
+
+    def test_returns_false_when_win_place_empty(self):
+        """単複オッズが空の場合 False を返すこと"""
+        with patch(
+            "src.automation.data.netkeiba_scraper.get_win_place_odds",
+            return_value=pd.DataFrame(),
+        ):
+            result = scrape_odds_for_race(
+                self.JRDB_RACE_ID, self.RACE_DATE, self.PROJECT_ID, sleep_sec=0
+            )
+
+        assert result is False
+
+    def test_returns_false_when_bq_save_fails(self):
+        """単複オッズのBQ保存が失敗した場合 False を返すこと"""
+        with (
+            patch(
+                "src.automation.data.netkeiba_scraper.get_win_place_odds",
+                return_value=self._make_win_place_df(),
+            ),
+            patch(
+                "src.automation.data.netkeiba_scraper.save_odds_to_bq",
+                side_effect=RuntimeError("BQ error"),
+            ),
+        ):
+            result = scrape_odds_for_race(
+                self.JRDB_RACE_ID, self.RACE_DATE, self.PROJECT_ID, sleep_sec=0
+            )
+
+        assert result is False
+
+    def test_combo_failure_does_not_affect_return(self):
+        """組み合わせオッズの取得失敗は True を返す（フォールバック）こと"""
+        with (
+            patch(
+                "src.automation.data.netkeiba_scraper.get_win_place_odds",
+                return_value=self._make_win_place_df(),
+            ),
+            patch(
+                "src.automation.data.netkeiba_scraper.save_odds_to_bq",
+                return_value=2,
+            ),
+            patch(
+                "src.automation.data.netkeiba_scraper.get_combo_odds",
+                side_effect=RuntimeError("combo error"),
+            ),
+        ):
+            result = scrape_odds_for_race(
+                self.JRDB_RACE_ID, self.RACE_DATE, self.PROJECT_ID, sleep_sec=0
+            )
+
+        assert result is True
+
+    def test_default_ticket_types_are_b4_b5_b7(self):
+        """ticket_types を省略した場合 b4/b5/b7 が使われること"""
+        called_with: list[list] = []
+
+        def fake_combo(netkeiba_race_id, ticket_types=None, sleep_sec=1.5):
+            called_with.append(ticket_types)
+            return pd.DataFrame()
+
+        with (
+            patch(
+                "src.automation.data.netkeiba_scraper.get_win_place_odds",
+                return_value=self._make_win_place_df(),
+            ),
+            patch(
+                "src.automation.data.netkeiba_scraper.save_odds_to_bq",
+                return_value=2,
+            ),
+            patch(
+                "src.automation.data.netkeiba_scraper.get_combo_odds",
+                side_effect=fake_combo,
+            ),
+        ):
+            scrape_odds_for_race(
+                self.JRDB_RACE_ID, self.RACE_DATE, self.PROJECT_ID, sleep_sec=0
+            )
+
+        assert called_with == [["b4", "b5", "b7"]]
