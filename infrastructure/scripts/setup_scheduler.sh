@@ -6,10 +6,12 @@
 # Cloud Schedulerジョブを作成する。
 #
 # 作成されるジョブ:
-#   1. daily-data-pipeline   AM 6:00 JST  データロード
-#   2. race-day-predict      AM 8:00 JST  翌日レース予測
-#   3. race-day-odds-scrape  AM 8:15 JST  netkeibaオッズ取得（単複＋組み合わせ）
-#   4. race-day-strategy     AM 8:30 JST  投資戦略策定・investment_decisions保存
+#   1. daily-data-pipeline    AM 6:00 JST  データロード
+#   2. race-day-predict       AM 8:00 JST  翌日レース予測
+#   3. race-day-odds-scrape   AM 8:15 JST  netkeibaオッズ取得（単複＋組み合わせ）
+#   4. race-day-strategy      AM 8:30 JST  投資戦略策定・investment_decisions保存
+#   5. monthly-model-retrain  毎月第1月曜 AM 8:00 JST  LightGBMモデル月次再学習
+#   6. race-day-purchase      土日 8:00〜17:00 5分おき  IPAT自動馬券購入
 #
 # 使用方法:
 #   ./infrastructure/scripts/setup_scheduler.sh
@@ -19,6 +21,11 @@
 #   2. 適切な権限を持つユーザーでログイン済み (gcloud auth login)
 #   3. .envファイルにGCP_PROJECT_IDが設定済み
 #   4. Cloud Runサービス keiba-pipeline がデプロイ済み
+#
+# 【重要】deploy_cloud_run.sh 実行後は必ずこのスクリプトを再実行してください。
+# Cloud Runのサービスを新たにデプロイするとURLが変わる場合があり、
+# また新規ジョブ（monthly-model-retrain 等）はこのスクリプトを実行しないと
+# Cloud Scheduler上に作成されません。
 #
 
 set -e
