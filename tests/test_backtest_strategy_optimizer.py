@@ -225,12 +225,12 @@ class TestStrategyOptimizerRunSimulation:
 
 
 class TestStrategyOptimizerRunGridSearch:
-    def test_grid_search_returns_100_results(self):
-        """デフォルトグリッドサーチが100通り（5×5×4）の結果を返す"""
+    def test_grid_search_returns_1296_results(self):
+        """デフォルトグリッドサーチが1296通り（p1(3)×threshold(3)×top_n_dominant(3)×top_n_standard(3)×r_dominant(4)×r_standard(4)）の結果を返す"""
         df = _make_predictions_df(n_races=2, n_horses=5, win_place_prob=0.5, odds=3.0)
         optimizer = StrategyOptimizer(df, None, combo_odds_df=None)
         results = optimizer.run_grid_search()
-        assert len(results) == 100  # p1(5) × threshold(5) × r(4)
+        assert len(results) == 1296  # 3×3×3×3×4×4
 
     def test_grid_search_results_have_params(self):
         """各結果に p1 と expected_return_threshold が含まれる"""
@@ -251,9 +251,10 @@ class TestStrategyOptimizerRunGridSearch:
         results = optimizer.run_grid_search(
             p1_range=[0.1, 0.2],
             threshold_range=[1.0, 1.2, 1.5],
-            r_range=[1.0],
+            r_dominant_range=[1.0],
+            r_standard_range=[1.0],
         )
-        assert len(results) == 6  # 2×3×1
+        assert len(results) == 54  # p1(2)×threshold(3)×top_n_dominant(3)×top_n_standard(3)×r_dominant(1)×r_standard(1)
 
 
 # ---------------------------------------------------------------------------

@@ -286,6 +286,114 @@ def _format_prediction_table(
     return header + "\n" + "\n".join(rows)
 
 
+def _format_single_bet_line(bet: dict[str, Any]) -> str:
+    """
+    単一馬券dictを1行テキストにフォーマットする。
+
+    bet キー:
+        bet_type       : "place" | "win" | "wide" | "sanrenpuku" など
+        horse_numbers  : カンマ区切り文字列 "3" or "1,3" or "1,3,7"
+        horse_names    : カンマ区切り文字列
+        win_place_prob : float | None  (複勝確率)
+        place_odds     : float | None  (オッズ)
+        expected_return: float | None  (期待値)
+        bet_amount     : float
+    """
+    bet_type = bet.get("bet_type", "")
+    horse_numbers_str = str(bet.get("horse_numbers", ""))
+    horse_names_str = str(bet.get("horse_names", ""))
+    win_place_prob: float | None = bet.get("win_place_prob")
+    place_odds: float | None = bet.get("place_odds")
+    expected_return: float | None = bet.get("expected_return")
+    bet_amount = float(bet.get("bet_amount", 0.0))
+
+    # 馬番・馬名の表示
+    numbers = [n.strip() for n in horse_numbers_str.split(",") if n.strip()]
+    names = [n.strip() for n in horse_names_str.split(",") if n.strip()]
+    horse_parts = []
+    for i, hn in enumerate(numbers):
+        hn_name = names[i] if i < len(names) else ""
+        horse_parts.append(f"馬番{hn} {hn_name}".strip())
+    horse_str = " / ".join(horse_parts)
+
+    parts = [horse_str]
+
+    # 確率表示（複勝・単勝のみ）
+    if win_place_prob is not None:
+        if bet_type == "win":
+            parts.append(f"複勝率(参考): {win_place_prob * 100:.1f}%")
+        else:
+            parts.append(f"複勝率: {win_place_prob * 100:.1f}%")
+
+    # オッズ表示
+    if place_odds is not None:
+        parts.append(f"{place_odds:.1f}倍")
+
+    # 期待値表示（複勝のみ、単勝は表示しない）
+    if expected_return is not None and bet_type != "win":
+        parts.append(f"期待値: {expected_return:.2f}")
+
+    # 推奨額
+    parts.append(f"¥{bet_amount:,.0f}")
+
+    return "  ".join(parts)
+
+
+def format_push_notification(
+    race_date: date,
+    decisions: list[dict[str, Any]],
+    races_per_message: int = 10,
+) -> list[dict[str, str]]:
+    """
+    投資決定リストをLINEプッシュ通知用メッセージリストに変換する。
+
+    Returns:
+        list of {"text": str} dicts.
+        - 先頭メッセージ: ヘッダー（日付・合計投資額・レース数）
+        - 以降のメッセージ: レースごとの馬券リスト（races_per_message件ずつ分割）
+        - decisionsが空の場合: 1件の "推奨馬券はありません" メッセージ
+    """
+    if not decisions:
+        return [{"text": f"🏇 {race_date.isoformat()}\n推奨馬券はありません"}]
+
+    # レース単位でグループ化（venue_code + race_number）
+    from collections import defaultdict
+    race_groups: dict[tuple[str, int], list[dict[str, Any]]] = defaultdict(list)
+    for d in decisions:
+        key = (str(d.get("venue_code", "")), int(d.get("race_number", 0)))
+        race_groups[key].append(d)
+
+    # venue_code → race_number 順でソート
+    sorted_keys = sorted(race_groups.keys(), key=lambda k: (k[0], k[1]))
+
+    # ヘッダーメッセージ
+    total_bet = sum(float(d.get("bet_amount", 0.0)) for d in decisions)
+    n_races = len(sorted_keys)
+    header_text = (
+        f"🏇 本日の推奨馬券 {race_date.isoformat()}\n"
+        f"レース数: {n_races}  合計投資額: ¥{total_bet:,.0f}"
+    )
+    messages: list[dict[str, str]] = [{"text": header_text}]
+
+    # レースをraces_per_message件ずつ分割してメッセージ化
+    for chunk_start in range(0, len(sorted_keys), races_per_message):
+        chunk_keys = sorted_keys[chunk_start : chunk_start + races_per_message]
+        lines: list[str] = []
+        for venue_code, race_number in chunk_keys:
+            venue_name = VENUE_CODE_TO_NAME.get(venue_code, venue_code)
+            bets = race_groups[(venue_code, race_number)]
+            race_pattern = bets[0].get("race_pattern", "")
+            pattern_label = PATTERN_LABELS.get(race_pattern, race_pattern)
+            lines.append(f"【{venue_name} {race_number}R】({pattern_label})")
+            for bet in bets:
+                bet_type_label = BET_TYPE_LABELS.get(bet.get("bet_type", ""), bet.get("bet_type", ""))
+                bet_line = _format_single_bet_line(bet)
+                lines.append(f"  [{bet_type_label}] {bet_line}")
+        messages.append({"text": "\n".join(lines)})
+
+    return messages
+
+
 def _format_bet_recommendations(
     race_date: date,
     venue_name: str,
