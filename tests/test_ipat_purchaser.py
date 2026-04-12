@@ -466,11 +466,12 @@ class TestNoLineNotificationOnSkip:
 
     TARGET_DATE = datetime.date(2026, 4, 12)
 
+    def setup_method(self):
+        import importlib
+        self.app_module = importlib.import_module("src.automation.api.app")
+
     def test_no_races_today_does_not_send_line(self):
         """当日レースが0件（all_races が空）の場合、LINE 通知が送られないこと"""
-        import importlib
-        app_module = importlib.import_module("src.automation.api.app")
-
         with (
             patch(
                 "src.automation.data.ipat_purchaser.fetch_today_races_with_start_time",
@@ -479,7 +480,7 @@ class TestNoLineNotificationOnSkip:
             patch("src.utils.line_notify.push_messages") as mock_push,
         ):
             result = run_async(
-                app_module._purchase_pipeline_async(
+                self.app_module._purchase_pipeline_async(
                     project_id="test-project",
                     target_date=self.TARGET_DATE,
                     member_id="12345678",
@@ -496,9 +497,6 @@ class TestNoLineNotificationOnSkip:
 
     def test_no_target_races_in_window_does_not_send_line(self):
         """レースは存在するが時間ウィンドウ内の対象レースが0件の場合、LINE 通知が送られないこと"""
-        import importlib
-        app_module = importlib.import_module("src.automation.api.app")
-
         with (
             patch(
                 "src.automation.data.ipat_purchaser.fetch_today_races_with_start_time",
@@ -513,7 +511,7 @@ class TestNoLineNotificationOnSkip:
             patch("src.utils.line_notify.push_messages") as mock_push,
         ):
             result = run_async(
-                app_module._purchase_pipeline_async(
+                self.app_module._purchase_pipeline_async(
                     project_id="test-project",
                     target_date=self.TARGET_DATE,
                     member_id="12345678",
@@ -530,9 +528,6 @@ class TestNoLineNotificationOnSkip:
 
     def test_dry_run_no_bets_does_not_send_line(self):
         """dry_run=True で全レースの推奨馬券が0件の場合、LINE 通知が送られないこと"""
-        import importlib
-        app_module = importlib.import_module("src.automation.api.app")
-
         target_races = [
             {"race_id": "06261411", "venue_name": "東京", "race_number": 11},
             {"race_id": "05261208", "venue_name": "中山", "race_number": 8},
@@ -564,7 +559,7 @@ class TestNoLineNotificationOnSkip:
             patch("src.utils.line_notify.push_messages") as mock_push,
         ):
             result = run_async(
-                app_module._purchase_pipeline_async(
+                self.app_module._purchase_pipeline_async(
                     project_id="test-project",
                     target_date=self.TARGET_DATE,
                     member_id="12345678",
@@ -576,7 +571,5 @@ class TestNoLineNotificationOnSkip:
                 )
             )
 
-        # 推奨馬券がないため LINE 通知は送られない
         mock_push.assert_not_called()
-        # パイプライン自体は成功（purchase は0件）
         assert result["status"] == "success"
