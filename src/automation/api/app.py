@@ -1469,6 +1469,7 @@ async def _purchase_pipeline_async(
         save_purchase_record,
         DAILY_BUDGET_LIMIT,
     )
+    from src.automation.data.netkeiba_scraper import scrape_odds_for_race
     from src.utils.line_notify import push_messages, text_message
 
     def _send_line(msg: str) -> None:
@@ -1497,6 +1498,27 @@ async def _purchase_pipeline_async(
         f"対象レース {len(target_races)}件: {[r['race_id'] for r in target_races]}"
         f" [{'ドライラン' if dry_run else '本番購入'}]"
     )
+
+    # 3. 対象レースのオッズをリアルタイムスクレイピング
+    for race in target_races:
+        race_id = race["race_id"]
+        try:
+            success = await asyncio.to_thread(
+                scrape_odds_for_race,
+                race_id,
+                target_date,
+                project_id,
+            )
+            if success:
+                logger.info(f"race_id={race_id}: リアルタイムオッズ取得完了")
+            else:
+                logger.warning(
+                    f"race_id={race_id}: リアルタイムオッズ取得失敗（既存データを使用）"
+                )
+        except Exception as e:
+            logger.warning(
+                f"race_id={race_id}: リアルタイムオッズ取得中に例外発生（フォールバック）: {e}"
+            )
 
     race_results = []
 

@@ -327,3 +327,131 @@ class TestBudgetCheck:
         """全馬券種が BET_TYPE_MAP に定義されていること"""
         expected_types = {"win", "place", "umaren", "wide", "umatan", "sanrenpuku"}
         assert set(BET_TYPE_MAP.keys()) == expected_types
+
+
+# ---------------------------------------------------------------------------
+# リアルタイムオッズスクレイピングのテスト
+# ---------------------------------------------------------------------------
+
+class TestRealtimeScraping:
+    """_purchase_pipeline_async() におけるリアルタイムオッズ取得の検証"""
+
+    TARGET_DATE = datetime.date(2026, 4, 12)
+    RACE_ID_1 = "06261411"
+    RACE_ID_2 = "05261208"
+
+    def _run_pipeline(self, target_races: list[dict], scrape_mock: MagicMock) -> dict:
+        """_purchase_pipeline_async() を dry_run=True で実行するヘルパー"""
+        import importlib
+        app_module = importlib.import_module("src.automation.api.app")
+
+        with (
+            patch(
+                "src.automation.data.ipat_purchaser.fetch_today_races_with_start_time",
+                return_value=[
+                    {
+                        "race_id": r["race_id"],
+                        "start_time": "1000",
+                        "venue_name": "東京",
+                        "race_number": 1,
+                    }
+                    for r in target_races
+                ],
+            ),
+            patch(
+                "src.automation.data.ipat_purchaser.fetch_target_races",
+                return_value=target_races,
+            ),
+            patch(
+                "src.automation.data.netkeiba_scraper.scrape_odds_for_race",
+                side_effect=scrape_mock,
+            ),
+            patch(
+                "src.automation.api.app._refresh_investment_decisions_for_race",
+                return_value=True,
+            ),
+            patch(
+                "src.automation.data.ipat_purchaser.fetch_recommended_bets",
+                return_value=[],
+            ),
+            patch("src.utils.line_notify.push_messages"),
+        ):
+            return run_async(
+                app_module._purchase_pipeline_async(
+                    project_id="test-project",
+                    target_date=self.TARGET_DATE,
+                    member_id="12345678",
+                    pin="1234",
+                    pat_number="87654321",
+                    channel_access_token="",
+                    line_user_id="",
+                    dry_run=True,
+                )
+            )
+
+    def test_scrape_called_for_each_target_race(self):
+        """target_races が1件以上ある場合、各レースに対して scrape_odds_for_race が呼ばれること"""
+        target_races = [
+            {"race_id": self.RACE_ID_1, "venue_name": "東京", "race_number": 11},
+            {"race_id": self.RACE_ID_2, "venue_name": "中山", "race_number": 8},
+        ]
+        call_log: list[str] = []
+
+        def scrape_side_effect(race_id, race_date, project_id, **kwargs):
+            call_log.append(race_id)
+            return True
+
+        self._run_pipeline(target_races, scrape_side_effect)
+
+        assert call_log == [self.RACE_ID_1, self.RACE_ID_2]
+
+    def test_no_scrape_when_no_target_races(self):
+        """target_races が0件の場合、scrape_odds_for_race は呼ばれないこと"""
+        import importlib
+        app_module = importlib.import_module("src.automation.api.app")
+
+        call_log: list[str] = []
+
+        def scrape_side_effect(race_id, race_date, project_id, **kwargs):
+            call_log.append(race_id)
+            return True
+
+        with (
+            patch(
+                "src.automation.data.ipat_purchaser.fetch_today_races_with_start_time",
+                return_value=[],
+            ),
+            patch(
+                "src.automation.data.netkeiba_scraper.scrape_odds_for_race",
+                side_effect=scrape_side_effect,
+            ),
+        ):
+            result = run_async(
+                app_module._purchase_pipeline_async(
+                    project_id="test-project",
+                    target_date=self.TARGET_DATE,
+                    member_id="12345678",
+                    pin="1234",
+                    pat_number="87654321",
+                    channel_access_token="",
+                    line_user_id="",
+                    dry_run=True,
+                )
+            )
+
+        assert result["status"] == "skipped"
+        assert call_log == []
+
+    def test_scrape_failure_does_not_abort_pipeline(self):
+        """scrape_odds_for_race が例外を投げてもパイプラインが止まらないこと"""
+        target_races = [
+            {"race_id": self.RACE_ID_1, "venue_name": "東京", "race_number": 11},
+        ]
+
+        def scrape_raises(race_id, race_date, project_id, **kwargs):
+            raise RuntimeError("ネットワークエラー")
+
+        result = self._run_pipeline(target_races, scrape_raises)
+
+        # スクレイプ失敗でもパイプライン全体は成功
+        assert result["status"] == "success"

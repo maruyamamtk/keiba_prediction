@@ -439,6 +439,124 @@ def netkeiba_to_jrdb_race_id(
         return None
 
 
+def jrdb_race_id_to_netkeiba(jrdb_race_id: str) -> str:
+    """
+    JRDB形式のrace_id（8文字）をnetkeiba形式（12桁）に変換する
+
+    JRDB形式: {PP}{YY}{K}{D}{RR}
+      - PP: 競馬場コード（2文字）
+      - YY: 年の下2桁（2文字）
+      - K : 回次（16進1文字）
+      - D : 日次（16進1文字）
+      - RR: レース番号（2文字）
+
+    netkeiba形式: {YYYY}{PP}{NN}{DD}{RR}
+      - YYYY: 4桁年
+      - PP  : 競馬場コード（2文字）
+      - NN  : 回次（2桁ゼロ埋め）
+      - DD  : 日次（2桁ゼロ埋め）
+      - RR  : レース番号（2文字）
+
+    Args:
+        jrdb_race_id: 8文字のJRDB race_id（例: "06261411"）
+
+    Returns:
+        12桁のnetkeiba race_id（例: "202606010411"）
+
+    Raises:
+        ValueError: 8文字でない、または形式が不正な場合
+    """
+    if len(jrdb_race_id) != 8:
+        raise ValueError(
+            f"JRDB race_id は8文字である必要があります: '{jrdb_race_id}'"
+        )
+    venue_code = jrdb_race_id[0:2]
+    year_short = jrdb_race_id[2:4]
+    kai = int(jrdb_race_id[4], 16)
+    day = int(jrdb_race_id[5], 16)
+    race_number = jrdb_race_id[6:8]
+    year = f"20{year_short}"
+    return f"{year}{venue_code}{kai:02d}{day:02d}{race_number}"
+
+
+def scrape_odds_for_race(
+    jrdb_race_id: str,
+    race_date: datetime.date,
+    project_id: str,
+    ticket_types: list[str] | None = None,
+    sleep_sec: float = 1.5,
+) -> bool:
+    """
+    指定レースの単複・組み合わせオッズをリアルタイムスクレイピングしてBQにUPSERTする
+
+    JRDB race_idをnetkeiba race_idに変換してnetkeibaからオッズを取得し、
+    predictions.daily_odds（単複）と predictions.daily_odds_combo（組み合わせ）に保存する。
+
+    Args:
+        jrdb_race_id: JRDB形式のレースID（8文字）
+        race_date: 開催日
+        project_id: GCPプロジェクトID
+        ticket_types: 組み合わせ馬券種リスト（例: ['b4', 'b5', 'b7']）
+                      None の場合は ['b4', 'b5', 'b7']（馬連・ワイド・三連複）を取得
+        sleep_sec: スクレイプ間隔（秒）
+
+    Returns:
+        単複オッズの取得・保存に成功した場合 True、失敗した場合 False
+        （組み合わせオッズの失敗はWARNINGログのみで全体の成否には影響しない）
+    """
+    if ticket_types is None:
+        ticket_types = ["b4", "b5", "b7"]
+
+    netkeiba_race_id = jrdb_race_id_to_netkeiba(jrdb_race_id)
+    scraped_at = datetime.datetime.now(datetime.timezone.utc)
+
+    # 単複オッズ取得
+    win_place_df = get_win_place_odds(netkeiba_race_id, sleep_sec=sleep_sec)
+    if win_place_df.empty:
+        logger.warning(f"race_id={jrdb_race_id}: 単複オッズが取得できませんでした")
+        return False
+
+    rows = []
+    for _, row in win_place_df.iterrows():
+        rows.append({
+            "race_id": jrdb_race_id,
+            "race_date": race_date,
+            "horse_number": int(row["horse_number"]),
+            "win_odds": row.get("win_odds"),
+            "place_odds_min": row.get("place_odds_min"),
+            "place_odds_max": row.get("place_odds_max"),
+            "scraped_at": scraped_at,
+        })
+
+    odds_df = pd.DataFrame(rows)
+    try:
+        saved = save_odds_to_bq(odds_df, project_id=project_id)
+        logger.info(f"race_id={jrdb_race_id}: 単複オッズ {saved}行をBQに保存")
+    except Exception as e:
+        logger.warning(f"race_id={jrdb_race_id}: 単複オッズのBQ保存失敗: {e}")
+        return False
+
+    # 組み合わせオッズ取得
+    try:
+        time.sleep(sleep_sec)
+        combo_df = get_combo_odds(netkeiba_race_id, ticket_types=ticket_types, sleep_sec=sleep_sec)
+        if combo_df.empty:
+            logger.warning(f"race_id={jrdb_race_id}: 組み合わせオッズが取得できませんでした（単複は保存済み）")
+        else:
+            save_combo_odds_to_bq(
+                df=combo_df,
+                race_id=jrdb_race_id,
+                race_date=race_date,
+                scraped_at=scraped_at,
+                project_id=project_id,
+            )
+            logger.info(f"race_id={jrdb_race_id}: 組み合わせオッズ {len(combo_df)}行をBQに保存")
+    except Exception as e:
+        logger.warning(f"race_id={jrdb_race_id}: 組み合わせオッズ取得・保存失敗（単複は保存済み）: {e}")
+
+    return True
+
+
 def scrape_today_odds(
     date: datetime.date,
     project_id: str,
