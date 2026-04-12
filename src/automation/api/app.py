@@ -1291,6 +1291,99 @@ def _run_purchase_pipeline(
     )
 
 
+def _predict_race_on_the_fly(
+    project_id: str,
+    race_id: str,
+    target_date: datetime.date,
+    client,
+) -> bool:
+    """
+    features.training_data からオンザフライで1レース分の予測を生成し daily_predictions に保存する。
+
+    daily_predictions に予測データが存在しないが features.training_data には存在する場合の
+    フォールバック手段として使用する。モデルは GCS から最新のものを自動取得する。
+
+    Args:
+        project_id: GCP プロジェクト ID
+        race_id: 対象レース ID
+        target_date: 対象日
+        client: BigQuery クライアント
+
+    Returns:
+        True: 予測生成・保存に成功, False: 失敗
+    """
+    import shutil
+    import numpy as _np
+
+    from src.models.lgbm_ranker import LGBMRanker
+    from src.models.predict import _scores_to_place_prob, save_predictions_to_bq
+    from src.models.train import build_feature_matrix, load_config
+
+    try:
+        # features.training_data から対象レースのデータを取得
+        query = f"""
+        SELECT *
+        FROM `{project_id}.features.training_data`
+        WHERE race_date = '{target_date.isoformat()}'
+          AND race_id = '{race_id}'
+        ORDER BY horse_number
+        """
+        import pandas as _pd
+        df = client.query(query).to_dataframe()
+        if df.empty:
+            logger.warning(
+                f"_predict_race: race_id={race_id} は features.training_data にも存在しない → スキップ"
+            )
+            return False
+
+        # 最新モデルをGCSからロード
+        local_model_path, tmpdir = _resolve_model_path(None, project_id)
+        try:
+            config = load_config()
+            data_config = config["data"]
+
+            ranker = LGBMRanker()
+            ranker.load(local_model_path)
+
+            X = build_feature_matrix(
+                df,
+                exclude_columns=data_config["exclude_columns"],
+                categorical_columns=data_config.get("categorical_columns", []),
+            )
+            scores = ranker.predict(X)
+
+            result_df = df[["race_id", "race_date", "horse_id", "horse_number", "horse_name"]].copy()
+            if "venue_code" in df.columns:
+                result_df["venue_code"] = df["venue_code"]
+            if "race_number" in df.columns:
+                result_df["race_number"] = df["race_number"]
+
+            result_df["pred_score"] = scores
+            result_df["win_place_prob"] = _scores_to_place_prob(scores, n_places=3)
+            result_df["pred_rank"] = (
+                result_df["pred_score"].rank(ascending=False, method="min").astype(int)
+            )
+            result_df["finish_position"] = _np.nan
+
+            rows_saved = save_predictions_to_bq(result_df, project_id)
+            logger.info(
+                f"_predict_race: race_id={race_id} のオンザフライ予測を生成・保存 "
+                f"({len(result_df)}頭, {rows_saved}行保存)"
+            )
+            return True
+
+        finally:
+            if tmpdir is not None:
+                shutil.rmtree(tmpdir, ignore_errors=True)
+
+    except Exception as e:
+        logger.warning(
+            f"_predict_race: race_id={race_id} のオンザフライ予測に失敗: {e}",
+            exc_info=True,
+        )
+        return False
+
+
 def _refresh_investment_decisions_for_race(
     project_id: str,
     race_id: str,
@@ -1303,7 +1396,10 @@ def _refresh_investment_decisions_for_race(
     select_bets_for_race() で推奨馬券を再計算して predictions.investment_decisions へ
     MERGE UPSERT する。
 
-    データが取得できない場合は既存の investment_decisions をそのまま使用（フォールバック）。
+    daily_predictions に予測データが存在しない場合:
+      1. features.training_data に当該レースが存在するか診断ログを出力する
+      2. 存在すれば _predict_race_on_the_fly() でオンザフライ予測を生成して再試行する
+      3. それでも取得できない場合は既存の investment_decisions をそのまま使用（フォールバック）。
 
     Args:
         project_id: GCP プロジェクト ID
@@ -1339,8 +1435,38 @@ def _refresh_investment_decisions_for_race(
         pred_df = client.query(pred_query).to_dataframe()
 
         if pred_df.empty:
-            logger.warning(f"_refresh: race_id={race_id} の予測データなし → フォールバック")
-            return False
+            # 予測データが daily_predictions にない理由を診断する
+            check_query = f"""
+            SELECT COUNT(*) AS cnt
+            FROM `{project_id}.features.training_data`
+            WHERE race_date = '{target_date.isoformat()}'
+              AND race_id = '{race_id}'
+            """
+            check_df = client.query(check_query).to_dataframe()
+            in_features = int(check_df["cnt"].iloc[0]) > 0
+
+            if in_features:
+                # features.training_data には存在 → オンザフライで予測を生成して再試行
+                logger.warning(
+                    f"_refresh: race_id={race_id} が daily_predictions にないが "
+                    f"features.training_data には存在 → オンザフライ予測を試みる"
+                )
+                success = _predict_race_on_the_fly(project_id, race_id, target_date, client)
+                if success:
+                    pred_df = client.query(pred_query).to_dataframe()
+                if not success or pred_df.empty:
+                    logger.warning(
+                        f"_refresh: race_id={race_id} オンザフライ予測後も取得失敗 → フォールバック"
+                    )
+                    return False
+            else:
+                # features.training_data にも存在しない → データパイプラインの問題
+                logger.warning(
+                    f"_refresh: race_id={race_id} の予測データなし "
+                    f"(daily_predictions: 空, features.training_data: 空) → フォールバック。"
+                    f"daily-data-pipeline の実行状況を確認してください。"
+                )
+                return False
 
         # 対象レースの単複オッズを取得
         odds_query = f"""
