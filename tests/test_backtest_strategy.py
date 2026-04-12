@@ -1045,28 +1045,29 @@ class TestProbWeightR:
         r_dominant=2.0（高確率馬優先）と r_dominant=0.5（高オッズ馬優先）で
         top_n 候補が変わり、コンボ馬券の選定結果が変わることを検証する。
 
-        スコア計算（score = odds * prob^r）:
-          horse_number=1: prob=0.50, odds=3.0 → score(r=2)=0.75,  score(r=0.5)=2.12
-          horse_number=2: prob=0.30, odds=5.0 → score(r=2)=0.45,  score(r=0.5)=2.74
-          horse_number=3: prob=0.12, odds=10.0 → score(r=2)=0.144, score(r=0.5)=3.46
-          horse_number=4: prob=0.08, odds=15.0 → score(r=2)=0.096, score(r=0.5)=4.24
+        スコア計算（score = place_odds * prob^r）:
+          horse_number=1: prob=0.50, place_odds=2.0 → score(r=2)=0.50,  score(r=0.5)=1.41
+          horse_number=2: prob=0.30, place_odds=3.5 → score(r=2)=0.315, score(r=0.5)=1.92
+          horse_number=3: prob=0.12, place_odds=8.0 → score(r=2)=0.115, score(r=0.5)=2.77
+          horse_number=4: prob=0.08, place_odds=10.0 → score(r=2)=0.064, score(r=0.5)=2.83
 
         r=2.0: top_n=2 → [H1, H2] → wide(1,2) が選定される
         r=0.5: top_n=2 → [H4, H3] → wide(3,4) が選定される
 
-        min_prob_threshold=0.20 により N=4 頭での補正後確率（prob×4/18）が全馬で 0.20 未満となり、
-        複勝ベットが除外される。ワイドのみの配分なのでアロケーションで除外されない。
+        複勝オッズ（place_odds）が低いため prob×place_odds < 1.2 → 複勝ベットは除外される。
+        min_prob_threshold=0.0 のため全馬が top_n 候補となり、r の違いで選定が変わることを検証する。
+        ワイドのみの配分なのでアロケーションで除外されない。
         """
         race_df = _make_race_df(
             n_horses=4,
             probs=[0.50, 0.30, 0.12, 0.08],
-            odds=[3.0, 5.0, 10.0, 15.0],
+            odds=[2.0, 3.5, 8.0, 10.0],  # 複勝オッズを低く設定（prob×odds < 1.2 → 複勝ベット除外）
         )
-        # wide(1,2): 0.50*0.30*12.0=1.8 > 1.2 ✓ → r=2で top=[H1,H2] → 選定
-        # wide(3,4): 0.12*0.08*150.0=1.44 > 1.2 ✓ → r=0.5で top=[H4,H3] → 選定
+        # wide(1,2): 0.50*0.30*10.0=1.5 > 1.2 ✓ → r=2で top=[H1,H2] → 選定
+        # wide(3,4): 0.12*0.08*200.0=1.92 > 1.2 ✓ → r=0.5で top=[H4,H3] → 選定
         combo_df = _make_combo_odds_df([
-            {"bet_type": "wide", "horse_number_1": 1, "horse_number_2": 2, "odds_value": 12.0},
-            {"bet_type": "wide", "horse_number_1": 3, "horse_number_2": 4, "odds_value": 150.0},
+            {"bet_type": "wide", "horse_number_1": 1, "horse_number_2": 2, "odds_value": 10.0},
+            {"bet_type": "wide", "horse_number_1": 3, "horse_number_2": 4, "odds_value": 200.0},
         ])
 
         # r_dominant=2.0: top_n=2 → H1,H2 → wide(1,2) が選定
@@ -1076,7 +1077,7 @@ class TestProbWeightR:
             expected_return_threshold=1.2,
             top_n_dominant=2,
             prob_weight_r_dominant=2.0,
-            min_prob_threshold=0.20,  # 全馬の補正確率 < 0.20 → 複勝除外
+            min_prob_threshold=0.0,  # フィルタなし → 全馬が top_n 候補
         )
         # r_dominant=0.5: top_n=2 → H4,H3 → wide(3,4) が選定
         bets_r05, pat_r05 = select_bets_for_race(
@@ -1085,7 +1086,7 @@ class TestProbWeightR:
             expected_return_threshold=1.2,
             top_n_dominant=2,
             prob_weight_r_dominant=0.5,
-            min_prob_threshold=0.20,
+            min_prob_threshold=0.0,
         )
         assert pat_r2.pattern == "one_dominant"
         assert pat_r05.pattern == "one_dominant"

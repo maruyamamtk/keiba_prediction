@@ -208,9 +208,10 @@ def select_base_bets(
             None または空の場合は複勝のみ選定
         expected_return_threshold: 期待回収率の最低閾値
         top_n: 組み合わせ候補とする上位馬数
-        min_prob_threshold: 軸馬の最低複勝率フィルタ基準（出走頭数18頭換算）。
+        min_prob_threshold: 最低複勝率フィルタ基準（出走頭数18頭換算）。
             実際の比較値: prob × N/18 >= min_prob_threshold（N = 出走頭数）
             少頭数レースでは理論複勝率が高くなるため、頭数で補正した上で基準と比較する。
+            複勝単体買いだけでなく、ワイド・三連複の候補馬（top_n）にも同フィルタを適用する。
         prob_weight_r: 選定スコアの確率ウェイト係数。スコア = odds * prob^r
             r=1 で通常の期待値と同等。r>1 で高確率馬が有利になる
 
@@ -247,8 +248,15 @@ def select_base_bets(
                 "odds": place_odds,
             })
 
-    # top_n頭候補（流し馬券の相手馬は min_prob_threshold フィルタ対象外）
-    top_candidates = sorted_df.head(top_n)
+    # top_n頭候補（min_prob_threshold フィルタ適用済みの馬から上位N頭を選択）
+    # ワイド・三連複の相手馬にも同フィルタを適用し、低確率馬が組み合わせ馬券に混入するのを防ぐ
+    if min_prob_threshold > 0:
+        candidates_df = sorted_df[
+            sorted_df["win_place_prob"] * N / 18 >= min_prob_threshold
+        ]
+    else:
+        candidates_df = sorted_df
+    top_candidates = candidates_df.head(top_n)
     top_horse_numbers = top_candidates["horse_number"].tolist()
     top_prob_map = dict(zip(
         top_candidates["horse_number"].tolist(),
