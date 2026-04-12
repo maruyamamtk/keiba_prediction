@@ -245,77 +245,102 @@ def build_race_df(
 def save_decisions_to_bq(
     decisions: list[dict],
     project_id: str,
+    target_date: datetime.date | None = None,
 ) -> int:
     """
-    投資判断結果を predictions.investment_decisions テーブルに UPSERT 保存する。
+    投資判断結果を predictions.investment_decisions テーブルに保存する。
 
-    1馬券を1行で保存する（マルチ馬券も horse_numbers をカンマ区切り文字列で保持）。
-    MERGE キー: race_id + bet_type + horse_numbers
+    target_date を指定した場合（日次全件置換モード）:
+        対象日の全レコードを race_date で DELETE してから INSERT する。
+        ベットなしになったレースの旧データも確実に消去できる。
+
+    target_date を省略した場合（1レース更新モード）:
+        decisions に含まれる race_id のみを DELETE してから MERGE する。
+        発走直前リフレッシュ（_refresh_investment_decisions_for_race）向け。
 
     Args:
         decisions: 投資判断リスト（各 dict は _build_decision_row() で生成）
         project_id: GCP プロジェクト ID
+        target_date: 対象日。指定時は対象日の全レコードを先に削除する
 
     Returns:
         保存した行数
     """
+    client = bigquery.Client(project=project_id)
+    table_ref = f"{project_id}.predictions.investment_decisions"
+
+    if target_date is not None:
+        # 日次全件置換: 対象日の全レコードを削除（ベットなしになったレースも確実に消去）
+        delete_query = f"""
+        DELETE FROM `{table_ref}`
+        WHERE race_date = '{target_date.isoformat()}'
+        """
+        client.query(delete_query).result()
+        logger.info(f"対象日 {target_date} の既存行を全削除")
+
     if not decisions:
         logger.info("投資判断なし（保存スキップ）")
         return 0
 
     df = pd.DataFrame(decisions)
-    client = bigquery.Client(project=project_id)
-    table_ref = f"{project_id}.predictions.investment_decisions"
     temp_table = f"{table_ref}_temp_{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}"
 
+    _SCHEMA = [
+        bigquery.SchemaField("race_id", "STRING", mode="REQUIRED"),
+        bigquery.SchemaField("race_date", "DATE", mode="REQUIRED"),
+        bigquery.SchemaField("horse_numbers", "STRING", mode="REQUIRED"),
+        bigquery.SchemaField("horse_names", "STRING"),
+        bigquery.SchemaField("venue_code", "STRING"),
+        bigquery.SchemaField("race_number", "INTEGER"),
+        bigquery.SchemaField("race_pattern", "STRING"),
+        bigquery.SchemaField("bet_type", "STRING"),
+        bigquery.SchemaField("bet_amount", "FLOAT64"),
+        bigquery.SchemaField("win_place_prob", "FLOAT64"),
+        bigquery.SchemaField("place_odds", "FLOAT64"),
+        bigquery.SchemaField("expected_return", "FLOAT64"),
+        bigquery.SchemaField("created_at", "TIMESTAMP", mode="REQUIRED"),
+    ]
     job_config = bigquery.LoadJobConfig(
         write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
-        schema=[
-            bigquery.SchemaField("race_id", "STRING", mode="REQUIRED"),
-            bigquery.SchemaField("race_date", "DATE", mode="REQUIRED"),
-            bigquery.SchemaField("horse_numbers", "STRING", mode="REQUIRED"),
-            bigquery.SchemaField("horse_names", "STRING"),
-            bigquery.SchemaField("venue_code", "STRING"),
-            bigquery.SchemaField("race_number", "INTEGER"),
-            bigquery.SchemaField("race_pattern", "STRING"),
-            bigquery.SchemaField("bet_type", "STRING"),
-            bigquery.SchemaField("bet_amount", "FLOAT64"),
-            bigquery.SchemaField("win_place_prob", "FLOAT64"),
-            bigquery.SchemaField("place_odds", "FLOAT64"),
-            bigquery.SchemaField("expected_return", "FLOAT64"),
-            bigquery.SchemaField("created_at", "TIMESTAMP", mode="REQUIRED"),
-        ],
+        schema=_SCHEMA,
     )
     client.load_table_from_dataframe(df, temp_table, job_config=job_config).result()
 
-    # 対象 race_id の既存行を削除してから MERGE（BigQuery は WHEN 句での相関サブクエリ非対応）
-    delete_query = f"""
-    DELETE FROM `{table_ref}`
-    WHERE race_id IN (SELECT DISTINCT race_id FROM `{temp_table}`)
-    """
-    client.query(delete_query).result()
+    if target_date is not None:
+        # 日付単位で全削除済みなので単純 INSERT
+        insert_query = f"INSERT INTO `{table_ref}` SELECT * FROM `{temp_table}`"
+        client.query(insert_query).result()
+    else:
+        # 1レース更新: 対象 race_id の既存行を削除してから MERGE
+        # （BigQuery は WHEN 句での相関サブクエリ非対応のため先に DELETE）
+        delete_query = f"""
+        DELETE FROM `{table_ref}`
+        WHERE race_id IN (SELECT DISTINCT race_id FROM `{temp_table}`)
+        """
+        client.query(delete_query).result()
 
-    merge_query = f"""
-    MERGE `{table_ref}` AS target
-    USING `{temp_table}` AS source
-    ON target.race_id = source.race_id
-       AND target.bet_type = source.bet_type
-       AND target.horse_numbers = source.horse_numbers
-    WHEN MATCHED THEN UPDATE SET
-        race_date = source.race_date,
-        horse_names = source.horse_names,
-        venue_code = source.venue_code,
-        race_number = source.race_number,
-        race_pattern = source.race_pattern,
-        bet_type = source.bet_type,
-        bet_amount = source.bet_amount,
-        win_place_prob = source.win_place_prob,
-        place_odds = source.place_odds,
-        expected_return = source.expected_return,
-        created_at = source.created_at
-    WHEN NOT MATCHED BY TARGET THEN INSERT ROW
-    """
-    client.query(merge_query).result()
+        merge_query = f"""
+        MERGE `{table_ref}` AS target
+        USING `{temp_table}` AS source
+        ON target.race_id = source.race_id
+           AND target.bet_type = source.bet_type
+           AND target.horse_numbers = source.horse_numbers
+        WHEN MATCHED THEN UPDATE SET
+            race_date = source.race_date,
+            horse_names = source.horse_names,
+            venue_code = source.venue_code,
+            race_number = source.race_number,
+            race_pattern = source.race_pattern,
+            bet_type = source.bet_type,
+            bet_amount = source.bet_amount,
+            win_place_prob = source.win_place_prob,
+            place_odds = source.place_odds,
+            expected_return = source.expected_return,
+            created_at = source.created_at
+        WHEN NOT MATCHED BY TARGET THEN INSERT ROW
+        """
+        client.query(merge_query).result()
+
     client.delete_table(temp_table, not_found_ok=True)
 
     logger.info(f"投資判断を保存: {len(df)}行 → {table_ref}")
@@ -518,7 +543,7 @@ def run_daily_strategy(
         logger.info(f"  馬券種別: {bet_types}")
 
     if not dry_run:
-        save_decisions_to_bq(decisions, project_id)
+        save_decisions_to_bq(decisions, project_id, target_date=target_date)
     else:
         logger.info("(--dry-run: BQ保存をスキップ)")
         for d in decisions:

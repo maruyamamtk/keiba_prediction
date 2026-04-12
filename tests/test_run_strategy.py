@@ -3,15 +3,18 @@ run_strategy.py の build_race_df と _build_decision_row のユニットテス�
 
 Issue #166: win_odds が race_df に渡されないため単勝が常に0件になるバグの修正検証。
 Issue #194: 単勝の expected_return に複勝率を使っているため誤った値になる問題の修正検証。
+Issue #XXX: save_decisions_to_bq が target_date 指定時に日付全体削除→INSERTで保存すること。
 """
 
 from __future__ import annotations
 
 import datetime
+from unittest.mock import MagicMock, call, patch
+
 import pandas as pd
 import pytest
 
-from scripts.run_strategy import build_race_df, _build_decision_row
+from scripts.run_strategy import build_race_df, _build_decision_row, save_decisions_to_bq
 
 
 # ---------------------------------------------------------------------------
@@ -179,3 +182,103 @@ class TestBuildDecisionRow:
             created_at=datetime.datetime(2026, 3, 29, 9, 0, 0),
         )
         assert abs(row["win_place_prob"] - 0.733) < 1e-6
+
+
+# ---------------------------------------------------------------------------
+# save_decisions_to_bq の target_date 挙動テスト
+# ---------------------------------------------------------------------------
+
+
+def _make_decisions(n: int = 2) -> list[dict]:
+    """テスト用の最小限 decisions リストを生成する"""
+    return [
+        {
+            "race_id": "race_001",
+            "race_date": datetime.date(2026, 4, 12),
+            "horse_numbers": str(i),
+            "horse_names": f"テストホース{i}",
+            "venue_code": "09",
+            "race_number": 1,
+            "race_pattern": "standard",
+            "bet_type": "place",
+            "bet_amount": 300.0,
+            "win_place_prob": 0.3,
+            "place_odds": 3.0,
+            "expected_return": 0.9,
+            "created_at": datetime.datetime(2026, 4, 12, 9, 0, 0, tzinfo=datetime.timezone.utc),
+        }
+        for i in range(1, n + 1)
+    ]
+
+
+class TestSaveDecisionsToBq:
+    """save_decisions_to_bq の保存モード切替テスト"""
+
+    @patch("scripts.run_strategy.bigquery.Client")
+    def test_target_date_deletes_by_date_then_inserts(self, mock_bq_cls):
+        """target_date 指定時は race_date で全削除してから INSERT する（日次全件置換モード）"""
+        mock_client = MagicMock()
+        mock_bq_cls.return_value = mock_client
+        mock_client.load_table_from_dataframe.return_value.result.return_value = None
+        mock_client.query.return_value.result.return_value = None
+
+        target_date = datetime.date(2026, 4, 12)
+        save_decisions_to_bq(_make_decisions(), "test-project", target_date=target_date)
+
+        # query() の呼び出し引数を収集
+        query_calls = [c.args[0].strip() for c in mock_client.query.call_args_list]
+
+        # 1回目: race_date による全削除
+        assert any("race_date = '2026-04-12'" in q for q in query_calls), (
+            "target_date 指定時は race_date で全削除すべき"
+        )
+        # 2回目: INSERT INTO（MERGE ではない）
+        assert any(q.startswith("INSERT INTO") for q in query_calls), (
+            "target_date 指定時は MERGE ではなく INSERT INTO を使うべき"
+        )
+        # MERGE は呼ばれない
+        assert not any("MERGE" in q for q in query_calls), (
+            "target_date 指定時に MERGE が呼ばれてはいけない"
+        )
+
+    @patch("scripts.run_strategy.bigquery.Client")
+    def test_no_target_date_uses_race_id_delete_and_merge(self, mock_bq_cls):
+        """target_date 未指定時は race_id で削除してから MERGE する（1レース更新モード）"""
+        mock_client = MagicMock()
+        mock_bq_cls.return_value = mock_client
+        mock_client.load_table_from_dataframe.return_value.result.return_value = None
+        mock_client.query.return_value.result.return_value = None
+
+        save_decisions_to_bq(_make_decisions(), "test-project", target_date=None)
+
+        query_calls = [c.args[0].strip() for c in mock_client.query.call_args_list]
+
+        # race_date による全削除は呼ばれない
+        assert not any("race_date" in q and "DELETE" in q for q in query_calls), (
+            "target_date 未指定時に race_date DELETE が呼ばれてはいけない"
+        )
+        # race_id による削除が呼ばれる
+        assert any("race_id IN" in q for q in query_calls), (
+            "target_date 未指定時は race_id で削除すべき"
+        )
+        # MERGE が呼ばれる
+        assert any("MERGE" in q for q in query_calls), (
+            "target_date 未指定時は MERGE を使うべき"
+        )
+
+    @patch("scripts.run_strategy.bigquery.Client")
+    def test_target_date_with_empty_decisions_still_deletes(self, mock_bq_cls):
+        """decisions が空でも target_date 指定時は削除だけ実行される（ベットなしレースの旧データ消去）"""
+        mock_client = MagicMock()
+        mock_bq_cls.return_value = mock_client
+        mock_client.query.return_value.result.return_value = None
+
+        target_date = datetime.date(2026, 4, 12)
+        result = save_decisions_to_bq([], "test-project", target_date=target_date)
+
+        assert result == 0
+        query_calls = [c.args[0].strip() for c in mock_client.query.call_args_list]
+        # 削除クエリは実行される
+        assert any("race_date = '2026-04-12'" in q for q in query_calls), (
+            "decisions が空でも target_date 指定時は race_date で削除すべき"
+        )
