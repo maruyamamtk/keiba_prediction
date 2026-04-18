@@ -220,13 +220,16 @@ class IpatPurchaser:
             return {"status": "failed", "error_message": str(e)}
 
     async def _navigate_to_top_menu(self) -> None:
-        """IPATのトップメニュー(pw_732_i.cgi)へ移動する。"""
-        if "pw_732_i" not in self._page.url:
-            await self._page.goto(
-                IPAT_TOP_MENU_URL,
-                timeout=PURCHASE_TIMEOUT_MS,
-                wait_until="domcontentloaded",
-            )
+        """IPATのトップメニュー(pw_732_i.cgi)へ移動する。
+
+        条件分岐なく毎回 goto() することで、前のフローが途中で
+        失敗した場合でも確実にクリーンな状態からスタートできる。
+        """
+        await self._page.goto(
+            IPAT_TOP_MENU_URL,
+            timeout=PURCHASE_TIMEOUT_MS,
+            wait_until="domcontentloaded",
+        )
 
     async def _execute_purchase(
         self,
@@ -278,11 +281,11 @@ class IpatPurchaser:
             await self._page.wait_for_load_state("domcontentloaded", timeout=PURCHASE_TIMEOUT_MS)
 
             # Step 6: 馬番選択（複数頭は1頭ずつクリック）
-            # IPATでは馬番が2桁ゼロパディングで表示される（例: 03）
+            # IPAT SP版では馬番がゼロパディングなし（例: "3"）で表示されるため
+            # :text-is() による完全一致でマッチさせる
             for h in horse_numbers:
-                horse_num_str = f"{h:02d}"
                 await self._page.click(
-                    f'a:has-text("{horse_num_str}")',
+                    f'a:text-is("{h}")',
                     timeout=PURCHASE_TIMEOUT_MS,
                 )
                 await self._page.wait_for_load_state("domcontentloaded", timeout=PURCHASE_TIMEOUT_MS)
