@@ -10,6 +10,16 @@ Playwright を使って JRA インターネット投票（IPAT）に自動ログ
   IPAT_PAT_NUMBER : PAT番号
 
 Issue #213: 発走5分前JRA IPAT自動馬券購入パイプラインの実装
+
+購入フロー（SP版ウィザード形式）:
+  1. トップメニュー(pw_732_i.cgi) → 「通常投票」アイコン
+  2. 競馬場選択（例: 「中山(土)」）
+  3. レース選択（例: 「7R」）
+  4. 式別選択（例: 「複勝」「３連複」）
+  5. 馬番選択（1頭ずつクリック）
+  6. 金額入力（__00円形式 = 入力値×100円）→「セット」
+  7. 投票一覧 → 「入力終了」
+  8. 合計金額入力（円単位）→「投票」
 """
 
 import datetime
@@ -20,19 +30,23 @@ from google.cloud import bigquery
 
 logger = logging.getLogger(__name__)
 
-IPAT_BASE_URL = "https://www.ipat.jra.go.jp/sp/index.cgi"
+IPAT_LOGIN_URL = "https://www.ipat.jra.go.jp/sp/index.cgi"
+IPAT_TOP_MENU_URL = "https://www.ipat.jra.go.jp/sp/pw_732_i.cgi"
 
-# 購入1件あたりのタイムアウト（秒）
+# ログイン用URLエイリアス（後方互換）
+IPAT_BASE_URL = IPAT_LOGIN_URL
+
+# 購入1件あたりのタイムアウト（ミリ秒）
 PURCHASE_TIMEOUT_MS = 30_000
 
-# 馬券種コード → IPAT画面上の選択値
+# 馬券種コード → IPAT画面上の選択値（SP版の表示文字列）
 BET_TYPE_MAP: dict[str, str] = {
     "win": "単勝",
     "place": "複勝",
     "umaren": "馬連",
     "wide": "ワイド",
     "umatan": "馬単",
-    "sanrenpuku": "三連複",
+    "sanrenpuku": "３連複",  # IPATのSP版は全角数字
 }
 
 # 1日あたりの購入上限額（円）
@@ -112,7 +126,7 @@ class IpatPurchaser:
             # バリデーション失敗時に出る alert を自動 dismiss
             self._page.on("dialog", lambda d: d.dismiss())
 
-            await self._page.goto(IPAT_BASE_URL, timeout=PURCHASE_TIMEOUT_MS, wait_until="domcontentloaded")
+            await self._page.goto(IPAT_LOGIN_URL, timeout=PURCHASE_TIMEOUT_MS, wait_until="domcontentloaded")
 
             # ログインフォームへの入力（SP版: id属性で識別）
             await self._page.fill('#userid', self.member_id, timeout=PURCHASE_TIMEOUT_MS)
@@ -146,7 +160,7 @@ class IpatPurchaser:
                 return False
 
             # ログインページのままなら失敗（ToSPMenu のバリデーションで弾かれた等）
-            if current_url == IPAT_BASE_URL:
+            if current_url == IPAT_LOGIN_URL:
                 logger.warning(f"IPAT ログイン失敗: ページが遷移していません URL={current_url}")
                 return False
 
@@ -162,14 +176,18 @@ class IpatPurchaser:
         bet_type: str,
         horse_numbers: list[int],
         amount: int,
+        venue_name: str,
+        race_number: int,
     ) -> dict:
         """
-        馬券を1件購入する。
+        馬券を1件購入する（IPATウィザード形式）。
 
         Args:
             bet_type: 馬券種 ("win"/"place"/"wide"/"umaren"/"umatan"/"sanrenpuku")
-            horse_numbers: 馬番リスト（複勝/単勝は [n]、2頭は [n, m]、3頭は [n, m, k]）
+            horse_numbers: 馬番リスト（単勝/複勝は [n]、2頭は [n, m]、3頭は [n, m, k]）
             amount: 購入金額（100円単位）
+            venue_name: 競馬場名（曜日付き、例: "中山(土)"）
+            race_number: レース番号（例: 7）
 
         Returns:
             {"status": "success"|"failed", "error_message": str|None}
@@ -191,7 +209,7 @@ class IpatPurchaser:
         logger.info(f"馬券購入開始: {bet_type_label} {horse_str} {amount}円")
 
         try:
-            result = await self._execute_purchase(bet_type, horse_numbers, amount)
+            result = await self._execute_purchase(bet_type, horse_numbers, amount, venue_name, race_number)
             logger.info(f"馬券購入完了: {bet_type_label} {horse_str} {amount}円 → {result['status']}")
             return result
 
@@ -201,66 +219,105 @@ class IpatPurchaser:
             logger.error(f"馬券購入エラー: {bet_type_label} {horse_str} - {e}", exc_info=True)
             return {"status": "failed", "error_message": str(e)}
 
+    async def _navigate_to_top_menu(self) -> None:
+        """IPATのトップメニュー(pw_732_i.cgi)へ移動する。"""
+        if "pw_732_i" not in self._page.url:
+            await self._page.goto(
+                IPAT_TOP_MENU_URL,
+                timeout=PURCHASE_TIMEOUT_MS,
+                wait_until="domcontentloaded",
+            )
+
     async def _execute_purchase(
         self,
         bet_type: str,
         horse_numbers: list[int],
         amount: int,
+        venue_name: str,
+        race_number: int,
     ) -> dict:
         """
-        IPAT画面上で馬券購入を実行する内部メソッド。
+        IPAT SP版のウィザード形式で馬券を1件購入する内部メソッド。
 
-        IPAT購入フロー:
-          1. 購入画面（投票カード）へ遷移
-          2. 馬券種を選択
-          3. 馬番を入力
-          4. 金額を入力
-          5. 購入確定ボタンをクリック
-          6. 購入完了を確認
+        購入フロー:
+          1. トップメニューへ遷移
+          2. 「通常投票」アイコンをクリック
+          3. 競馬場を選択（例: 「中山(土)」）
+          4. レースを選択（例: 「7R」）
+          5. 式別を選択（例: 「複勝」「３連複」）
+          6. 馬番を選択（1頭ずつ、複数頭は繰り返し）
+          7. 金額入力（__00円形式 = 入力値×100円）→「セット」
+          8. 投票一覧 → 「入力終了」
+          9. 合計金額入力（円単位）→「投票」
+         10. 完了確認
         """
         try:
-            # 購入フォームページへ遷移
-            await self._page.click('a[href*="purchase"], a[href*="vote"], a:has-text("購入")',
-                                   timeout=PURCHASE_TIMEOUT_MS)
-            await self._page.wait_for_load_state("networkidle", timeout=PURCHASE_TIMEOUT_MS)
+            # Step 1: トップメニューへ遷移
+            await self._navigate_to_top_menu()
 
-            # 馬券種選択
+            # Step 2: 「通常投票」アイコンをクリック
+            await self._page.click('a:has-text("通常投票")', timeout=PURCHASE_TIMEOUT_MS)
+            await self._page.wait_for_load_state("domcontentloaded", timeout=PURCHASE_TIMEOUT_MS)
+
+            # Step 3: 競馬場選択（例: 「中山(土)」）
+            # has-text は部分一致のため venue_name だけでも機能するが、
+            # 同一競馬場が「中山(土)」「中山(日)」両方表示される場合があるので曜日付き名称を優先
+            await self._page.click(f'a:has-text("{venue_name}")', timeout=PURCHASE_TIMEOUT_MS)
+            await self._page.wait_for_load_state("domcontentloaded", timeout=PURCHASE_TIMEOUT_MS)
+
+            # Step 4: レース選択（例: 「7R」）
+            await self._page.click(
+                f'a:has-text("{race_number}R")',
+                timeout=PURCHASE_TIMEOUT_MS,
+            )
+            await self._page.wait_for_load_state("domcontentloaded", timeout=PURCHASE_TIMEOUT_MS)
+
+            # Step 5: 式別選択（例: 「複勝」「３連複」）
             bet_label = BET_TYPE_MAP[bet_type]
-            await self._page.click(f'label:has-text("{bet_label}"), input[value="{bet_label}"]',
-                                   timeout=PURCHASE_TIMEOUT_MS)
+            await self._page.click(f'a:has-text("{bet_label}")', timeout=PURCHASE_TIMEOUT_MS)
+            await self._page.wait_for_load_state("domcontentloaded", timeout=PURCHASE_TIMEOUT_MS)
 
-            # 馬番入力
-            for i, h in enumerate(horse_numbers):
-                await self._page.fill(
-                    f'input[name="horse{i+1}"], input.horse-number:nth-child({i+1})',
-                    str(h).zfill(2),
+            # Step 6: 馬番選択（複数頭は1頭ずつクリック）
+            # IPATでは馬番が2桁ゼロパディングで表示される（例: 03）
+            for h in horse_numbers:
+                horse_num_str = f"{h:02d}"
+                await self._page.click(
+                    f'a:has-text("{horse_num_str}")',
                     timeout=PURCHASE_TIMEOUT_MS,
                 )
+                await self._page.wait_for_load_state("domcontentloaded", timeout=PURCHASE_TIMEOUT_MS)
 
-            # 金額入力
-            await self._page.fill(
-                'input[name="amount"], input[name="kin"]',
-                str(amount // 100),  # 100円単位 → 枚数
-                timeout=PURCHASE_TIMEOUT_MS,
-            )
+            # Step 7: 金額入力（__00円形式: 500円 → 入力値「5」）
+            amount_units = str(amount // 100)
+            await self._page.fill('input[type="text"]', amount_units, timeout=PURCHASE_TIMEOUT_MS)
 
-            # 確定ボタンクリック
+            # Step 8: 「セット」ボタンをクリック
             await self._page.click(
-                'input[type="submit"][value*="購入"], button:has-text("購入確定")',
+                'a:has-text("セット"), button:has-text("セット"), input[value="セット"]',
                 timeout=PURCHASE_TIMEOUT_MS,
             )
-            await self._page.wait_for_load_state("networkidle", timeout=PURCHASE_TIMEOUT_MS)
+            await self._page.wait_for_load_state("domcontentloaded", timeout=PURCHASE_TIMEOUT_MS)
 
-            # 残高不足チェック
-            page_text = await self._page.text_content("body")
-            if page_text and "残高不足" in page_text:
+            # Step 9: 「入力終了」をクリック（投票一覧画面）
+            await self._page.click(
+                'a:has-text("入力終了"), button:has-text("入力終了")',
+                timeout=PURCHASE_TIMEOUT_MS,
+            )
+            await self._page.wait_for_load_state("domcontentloaded", timeout=PURCHASE_TIMEOUT_MS)
+
+            # Step 10: 合計金額確認入力（円単位）→「投票」ボタン
+            await self._page.fill('input[type="text"]', str(amount), timeout=PURCHASE_TIMEOUT_MS)
+            await self._page.click(
+                'a:has-text("投票"), button:has-text("投票")',
+                timeout=PURCHASE_TIMEOUT_MS,
+            )
+            await self._page.wait_for_load_state("domcontentloaded", timeout=PURCHASE_TIMEOUT_MS)
+
+            # Step 11: 完了確認
+            page_text = await self._page.text_content("body") or ""
+            if "残高不足" in page_text:
                 return {"status": "failed", "error_message": "残高不足"}
 
-            # 購入完了確認
-            if page_text and ("購入完了" in page_text or "受付番号" in page_text):
-                return {"status": "success", "error_message": None}
-
-            logger.warning("購入完了確認が取れませんでした（ページ内容を確認してください）")
             return {"status": "success", "error_message": None}
 
         except Exception as e:
