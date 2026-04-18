@@ -1595,11 +1595,17 @@ async def _purchase_pipeline_async(
             _send_line(msg)
             return {"status": "error", "purchased_races": 0, "total_amount": 0, "results": []}
 
+        # 曜日付き競馬場名を計算（IPATのSP版は「中山(土)」形式で表示）
+        _WEEKDAY_JP = ["月", "火", "水", "木", "金", "土", "日"]
+        weekday_suffix = f"({_WEEKDAY_JP[target_date.weekday()]})"
+
         # 4. 各レースの購入処理
         for race in target_races:
             race_id = race["race_id"]
             venue_name = race.get("venue_name", "")
-            race_number = race.get("race_number", "")
+            race_number = race.get("race_number", 0)
+            # IPATのSP版に表示される競馬場名（「中山(土)」形式）
+            venue_name_with_day = f"{venue_name}{weekday_suffix}"
 
             # 最新オッズで investment_decisions を上書き
             refreshed = _refresh_investment_decisions_for_race(project_id, race_id, target_date)
@@ -1640,7 +1646,9 @@ async def _purchase_pipeline_async(
                     break
 
                 # 馬券購入
-                result = await purchaser.purchase_bet(bet_type, horse_numbers, amount)
+                result = await purchaser.purchase_bet(
+                    bet_type, horse_numbers, amount, venue_name_with_day, race_number
+                )
                 status = result["status"]
                 error_message = result.get("error_message")
 

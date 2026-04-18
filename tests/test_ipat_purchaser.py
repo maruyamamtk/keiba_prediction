@@ -212,7 +212,7 @@ class TestIpatPurchaserPurchaseBet:
         purchaser = self._make_purchaser()
         purchaser._page.text_content = AsyncMock(return_value="購入完了しました。受付番号: 12345")
 
-        result = run_async(purchaser.purchase_bet("place", [3], 300))
+        result = run_async(purchaser.purchase_bet("place", [3], 300, "東京(土)", 7))
 
         assert result["status"] == "success"
         assert result["error_message"] is None
@@ -222,7 +222,7 @@ class TestIpatPurchaserPurchaseBet:
         purchaser = self._make_purchaser()
         purchaser._page.text_content = AsyncMock(return_value="残高不足のため購入できませんでした")
 
-        result = run_async(purchaser.purchase_bet("place", [3], 300))
+        result = run_async(purchaser.purchase_bet("place", [3], 300, "東京(土)", 7))
 
         assert result["status"] == "failed"
         assert "残高不足" in result["error_message"]
@@ -232,28 +232,28 @@ class TestIpatPurchaserPurchaseBet:
         purchaser = self._make_purchaser()
 
         with pytest.raises(IpatPurchaseError):
-            run_async(purchaser.purchase_bet("invalid_type", [3], 300))
+            run_async(purchaser.purchase_bet("invalid_type", [3], 300, "東京(土)", 7))
 
     def test_purchase_invalid_amount_raises(self):
         """100円単位でない金額は IpatPurchaseError を送出すること"""
         purchaser = self._make_purchaser()
 
         with pytest.raises(IpatPurchaseError):
-            run_async(purchaser.purchase_bet("place", [3], 150))
+            run_async(purchaser.purchase_bet("place", [3], 150, "東京(土)", 7))
 
     def test_purchase_zero_amount_raises(self):
         """0円は IpatPurchaseError を送出すること"""
         purchaser = self._make_purchaser()
 
         with pytest.raises(IpatPurchaseError):
-            run_async(purchaser.purchase_bet("place", [3], 0))
+            run_async(purchaser.purchase_bet("place", [3], 0, "東京(土)", 7))
 
     def test_purchase_timeout_returns_failed(self):
         """タイムアウトエラーは status=failed を返すこと"""
         purchaser = self._make_purchaser()
         purchaser._page.click = AsyncMock(side_effect=Exception("Timeout exceeded"))
 
-        result = run_async(purchaser.purchase_bet("place", [3], 300))
+        result = run_async(purchaser.purchase_bet("place", [3], 300, "東京(土)", 7))
 
         assert result["status"] == "failed"
         assert result["error_message"] is not None
@@ -327,6 +327,10 @@ class TestBudgetCheck:
         """全馬券種が BET_TYPE_MAP に定義されていること"""
         expected_types = {"win", "place", "umaren", "wide", "umatan", "sanrenpuku"}
         assert set(BET_TYPE_MAP.keys()) == expected_types
+
+    def test_sanrenpuku_label_is_fullwidth(self):
+        """sanrenpuku のIPAT表示ラベルが全角数字「３連複」であること"""
+        assert BET_TYPE_MAP["sanrenpuku"] == "３連複"
 
 
 # ---------------------------------------------------------------------------
