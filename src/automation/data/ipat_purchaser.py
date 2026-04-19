@@ -219,17 +219,36 @@ class IpatPurchaser:
             logger.error(f"馬券購入エラー: {bet_type_label} {horse_str} - {e}", exc_info=True)
             return {"status": "failed", "error_message": str(e)}
 
-    async def _navigate_to_top_menu(self) -> None:
-        """IPATのトップメニュー(pw_732_i.cgi)へ移動する。
+    async def _wait_for_jqm_ready(self) -> None:
+        """jQuery Mobile のページ遷移が完了するまで待機する。
 
-        条件分岐なく毎回 goto() することで、前のフローが途中で
-        失敗した場合でも確実にクリーンな状態からスタートできる。
+        IPAT SP版は pw_740_i.cgi 上で全ウィザードステップを jQuery Mobile の
+        ページ遷移で処理する。遷移中は <html class="... ui-loading"> となり
+        ui-loader-cover が画面を覆うため、その消滅を待つ必要がある。
+        wait_for_load_state("domcontentloaded") では不十分（URL が変わらず
+        DOMは既にロード済みのため即座に返る）。
         """
-        await self._page.goto(
-            IPAT_TOP_MENU_URL,
-            timeout=PURCHASE_TIMEOUT_MS,
-            wait_until="domcontentloaded",
-        )
+        try:
+            await self._page.wait_for_function(
+                "!document.documentElement.classList.contains('ui-loading')",
+                timeout=PURCHASE_TIMEOUT_MS,
+            )
+        except Exception:
+            # ui-loading が存在しないページ（トップメニュー等）では無視
+            pass
+
+    async def _navigate_to_top_menu(self) -> None:
+        """IPATのトップメニューへ遷移する。
+
+        直接 goto(IPAT_TOP_MENU_URL) を呼ぶとセッションエラー(120)が発生するため使用しない。
+        - ログイン直後は URL が pw_732_i.cgi のままなので何もしない。
+        - ウィザード途中/完了後は「トップメニュー」ボタンをクリックして戻る。
+        """
+        if "pw_732_i" in self._page.url:
+            return  # すでにトップメニューにいる
+        logger.info(f"「トップメニュー」ボタンで戻ります (現在URL: {self._page.url})")
+        await self._page.click('a:has-text("トップメニュー")', timeout=PURCHASE_TIMEOUT_MS)
+        await self._page.wait_for_load_state("domcontentloaded", timeout=PURCHASE_TIMEOUT_MS)
 
     async def _execute_purchase(
         self,
@@ -242,79 +261,78 @@ class IpatPurchaser:
         """
         IPAT SP版のウィザード形式で馬券を1件購入する内部メソッド。
 
-        購入フロー:
+        購入フロー（全ステップが pw_740_i.cgi 上で jQuery Mobile ページ遷移で処理される）:
           1. トップメニューへ遷移
-          2. 「通常投票」アイコンをクリック
-          3. 競馬場を選択（例: 「中山(土)」）
-          4. レースを選択（例: 「7R」）
-          5. 式別を選択（例: 「複勝」「３連複」）
-          6. 馬番を選択（1頭ずつ、複数頭は繰り返し）
+          2. 「通常投票」アイコンをクリック → 競馬場選択画面
+          3. 競馬場を選択（ul.selectList 内の完全一致）
+          4. レースを選択（ul.selectList 内の部分一致）
+          5. 式別を選択（ul.selectList 内の完全一致）
+          6. 馬番を選択（1頭ずつ、:text-is() 完全一致）
           7. 金額入力（__00円形式 = 入力値×100円）→「セット」
           8. 投票一覧 → 「入力終了」
           9. 合計金額入力（円単位）→「投票」
          10. 完了確認
+
+        各ステップ後に _wait_for_jqm_ready() を呼ぶことで、
+        jQuery Mobile の ui-loader-cover が消えてから次のクリックを行う。
         """
         try:
             # Step 1: トップメニューへ遷移
             await self._navigate_to_top_menu()
 
-            # Step 2: 「通常投票」アイコンをクリック
+            # Step 2: 「通常投票」アイコンをクリック → 競馬場選択画面
             await self._page.click('a:has-text("通常投票")', timeout=PURCHASE_TIMEOUT_MS)
             await self._page.wait_for_load_state("domcontentloaded", timeout=PURCHASE_TIMEOUT_MS)
+            await self._wait_for_jqm_ready()
 
             # Step 3: 競馬場選択（例: 「中山(土)」）
-            # has-text は部分一致のため venue_name だけでも機能するが、
-            # 同一競馬場が「中山(土)」「中山(日)」両方表示される場合があるので曜日付き名称を優先
-            await self._page.click(f'a:has-text("{venue_name}")', timeout=PURCHASE_TIMEOUT_MS)
-            await self._page.wait_for_load_state("domcontentloaded", timeout=PURCHASE_TIMEOUT_MS)
+            # ul.selectList 内の完全一致で指定。
+            # ページ内に存在する隠れた jQuery Mobile ページ（投票一覧等）の
+            # パンくず「中山(土)」と混同しないよう .selectList でスコープを絞る。
+            await self._page.click(f'.selectList a:text-is("{venue_name}")', timeout=PURCHASE_TIMEOUT_MS)
+            await self._wait_for_jqm_ready()
 
-            # Step 4: レース選択（例: 「7R」）
+            # Step 4: レース選択（例: 「7R」「9R 袖ケ浦特別」）
+            # レース名付き行も正しく選択するため has-text の部分一致を使用。
+            # ul.selectList でスコープを絞り、他ページ要素との混同を防ぐ。
             await self._page.click(
-                f'a:has-text("{race_number}R")',
+                f'.selectList a:has-text("{race_number}R")',
                 timeout=PURCHASE_TIMEOUT_MS,
             )
-            await self._page.wait_for_load_state("domcontentloaded", timeout=PURCHASE_TIMEOUT_MS)
+            await self._wait_for_jqm_ready()
 
             # Step 5: 式別選択（例: 「複勝」「３連複」）
             bet_label = BET_TYPE_MAP[bet_type]
-            await self._page.click(f'a:has-text("{bet_label}")', timeout=PURCHASE_TIMEOUT_MS)
-            await self._page.wait_for_load_state("domcontentloaded", timeout=PURCHASE_TIMEOUT_MS)
+            await self._page.click(f'.selectList a:text-is("{bet_label}")', timeout=PURCHASE_TIMEOUT_MS)
+            await self._wait_for_jqm_ready()
 
             # Step 6: 馬番選択（複数頭は1頭ずつクリック）
-            # IPAT SP版では馬番がゼロパディングなし（例: "3"）で表示されるため
-            # :text-is() による完全一致でマッチさせる
+            # 馬番セル: <a class="ui-link" data-value="3">3\n馬名\nオッズ</a>
+            # data-value 属性が馬番なのでそれを使う。テキストには馬名・オッズが含まれるため
+            # text-is では一致しない。
             for h in horse_numbers:
                 await self._page.click(
-                    f'a:text-is("{h}")',
+                    f'a[data-value="{h}"]',
                     timeout=PURCHASE_TIMEOUT_MS,
                 )
-                await self._page.wait_for_load_state("domcontentloaded", timeout=PURCHASE_TIMEOUT_MS)
+                await self._wait_for_jqm_ready()
 
             # Step 7: 金額入力（__00円形式: 500円 → 入力値「5」）
             amount_units = str(amount // 100)
-            await self._page.fill('input[type="text"]', amount_units, timeout=PURCHASE_TIMEOUT_MS)
+            await self._page.fill('input[type="tel"]', amount_units, timeout=PURCHASE_TIMEOUT_MS)
 
             # Step 8: 「セット」ボタンをクリック
-            await self._page.click(
-                'a:has-text("セット"), button:has-text("セット"), input[value="セット"]',
-                timeout=PURCHASE_TIMEOUT_MS,
-            )
-            await self._page.wait_for_load_state("domcontentloaded", timeout=PURCHASE_TIMEOUT_MS)
+            await self._page.click('a:has-text("セット")', timeout=PURCHASE_TIMEOUT_MS)
+            await self._wait_for_jqm_ready()
 
             # Step 9: 「入力終了」をクリック（投票一覧画面）
-            await self._page.click(
-                'a:has-text("入力終了"), button:has-text("入力終了")',
-                timeout=PURCHASE_TIMEOUT_MS,
-            )
-            await self._page.wait_for_load_state("domcontentloaded", timeout=PURCHASE_TIMEOUT_MS)
+            await self._page.click('a:has-text("入力終了")', timeout=PURCHASE_TIMEOUT_MS)
+            await self._wait_for_jqm_ready()
 
             # Step 10: 合計金額確認入力（円単位）→「投票」ボタン
-            await self._page.fill('input[type="text"]', str(amount), timeout=PURCHASE_TIMEOUT_MS)
-            await self._page.click(
-                'a:has-text("投票"), button:has-text("投票")',
-                timeout=PURCHASE_TIMEOUT_MS,
-            )
-            await self._page.wait_for_load_state("domcontentloaded", timeout=PURCHASE_TIMEOUT_MS)
+            await self._page.fill('input[type="tel"]', str(amount), timeout=PURCHASE_TIMEOUT_MS)
+            await self._page.click('a:has-text("投票")', timeout=PURCHASE_TIMEOUT_MS)
+            await self._wait_for_jqm_ready()
 
             # Step 11: 完了確認
             page_text = await self._page.text_content("body") or ""
