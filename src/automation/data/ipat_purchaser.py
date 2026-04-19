@@ -22,6 +22,7 @@ Issue #213: 発走5分前JRA IPAT自動馬券購入パイプラインの実装
   8. 合計金額入力（円単位）→「投票」
 """
 
+import asyncio
 import datetime
 import logging
 import re
@@ -124,8 +125,9 @@ class IpatPurchaser:
         try:
             logger.info("JRA IPAT ログイン開始")
 
-            # バリデーション失敗時に出る alert を自動 dismiss
-            self._page.on("dialog", lambda d: d.dismiss())
+            # alert は accept/dismiss どちらでも閉じる。
+            # 購入確認の confirm ダイアログは accept() が必要なので全て accept に統一する。
+            self._page.on("dialog", lambda d: asyncio.create_task(d.accept()))
 
             await self._page.goto(IPAT_LOGIN_URL, timeout=PURCHASE_TIMEOUT_MS, wait_until="domcontentloaded")
 
@@ -356,28 +358,72 @@ class IpatPurchaser:
                 pass  # 単勝・複勝など「金額入力画面へ」ボタンが存在しない場合はスキップ
 
             # Step 7: 金額入力（__00円形式: 500円 → 入力値「5」）
+            # .ui-page-active でスコープし、非アクティブページの入力欄と混同しない。
             amount_units = str(amount // 100)
-            await self._page.fill('input[type="tel"]', amount_units, timeout=PURCHASE_TIMEOUT_MS)
+            await self._page.fill(
+                '.ui-page-active input[type="tel"]', amount_units, timeout=PURCHASE_TIMEOUT_MS
+            )
 
-            # Step 8: 「セット」ボタンをクリック
-            await self._page.click('a:has-text("セット")', timeout=PURCHASE_TIMEOUT_MS)
+            # Step 8: 「セット」ボタンをクリック → 投票一覧へ
+            await self._page.click(
+                '.ui-page-active a:text-is("セット")', timeout=PURCHASE_TIMEOUT_MS
+            )
             await self._wait_for_jqm_ready()
 
-            # Step 9: 「入力終了」をクリック（投票一覧画面）
-            await self._page.click('a:has-text("入力終了")', timeout=PURCHASE_TIMEOUT_MS)
+            # Step 9: 「入力終了」をクリック → 合計金額入力へ
+            await self._page.click(
+                '.ui-page-active a:text-is("入力終了")', timeout=PURCHASE_TIMEOUT_MS
+            )
             await self._wait_for_jqm_ready()
 
             # Step 10: 合計金額確認入力（円単位）→「投票」ボタン
-            await self._page.fill('input[type="tel"]', str(amount), timeout=PURCHASE_TIMEOUT_MS)
-            await self._page.click('a:has-text("投票")', timeout=PURCHASE_TIMEOUT_MS)
+            # 合計金額入力ページの入力欄は id="sum"。.ui-page-active スコープで
+            # 非アクティブページの tel 入力と混在しないよう id 指定する。
+            # 合計金額確認入力ページは FORM0 (POST) を持つ。
+            # 「投票」ボタンの extap→FORM0.submit() は Playwright click / trigger('tap') では
+            # 発火しないため、#sum を fill してから直接 submit する。
+            # wait_for_selector で DOM の準備を確認してから操作する。
+            # #sum は FORM0 の外にある独立した入力欄。
+            # JS の投票ハンドラが #sum を読んで検証し、confirm ダイアログ後に FORM0.submit() する。
+            # Playwright の click() は JQM tap を発火しないので trigger('tap') を使う。
+            # confirm ダイアログは login() の accept ハンドラで自動承認される。
+            await self._page.wait_for_selector('#sum', state='attached', timeout=PURCHASE_TIMEOUT_MS)
+            await self._page.locator('#sum').fill(str(amount), timeout=PURCHASE_TIMEOUT_MS)
+            async with self._page.expect_navigation(
+                wait_until="domcontentloaded", timeout=PURCHASE_TIMEOUT_MS
+            ):
+                # 75ms 後に extap → 投票 JS ハンドラ → confirm（accept）→ FORM0.submit()
+                await self._page.evaluate(
+                    "window.jQuery('.ui-page-active .btnColor a').trigger('tap')"
+                )
             await self._wait_for_jqm_ready()
 
             # Step 11: 完了確認
-            page_text = await self._page.text_content("body") or ""
-            if "残高不足" in page_text:
-                return {"status": "failed", "error_message": "残高不足"}
+            # 投票完了なら active page に「受付番号」が表示される。
+            # inner_text() で display:none の noscript テキストを除外し正確に判定する。
+            active_text = await self._page.locator('.ui-page-active').inner_text() or ""
+            logger.info(f"Step 11 active_text: {active_text[:300]}")
 
-            return {"status": "success", "error_message": None}
+            ERROR_PATTERNS = [
+                "残高不足",
+                "締め切られました",
+                "締め切り",
+                "金額が一致しません",
+                "合計金額が違います",
+                "投票できません",
+                "エラーが発生",
+                "ご確認ください",
+            ]
+            for pat in ERROR_PATTERNS:
+                if pat in active_text:
+                    return {"status": "failed", "error_message": pat}
+
+            if "受付番号" in active_text:
+                return {"status": "success", "error_message": None}
+
+            # 受付番号が見つからない場合はページ内容を添えて失敗扱い
+            snippet = active_text.strip()[:200]
+            return {"status": "failed", "error_message": f"完了確認できず: {snippet}"}
 
         except Exception as e:
             error_msg = str(e)
