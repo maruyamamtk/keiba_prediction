@@ -392,7 +392,7 @@ keiba_prediction/
 │   │   │   ├── __init__.py
 │   │   │   ├── jrdb_downloader.py    # JRDBダウンローダー
 │   │   │   ├── jrdb_parser.py        # JRDBデータパーサー
-│   │   │   ├── ipat_purchaser.py     # JRA IPAT自動馬券購入（Playwright）
+│   │   │   ├── ipat_purchaser.py     # JRA IPAT SP版自動馬券購入（Playwright + jQuery Mobile）
 │   │   │   ├── load_to_bq.py         # BigQueryロード（MERGE+重複スキップ）
 │   │   │   ├── netkeiba_scraper.py   # netkeibaリアルタイムオッズスクレイパー
 │   │   │   └── upload_to_gcs.py      # GCSアップロード
@@ -445,6 +445,7 @@ keiba_prediction/
 │   ├── run_strategy.py               # 日次投資戦略策定スクリプト（手動確認用）
 │   ├── run_strategy_optimization.py  # 投資パラメータ最適化スクリプト（手動実行）
 │   ├── scrape_historical_odds.py       # 過去レース一括オッズ取得（netkeibaスクレイプ）
+│   ├── test_ipat_e2e.py              # IPAT自動購入E2Eテストスクリプト（ローカル動作確認用）
 │   ├── setup_bigquery.sh
 │   ├── setup_gcp.sh
 │   ├── sync_to_gcs.sh
@@ -620,7 +621,7 @@ Cloud RunにデプロイされたFastAPIアプリケーションは以下のエ�
 | POST | `/api/v1/odds/scrape` | netkeibaから当日オッズを取得し `predictions.daily_odds` にUPSERT保存。`include_combo=true` で組み合わせ馬券オッズも取得し `predictions.daily_odds_combo` に保存。 |
 | POST | `/api/v1/strategy/daily` | 当日の投資戦略を策定。`config/strategy_config.yaml` のパラメータを使用。`dry_run` のデフォルトは `true`（BQ保存なし）。実際のBQ保存は発走直前の `race-day-purchase` が最新オッズで上書き実行する（Issue #231）。 |
 | POST | `/api/v1/line/webhook` | LINE Messaging API Webhook受信。「日付 競馬場名 レース番号」形式のメッセージに対して予測テーブルと推奨馬券リストを返信。 |
-| POST | `/api/v1/purchase/daily` | 発走5分前JRA IPAT自動馬券購入。`dry_run` のデフォルトは `false`（本番購入モード）。`dry_run=true` の場合はIPATログイン・購入をスキップし推奨馬券をLINE通知のみ実行。結果は `predictions.purchase_history` に保存。 |
+| POST | `/api/v1/purchase/daily` | 発走5分前JRA IPAT SP版自動馬券購入。対応馬券種: 単勝・複勝・馬連・ワイド・馬単・三連複。`dry_run` のデフォルトは `false`（本番購入モード）。`dry_run=true` の場合はIPATログイン・購入をスキップし推奨馬券をLINE通知のみ実行。結果は `predictions.purchase_history` に保存。 |
 
 ---
 
@@ -897,4 +898,5 @@ python -m pytest tests/ --cov=src --cov-report=html
 - [JRDB公式サイト](http://www.jrdb.com/)
 - [LightGBM Documentation](https://lightgbm.readthedocs.io/)
 - [Claude Code](https://claude.ai/code)
+| 2026-04-19 | PR #247〜#250（IPAT SP版自動購入フロー修正: SP版ウィザード形式への全面移行、jQuery Mobile tap イベント対応（`trigger('tap')` で馬番選択・投票ボタン制御）、confirm ダイアログ自動承認、全馬券種（単勝・複勝・馬連・ワイド・馬単・三連複）の実購入確認済み、`scripts/test_ipat_e2e.py` 追加）を反映 |
 | 2026-04-04 | Issue #214（raw.race_info に start_time カラム追加: HHMM形式、jrdb_parser.py + scripts/add_start_time_to_race_info.py 追加）・Issue #213（発走5分前JRA IPAT自動馬券購入パイプライン: POST /api/v1/purchase/daily 追加、ipat_purchaser.py・predictions.purchase_history・scripts/create_purchase_history_table.py 追加、Cloud Scheduler ジョブ race-day-purchase 追加、dry_run フラグで本番切り替え可能）の実装を反映 |

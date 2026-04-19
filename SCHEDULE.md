@@ -121,7 +121,9 @@
 
 **スケジュール**: 土日 AM 8:00〜PM 5:55 の5分おき
 
-**概要**: 5分おきに起動し、現在時刻の5〜10分後に発走するレースが存在する場合に以下を実行します。netkeibaで最新オッズをスクレイピングして `daily_odds` を上書きし、投資戦略を再計算して `investment_decisions` を更新した上で、JRA IPATで馬券を自動購入します。
+**概要**: 5分おきに起動し、現在時刻の5〜10分後に発走するレースが存在する場合に以下を実行します。netkeibaで最新オッズをスクレイピングして `daily_odds` を上書きし、投資戦略を再計算して `investment_decisions` を更新した上で、JRA IPAT SP版（`https://www.ipat.jra.go.jp/sp/`）で馬券を自動購入します。
+
+**対応馬券種**: 単勝・複勝・馬連・ワイド・馬単・三連複
 
 **処理フロー**（両モード共通 → dry_run 分岐）:
 1. `raw.race_info` から当日の発走時刻付きレース一覧を取得
@@ -133,7 +135,13 @@
    - 失敗時はフォールバック（既存の `investment_decisions` を使用）
 5. 推奨馬券を取得し、**dry_run に応じて分岐**:
    - `dry_run=true`: LINE通知のみ（IPATログイン・購入は行わない）
-   - `dry_run=false`: IPATログイン → 馬券購入 → `predictions.purchase_history` に保存 → LINE通知
+   - `dry_run=false`: IPAT SP版にログイン → ウィザード形式で馬券購入（`IpatPurchaser`） → `predictions.purchase_history` に保存 → LINE通知
+
+**IPAT SP版購入ウィザード（`src/automation/data/ipat_purchaser.py`）**:
+- ログイン: `https://www.ipat.jra.go.jp/sp/index.cgi`（SP版）
+- 購入フロー: トップメニュー → 競馬場 → レース → 式別 → 投票形式 → 馬番選択 → 金額入力 → セット → 入力終了 → 合計金額確認 → 投票
+- 馬番選択は jQuery Mobile の `tap` イベント（`trigger('tap')`）で制御（Playwright `click()` は JQM tap 非対応）
+- 投票確認 confirm ダイアログは自動承認（`asyncio.create_task(d.accept())`）
 
 **dry_run挙動**:
 
@@ -329,7 +337,19 @@ python3 scripts/run_strategy.py --project-id <PROJECT_ID> --target-date <YYYY-MM
 gcloud secrets list --project=<PROJECT_ID>
 ```
 
-2. dry_runモードで動作確認:
+2. ローカルE2Eテストスクリプトで動作確認（実購入・ローカルのみ）:
+
+```bash
+IPAT_MEMBER_ID=xxx IPAT_PIN=xxx IPAT_PAT_NUMBER=xxx \
+  .venv/bin/python scripts/test_ipat_e2e.py \
+    --venue "中山(日)" --race 11 --bet-type wide --horses 1 12 --amount 100
+
+# dry-runモード（ログインのみ、購入しない）
+IPAT_MEMBER_ID=xxx IPAT_PIN=xxx IPAT_PAT_NUMBER=xxx \
+  .venv/bin/python scripts/test_ipat_e2e.py --dry-run
+```
+
+3. dry_runモードでCloud Run経由の動作確認:
 
 ```bash
 curl -X POST <CLOUD_RUN_URL>/api/v1/purchase/daily \
