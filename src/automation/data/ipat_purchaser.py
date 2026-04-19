@@ -24,6 +24,7 @@ Issue #213: 発走5分前JRA IPAT自動馬券購入パイプラインの実装
 
 import datetime
 import logging
+import re
 import uuid
 
 from google.cloud import bigquery
@@ -306,16 +307,53 @@ class IpatPurchaser:
             await self._page.click(f'.selectList a:text-is("{bet_label}")', timeout=PURCHASE_TIMEOUT_MS)
             await self._wait_for_jqm_ready()
 
-            # Step 6: 馬番選択（複数頭は1頭ずつクリック）
-            # 馬番セル: <a class="ui-link" data-value="3">3\n馬名\nオッズ</a>
-            # data-value 属性が馬番なのでそれを使う。テキストには馬名・オッズが含まれるため
-            # text-is では一致しない。
+            # Step 5b: 投票形式選択（複数頭馬券のみ: ワイド/馬連/三連複等）
+            # 式別選択後に「通常/ながし/ボックス/フォーメーション」画面が現れる場合のみ処理。
+            try:
+                await self._page.wait_for_selector(
+                    '.selectList a:text-is("通常")',
+                    state="visible",
+                    timeout=3000,
+                )
+                await self._page.click('.selectList a:text-is("通常")', timeout=PURCHASE_TIMEOUT_MS)
+                await self._wait_for_jqm_ready()
+            except Exception:
+                pass  # 単勝・複勝などはこの画面が存在しない
+
+            # Step 6: 馬番選択
+            # IPAT SP版は jqm.extend_260206.js が multichoice リスト項目に
+            #   $('ul[data-role=multichoice] li a').bind('tap', toggleClass('selected'))
+            # を、740_260206.js が extap で PAIRCHECK + KinBtnControl をバインドしている。
+            # JQM の tap イベントは touchstart/touchend か vmousedown+vmouseup から合成されるが、
+            # Playwright のマウス click() では tap が発火しないため jQuery.trigger('tap') を使う。
+            # tap 発火後 75ms でextap が動くため wait_for_timeout(200) でバッファを確保する。
             for h in horse_numbers:
+                await self._page.evaluate(
+                    """(h) => {
+                        window.jQuery('.ui-page-active .selectHorse [data-value="' + h + '"]')
+                            .trigger('tap');
+                    }""",
+                    h,
+                )
+                await self._page.wait_for_timeout(200)
+
+            # Step 6c: 複数頭馬券では「金額入力画面へ」ボタンで金額入力画面へ遷移
+            # 選択完了後は KinBtnControl が disabled を除去しているので click() で遷移できる。
+            # evaluate() 内から trigger('extap') すると JQM の内部 Deferred が壊れるため
+            # Playwright のネイティブ click() を使う（tap→extap の非同期チェーンが正常動作）。
+            try:
+                await self._page.wait_for_selector(
+                    '.ui-page-active a:text-is("金額入力画面へ")',
+                    state="attached",
+                    timeout=3000,
+                )
                 await self._page.click(
-                    f'a[data-value="{h}"]',
+                    '.ui-page-active a:text-is("金額入力画面へ")',
                     timeout=PURCHASE_TIMEOUT_MS,
                 )
                 await self._wait_for_jqm_ready()
+            except Exception:
+                pass  # 単勝・複勝など「金額入力画面へ」ボタンが存在しない場合はスキップ
 
             # Step 7: 金額入力（__00円形式: 500円 → 入力値「5」）
             amount_units = str(amount // 100)
