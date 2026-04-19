@@ -25,7 +25,6 @@ Issue #213: 発走5分前JRA IPAT自動馬券購入パイプラインの実装
 import asyncio
 import datetime
 import logging
-import re
 import uuid
 
 from google.cloud import bigquery
@@ -319,8 +318,10 @@ class IpatPurchaser:
                 )
                 await self._page.click('.selectList a:text-is("通常")', timeout=PURCHASE_TIMEOUT_MS)
                 await self._wait_for_jqm_ready()
-            except Exception:
-                pass  # 単勝・複勝などはこの画面が存在しない
+            except Exception as e:
+                if "Timeout" not in type(e).__name__:
+                    logger.warning(f"Step 5b 予期しないエラー（スキップ）: {e}")
+                # 単勝・複勝などはこの画面が存在しないため TimeoutError は無視
 
             # Step 6: 馬番選択
             # IPAT SP版は jqm.extend_260206.js が multichoice リスト項目に
@@ -354,8 +355,10 @@ class IpatPurchaser:
                     timeout=PURCHASE_TIMEOUT_MS,
                 )
                 await self._wait_for_jqm_ready()
-            except Exception:
-                pass  # 単勝・複勝など「金額入力画面へ」ボタンが存在しない場合はスキップ
+            except Exception as e:
+                if "Timeout" not in type(e).__name__:
+                    logger.warning(f"Step 6c 予期しないエラー（スキップ）: {e}")
+                # 単勝・複勝など「金額入力画面へ」ボタンが存在しない場合は TimeoutError を無視
 
             # Step 7: 金額入力（__00円形式: 500円 → 入力値「5」）
             # .ui-page-active でスコープし、非アクティブページの入力欄と混同しない。
@@ -377,16 +380,10 @@ class IpatPurchaser:
             await self._wait_for_jqm_ready()
 
             # Step 10: 合計金額確認入力（円単位）→「投票」ボタン
-            # 合計金額入力ページの入力欄は id="sum"。.ui-page-active スコープで
-            # 非アクティブページの tel 入力と混在しないよう id 指定する。
-            # 合計金額確認入力ページは FORM0 (POST) を持つ。
-            # 「投票」ボタンの extap→FORM0.submit() は Playwright click / trigger('tap') では
-            # 発火しないため、#sum を fill してから直接 submit する。
-            # wait_for_selector で DOM の準備を確認してから操作する。
-            # #sum は FORM0 の外にある独立した入力欄。
-            # JS の投票ハンドラが #sum を読んで検証し、confirm ダイアログ後に FORM0.submit() する。
-            # Playwright の click() は JQM tap を発火しないので trigger('tap') を使う。
-            # confirm ダイアログは login() の accept ハンドラで自動承認される。
+            # #sum は FORM0 の外にある独立した入力欄。JS の投票ハンドラが #sum を読んで
+            # 検証し、confirm ダイアログ（login() の accept ハンドラで自動承認）後に
+            # FORM0.submit() する。Playwright click() は JQM tap を発火しないため
+            # trigger('tap') 経由で JS ハンドラを起動する。
             await self._page.wait_for_selector('#sum', state='attached', timeout=PURCHASE_TIMEOUT_MS)
             await self._page.locator('#sum').fill(str(amount), timeout=PURCHASE_TIMEOUT_MS)
             async with self._page.expect_navigation(
