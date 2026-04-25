@@ -173,6 +173,74 @@ class IpatPurchaser:
             logger.error(f"JRA IPAT ログインエラー: {e}", exc_info=True)
             raise IpatLoginError(f"ログイン処理中にエラーが発生しました: {e}") from e
 
+    async def purchase_bets_for_race(
+        self,
+        bets: list[dict],
+        venue_name: str,
+        race_number: int,
+    ) -> dict:
+        """
+        同一レースの複数馬券を一括購入する。
+
+        投票一覧に全馬券を追加してから1回の「投票」で確定する。
+        2件目以降は「場名から続けて入力」で同じウィザードセッションを継続する。
+
+        Args:
+            bets: 馬券リスト [{"bet_type": str, "horse_numbers": list[int], "amount": int}, ...]
+            venue_name: 競馬場名（曜日付き、例: "中山(土)"）
+            race_number: レース番号（例: 7）
+
+        Returns:
+            {"status": "success"|"failed", "total_amount": int, "error_message": str|None}
+
+        Raises:
+            IpatPurchaseError: 予期しないエラーが発生した場合
+        """
+        if self._page is None:
+            raise IpatPurchaseError("ブラウザが初期化されていません。")
+        if not bets:
+            raise IpatPurchaseError("馬券リストが空です。")
+
+        for bet in bets:
+            if bet.get("bet_type") not in BET_TYPE_MAP:
+                raise IpatPurchaseError(f"未対応の馬券種: {bet.get('bet_type')}")
+            amount = bet.get("amount", 0)
+            if amount <= 0 or amount % 100 != 0:
+                raise IpatPurchaseError(f"購入金額は100円単位の正の整数である必要があります: {amount}")
+
+        total_amount = sum(b["amount"] for b in bets)
+        summary = ", ".join(
+            f"{BET_TYPE_MAP[b['bet_type']]} {'-'.join(str(h) for h in b['horse_numbers'])} {b['amount']}円"
+            for b in bets
+        )
+        logger.info(f"一括購入開始: {venue_name} {race_number}R / {len(bets)}件 合計{total_amount}円 [{summary}]")
+
+        try:
+            await self._navigate_to_top_menu()
+
+            for i, bet in enumerate(bets):
+                await self._add_bet_to_list(
+                    bet["bet_type"],
+                    bet["horse_numbers"],
+                    bet["amount"],
+                    venue_name,
+                    race_number,
+                    is_first_bet=(i == 0),
+                )
+
+            result = await self._finalize_and_submit(total_amount)
+            result["total_amount"] = total_amount
+            logger.info(f"一括購入完了: {venue_name} {race_number}R → {result['status']}")
+            return result
+
+        except IpatPurchaseError:
+            raise
+        except Exception as e:
+            error_msg = str(e)
+            if "Timeout" in error_msg:
+                return {"status": "failed", "total_amount": total_amount, "error_message": f"購入画面タイムアウト: {error_msg}"}
+            raise IpatPurchaseError(error_msg) from e
+
     async def purchase_bet(
         self,
         bet_type: str,
@@ -182,44 +250,16 @@ class IpatPurchaser:
         race_number: int,
     ) -> dict:
         """
-        馬券を1件購入する（IPATウィザード形式）。
+        馬券を1件購入する（後方互換ラッパー）。
 
-        Args:
-            bet_type: 馬券種 ("win"/"place"/"wide"/"umaren"/"umatan"/"sanrenpuku")
-            horse_numbers: 馬番リスト（単勝/複勝は [n]、2頭は [n, m]、3頭は [n, m, k]）
-            amount: 購入金額（100円単位）
-            venue_name: 競馬場名（曜日付き、例: "中山(土)"）
-            race_number: レース番号（例: 7）
+        内部的に purchase_bets_for_race を呼び出す。
 
         Returns:
             {"status": "success"|"failed", "error_message": str|None}
-
-        Raises:
-            IpatPurchaseError: 購入処理中に予期しないエラーが発生した場合
         """
-        if self._page is None:
-            raise IpatPurchaseError("ブラウザが初期化されていません。")
-
-        if bet_type not in BET_TYPE_MAP:
-            raise IpatPurchaseError(f"未対応の馬券種: {bet_type}")
-
-        if amount <= 0 or amount % 100 != 0:
-            raise IpatPurchaseError(f"購入金額は100円単位の正の整数である必要があります: {amount}")
-
-        bet_type_label = BET_TYPE_MAP[bet_type]
-        horse_str = "-".join(str(h) for h in horse_numbers)
-        logger.info(f"馬券購入開始: {bet_type_label} {horse_str} {amount}円")
-
-        try:
-            result = await self._execute_purchase(bet_type, horse_numbers, amount, venue_name, race_number)
-            logger.info(f"馬券購入完了: {bet_type_label} {horse_str} {amount}円 → {result['status']}")
-            return result
-
-        except IpatPurchaseError:
-            raise
-        except Exception as e:
-            logger.error(f"馬券購入エラー: {bet_type_label} {horse_str} - {e}", exc_info=True)
-            return {"status": "failed", "error_message": str(e)}
+        bets = [{"bet_type": bet_type, "horse_numbers": horse_numbers, "amount": amount}]
+        result = await self.purchase_bets_for_race(bets, venue_name, race_number)
+        return {"status": result["status"], "error_message": result.get("error_message")}
 
     async def _wait_for_jqm_ready(self) -> None:
         """jQuery Mobile のページ遷移が完了するまで待機する。
@@ -252,181 +292,146 @@ class IpatPurchaser:
         await self._page.click('a:has-text("トップメニュー")', timeout=PURCHASE_TIMEOUT_MS)
         await self._page.wait_for_load_state("domcontentloaded", timeout=PURCHASE_TIMEOUT_MS)
 
-    async def _execute_purchase(
+    async def _add_bet_to_list(
         self,
         bet_type: str,
         horse_numbers: list[int],
         amount: int,
         venue_name: str,
         race_number: int,
-    ) -> dict:
+        is_first_bet: bool = True,
+    ) -> None:
         """
-        IPAT SP版のウィザード形式で馬券を1件購入する内部メソッド。
+        馬券1件をウィザードで入力し「セット」→投票一覧まで進む。
 
-        購入フロー（全ステップが pw_740_i.cgi 上で jQuery Mobile ページ遷移で処理される）:
-          1. トップメニューへ遷移
-          2. 「通常投票」アイコンをクリック → 競馬場選択画面
-          3. 競馬場を選択（ul.selectList 内の完全一致）
-          4. レースを選択（ul.selectList 内の部分一致）
-          5. 式別を選択（ul.selectList 内の完全一致）
-          6. 馬番を選択（1頭ずつ、:text-is() 完全一致）
-          7. 金額入力（__00円形式 = 入力値×100円）→「セット」
-          8. 投票一覧 → 「入力終了」
-          9. 合計金額入力（円単位）→「投票」
-         10. 完了確認
-
-        各ステップ後に _wait_for_jqm_ready() を呼ぶことで、
-        jQuery Mobile の ui-loader-cover が消えてから次のクリックを行う。
+        is_first_bet=True:  「通常投票」クリックから開始
+        is_first_bet=False: 投票一覧の「場名から続けて入力」クリックから開始
         """
-        try:
-            # Step 1: トップメニューへ遷移
-            await self._navigate_to_top_menu()
+        bet_label = BET_TYPE_MAP[bet_type]
+        horse_str = "-".join(str(h) for h in horse_numbers)
+        logger.info(f"馬券入力({'初回' if is_first_bet else '追加'}): {bet_label} {horse_str} {amount}円")
 
-            # Step 2: 「通常投票」アイコンをクリック → 競馬場選択画面
+        if is_first_bet:
+            # 「通常投票」アイコンをクリック → 競馬場選択画面
             await self._page.click('a:has-text("通常投票")', timeout=PURCHASE_TIMEOUT_MS)
             await self._page.wait_for_load_state("domcontentloaded", timeout=PURCHASE_TIMEOUT_MS)
             await self._wait_for_jqm_ready()
-
-            # Step 3: 競馬場選択（例: 「中山(土)」）
-            # ul.selectList 内の完全一致で指定。
-            # ページ内に存在する隠れた jQuery Mobile ページ（投票一覧等）の
-            # パンくず「中山(土)」と混同しないよう .selectList でスコープを絞る。
-            await self._page.click(f'.selectList a:text-is("{venue_name}")', timeout=PURCHASE_TIMEOUT_MS)
-            await self._wait_for_jqm_ready()
-
-            # Step 4: レース選択（例: 「7R」「9R 袖ケ浦特別」）
-            # レース名付き行も正しく選択するため has-text の部分一致を使用。
-            # ul.selectList でスコープを絞り、他ページ要素との混同を防ぐ。
+        else:
+            # 投票一覧の「場名から続けて入力」で同一セッションを継続
             await self._page.click(
-                f'.selectList a:has-text("{race_number}R")',
-                timeout=PURCHASE_TIMEOUT_MS,
+                '.ui-page-active a:text-is("場名から続けて入力")', timeout=PURCHASE_TIMEOUT_MS
             )
             await self._wait_for_jqm_ready()
 
-            # Step 5: 式別選択（例: 「複勝」「３連複」）
-            bet_label = BET_TYPE_MAP[bet_type]
-            await self._page.click(f'.selectList a:text-is("{bet_label}")', timeout=PURCHASE_TIMEOUT_MS)
-            await self._wait_for_jqm_ready()
+        # 競馬場選択（例: 「中山(土)」）
+        # ul.selectList 内の完全一致で指定。
+        # 隠れた JQM ページのパンくず「中山(土)」と混同しないよう .selectList でスコープを絞る。
+        await self._page.click(f'.selectList a:text-is("{venue_name}")', timeout=PURCHASE_TIMEOUT_MS)
+        await self._wait_for_jqm_ready()
 
-            # Step 5b: 投票形式選択（複数頭馬券のみ: ワイド/馬連/三連複等）
-            # 式別選択後に「通常/ながし/ボックス/フォーメーション」画面が現れる場合のみ処理。
-            try:
-                await self._page.wait_for_selector(
-                    '.selectList a:text-is("通常")',
-                    state="visible",
-                    timeout=3000,
-                )
-                await self._page.click('.selectList a:text-is("通常")', timeout=PURCHASE_TIMEOUT_MS)
-                await self._wait_for_jqm_ready()
-            except Exception as e:
-                if "Timeout" not in type(e).__name__:
-                    logger.warning(f"Step 5b 予期しないエラー（スキップ）: {e}")
-                # 単勝・複勝などはこの画面が存在しないため TimeoutError は無視
+        # レース選択（例: 「7R」「9R 袖ケ浦特別」）
+        await self._page.click(
+            f'.selectList a:has-text("{race_number}R")', timeout=PURCHASE_TIMEOUT_MS
+        )
+        await self._wait_for_jqm_ready()
 
-            # Step 6: 馬番選択
-            # IPAT SP版は jqm.extend_260206.js が multichoice リスト項目に
-            #   $('ul[data-role=multichoice] li a').bind('tap', toggleClass('selected'))
-            # を、740_260206.js が extap で PAIRCHECK + KinBtnControl をバインドしている。
-            # JQM の tap イベントは touchstart/touchend か vmousedown+vmouseup から合成されるが、
-            # Playwright のマウス click() では tap が発火しないため jQuery.trigger('tap') を使う。
-            # tap 発火後 75ms でextap が動くため wait_for_timeout(200) でバッファを確保する。
-            for h in horse_numbers:
-                await self._page.evaluate(
-                    """(h) => {
-                        window.jQuery('.ui-page-active .selectHorse [data-value="' + h + '"]')
-                            .trigger('tap');
-                    }""",
-                    h,
-                )
-                await self._page.wait_for_timeout(200)
+        # 式別選択（例: 「複勝」「３連複」）
+        await self._page.click(f'.selectList a:text-is("{bet_label}")', timeout=PURCHASE_TIMEOUT_MS)
+        await self._wait_for_jqm_ready()
 
-            # Step 6c: 複数頭馬券では「金額入力画面へ」ボタンで金額入力画面へ遷移
-            # 選択完了後は KinBtnControl が disabled を除去しているので click() で遷移できる。
-            # evaluate() 内から trigger('extap') すると JQM の内部 Deferred が壊れるため
-            # Playwright のネイティブ click() を使う（tap→extap の非同期チェーンが正常動作）。
-            try:
-                await self._page.wait_for_selector(
-                    '.ui-page-active a:text-is("金額入力画面へ")',
-                    state="attached",
-                    timeout=3000,
-                )
-                await self._page.click(
-                    '.ui-page-active a:text-is("金額入力画面へ")',
-                    timeout=PURCHASE_TIMEOUT_MS,
-                )
-                await self._wait_for_jqm_ready()
-            except Exception as e:
-                if "Timeout" not in type(e).__name__:
-                    logger.warning(f"Step 6c 予期しないエラー（スキップ）: {e}")
-                # 単勝・複勝など「金額入力画面へ」ボタンが存在しない場合は TimeoutError を無視
-
-            # Step 7: 金額入力（__00円形式: 500円 → 入力値「5」）
-            # .ui-page-active でスコープし、非アクティブページの入力欄と混同しない。
-            amount_units = str(amount // 100)
-            await self._page.fill(
-                '.ui-page-active input[type="tel"]', amount_units, timeout=PURCHASE_TIMEOUT_MS
+        # 投票形式選択（複数頭馬券のみ）
+        try:
+            await self._page.wait_for_selector(
+                '.selectList a:text-is("通常")', state="visible", timeout=3000
             )
-
-            # Step 8: 「セット」ボタンをクリック → 投票一覧へ
-            await self._page.click(
-                '.ui-page-active a:text-is("セット")', timeout=PURCHASE_TIMEOUT_MS
-            )
+            await self._page.click('.selectList a:text-is("通常")', timeout=PURCHASE_TIMEOUT_MS)
             await self._wait_for_jqm_ready()
-
-            # Step 9: 「入力終了」をクリック → 合計金額入力へ
-            await self._page.click(
-                '.ui-page-active a:text-is("入力終了")', timeout=PURCHASE_TIMEOUT_MS
-            )
-            await self._wait_for_jqm_ready()
-
-            # Step 10: 合計金額確認入力（円単位）→「投票」ボタン
-            # #sum は FORM0 の外にある独立した入力欄。JS の投票ハンドラが #sum を読んで
-            # 検証し、confirm ダイアログ（login() の accept ハンドラで自動承認）後に
-            # FORM0.submit() する。Playwright click() は JQM tap を発火しないため
-            # trigger('tap') 経由で JS ハンドラを起動する。
-            await self._page.wait_for_selector('#sum', state='attached', timeout=PURCHASE_TIMEOUT_MS)
-            await self._page.locator('#sum').fill(str(amount), timeout=PURCHASE_TIMEOUT_MS)
-            async with self._page.expect_navigation(
-                wait_until="domcontentloaded", timeout=PURCHASE_TIMEOUT_MS
-            ):
-                # 75ms 後に extap → 投票 JS ハンドラ → confirm（accept）→ FORM0.submit()
-                await self._page.evaluate(
-                    "window.jQuery('.ui-page-active .btnColor a').trigger('tap')"
-                )
-            await self._wait_for_jqm_ready()
-
-            # Step 11: 完了確認
-            # 投票完了なら active page に「受付番号」が表示される。
-            # inner_text() で display:none の noscript テキストを除外し正確に判定する。
-            active_text = await self._page.locator('.ui-page-active').inner_text() or ""
-            logger.info(f"Step 11 active_text: {active_text[:300]}")
-
-            ERROR_PATTERNS = [
-                "残高不足",
-                "締め切られました",
-                "締め切り",
-                "金額が一致しません",
-                "合計金額が違います",
-                "投票できません",
-                "エラーが発生",
-                "ご確認ください",
-            ]
-            for pat in ERROR_PATTERNS:
-                if pat in active_text:
-                    return {"status": "failed", "error_message": pat}
-
-            if "受付番号" in active_text:
-                return {"status": "success", "error_message": None}
-
-            # 受付番号が見つからない場合はページ内容を添えて失敗扱い
-            snippet = active_text.strip()[:200]
-            return {"status": "failed", "error_message": f"完了確認できず: {snippet}"}
-
         except Exception as e:
-            error_msg = str(e)
-            if "Timeout" in error_msg:
-                return {"status": "failed", "error_message": f"購入画面タイムアウト: {error_msg}"}
-            raise IpatPurchaseError(error_msg) from e
+            if "Timeout" not in type(e).__name__:
+                logger.warning(f"通常選択スキップ: {e}")
+
+        # 馬番選択
+        # JQM tap イベントは Playwright click() では発火しないため jQuery.trigger('tap') を使う。
+        for h in horse_numbers:
+            await self._page.evaluate(
+                """(h) => {
+                    window.jQuery('.ui-page-active .selectHorse [data-value="' + h + '"]')
+                        .trigger('tap');
+                }""",
+                h,
+            )
+            await self._page.wait_for_timeout(200)
+
+        # 「金額入力画面へ」（複数頭馬券のみ）
+        # evaluate() 内から trigger('extap') すると JQM Deferred が壊れるため Playwright click() を使う。
+        try:
+            await self._page.wait_for_selector(
+                '.ui-page-active a:text-is("金額入力画面へ")', state="attached", timeout=3000
+            )
+            await self._page.click(
+                '.ui-page-active a:text-is("金額入力画面へ")', timeout=PURCHASE_TIMEOUT_MS
+            )
+            await self._wait_for_jqm_ready()
+        except Exception as e:
+            if "Timeout" not in type(e).__name__:
+                logger.warning(f"金額入力画面へスキップ: {e}")
+
+        # 金額入力（__00円形式: 500円 → 入力値「5」）
+        amount_units = str(amount // 100)
+        await self._page.fill(
+            '.ui-page-active input[type="tel"]', amount_units, timeout=PURCHASE_TIMEOUT_MS
+        )
+
+        # 「セット」→ 投票一覧へ
+        await self._page.click('.ui-page-active a:text-is("セット")', timeout=PURCHASE_TIMEOUT_MS)
+        await self._wait_for_jqm_ready()
+        logger.info(f"投票一覧に追加: {bet_label} {horse_str} {amount}円")
+
+    async def _finalize_and_submit(self, total_amount: int) -> dict:
+        """
+        投票一覧から「入力終了」→ 合計金額確認 →「投票」まで処理する。
+
+        #sum は FORM0 の外にある独立した入力欄。JS の投票ハンドラが #sum を読んで
+        検証し、confirm ダイアログ後に FORM0.submit() する。
+        """
+        # 「入力終了」→ 合計金額入力へ
+        await self._page.click('.ui-page-active a:text-is("入力終了")', timeout=PURCHASE_TIMEOUT_MS)
+        await self._wait_for_jqm_ready()
+
+        # 合計金額確認入力 → 「投票」
+        await self._page.wait_for_selector('#sum', state='attached', timeout=PURCHASE_TIMEOUT_MS)
+        await self._page.locator('#sum').fill(str(total_amount), timeout=PURCHASE_TIMEOUT_MS)
+        async with self._page.expect_navigation(
+            wait_until="domcontentloaded", timeout=PURCHASE_TIMEOUT_MS
+        ):
+            await self._page.evaluate(
+                "window.jQuery('.ui-page-active .btnColor a').trigger('tap')"
+            )
+        await self._wait_for_jqm_ready()
+
+        # 完了確認
+        active_text = await self._page.locator('.ui-page-active').inner_text() or ""
+        logger.info(f"完了確認 active_text: {active_text[:300]}")
+
+        ERROR_PATTERNS = [
+            "残高不足",
+            "締め切られました",
+            "締め切り",
+            "金額が一致しません",
+            "合計金額が違います",
+            "投票できません",
+            "エラーが発生",
+            "ご確認ください",
+        ]
+        for pat in ERROR_PATTERNS:
+            if pat in active_text:
+                return {"status": "failed", "error_message": pat}
+
+        if "受付番号" in active_text:
+            return {"status": "success", "error_message": None}
+
+        snippet = active_text.strip()[:200]
+        return {"status": "failed", "error_message": f"完了確認できず: {snippet}"}
 
     async def logout(self) -> None:
         """IPAT からログアウトする"""
