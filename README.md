@@ -745,7 +745,7 @@ gcloud scheduler jobs run daily-data-pipeline --location=asia-northeast1
 | `race-day-predict` | 毎日 AM 8:00 | レース予測 |
 | `race-day-odds-scrape` | 毎日 AM 8:15 | netkeibaオッズ取得 |
 | `race-day-strategy` | 毎日 AM 8:30 | 投資戦略策定（dry_run=true） |
-| `monthly-model-retrain` | 毎月第1月曜 AM 8:00 | モデル月次再学習 |
+| `weekly-model-retrain` | 毎週月曜 AM 8:00 | モデル週次再学習 |
 | `race-day-purchase` | 土日 8:00〜17:55 の5分おき | 発走直前IPAT自動馬券購入 |
 
 詳細な設定内容・操作コマンド・障害対応は [SCHEDULE.md](./SCHEDULE.md) を参照してください。

@@ -10,7 +10,7 @@
 #   2. race-day-predict       AM 8:00 JST  翌日レース予測
 #   3. race-day-odds-scrape   AM 8:15 JST  netkeibaオッズ取得（単複＋組み合わせ）
 #   4. race-day-strategy      AM 8:30 JST  投資戦略策定・investment_decisions保存
-#   5. monthly-model-retrain  毎月第1月曜 AM 8:00 JST  LightGBMモデル月次再学習
+#   5. weekly-model-retrain   毎週月曜 AM 8:00 JST  LightGBMモデル週次再学習
 #   6. race-day-purchase      土日 8:00〜17:00 5分おき  IPAT自動馬券購入
 #
 # 使用方法:
@@ -24,7 +24,7 @@
 #
 # 【重要】deploy_cloud_run.sh 実行後は必ずこのスクリプトを再実行してください。
 # Cloud Runのサービスを新たにデプロイするとURLが変わる場合があり、
-# また新規ジョブ（monthly-model-retrain 等）はこのスクリプトを実行しないと
+# また新規ジョブ（weekly-model-retrain 等）はこのスクリプトを実行しないと
 # Cloud Scheduler上に作成されません。
 #
 
@@ -85,10 +85,10 @@ ODDS_SCRAPE_SCHEDULE="15 8 * * *"
 # 投資戦略ジョブ
 STRATEGY_JOB_NAME="race-day-strategy"
 STRATEGY_SCHEDULE="30 8 * * *"
-# 月次モデル再学習ジョブ（毎月第1月曜日 AM 8:00）
-# "0 8 1-7 * 1" = 月の1〜7日かつ月曜日の 8:00 = 毎月第1月曜日
-RETRAIN_JOB_NAME="monthly-model-retrain"
-RETRAIN_SCHEDULE="0 8 1-7 * 1"
+# 週次モデル再学習ジョブ（毎週月曜日 AM 8:00）
+# "0 8 * * 1" = 毎週月曜日の 8:00
+RETRAIN_JOB_NAME="weekly-model-retrain"
+RETRAIN_SCHEDULE="0 8 * * 1"
 # IPAT自動購入ジョブ（土日 8:00〜17:00 の5分おき）
 # race-day-strategy(AM 8:30) 完了後に稼働し、発走5分前のレースを自動購入する
 PURCHASE_JOB_NAME="race-day-purchase"
@@ -108,7 +108,7 @@ log_info "予測ジョブ: ${PREDICT_JOB_NAME} (${PREDICT_SCHEDULE})"
 log_info "オッズ取得ジョブ: ${ODDS_SCRAPE_JOB_NAME} (${ODDS_SCRAPE_SCHEDULE})"
 log_info "投資戦略ジョブ: ${STRATEGY_JOB_NAME} (${STRATEGY_SCHEDULE})"
 log_info "LINE通知ジョブ: ${NOTIFY_JOB_NAME} (${NOTIFY_SCHEDULE}) ※土日のみ"
-log_info "月次再学習ジョブ: ${RETRAIN_JOB_NAME} (${RETRAIN_SCHEDULE}) ※毎月第1月曜日"
+log_info "週次再学習ジョブ: ${RETRAIN_JOB_NAME} (${RETRAIN_SCHEDULE}) ※毎週月曜日"
 log_info "IPAT自動購入ジョブ: ${PURCHASE_JOB_NAME} (${PURCHASE_SCHEDULE}) ※土日のみ"
 log_info "タイムゾーン: ${TIME_ZONE}"
 log_info "サービスアカウント: ${PIPELINE_SA_EMAIL}"
@@ -147,10 +147,10 @@ log_info "オッズ取得URI: ${ODDS_SCRAPE_TARGET_URI}"
 # ターゲットURL（投資戦略: 日次投資戦略エンドポイント）
 STRATEGY_TARGET_URI="${SERVICE_URL}/api/v1/strategy/daily"
 log_info "投資戦略URI: ${STRATEGY_TARGET_URI}"
-# ターゲットURL（月次モデル再学習: バックグラウンド実行エンドポイント）
+# ターゲットURL（週次モデル再学習: バックグラウンド実行エンドポイント）
 # /async を使用して Cloud Scheduler の attempt-deadline 超過を防ぐ
 RETRAIN_TARGET_URI="${SERVICE_URL}/api/v1/model/retrain/async"
-log_info "月次再学習URI: ${RETRAIN_TARGET_URI}"
+log_info "週次再学習URI: ${RETRAIN_TARGET_URI}"
 # ターゲットURL（IPAT自動購入: 発走5分前レースを自動購入）
 PURCHASE_TARGET_URI="${SERVICE_URL}/api/v1/purchase/daily"
 log_info "IPAT自動購入URI: ${PURCHASE_TARGET_URI}"
@@ -291,10 +291,10 @@ create_or_update_job \
     "${STRATEGY_TARGET_URI}" \
     "800s"
 
-# 4-5. 月次モデル再学習ジョブ（monthly-model-retrain）
-# 毎月第1月曜日 AM 8:00 JST に /api/v1/model/retrain/async を呼び出す
+# 4-5. 週次モデル再学習ジョブ（weekly-model-retrain）
+# 毎週月曜日 AM 8:00 JST に /api/v1/model/retrain/async を呼び出す
 # バックグラウンド実行のため attempt-deadline=60s で即時レスポンスを受け取る
-log_info "--- 月次モデル再学習ジョブの設定 ---"
+log_info "--- 週次モデル再学習ジョブの設定 ---"
 create_or_update_job \
     "${RETRAIN_JOB_NAME}" \
     "${RETRAIN_SCHEDULE}" \
@@ -353,7 +353,7 @@ log_info "  一時停止:    gcloud scheduler jobs pause ${STRATEGY_JOB_NAME} --
 log_info "  再開:        gcloud scheduler jobs resume ${STRATEGY_JOB_NAME} --location=${GCP_REGION}"
 log_info "  実行履歴:    gcloud logging read 'resource.type=\"cloud_scheduler_job\" AND resource.labels.job_id=\"${STRATEGY_JOB_NAME}\"' --limit=10"
 log_info ""
-log_info "【月次モデル再学習ジョブ (${RETRAIN_JOB_NAME})】 ※毎月第1月曜日 AM 8:00"
+log_info "【週次モデル再学習ジョブ (${RETRAIN_JOB_NAME})】 ※毎週月曜日 AM 8:00"
 log_info "  手動実行:    gcloud scheduler jobs run ${RETRAIN_JOB_NAME} --location=${GCP_REGION}"
 log_info "  一時停止:    gcloud scheduler jobs pause ${RETRAIN_JOB_NAME} --location=${GCP_REGION}"
 log_info "  再開:        gcloud scheduler jobs resume ${RETRAIN_JOB_NAME} --location=${GCP_REGION}"

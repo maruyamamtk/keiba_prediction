@@ -154,7 +154,7 @@ GCP_PROJECT_ID=your-project-id
 | `race-day-predict` | `0 8 * * *`（AM 8:00） | `POST /api/v1/predict/daily` | レース予測・BQ/GCS保存 |
 | `race-day-odds-scrape` | `15 8 * * *`（AM 8:15） | `POST /api/v1/odds/scrape` | netkeibaオッズ取得 |
 | `race-day-strategy` | `30 8 * * *`（AM 8:30） | `POST /api/v1/strategy/daily` | 投資戦略策定（dry_run=true） |
-| `monthly-model-retrain` | `0 8 1-7 * 1`（毎月第1月曜AM 8:00） | `POST /api/v1/model/retrain/async` | モデル月次再学習 |
+| `weekly-model-retrain` | `0 8 * * 1`（毎週月曜AM 8:00） | `POST /api/v1/model/retrain/async` | モデル週次再学習 |
 | `race-day-purchase` | `*/5 8-17 * * 6,0`（土日5分おき） | `POST /api/v1/purchase/daily` | 発走直前IPAT自動馬券購入 |
 
 **全ジョブ共通設定:**
