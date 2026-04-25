@@ -237,7 +237,7 @@ class HealthResponse(BaseModel):
 
 
 class RetrainRequest(BaseModel):
-    """月次モデル再学習リクエスト"""
+    """モデル再学習リクエスト"""
 
     execution_date: str | None = Field(
         default=None,
@@ -270,7 +270,7 @@ class RetrainRequest(BaseModel):
 
 
 class RetrainResponse(BaseModel):
-    """月次モデル再学習レスポンス"""
+    """モデル再学習レスポンス"""
 
     status: str = Field(description="処理ステータス (success/failed)")
     execution_date: str = Field(description="実行日")
@@ -1748,7 +1748,7 @@ async def retrain_model(request: RetrainRequest):
     実行時間の目安: 1〜2時間（チューニング込み）。
     長時間処理が懸念される場合は /api/v1/model/retrain/async を使用すること。
 
-    Cloud Schedulerから毎月第1月曜日 AM 8:00 JST に呼び出されることを想定。
+    Cloud Schedulerから毎週月曜日 AM 8:00 JST に呼び出されることを想定。
     """
     execution_date = (
         datetime.date.fromisoformat(request.execution_date)

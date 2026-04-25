@@ -1,10 +1,10 @@
 #!/bin/bash
 #
-# 月次モデル再学習の環境修正スクリプト
+# モデル再学習の環境修正スクリプト
 #
 # 以下の2つの問題を修正します:
 #   1. モデルバケットへの書き込み権限がない（objectViewer → objectAdmin）
-#   2. monthly-model-retrain Cloud Schedulerジョブが存在しない場合の作成
+#   2. weekly-model-retrain Cloud Schedulerジョブが存在しない場合の作成
 #
 # 使用方法:
 #   ./scripts/fix_retrain_setup.sh
@@ -45,7 +45,7 @@ GCS_BUCKET_MODELS_FULL="${GCP_PROJECT_ID}-${GCS_BUCKET_MODELS:-keiba-models}"
 SERVICE_NAME="keiba-pipeline"
 
 log_info "=========================================="
-log_info "月次モデル再学習の環境修正"
+log_info "モデル再学習の環境修正"
 log_info "=========================================="
 log_info "プロジェクトID : ${GCP_PROJECT_ID}"
 log_info "サービスアカウント: ${PIPELINE_SA_EMAIL}"
@@ -56,7 +56,7 @@ log_info "=========================================="
 # 修正1: モデルバケットへの書き込み権限付与
 # ----------------------------------------
 log_info "【修正1】モデルバケットに objectAdmin 権限を付与します..."
-log_info "  月次再学習(POST /api/v1/model/retrain/async)でGCSにモデルを書き込むために必要です"
+log_info "  週次再学習(POST /api/v1/model/retrain/async)でGCSにモデルを書き込むために必要です"
 
 gsutil iam ch \
     "serviceAccount:${PIPELINE_SA_EMAIL}:roles/storage.objectAdmin" \
@@ -65,10 +65,10 @@ gsutil iam ch \
     log_warn "  権限付与に失敗しました（バケットが存在しない、または権限不足の可能性）"
 
 # ----------------------------------------
-# 修正2: monthly-model-retrain ジョブの確認と作成
+# 修正2: weekly-model-retrain ジョブの確認と作成
 # ----------------------------------------
 log_info ""
-log_info "【修正2】monthly-model-retrain Cloud Schedulerジョブを確認します..."
+log_info "【修正2】weekly-model-retrain Cloud Schedulerジョブを確認します..."
 
 SERVICE_URL=$(gcloud run services describe "${SERVICE_NAME}" \
     --region="${GCP_REGION}" \
@@ -80,9 +80,9 @@ if [ -z "${SERVICE_URL}" ]; then
     exit 1
 fi
 
-RETRAIN_JOB_NAME="monthly-model-retrain"
+RETRAIN_JOB_NAME="weekly-model-retrain"
 RETRAIN_TARGET_URI="${SERVICE_URL}/api/v1/model/retrain/async"
-RETRAIN_SCHEDULE="0 8 1-7 * 1"
+RETRAIN_SCHEDULE="0 8 * * 1"
 TIME_ZONE="Asia/Tokyo"
 
 if gcloud scheduler jobs describe "${RETRAIN_JOB_NAME}" \

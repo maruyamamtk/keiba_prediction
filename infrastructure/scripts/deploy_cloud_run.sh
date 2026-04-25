@@ -150,7 +150,7 @@ log_warn "Cloud Schedulerジョブを作成・更新するため setup_scheduler
 log_warn "  ./infrastructure/scripts/setup_scheduler.sh"
 log_warn ""
 log_warn "これを実行しないと以下のジョブが本番環境に存在しません:"
-log_warn "  - monthly-model-retrain（毎月第1月曜 AM 8:00）"
+log_warn "  - weekly-model-retrain（毎週月曜 AM 8:00）"
 log_warn "  - race-day-predict、race-day-strategy 等の日次ジョブ"
 log_warn "=========================================="
 log_info ""

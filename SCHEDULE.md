@@ -12,7 +12,7 @@
 | `race-day-predict` | 毎日 AM 8:00 | `0 8 * * *` | `POST /api/v1/predict/daily` | レース予測・BQ/GCS保存 |
 | `race-day-odds-scrape` | 毎日 AM 8:15 | `15 8 * * *` | `POST /api/v1/odds/scrape` | netkeibaオッズ取得 |
 | `race-day-strategy` | 毎日 AM 8:30 | `30 8 * * *` | `POST /api/v1/strategy/daily` | 投資戦略策定（dry_run=true） |
-| `monthly-model-retrain` | 毎月第1月曜 AM 8:00 | `0 8 1-7 * 1` | `POST /api/v1/model/retrain/async` | モデル月次再学習 |
+| `weekly-model-retrain` | 毎週月曜 AM 8:00 | `0 8 * * 1` | `POST /api/v1/model/retrain/async` | モデル週次再学習 |
 | `race-day-purchase` | 土日 8:00〜17:00 5分おき | `*/5 8-17 * * 6,0` | `POST /api/v1/purchase/daily` | 発走直前IPAT自動馬券購入 |
 
 **全ジョブ共通設定:**
@@ -100,9 +100,9 @@
 
 ---
 
-### monthly-model-retrain — モデル月次再学習
+### weekly-model-retrain — モデル週次再学習
 
-**スケジュール**: 毎月第1月曜日 AM 8:00 JST
+**スケジュール**: 毎週月曜日 AM 8:00 JST
 
 **概要**: BigQueryの学習用データを用いてLightGBM LambdaRankモデルを再学習し、GCSに保存します。
 
@@ -186,7 +186,7 @@ gcloud scheduler jobs run race-day-odds-scrape --location=asia-northeast1
 gcloud scheduler jobs run race-day-strategy --location=asia-northeast1
 
 # モデル再学習
-gcloud scheduler jobs run monthly-model-retrain --location=asia-northeast1
+gcloud scheduler jobs run weekly-model-retrain --location=asia-northeast1
 
 # 発走前購入（dry_run=falseの本番モード）
 gcloud scheduler jobs run race-day-purchase --location=asia-northeast1
@@ -206,6 +206,14 @@ gcloud scheduler jobs resume race-day-purchase --location=asia-northeast1
 
 ```bash
 gcloud scheduler jobs list --location=asia-northeast1
+```
+
+### 移行時の旧ジョブ削除
+
+`monthly-model-retrain` から `weekly-model-retrain` へ移行する際は、旧ジョブを手動削除してください:
+
+```bash
+gcloud scheduler jobs delete monthly-model-retrain --location=asia-northeast1
 ```
 
 ### dry_runの本番切り替え
