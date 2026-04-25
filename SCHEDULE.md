@@ -208,6 +208,14 @@ gcloud scheduler jobs resume race-day-purchase --location=asia-northeast1
 gcloud scheduler jobs list --location=asia-northeast1
 ```
 
+### 移行時の旧ジョブ削除
+
+`monthly-model-retrain` から `weekly-model-retrain` へ移行する際は、旧ジョブを手動削除してください:
+
+```bash
+gcloud scheduler jobs delete monthly-model-retrain --location=asia-northeast1
+```
+
 ### dry_runの本番切り替え
 
 `race-day-purchase` を本番購入モード（dry_run=false）に切り替える:
