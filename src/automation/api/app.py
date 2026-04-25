@@ -1626,49 +1626,62 @@ async def _purchase_pipeline_async(
             race_amount = 0
             budget_exceeded = False
 
+            # 予算内の馬券のみ選別
+            spent = fetch_daily_spent_amount(project_id, target_date)
+            valid_bets: list[dict] = []
+            cumulative = 0
             for bet in bets:
-                bet_type = bet["bet_type"]
-                horse_numbers = bet["horse_numbers"]
                 amount = int(bet["bet_amount"])
-
-                # 予算上限チェック
-                spent = fetch_daily_spent_amount(project_id, target_date)
-                if spent + amount > DAILY_BUDGET_LIMIT:
+                if spent + cumulative + amount > DAILY_BUDGET_LIMIT:
                     msg = f"本日の購入上限（{DAILY_BUDGET_LIMIT:,}円）に達しました（累計: {spent:,}円）"
                     logger.warning(msg)
                     _send_line(msg)
                     save_purchase_record(
                         project_id, target_date, race_id,
-                        bet_type, horse_numbers, amount, "skipped_budget",
+                        bet["bet_type"], bet["horse_numbers"], amount, "skipped_budget",
                     )
                     bets_skipped_budget += 1
                     budget_exceeded = True
-                    break
+                else:
+                    cumulative += amount
+                    valid_bets.append({
+                        "bet_type": bet["bet_type"],
+                        "horse_numbers": bet["horse_numbers"],
+                        "amount": amount,
+                    })
 
-                # 馬券購入
-                result = await purchaser.purchase_bet(
-                    bet_type, horse_numbers, amount, venue_name_with_day, race_number
+            # 予算内の馬券を1レース分まとめて購入
+            if valid_bets:
+                result = await purchaser.purchase_bets_for_race(
+                    valid_bets, venue_name_with_day, race_number
                 )
                 status = result["status"]
                 error_message = result.get("error_message")
 
-                save_purchase_record(
-                    project_id, target_date, race_id,
-                    bet_type, horse_numbers, amount, status, error_message,
-                )
-
                 if status == "success":
-                    bets_purchased += 1
-                    race_amount += amount
+                    bets_purchased = len(valid_bets)
+                    race_amount = result.get("total_amount", cumulative)
+                    for bet in valid_bets:
+                        save_purchase_record(
+                            project_id, target_date, race_id,
+                            bet["bet_type"], bet["horse_numbers"], bet["amount"], "success",
+                        )
                 else:
-                    bets_failed += 1
-                    horse_str = "-".join(str(h) for h in horse_numbers)
+                    bets_failed = len(valid_bets)
+                    bet_summary = ", ".join(
+                        f"{b['bet_type']} {'-'.join(str(h) for h in b['horse_numbers'])} {b['amount']}円"
+                        for b in valid_bets
+                    )
                     msg = (
-                        f"馬券購入失敗: {venue_name}{race_number}R "
-                        f"{bet_type} {horse_str} {amount}円 - {error_message}"
+                        f"馬券購入失敗: {venue_name}{race_number}R [{bet_summary}] - {error_message}"
                     )
                     logger.warning(msg)
                     _send_line(msg)
+                    for bet in valid_bets:
+                        save_purchase_record(
+                            project_id, target_date, race_id,
+                            bet["bet_type"], bet["horse_numbers"], bet["amount"], "failed", error_message,
+                        )
 
             race_results.append({
                 "race_id": race_id,

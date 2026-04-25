@@ -202,15 +202,27 @@ class TestIpatPurchaserLogin:
 class TestIpatPurchaserPurchaseBet:
     """IpatPurchaser.purchase_bet() の成功・失敗ケースのテスト"""
 
-    def _make_purchaser(self) -> IpatPurchaser:
+    def _make_purchaser(self, completion_text: str = "受付番号: 12345") -> IpatPurchaser:
         p = IpatPurchaser("12345678", "1234", "87654321")
         p._page = AsyncMock()
+
+        # locator() は同期メソッドなので MagicMock にし、fill()/inner_text() を AsyncMock で持たせる
+        locator_mock = MagicMock()
+        locator_mock.fill = AsyncMock()
+        locator_mock.inner_text = AsyncMock(return_value=completion_text)
+        p._page.locator = MagicMock(return_value=locator_mock)
+
+        # expect_navigation() は非同期コンテキストマネージャ
+        nav_ctx = MagicMock()
+        nav_ctx.__aenter__ = AsyncMock(return_value=nav_ctx)
+        nav_ctx.__aexit__ = AsyncMock(return_value=False)
+        p._page.expect_navigation = MagicMock(return_value=nav_ctx)
+
         return p
 
     def test_purchase_success(self):
         """購入完了テキストが確認できれば success を返すこと"""
-        purchaser = self._make_purchaser()
-        purchaser._page.text_content = AsyncMock(return_value="購入完了しました。受付番号: 12345")
+        purchaser = self._make_purchaser("購入完了しました。受付番号: 12345")
 
         result = run_async(purchaser.purchase_bet("place", [3], 300, "東京(土)", 7))
 
@@ -219,8 +231,7 @@ class TestIpatPurchaserPurchaseBet:
 
     def test_purchase_failure_insufficient_balance(self):
         """残高不足メッセージがある場合は failed を返すこと"""
-        purchaser = self._make_purchaser()
-        purchaser._page.text_content = AsyncMock(return_value="残高不足のため購入できませんでした")
+        purchaser = self._make_purchaser("残高不足のため購入できませんでした")
 
         result = run_async(purchaser.purchase_bet("place", [3], 300, "東京(土)", 7))
 
