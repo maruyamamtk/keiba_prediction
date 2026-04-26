@@ -486,13 +486,13 @@ def fetch_today_races_with_start_time(
 def fetch_target_races(
     all_races: list[dict],
     now: datetime.datetime,
-    window_minutes_before: int = 10,
-    window_minutes_after: int = 5,
+    window_minutes_before: int = 5,
+    window_minutes_after: int = 0,
 ) -> list[dict]:
     """
     現在時刻の window_minutes_after〜window_minutes_before 分後に発走するレースを抽出する。
 
-    例: now=10:00, window=(5, 10) → 10:05〜10:10 に発走するレースを返す
+    例: now=10:00, window=(0, 5) → 10:00〜10:05 に発走するレースを返す
 
     Args:
         all_races: fetch_today_races_with_start_time() の戻り値
