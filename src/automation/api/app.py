@@ -1198,7 +1198,7 @@ async def purchase_daily(request: PurchaseDailyRequest):
     発走5分前のレースの推奨馬券を JRA IPAT で自動購入する。
 
     Cloud Scheduler から土日 8:00〜17:00 の5分おきに呼び出されることを想定。
-    現在時刻の5〜10分後に発走するレースを対象とし、
+    現在時刻の0〜5分後に発走するレースを対象とし、
     predictions.investment_decisions の推奨馬券を購入する。
 
     前提条件:
@@ -1451,7 +1451,7 @@ async def _purchase_pipeline_async(
 
     フロー:
       1. raw.race_info から当日の発走時刻を取得
-      2. 現在時刻の5〜10分後に発走するレースを特定
+      2. 現在時刻の0〜5分後に発走するレースを特定
       3. 対象レースが0件なら skipped を返す
       4. 対象レースのオッズをリアルタイムスクレイピング（netkeiba）
          失敗時はフォールバック（既存の daily_odds を使用）
@@ -1490,10 +1490,10 @@ async def _purchase_pipeline_async(
         logger.info(f"{target_date}: start_time付きレースが存在しません")
         return {"status": "skipped", "purchased_races": 0, "total_amount": 0, "results": []}
 
-    # 2. 対象レースを抽出（現在時刻の5〜10分後）
+    # 2. 対象レースを抽出（現在時刻の0〜5分後）
     # start_time は JST で格納されているため、now も JST で取得する
     now = datetime.datetime.now(ZoneInfo("Asia/Tokyo"))
-    target_races = fetch_target_races(all_races, now, window_minutes_before=10, window_minutes_after=5)
+    target_races = fetch_target_races(all_races, now, window_minutes_before=5, window_minutes_after=0)
 
     if not target_races:
         logger.info(f"{target_date}: 現在時刻 {now.strftime('%H:%M')} に対象レースなし")
