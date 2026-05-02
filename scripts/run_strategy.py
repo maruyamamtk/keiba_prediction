@@ -76,11 +76,13 @@ def fetch_combo_odds_for_date(
     race_ids: list[str],
 ) -> pd.DataFrame:
     """
-    コンボオッズを以下の優先順位で取得する（当日分）
+    コンボオッズを取得する（当日分）
 
-    優先順位:
-      1. predictions.daily_odds_combo（netkeibaスクレイピング）
-      2. raw.combo_odds（JRDB基準オッズ）
+    取得優先度:
+      - 馬連・ワイド: predictions.daily_odds_combo を優先し、未取得レースは raw.combo_odds で補完
+      - 三連複: predictions.daily_odds_combo は人気順上位100件の上限があるため、
+                daily_odds_combo（リアルタイムオッズ）+ raw.combo_odds（全件）をマージして使用。
+                同一組み合わせは daily_odds_combo（netkeiba実オッズ）を優先する。
 
     返り値の統一スキーマ:
         race_id, bet_type, horse_number_1, horse_number_2, horse_number_3, odds_value
@@ -107,7 +109,8 @@ def fetch_combo_odds_for_date(
                 df[col] = None
         return df[_UNIFIED_SCHEMA]
 
-    # Stage 1: predictions.daily_odds_combo
+    # Stage 1: predictions.daily_odds_combo（netkeibaリアルタイムオッズ）
+    df1 = pd.DataFrame()
     try:
         query1 = f"""
         SELECT race_id, ticket_type AS bet_type,
@@ -120,38 +123,16 @@ def fetch_combo_odds_for_date(
         df1 = client.query(query1).to_dataframe()
         if len(df1) > 0:
             df1 = _ensure_schema(df1)
-            covered_ids = set(df1["race_id"].unique())
-            remaining_ids = [r for r in race_ids if r not in covered_ids]
-            logger.info(
-                f"predictions.daily_odds_combo から {len(df1)} 件取得"
-                f"（カバー: {len(covered_ids)} レース）"
-            )
-            if not remaining_ids:
-                return df1
-            # 残りを Stage 2 で補完
-            rem_ids_str = ", ".join(f"'{r}'" for r in remaining_ids)
-            try:
-                query2 = f"""
-                SELECT race_id, bet_type,
-                       horse_number_1, horse_number_2, horse_number_3,
-                       odds_value
-                FROM `{project_id}.raw.combo_odds`
-                WHERE bet_type IN ({types_str})
-                  AND race_id IN ({rem_ids_str})
-                """
-                df2 = client.query(query2).to_dataframe()
-                if len(df2) > 0:
-                    df2 = _ensure_schema(df2)
-                    return pd.concat([df1, df2], ignore_index=True)
-            except Exception as e2:
-                logger.info(f"raw.combo_odds 取得スキップ: {e2}")
-            return df1
+            logger.info(f"predictions.daily_odds_combo から {len(df1)} 件取得")
         else:
             logger.info("predictions.daily_odds_combo にデータなし → raw.combo_odds へ")
+            df1 = pd.DataFrame()
     except Exception as e:
         logger.info(f"predictions.daily_odds_combo が存在しないか取得失敗: {e} → raw.combo_odds へ")
 
-    # Stage 2: raw.combo_odds
+    # Stage 2: raw.combo_odds（JRDB基準オッズ・全組み合わせ）
+    # 三連複は housiki=c99 でも上位100件までしか取得できないため、常に raw.combo_odds でマージする
+    df2 = pd.DataFrame()
     try:
         query2 = f"""
         SELECT race_id, bet_type,
@@ -165,12 +146,38 @@ def fetch_combo_odds_for_date(
         if len(df2) > 0:
             df2 = _ensure_schema(df2)
             logger.info(f"raw.combo_odds から {len(df2)} 件取得")
-            return df2
-        logger.info("raw.combo_odds にもデータなし")
+        else:
+            logger.info("raw.combo_odds にもデータなし")
     except Exception as e:
         logger.info(f"raw.combo_odds が存在しないか取得失敗: {e}")
 
-    return pd.DataFrame(columns=_UNIFIED_SCHEMA)
+    if df1.empty and df2.empty:
+        return pd.DataFrame()
+
+    if df1.empty:
+        return df2
+
+    if df2.empty:
+        return df1
+
+    # Stage 1 を優先してマージ: Stage 1 にない組み合わせのみ Stage 2 から補完
+    df1_keys = set(
+        zip(df1["race_id"], df1["bet_type"], df1["horse_number_1"],
+            df1["horse_number_2"], df1["horse_number_3"])
+    )
+    df2_supplement = df2[
+        ~df2.apply(
+            lambda r: (r["race_id"], r["bet_type"], r["horse_number_1"],
+                       r["horse_number_2"], r["horse_number_3"]) in df1_keys,
+            axis=1,
+        )
+    ]
+    merged = pd.concat([df1, df2_supplement], ignore_index=True)
+    logger.info(
+        f"コンボオッズマージ完了: daily_odds_combo {len(df1)} 件"
+        f" + raw.combo_odds補完 {len(df2_supplement)} 件 = 計 {len(merged)} 件"
+    )
+    return merged[_UNIFIED_SCHEMA]
 
 
 def fetch_daily_predictions(

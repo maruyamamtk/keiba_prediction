@@ -781,18 +781,76 @@ def scrape_today_combo_odds(
     return total_saved
 
 
+def _parse_sanrenpuku_ninki_html(html: str) -> pd.DataFrame:
+    """
+    三連複の人気順全件ページ（housiki=c99）のHTMLをパースする
+    （テスト可能な純粋関数）
+
+    HTMLの構造:
+      <tr id="ninki-data_N">
+        <td class="Ninki">人気順位</td>
+        <td class="Check_Odd"></td>
+        <td>組み合わせ文字列</td>
+        <td class="Name_Odds">オッズ</td>
+        <td>馬番1</td>
+        <td class="Horse_Name Txt_L">馬名1</td>
+        <td>馬番2</td>
+        <td class="Horse_Name Txt_L">馬名2</td>
+        <td>馬番3</td>
+        <td class="Horse_Name Txt_L">馬名3</td>
+      </tr>
+
+    Args:
+        html: オッズページのHTML文字列
+
+    Returns:
+        DataFrame[ticket_type(str), horse_number_1(int), horse_number_2(int),
+                  horse_number_3(int), odds(float)]
+        パース失敗時は空のDataFrameを返す
+    """
+    soup = BeautifulSoup(html, "lxml")
+    pattern = re.compile(r"^ninki-data_\d+$")
+    rows = []
+    for tr in soup.find_all("tr", id=pattern):
+        tds = tr.find_all("td")
+        if len(tds) < 9:
+            continue
+        try:
+            odds_val = float(tds[3].get_text(strip=True).replace(",", ""))
+            h1 = int(tds[4].get_text(strip=True))
+            h2 = int(tds[6].get_text(strip=True))
+            h3 = int(tds[8].get_text(strip=True))
+        except (ValueError, IndexError):
+            continue
+        if odds_val <= 1.0:
+            continue
+        rows.append({
+            "ticket_type": "sanrenpuku",
+            "horse_number_1": min(h1, h2, h3),
+            "horse_number_2": sorted([h1, h2, h3])[1],
+            "horse_number_3": max(h1, h2, h3),
+            "odds": odds_val,
+        })
+
+    if not rows:
+        return pd.DataFrame(columns=_EMPTY_COMBO_COLUMNS)
+
+    return pd.DataFrame(rows)
+
+
 def _parse_combo_odds_html(html: str, ticket_type: str) -> pd.DataFrame:
     """
-    組み合わせ馬券（馬連・馬単・ワイド・三連複）のオッズページ HTML をパースする
+    組み合わせ馬券（馬連・馬単・ワイド）のオッズページ HTML をパースする
     （テスト可能な純粋関数）
 
     HTMLの span ID 形式:
       2頭組み合わせ: <span id="odds-{code}-XXYY">
-      3頭組み合わせ: <span id="odds-{code}-XXYYZZ">
+
+    三連複（b7）は _parse_sanrenpuku_ninki_html を使用すること。
 
     Args:
         html: オッズページのHTML文字列
-        ticket_type: 'b4'(馬連) / 'b5'(ワイド) / 'b6'(馬単) / 'b7'(三連複)
+        ticket_type: 'b4'(馬連) / 'b5'(ワイド) / 'b6'(馬単)
 
     Returns:
         DataFrame[ticket_type(str), horse_number_1(int), horse_number_2(int),
@@ -805,9 +863,7 @@ def _parse_combo_odds_html(html: str, ticket_type: str) -> pd.DataFrame:
         return pd.DataFrame(columns=_EMPTY_COMBO_COLUMNS)
 
     soup = BeautifulSoup(html, "lxml")
-    is_trio = (ticket_type == "b7")
-    # 三連複(b7)は6桁、2頭組(b4/b5/b6)は4桁
-    pattern = re.compile(rf'^odds-{code}-(\d{{6}})$' if is_trio else rf'^odds-{code}-(\d{{4}})$')
+    pattern = re.compile(rf'^odds-{code}-(\d{{4}})$')
 
     rows = []
     for span in soup.find_all("span", id=pattern):
@@ -823,24 +879,14 @@ def _parse_combo_odds_html(html: str, ticket_type: str) -> pd.DataFrame:
         if odds_val <= 1.0:
             continue
 
-        if is_trio:
-            h1, h2, h3 = int(digits[0:2]), int(digits[2:4]), int(digits[4:6])
-            rows.append({
-                "ticket_type": COMBO_TICKET_TYPES[ticket_type],
-                "horse_number_1": h1,
-                "horse_number_2": h2,
-                "horse_number_3": h3,
-                "odds": odds_val,
-            })
-        else:
-            h1, h2 = int(digits[0:2]), int(digits[2:4])
-            rows.append({
-                "ticket_type": COMBO_TICKET_TYPES[ticket_type],
-                "horse_number_1": h1,
-                "horse_number_2": h2,
-                "horse_number_3": None,
-                "odds": odds_val,
-            })
+        h1, h2 = int(digits[0:2]), int(digits[2:4])
+        rows.append({
+            "ticket_type": COMBO_TICKET_TYPES[ticket_type],
+            "horse_number_1": h1,
+            "horse_number_2": h2,
+            "horse_number_3": None,
+            "odds": odds_val,
+        })
 
     if not rows:
         return pd.DataFrame(columns=_EMPTY_COMBO_COLUMNS)
@@ -893,10 +939,17 @@ def get_combo_odds(
                     logger.warning(f"未対応の馬券種をスキップ: {ttype}")
                     continue
 
-                url = (
-                    f"{NETKEIBA_BASE_URL}/odds/index.html"
-                    f"?race_id={netkeiba_race_id}&type={ttype}"
-                )
+                # 三連複は housiki=c99 で人気順全件ページを取得する
+                if ttype == "b7":
+                    url = (
+                        f"{NETKEIBA_BASE_URL}/odds/index.html"
+                        f"?type=b7&race_id={netkeiba_race_id}&housiki=c99"
+                    )
+                else:
+                    url = (
+                        f"{NETKEIBA_BASE_URL}/odds/index.html"
+                        f"?race_id={netkeiba_race_id}&type={ttype}"
+                    )
                 logger.debug(f"組み合わせオッズ取得: {url}")
 
                 if i > 0:
@@ -916,7 +969,11 @@ def get_combo_odds(
                     except Exception:
                         pass
 
-                df = _parse_combo_odds_html(html, ttype)
+                # 三連複は ninki-data_N 形式のパーサーを使用
+                if ttype == "b7":
+                    df = _parse_sanrenpuku_ninki_html(html)
+                else:
+                    df = _parse_combo_odds_html(html, ttype)
                 if not df.empty:
                     all_dfs.append(df)
                     logger.debug(
