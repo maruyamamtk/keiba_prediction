@@ -90,3 +90,6 @@ service-account-key.json
 # other documents
 HANGOVER.md
 docs/figures
+
+# Playwright MCP cache
+.playwright-mcp/

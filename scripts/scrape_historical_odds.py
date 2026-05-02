@@ -56,6 +56,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from src.automation.data.netkeiba_scraper import (
     COMBO_TICKET_TYPES,
     _parse_combo_odds_html,
+    _parse_sanrenpuku_ninki_html,
     _parse_win_place_odds_html,
     save_combo_odds_to_bq,
     save_odds_to_bq,
@@ -356,7 +357,11 @@ def scrape_combo_odds_batch(
                         logger.debug(f"    スキップ（既取得済み）: {race_id} / {ticket_name}")
                         continue
 
-                    url = f"{NETKEIBA_BASE_URL}/odds/index.html?race_id={netkeiba_id}&type={ttype}"
+                    # 三連複は housiki=c99 で人気順全件ページを取得する
+                    if ttype == "b7":
+                        url = f"{NETKEIBA_BASE_URL}/odds/index.html?type=b7&race_id={netkeiba_id}&housiki=c99"
+                    else:
+                        url = f"{NETKEIBA_BASE_URL}/odds/index.html?race_id={netkeiba_id}&type={ttype}"
 
                     if not first_request:
                         time.sleep(sleep_sec)
@@ -366,7 +371,11 @@ def scrape_combo_odds_batch(
                     if not html:
                         continue
 
-                    df = _parse_combo_odds_html(html, ttype)
+                    # 三連複は ninki-data_N 形式のパーサーを使用
+                    if ttype == "b7":
+                        df = _parse_sanrenpuku_ninki_html(html)
+                    else:
+                        df = _parse_combo_odds_html(html, ttype)
                     if not df.empty:
                         all_dfs.append(df)
 
