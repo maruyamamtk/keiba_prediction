@@ -28,6 +28,7 @@ from src.automation.data.netkeiba_scraper import (
     _create_page_with_route_block,
     _parse_combo_odds_html,
     _parse_race_list_html,
+    _parse_sanrenpuku_ninki_html,
     _parse_win_place_odds_html,
     get_combo_odds,
     get_today_race_list,
@@ -298,16 +299,11 @@ class TestParseComboOddsHtml:
         assert df.iloc[0]["horse_number_2"] == 2
         assert df.iloc[0]["horse_number_3"] is None
 
-    def test_sanrenpuku_b7(self):
-        """b7 は三連複・6桁（Issue #167 修正: 旧 wide → 正しくは sanrenpuku）"""
+    def test_sanrenpuku_b7_returns_empty(self):
+        """b7（三連複）は _parse_combo_odds_html では処理しない（_parse_sanrenpuku_ninki_html を使用）"""
         html = _make_combo_html("b7", [(1, 2, 3, 12.5)])
         df = _parse_combo_odds_html(html, "b7")
-        assert len(df) == 1
-        assert df.iloc[0]["ticket_type"] == "sanrenpuku"
-        assert df.iloc[0]["horse_number_1"] == 1
-        assert df.iloc[0]["horse_number_2"] == 2
-        assert df.iloc[0]["horse_number_3"] == 3
-        assert df.iloc[0]["odds"] == pytest.approx(12.5)
+        assert df.empty
 
     def test_empty_html(self):
         df = _parse_combo_odds_html("<html><body></body></html>", "b4")
@@ -349,6 +345,88 @@ class TestParseComboOddsHtml:
 
 # ---------------------------------------------------------------------------
 # save_combo_odds_to_bq (BQモック)
+# ---------------------------------------------------------------------------
+# _parse_sanrenpuku_ninki_html
+# ---------------------------------------------------------------------------
+
+
+def _make_sanrenpuku_ninki_html(combos: list[tuple]) -> str:
+    """ninki-data_N 形式の三連複HTMLを生成するヘルパー
+
+    Args:
+        combos: [(h1, h2, h3, odds), ...] の形式
+    """
+    rows = ""
+    for i, (h1, h2, h3, odds) in enumerate(combos, start=1):
+        rows += (
+            f'<tr id="ninki-data_{i}">'
+            f'<td class="Ninki">{i}</td>'
+            f'<td class="Check_Odd"></td>'
+            f'<td>{h1}{h2}{h3}</td>'
+            f'<td class="Name_Odds">{odds}</td>'
+            f'<td>{h1}</td>'
+            f'<td class="Horse_Name Txt_L">馬名{h1}</td>'
+            f'<td>{h2}</td>'
+            f'<td class="Horse_Name Txt_L">馬名{h2}</td>'
+            f'<td>{h3}</td>'
+            f'<td class="Horse_Name Txt_L">馬名{h3}</td>'
+            f'</tr>'
+        )
+    return f"<html><body><table>{rows}</table></body></html>"
+
+
+class TestParseSanrenpukuNinkiHtml:
+    def test_basic(self):
+        """基本的な三連複パースが正常に動作する"""
+        html = _make_sanrenpuku_ninki_html([(1, 5, 6, 14.1), (5, 6, 10, 11.5)])
+        df = _parse_sanrenpuku_ninki_html(html)
+        assert len(df) == 2
+        assert set(df["ticket_type"]) == {"sanrenpuku"}
+
+    def test_horse_numbers_sorted_ascending(self):
+        """馬番は昇順に整列されて保存される"""
+        html = _make_sanrenpuku_ninki_html([(6, 1, 5, 14.1)])
+        df = _parse_sanrenpuku_ninki_html(html)
+        assert df.iloc[0]["horse_number_1"] == 1
+        assert df.iloc[0]["horse_number_2"] == 5
+        assert df.iloc[0]["horse_number_3"] == 6
+
+    def test_odds_value(self):
+        """オッズが正しく取得される"""
+        html = _make_sanrenpuku_ninki_html([(5, 6, 10, 11.5)])
+        df = _parse_sanrenpuku_ninki_html(html)
+        assert df.iloc[0]["odds"] == pytest.approx(11.5)
+
+    def test_filters_odds_lte_1(self):
+        """オッズが1.0以下の行は除外される"""
+        html = _make_sanrenpuku_ninki_html([(1, 2, 3, 1.0), (1, 5, 6, 14.1)])
+        df = _parse_sanrenpuku_ninki_html(html)
+        assert len(df) == 1
+        assert df.iloc[0]["odds"] == pytest.approx(14.1)
+
+    def test_comma_in_odds(self):
+        """カンマ区切りのオッズ（例: 1,234.5）を正しくパースできる"""
+        html = _make_sanrenpuku_ninki_html([(1, 2, 3, "1,234.5")])
+        df = _parse_sanrenpuku_ninki_html(html)
+        assert len(df) == 1
+        assert df.iloc[0]["odds"] == pytest.approx(1234.5)
+
+    def test_empty_html(self):
+        """ninki-data_N が存在しないHTMLは空のDFを返す"""
+        df = _parse_sanrenpuku_ninki_html("<html><body></body></html>")
+        assert df.empty
+        assert list(df.columns) == [
+            "ticket_type", "horse_number_1", "horse_number_2", "horse_number_3", "odds"
+        ]
+
+    def test_multiple_rows(self):
+        """複数行が全件パースされる"""
+        combos = [(1, 2, 3, 10.0), (1, 2, 4, 15.0), (1, 3, 4, 20.0)]
+        html = _make_sanrenpuku_ninki_html(combos)
+        df = _parse_sanrenpuku_ninki_html(html)
+        assert len(df) == 3
+
+
 # ---------------------------------------------------------------------------
 
 
@@ -707,6 +785,39 @@ class TestPlaywrightDomcontentloaded:
         mock_page.goto.assert_called()
         _, kwargs = mock_page.goto.call_args
         assert kwargs.get("wait_until") == "domcontentloaded"
+
+    def test_sanrenpuku_uses_housiki_c99_url(self):
+        """三連複（b7）は housiki=c99 パラメータ付きURLを使うこと"""
+        mock_cm, mock_browser, mock_page = self._make_playwright_mock()
+        visited_urls: list[str] = []
+
+        def capture_goto(url, **kwargs):
+            visited_urls.append(url)
+
+        mock_page.goto.side_effect = capture_goto
+
+        with patch("playwright.sync_api.sync_playwright", return_value=mock_cm):
+            get_combo_odds("202405021211", ticket_types=["b7"], sleep_sec=0)
+
+        assert len(visited_urls) == 1
+        assert "housiki=c99" in visited_urls[0]
+        assert "type=b7" in visited_urls[0]
+
+    def test_umaren_wide_do_not_use_housiki(self):
+        """馬連（b4）・ワイド（b5）は housiki=c99 を使わないこと"""
+        mock_cm, mock_browser, mock_page = self._make_playwright_mock()
+        visited_urls: list[str] = []
+
+        def capture_goto(url, **kwargs):
+            visited_urls.append(url)
+
+        mock_page.goto.side_effect = capture_goto
+
+        with patch("playwright.sync_api.sync_playwright", return_value=mock_cm):
+            get_combo_odds("202405021211", ticket_types=["b4", "b5"], sleep_sec=0)
+
+        for url in visited_urls:
+            assert "housiki" not in url
 
 
 # ---------------------------------------------------------------------------
