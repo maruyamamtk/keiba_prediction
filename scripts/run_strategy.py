@@ -161,7 +161,6 @@ def fetch_combo_odds_for_date(
         return df1
 
     # Stage 1 を優先してマージ: Stage 1 にない組み合わせのみ Stage 2 から補完
-    merge_keys = ["race_id", "bet_type", "horse_number_1", "horse_number_2", "horse_number_3"]
     df1_keys = set(
         zip(df1["race_id"], df1["bet_type"], df1["horse_number_1"],
             df1["horse_number_2"], df1["horse_number_3"])
@@ -179,8 +178,6 @@ def fetch_combo_odds_for_date(
         f" + raw.combo_odds補完 {len(df2_supplement)} 件 = 計 {len(merged)} 件"
     )
     return merged[_UNIFIED_SCHEMA]
-
-    return pd.DataFrame(columns=_UNIFIED_SCHEMA)
 
 
 def fetch_daily_predictions(
