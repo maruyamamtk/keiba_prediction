@@ -103,6 +103,7 @@ def fetch_training_data(
     """
     logger.info(f"Fetching data from {project_id}.{dataset}.{table}...")
     df = client.query(query).to_dataframe()
+    df = df.sort_values(["race_date", "race_id", "horse_number"]).reset_index(drop=True)
     logger.info(f"Fetched {len(df)} rows, {len(df.columns)} columns")
     return df
 

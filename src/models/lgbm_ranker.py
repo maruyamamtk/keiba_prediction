@@ -216,8 +216,7 @@ class LGBMRanker:
 
         self.model = lgb.Booster(model_file=str(model_path))
 
-        # カテゴリカル特徴量情報をモデルファイルからパースしてキャッシュ
-        # メタデータを読み込み（feature_names確定後にカテゴリ情報をパースするため先に実行）
+        # feature_names を確定させてからカテゴリカル特徴量をパースする
         meta_path = model_path.with_suffix(".meta.json")
         if meta_path.exists():
             meta = json.loads(meta_path.read_text())
@@ -237,15 +236,15 @@ class LGBMRanker:
         """モデルファイルの [categorical_feature: N,M,...] 行からカテゴリカル特徴量名を返す。"""
         feature_names = self.feature_names or self.model.feature_name()
         with open(model_path) as f:
-            for line in f:
-                line = line.strip()
-                if line.startswith("[categorical_feature:"):
-                    content = line.split(":", 1)[1].strip().rstrip("]").strip()
+            for raw_line in f:
+                stripped = raw_line.strip()
+                if stripped.startswith("[categorical_feature:"):
+                    content = stripped.split(":", 1)[1].strip().rstrip("]").strip()
                     if not content or content == "none":
                         return []
                     indices = [int(x.strip()) for x in content.split(",")]
                     return [feature_names[i] for i in indices]
-                if line.startswith("[Tree"):
+                if stripped.startswith("[Tree"):
                     break
         return []
 
