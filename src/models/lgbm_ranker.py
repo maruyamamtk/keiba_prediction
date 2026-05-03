@@ -117,6 +117,11 @@ class LGBMRanker:
             ],
         )
 
+        # train() → predict() フローでも _align_for_predict が正しく動くよう
+        # カテゴリカル特徴量名を保持する
+        if categorical_feature:
+            self._categorical_feature_names = list(categorical_feature)
+
         logger.info(
             f"Training completed: best_iteration={self.model.best_iteration}"
         )
