@@ -76,7 +76,10 @@ def fetch_training_data(
     table: str,
 ) -> pd.DataFrame:
     """
-    BigQueryからtraining_dataを取得する
+    BigQueryからtraining_dataを取得し、raw.race_resultsからfinish_positionラベルをJOINして返す
+
+    features.training_data の finish_position 列は全 NULL のため、
+    学習ラベルは raw.race_results から直接取得する。
 
     Args:
         project_id: GCPプロジェクトID
@@ -84,13 +87,18 @@ def fetch_training_data(
         table: テーブル名
 
     Returns:
-        全データのDataFrame
+        finish_position ラベル付きの全データDataFrame
     """
     client = bigquery.Client(project=project_id)
     query = f"""
-    SELECT *
-    FROM `{project_id}.{dataset}.{table}`
-    ORDER BY race_date, race_id, horse_number
+    SELECT
+        t.* EXCEPT(finish_position),
+        r_r.finish_position
+    FROM `{project_id}.{dataset}.{table}` AS t
+    LEFT JOIN `{project_id}.raw.race_results` AS r_r
+        ON t.race_id = r_r.race_id
+        AND t.horse_number = r_r.horse_number
+    ORDER BY t.race_date, t.race_id, t.horse_number
     """
     logger.info(f"Fetching data from {project_id}.{dataset}.{table}...")
     df = client.query(query).to_dataframe()
@@ -180,9 +188,15 @@ def build_feature_matrix(
     Returns:
         特徴量のDataFrame
     """
+    # exclude_columns に加え、数値型でもカテゴリカル指定でもない列（文字列・日付等）を自動除外
+    # BigQuery Storage API は文字列列を object 型で返すため明示的なフィルタが必要
     feature_cols = [
         c for c in df.columns
         if c not in exclude_columns
+        and (
+            pd.api.types.is_numeric_dtype(df[c])
+            or c in categorical_columns
+        )
     ]
 
     X = df[feature_cols].copy()
@@ -214,8 +228,9 @@ def prepare_features(
     X = build_feature_matrix(df, exclude_columns, categorical_columns)
 
     # ラベル: 3着以内=1, それ以外=0 の二値ラベル
-    # finish_position=0（出走取消等）は0として扱う
-    positions = df["finish_position"].values.astype(int)
+    # finish_position=0（出走取消等）またはNULL（欠損）は0として扱う
+    # BigQuery Storageモジュール経由だとNullable Int64で返るためfillna(0)が必要
+    positions = df["finish_position"].fillna(0).values.astype(int)
     y = np.where((positions >= 1) & (positions <= 3), 1, 0)
 
     # グループサイズ（各レースの馬数）
@@ -456,7 +471,7 @@ def train_pipeline(
     # 6. 検証データで評価
     valid_pred = ranker.predict(X_valid)
     metrics = evaluate_predictions(
-        y_true_positions=valid_df["finish_position"].values,
+        y_true_positions=valid_df["finish_position"].fillna(0).values.astype(int),
         y_pred=valid_pred,
         groups=groups_valid,
     )

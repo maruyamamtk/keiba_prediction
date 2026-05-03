@@ -9,23 +9,46 @@ config/strategy_config.yaml に保存する。
   - POST /api/v1/strategy/daily（Cloud Scheduler）
   - scripts/run_strategy.py（手動確認用）
 
+OOS（アウトオブサンプル）評価の原則:
+  --start-date / --end-date にはモデルの学習期間・検証期間に含まれない日付を指定すること。
+  例: --execution-date 2025-01-06 で学習したモデル → 検証期間が ~2025-01-06 で終わるため
+      --start-date 2025-01-11 以降を指定する。
+
+実行時間の目安（データ期間: 約1年、レース数: 約3,200）:
+  - デフォルト（r_dominant 4値 × r_standard 4値）: 1,296 組み合わせ → 約8時間
+  - --r-dominant-range 1.0 --r-standard-range 1.0: 81 組み合わせ → 約30分（推奨）
+  - --r-dominant-range 1.0 1.2 --r-standard-range 1.0 1.2: 324 組み合わせ → 約2時間
+
 Usage:
+    # 推奨: r 値を固定して高速実行（約30分）
     python scripts/run_strategy_optimization.py \\
         --project-id <PROJECT_ID> \\
-        --model-path gs://<PROJECT_ID>-keiba-models/lgbm_ranker/20260301/model.txt \\
-        --start-date 2024-01-01 \\
-        --end-date 2024-12-31
+        --model-path gs://<PROJECT_ID>-keiba-models/lgbm_ranker/20250106/lgbm_ranker_20250106.txt \\
+        --start-date 2025-01-11 \\
+        --end-date 2025-12-31 \\
+        --r-dominant-range 1.0 \\
+        --r-standard-range 1.0
 
-    # 出力ファイルを指定（デフォルト: config/strategy_config.yaml）
+    # フルグリッドサーチ（約8時間）
+    python scripts/run_strategy_optimization.py \\
+        --project-id <PROJECT_ID> \\
+        --model-path gs://<PROJECT_ID>-keiba-models/lgbm_ranker/20250106/lgbm_ranker_20250106.txt \\
+        --start-date 2025-01-11 \\
+        --end-date 2025-12-31
+
+    # 出力ファイルを指定
     python scripts/run_strategy_optimization.py \\
         --project-id <PROJECT_ID> \\
         --model-path <MODEL_PATH> \\
-        --start-date 2024-01-01 \\
-        --end-date 2024-12-31 \\
-        --output-csv results/optimization_2024.csv \\
+        --start-date 2025-01-11 \\
+        --end-date 2025-12-31 \\
+        --r-dominant-range 1.0 \\
+        --r-standard-range 1.0 \\
+        --output-csv results/optimization_oos_2025.csv \\
         --metric recovery_rate
 
 Issue #105: 投資戦略モジュールをバックテストパイプラインに統合
+Issue #258: OOSデータによる評価でのデータリーク修正
 """
 
 from __future__ import annotations
@@ -173,6 +196,12 @@ def main() -> None:
         help="最適化の評価指標（デフォルト: recovery_rate）",
     )
     parser.add_argument("--initial-capital", type=float, default=100_000.0)
+    parser.add_argument(
+        "--budget-per-race",
+        type=float,
+        default=None,
+        help="1レースあたりの固定予算 (円)。デフォルト: strategy_config.yaml の値",
+    )
     parser.add_argument("--output-csv", help="全グリッドサーチ結果のCSV保存先")
     parser.add_argument("--top-n", type=int, default=10, help="上位N件の結果を表示")
     parser.add_argument(
@@ -279,7 +308,10 @@ def main() -> None:
         with open(STRATEGY_CONFIG_PATH) as _f:
             _strategy_cfg = yaml.safe_load(_f) or {}
     min_prob_threshold = float(_strategy_cfg.get("min_prob_threshold", 0.10))
+    budget_per_race = args.budget_per_race if args.budget_per_race is not None else \
+        float(_strategy_cfg.get("budget_per_race", 3000.0))
     logger.info(f"min_prob_threshold={min_prob_threshold} (固定パラメータ)")
+    logger.info(f"budget_per_race={budget_per_race} (固定パラメータ)")
 
     # グリッドサーチ最適化
     optimizer = StrategyOptimizer(
@@ -287,7 +319,7 @@ def main() -> None:
         payouts_df=payouts_df,
         initial_capital=args.initial_capital,
         combo_odds_df=combo_odds_df,
-        budget_per_race=3000.0,
+        budget_per_race=budget_per_race,
     )
     results = optimizer.run_grid_search(
         r_dominant_range=args.r_dominant_range,

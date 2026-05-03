@@ -52,6 +52,7 @@ class LGBMRanker:
         self.config = config or LGBMRankerConfig()
         self.model: lgb.Booster | None = None
         self.feature_names: list[str] | None = None
+        self._categorical_feature_names: list[str] = []
 
     def train(
         self,
@@ -142,8 +143,9 @@ class LGBMRanker:
         """
         予測用にDataFrameをモデルの期待に合わせて整形する
 
-        1. モデルの特徴量名でフィルタ（学習後に追加されたカラムを除外）
-        2. object型カラムをcategory型に変換（LightGBMのpandas_categoricalと整合）
+        1. モデルの全特徴量を揃える（不足列はNaNで補完）
+        2. カテゴリカル特徴量を学習時のカテゴリ情報で category 型に変換
+           （pandas_categorical の数とカテゴリ型カラム数を一致させる）
 
         Args:
             X: 特徴量DataFrame
@@ -153,19 +155,24 @@ class LGBMRanker:
         """
         model_feature_names = self.feature_names or self.model.feature_name()
 
-        # モデルの特徴量名でフィルタ
-        available = [c for c in model_feature_names if c in X.columns]
         missing = [c for c in model_feature_names if c not in X.columns]
         if missing:
             logger.warning(f"モデルの特徴量がデータに不足: {missing}")
 
-        X_pred = X[available].copy()
+        # 不足特徴量をNaNで補完し、余剰カラムを除外してモデル順に並べ替え
+        X_pred = X.reindex(columns=model_feature_names)
 
-        # object型（文字列）カラムをcategory型に変換
-        # LightGBMはpandas_categoricalの数とcategory型カラム数が
-        # 一致しないとエラーになるため、全object型をcategory型に変換する
+        # カテゴリカル特徴量を学習時のカテゴリ情報で変換
+        # （不足特徴量がある場合でもpandas_categoricalの数を合わせる）
+        model_cats = getattr(self.model, "pandas_categorical", [])
+        for col, cats in zip(self._categorical_feature_names, model_cats):
+            dtype = pd.CategoricalDtype(categories=cats)
+            X_pred[col] = X_pred[col].astype(dtype)
+
+        # 残りのobject型カラムをcategory型に変換
         for col in X_pred.select_dtypes(include="object").columns:
-            X_pred[col] = X_pred[col].astype("category")
+            if not pd.api.types.is_categorical_dtype(X_pred[col]):
+                X_pred[col] = X_pred[col].astype("category")
 
         return X_pred
 
@@ -208,6 +215,9 @@ class LGBMRanker:
 
         self.model = lgb.Booster(model_file=str(model_path))
 
+        # カテゴリカル特徴量情報をモデルファイルからパースしてキャッシュ
+        self._categorical_feature_names = self._parse_categorical_feature_names(model_path)
+
         # メタデータを読み込み
         meta_path = model_path.with_suffix(".meta.json")
         if meta_path.exists():
@@ -220,6 +230,27 @@ class LGBMRanker:
         else:
             self.feature_names = self.model.feature_name()
             logger.info(f"Model loaded from {model_path} (no metadata)")
+
+    def _parse_categorical_feature_names(self, model_path: Path) -> list[str]:
+        """
+        モデルファイルの [categorical_feature: ...] 行からカテゴリカル特徴量名を取得する
+
+        LightGBMはモデルファイルのヘッダーにカテゴリカル特徴量のインデックスを保存する。
+        これとfeature_name()を組み合わせて特徴量名リストを返す。
+        """
+        feature_names = self.model.feature_name()
+        with open(model_path) as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith("[categorical_feature:"):
+                    content = line.split(":", 1)[1].strip().rstrip("]").strip()
+                    if not content or content == "none":
+                        return []
+                    indices = [int(x.strip()) for x in content.split(",")]
+                    return [feature_names[i] for i in indices]
+                if line.startswith("[Tree"):
+                    break
+        return []
 
     def feature_importance(self, importance_type: str = "gain") -> pd.DataFrame:
         """
