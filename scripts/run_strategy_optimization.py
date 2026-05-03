@@ -74,6 +74,7 @@ from scripts.run_backtest import (
     fetch_place_odds,
     fetch_combo_odds,
     generate_predictions,
+    _load_strategy_config,
 )
 from src.backtest.strategy_optimizer import StrategyOptimizer
 from src.models.train import load_config
@@ -302,11 +303,7 @@ def main() -> None:
     race_ids = predictions_df["race_id"].unique().tolist()
     combo_odds_df = fetch_combo_odds(args.project_id, race_ids)
 
-    # strategy_config.yaml から固定パラメータを読み込む
-    _strategy_cfg = {}
-    if STRATEGY_CONFIG_PATH.exists():
-        with open(STRATEGY_CONFIG_PATH) as _f:
-            _strategy_cfg = yaml.safe_load(_f) or {}
+    _strategy_cfg = _load_strategy_config(str(STRATEGY_CONFIG_PATH))
     min_prob_threshold = float(_strategy_cfg.get("min_prob_threshold", 0.10))
     budget_per_race = args.budget_per_race if args.budget_per_race is not None else \
         float(_strategy_cfg.get("budget_per_race", 3000.0))

@@ -80,6 +80,8 @@ def fetch_training_data(
 
     features.training_data の finish_position 列は全 NULL のため、
     学習ラベルは raw.race_results から直接取得する。
+    BigQuery Storage API は文字列列を object 型で返すため、build_feature_matrix で
+    数値型・categorical_columns 以外の列は自動除外される。
 
     Args:
         project_id: GCPプロジェクトID
@@ -98,7 +100,6 @@ def fetch_training_data(
     LEFT JOIN `{project_id}.raw.race_results` AS r_r
         ON t.race_id = r_r.race_id
         AND t.horse_number = r_r.horse_number
-    ORDER BY t.race_date, t.race_id, t.horse_number
     """
     logger.info(f"Fetching data from {project_id}.{dataset}.{table}...")
     df = client.query(query).to_dataframe()
@@ -188,8 +189,6 @@ def build_feature_matrix(
     Returns:
         特徴量のDataFrame
     """
-    # exclude_columns に加え、数値型でもカテゴリカル指定でもない列（文字列・日付等）を自動除外
-    # BigQuery Storage API は文字列列を object 型で返すため明示的なフィルタが必要
     feature_cols = [
         c for c in df.columns
         if c not in exclude_columns
