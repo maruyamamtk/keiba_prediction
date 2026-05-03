@@ -52,6 +52,12 @@ data:
   categorical_columns:
     - "course_type"
     - "track_condition"
+    - "direction"
+    - "age_condition"
+    - "race_class"
+    - "blinker"
+    - "pace_forecast"
+    - "trainer_affiliation"
 
 # GCS設定
 gcs:

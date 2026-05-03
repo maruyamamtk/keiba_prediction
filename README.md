@@ -152,12 +152,37 @@ python scripts/run_backtest.py \
 グリッドサーチで最適な投資パラメータを探索し、`config/strategy_config.yaml` に保存する。
 **この手順を一度実行するだけで、以降の日次自動実行（手順B）が正しいパラメータで動作する。**
 
+> **⚠️ OOS（アウトオブサンプル）評価の原則**
+> `--start-date` / `--end-date` には、モデルの学習期間・検証期間に**含まれない**日付を指定すること。
+> モデルの学習/検証期間を最適化データに使うと、パラメータが過去の学習データに過適合する（データリーク）。
+> 例: `--execution-date 2025-01-06` で学習した場合 → 検証期間は〜2025-01-06 → `--start-date 2025-01-11` 以降を指定する。
+
+> **⏱️ 実行時間の目安**（データ期間: 約1年、レース数: 約3,200）
+>
+> | グリッドサイズ | 組み合わせ数 | 推定時間 |
+> |---|---|---|
+> デフォルト（`--r-dominant-range` 未指定） | 1,296 | 約8時間 |
+> `--r-dominant-range 1.0 1.2 --r-standard-range 1.0 1.2` | 324 | 約2時間 |
+> `--r-dominant-range 1.0 --r-standard-range 1.0` | 81 | 約30分 |
+>
+> 初回は r 値を固定して p1 × threshold × top_n のみ探索することを推奨。
+
 ```bash
+# 推奨: r 値を固定して高速実行（約30分）
 python3 scripts/run_strategy_optimization.py \
     --project-id <PROJECT_ID> \
     --model-path gs://<PROJECT_ID>-keiba-models/lgbm_ranker/20260301/model.txt \
-    --start-date 2024-01-01 \
-    --end-date 2024-12-31
+    --start-date 2025-01-11 \
+    --end-date 2025-12-31 \
+    --r-dominant-range 1.0 \
+    --r-standard-range 1.0
+
+# フルグリッドサーチ（約8時間）
+python3 scripts/run_strategy_optimization.py \
+    --project-id <PROJECT_ID> \
+    --model-path gs://<PROJECT_ID>-keiba-models/lgbm_ranker/20260301/model.txt \
+    --start-date 2025-01-11 \
+    --end-date 2025-12-31
 ```
 
 #### B. 日次投資戦略策定（手動確認用 / Cloud Schedulerで自動実行）

@@ -143,8 +143,8 @@ python3 -m src.models.train --project-id <PROJECT_ID> --tune --n-trials 50
 # チューニング（タイムアウト付き）
 python3 -m src.models.train --project-id <PROJECT_ID> --tune --tune-timeout 3600
 
-# 実行日を指定
-python3 -m src.models.train --project-id <PROJECT_ID> --execution-date 2026-02-15
+# 実行日を指定（OOS評価モデルの作成に使用）
+python3 -m src.models.train --project-id <PROJECT_ID> --execution-date 2025-01-06
 
 # カスタム設定ファイル
 python3 -m src.models.train --project-id <PROJECT_ID> --config ./my_config.yaml
@@ -152,6 +152,24 @@ python3 -m src.models.train --project-id <PROJECT_ID> --config ./my_config.yaml
 # 詳細ログ
 python3 -m src.models.train --project-id <PROJECT_ID> -v
 ```
+
+> **`--execution-date` とデータ分割の関係**
+>
+> `--execution-date YYYY-MM-DD` を指定すると、学習/検証/推論期間が以下のように決まる:
+>
+> | 期間 | 範囲 |
+> |---|---|
+> | 推論対象 | 指定日の週の土日 |
+> | 検証（Valid） | 推論対象の前日 〜 その6ヶ月前 |
+> | 学習（Train） | それ以前の全データ |
+>
+> **OOS（アウトオブサンプル）評価用モデルを作る場合**: バックテストや戦略最適化で使いたいデータ期間よりも前の日付を `--execution-date` に指定すること。  
+> 例: 2025年データで評価したい場合 → `--execution-date 2025-01-06`（検証期間が〜2025-01-06 で終わり、2025-01-11 以降がOOS）
+
+> **`finish_position` ラベルの取得元**
+>
+> `features.training_data` の `finish_position` 列は常に NULL のため、学習ラベルは `raw.race_results` テーブルから直接 JOIN して取得する。  
+> 推論時（未来のレース）はラベルが存在しないが、推論には `finish_position` を使用しないため問題ない。
 
 ---
 
