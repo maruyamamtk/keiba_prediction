@@ -219,6 +219,34 @@ def main() -> None:
         default=None,
         help="prob_weight_r_standard の探索値（複数指定可、デフォルト: 0.8 1.0 1.2 1.5）",
     )
+    parser.add_argument(
+        "--p1-range",
+        type=float,
+        nargs="+",
+        default=None,
+        help="p1 の探索値（複数指定可、デフォルト: 0.5 0.55 0.6）",
+    )
+    parser.add_argument(
+        "--threshold-range",
+        type=float,
+        nargs="+",
+        default=None,
+        help="expected_return_threshold の探索値（複数指定可、デフォルト: 1.2 1.35 1.5）",
+    )
+    parser.add_argument(
+        "--top-n-dominant-range",
+        type=int,
+        nargs="+",
+        default=None,
+        help="top_n_dominant の探索値（複数指定可、デフォルト: 4 5 6）",
+    )
+    parser.add_argument(
+        "--top-n-standard-range",
+        type=int,
+        nargs="+",
+        default=None,
+        help="top_n_standard の探索値（複数指定可、デフォルト: 5 6 7）",
+    )
     args = parser.parse_args()
 
     if not args.project_id:
@@ -319,6 +347,10 @@ def main() -> None:
         budget_per_race=budget_per_race,
     )
     results = optimizer.run_grid_search(
+        p1_range=args.p1_range,
+        threshold_range=args.threshold_range,
+        top_n_dominant_range=args.top_n_dominant_range,
+        top_n_standard_range=args.top_n_standard_range,
         r_dominant_range=args.r_dominant_range,
         r_standard_range=args.r_standard_range,
         min_prob_threshold=min_prob_threshold,
