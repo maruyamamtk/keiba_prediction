@@ -1,19 +1,18 @@
-p1: 0.5
-expected_return_threshold: 1.2
-prob_weight_r_dominant: 1.5
-prob_weight_r_standard: 1.0
+p1: 0.0
+expected_return_threshold: 1.5
+prob_weight_r_dominant: 0.8
+prob_weight_r_standard: 0.8
 budget_per_race: 1000
 min_bet_amount: 100
 min_prob_threshold: 0.1
-top_n_dominant: 4
-top_n_standard: 5
+top_n_dominant: 3
+top_n_standard: 4
 optimization:
-  last_run: '2026-05-03T12:01:28'
-  metric: sharpe_ratio
+  last_run: '2026-05-04T17:46:24'
+  metric: recovery_rate
   start_date: '2025-01-11'
   end_date: '2025-12-31'
-  recovery_rate: 126.98
-  hit_rate: 15.36
-  max_drawdown: 9.91
-  sharpe_ratio: 5.52
-  total_bets: 17053
+  recovery_rate: 115.69
+  hit_rate: 12.92
+  max_drawdown: 19.03
+  total_bets: 6302
