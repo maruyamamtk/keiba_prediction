@@ -659,6 +659,7 @@ def run_full_strategy_backtest_pipeline(
     expected_return_threshold: float = 1.2,
     prob_weight_r: float = 1.0,
     top_n: int = 5,
+    max_wide_odds: float | None = None,
     initial_capital: float = 100_000.0,
     output_csv: str | None = None,
     save_bq: bool = False,
@@ -689,6 +690,7 @@ def run_full_strategy_backtest_pipeline(
         expected_return_threshold: 期待回収率閾値
         prob_weight_r: 選定スコア係数 (score = odds * prob^r)
         top_n: 候補馬数
+        max_wide_odds: ワイド購入の上限オッズ（None で無制限）
         initial_capital: 初期資金 (円)
         output_csv: CSV 出力パス (None でスキップ)
         save_bq: BigQuery 保存フラグ
@@ -782,6 +784,7 @@ def run_full_strategy_backtest_pipeline(
         min_prob_threshold=min_prob_threshold,
         prob_weight_r=prob_weight_r,
         top_n=top_n,
+        max_wide_odds=max_wide_odds,
     )
 
     # 6. 評価指標計算
@@ -905,6 +908,13 @@ def main() -> int:
         dest="top_n",
         help="ワイド/三連複/馬連の候補馬数。指定時はYAMLの値より優先",
     )
+    parser.add_argument(
+        "--max-wide-odds",
+        type=float,
+        default=None,
+        dest="max_wide_odds",
+        help="ワイド購入の上限オッズ（指定時はYAMLの値より優先。未指定はYAML値、YAMLに未設定なら無制限）",
+    )
     parser.add_argument("--verbose", "-v", action="store_true", help="詳細ログ")
 
     args = parser.parse_args()
@@ -944,6 +954,9 @@ def main() -> int:
     top_n = args.top_n if args.top_n is not None else int(strategy_cfg.get("top_n", 5))
     prob_weight_r = args.prob_weight_r if args.prob_weight_r is not None else \
         float(strategy_cfg.get("prob_weight_r", 1.0))
+    _yaml_mwo = strategy_cfg.get("max_wide_odds", None)
+    max_wide_odds = args.max_wide_odds if args.max_wide_odds is not None else \
+        (float(_yaml_mwo) if _yaml_mwo is not None else None)
 
     print(f"\nバックテスト設定:")
     print(f"  期間:                          {start_date} ~ {end_date}")
@@ -954,6 +967,7 @@ def main() -> int:
     print(f"  1レースあたり予算:             ¥{budget:,.0f}")
     print(f"  min_prob_threshold:            {min_prob}")
     print(f"  prob_weight_r:                 {prob_weight_r}")
+    print(f"  max_wide_odds:                 {max_wide_odds if max_wide_odds is not None else '無制限'}")
 
     history_df, metrics = run_full_strategy_backtest_pipeline(
         project_id=args.project_id,
@@ -966,6 +980,7 @@ def main() -> int:
         expected_return_threshold=expected_return_threshold,
         prob_weight_r=prob_weight_r,
         top_n=top_n,
+        max_wide_odds=max_wide_odds,
         initial_capital=args.initial_capital,
         output_csv=args.output_csv,
         save_bq=args.save_to_bq,

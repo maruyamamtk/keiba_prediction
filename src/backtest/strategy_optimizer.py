@@ -144,6 +144,7 @@ class StrategyOptimizer:
         min_prob_threshold: float = 0.0,
         prob_weight_r: float = 1.0,
         top_n: int = 5,
+        max_wide_odds: float | None = None,
         # 後方互換性のための旧パラメータ（無視される）
         p1: float | None = None,
         prob_weight_r_dominant: float | None = None,
@@ -160,6 +161,7 @@ class StrategyOptimizer:
             min_prob_threshold: 軸馬の最低複勝率
             prob_weight_r: 選定スコアの確率ウェイト係数
             top_n: 候補馬数
+            max_wide_odds: ワイド購入の上限オッズ（None で無制限）
 
         Returns:
             (history_df, pattern_stats) のタプル:
@@ -221,6 +223,7 @@ class StrategyOptimizer:
                     min_prob_threshold=min_prob_threshold,
                     prob_weight_r=prob_weight_r,
                     top_n=top_n,
+                    max_wide_odds=max_wide_odds,
                 )
             except ValueError:
                 continue
@@ -327,8 +330,11 @@ class StrategyOptimizer:
         top_n_range: list[int] | None = None,
         r_range: list[float] | None = None,
         min_prob_threshold_range: list[float] | None = None,
+        max_wide_odds_range: list[float | None] | None = None,
         # 後方互換性: min_prob_threshold_range が None の場合に使用する固定値
         min_prob_threshold: float = 0.0,
+        # 後方互換性: max_wide_odds_range が None の場合に使用する固定値
+        max_wide_odds: float | None = None,
         # 後方互換性のための旧パラメータ（無視される）
         p1_range: list[float] | None = None,
         top_n_dominant_range: list[int] | None = None,
@@ -339,14 +345,14 @@ class StrategyOptimizer:
         """
         グリッドサーチを実行し、全パラメータ組み合わせのバックテスト結果を返す
 
-        デフォルト探索範囲（min_prob_threshold_range=None の場合）:
+        デフォルト探索範囲（min_prob_threshold_range=None, max_wide_odds_range=None の場合）:
           - threshold:  [1.2, 1.35, 1.5, 1.75]  （期待回収率閾値）
           - top_n:      [2, 3, 4, 5]             （候補馬数）
           - r:          [0.6, 0.8, 1.0, 1.2, 1.5]（prob_weight_r）
         総組み合わせ数: 4×4×5 = 80通り
 
-        min_prob_threshold_range を指定した場合は4次元サーチになる:
-          - threshold × top_n × r × min_prob 全組み合わせを探索
+        max_wide_odds_range を指定した場合は追加次元のグリッドサーチになる:
+          - threshold × top_n × r × min_prob × max_wide_odds 全組み合わせを探索
 
         Args:
             threshold_range: 期待回収率閾値の探索値リスト
@@ -354,7 +360,10 @@ class StrategyOptimizer:
             r_range: prob_weight_r の探索値リスト
             min_prob_threshold_range: 全候補馬共通の最低複勝率の探索値リスト。
                 None の場合は min_prob_threshold 固定値を全組み合わせに適用（後方互換）
+            max_wide_odds_range: ワイドオッズ上限の探索値リスト（None を含む場合は無制限も探索）。
+                None の場合は max_wide_odds 固定値を全組み合わせに適用
             min_prob_threshold: min_prob_threshold_range=None 時の固定値（後方互換）
+            max_wide_odds: max_wide_odds_range=None 時の固定値（後方互換）
             p1_range: 廃止済み（無視される）
             top_n_dominant_range: 廃止済み（無視される）
             top_n_standard_range: 廃止済み（無視される）
@@ -375,34 +384,34 @@ class StrategyOptimizer:
         if r_range is None:
             r_range = [0.6, 0.8, 1.0, 1.2, 1.5]
 
-        # min_prob_threshold_range が指定された場合のみ4次元グリッドサーチ
-        if min_prob_threshold_range is not None:
-            param_grid = list(product(threshold_range, top_n_range, r_range, min_prob_threshold_range))
-            total = len(param_grid)
-            logger.info(
-                f"グリッドサーチ開始: {total} パラメータ組み合わせ "
-                f"(threshold×top_n×r×min_prob = "
-                f"{len(threshold_range)}×{len(top_n_range)}×{len(r_range)}×{len(min_prob_threshold_range)})"
-            )
-        else:
-            param_grid_3d = list(product(threshold_range, top_n_range, r_range))
-            param_grid = [(th, tn, r, min_prob_threshold) for th, tn, r in param_grid_3d]
-            total = len(param_grid)
-            logger.info(f"グリッドサーチ開始: {total} パラメータ組み合わせ (min_prob_threshold={min_prob_threshold} 固定)")
+        # min_prob の探索値リストを確定
+        mpt_values = min_prob_threshold_range if min_prob_threshold_range is not None else [min_prob_threshold]
+        # max_wide_odds の探索値リストを確定
+        mwo_values = max_wide_odds_range if max_wide_odds_range is not None else [max_wide_odds]
+
+        param_grid = list(product(threshold_range, top_n_range, r_range, mpt_values, mwo_values))
+        total = len(param_grid)
+
+        dim_info = (
+            f"threshold×top_n×r×min_prob×max_wide_odds = "
+            f"{len(threshold_range)}×{len(top_n_range)}×{len(r_range)}×{len(mpt_values)}×{len(mwo_values)}"
+        )
+        logger.info(f"グリッドサーチ開始: {total} パラメータ組み合わせ ({dim_info})")
 
         results: list[OptimizationResult] = []
 
-        for i, (th, tn, r, mpt) in enumerate(param_grid):
+        for i, (th, tn, r, mpt, mwo) in enumerate(param_grid):
             params = {
                 "expected_return_threshold": th,
                 "top_n": tn,
                 "prob_weight_r": r,
                 "min_prob_threshold": mpt,
+                "max_wide_odds": mwo,
             }
 
             if (i + 1) % 20 == 0 or (i + 1) == total:
                 logger.info(
-                    f"  [{i + 1}/{total}] th={th} top_n={tn} r={r} min_prob={mpt}"
+                    f"  [{i + 1}/{total}] th={th} top_n={tn} r={r} min_prob={mpt} max_wide_odds={mwo}"
                 )
 
             history_df, pattern_stats = self._run_simulation(
@@ -410,6 +419,7 @@ class StrategyOptimizer:
                 min_prob_threshold=mpt,
                 prob_weight_r=r,
                 top_n=tn,
+                max_wide_odds=mwo,
             )
 
             metrics = compute_metrics(history_df, self.initial_capital)

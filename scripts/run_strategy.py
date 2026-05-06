@@ -450,6 +450,8 @@ def run_daily_strategy(
     min_bet_amount = config.get("min_bet_amount", 100.0)
     min_prob_threshold = config.get("min_prob_threshold", 0.10)
     prob_weight_r = float(config.get("prob_weight_r", 1.0))
+    _mwo = config.get("max_wide_odds", None)
+    max_wide_odds = float(_mwo) if _mwo is not None else None
 
     opt = config.get("optimization", {})
     logger.info(f"=== 日次投資戦略策定 ({target_date}) ===")
@@ -457,7 +459,7 @@ def run_daily_strategy(
         f"パラメータ: expected_return_threshold={expected_return_threshold}, "
         f"top_n={top_n}, budget_per_race={budget_per_race}, "
         f"min_bet_amount={min_bet_amount}, min_prob_threshold={min_prob_threshold}, "
-        f"prob_weight_r={prob_weight_r}"
+        f"prob_weight_r={prob_weight_r}, max_wide_odds={max_wide_odds}"
     )
     if opt.get("last_run"):
         logger.info(f"最終最適化: {opt['last_run']} "
@@ -505,6 +507,7 @@ def run_daily_strategy(
                 min_prob_threshold=min_prob_threshold,
                 prob_weight_r=prob_weight_r,
                 top_n=top_n,
+                max_wide_odds=max_wide_odds,
             )
         except ValueError as e:
             logger.debug(f"レース {race_id} スキップ: {e}")

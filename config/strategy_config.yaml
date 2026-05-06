@@ -4,6 +4,7 @@ budget_per_race: 1000
 min_bet_amount: 100
 min_prob_threshold: 0.1
 top_n: 2
+max_wide_odds: 50.0
 optimization:
   last_run: '2026-05-04T18:20:51'
   metric: recovery_rate

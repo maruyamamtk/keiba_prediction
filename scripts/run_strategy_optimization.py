@@ -148,6 +148,7 @@ def save_best_params_to_yaml(
     config["top_n"] = best.params["top_n"]
     config["prob_weight_r"] = best.params["prob_weight_r"]
     config["min_prob_threshold"] = best.params["min_prob_threshold"]
+    config["max_wide_odds"] = best.params.get("max_wide_odds", None)
     # 廃止済みパラメータを削除（存在する場合）
     for key in ["p1", "top_n_dominant", "top_n_standard", "prob_weight_r_dominant",
                 "prob_weight_r_standard", "threshold_dominant", "threshold_standard"]:
@@ -171,7 +172,8 @@ def save_best_params_to_yaml(
         f"  expected_return_threshold={best.params['expected_return_threshold']}, "
         f"top_n={best.params['top_n']}, "
         f"prob_weight_r={best.params['prob_weight_r']}, "
-        f"min_prob_threshold={best.params['min_prob_threshold']}"
+        f"min_prob_threshold={best.params['min_prob_threshold']}, "
+        f"max_wide_odds={best.params.get('max_wide_odds', None)}"
     )
     logger.info(f"  回収率={best.recovery_rate:.2f}%, 的中率={best.hit_rate:.2f}%, "
                 f"最大ドローダウン={best.max_drawdown:.2f}%")
@@ -227,6 +229,13 @@ def main() -> None:
         nargs="+",
         default=None,
         help="min_prob_threshold の探索値（複数指定可）。指定時は4次元グリッドサーチ。未指定時は strategy_config.yaml の固定値を使用",
+    )
+    parser.add_argument(
+        "--max-wide-odds-range",
+        type=str,
+        nargs="+",
+        default=None,
+        help="max_wide_odds の探索値（複数指定可、'None' で無制限を探索可）。例: --max-wide-odds-range 30 50 80 None",
     )
     args = parser.parse_args()
 
@@ -316,10 +325,25 @@ def main() -> None:
     min_prob_threshold = float(_strategy_cfg.get("min_prob_threshold", 0.10))
     budget_per_race = args.budget_per_race if args.budget_per_race is not None else \
         float(_strategy_cfg.get("budget_per_race", 3000.0))
+    _yaml_mwo = _strategy_cfg.get("max_wide_odds", None)
+    max_wide_odds_fixed = float(_yaml_mwo) if _yaml_mwo is not None else None
+
+    # --max-wide-odds-range 引数を float | None のリストに変換
+    max_wide_odds_range: list[float | None] | None = None
+    if args.max_wide_odds_range is not None:
+        max_wide_odds_range = [
+            None if v.lower() == "none" else float(v)
+            for v in args.max_wide_odds_range
+        ]
+
     if args.min_prob_threshold_range is not None:
         logger.info(f"min_prob_threshold_range={args.min_prob_threshold_range} (探索パラメータ)")
     else:
         logger.info(f"min_prob_threshold={min_prob_threshold} (固定パラメータ)")
+    if max_wide_odds_range is not None:
+        logger.info(f"max_wide_odds_range={max_wide_odds_range} (探索パラメータ)")
+    else:
+        logger.info(f"max_wide_odds={max_wide_odds_fixed} (固定パラメータ)")
     logger.info(f"budget_per_race={budget_per_race} (固定パラメータ)")
 
     # グリッドサーチ最適化
@@ -336,6 +360,8 @@ def main() -> None:
         r_range=args.r_range,
         min_prob_threshold_range=args.min_prob_threshold_range,
         min_prob_threshold=min_prob_threshold,
+        max_wide_odds_range=max_wide_odds_range,
+        max_wide_odds=max_wide_odds_fixed,
     )
 
     if not results:
