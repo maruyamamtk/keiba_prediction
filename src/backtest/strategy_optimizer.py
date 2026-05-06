@@ -4,8 +4,9 @@
 グリッドサーチにより投資戦略のパラメータを最適化する。
 
 最適化対象パラメータ:
-  - p1: 突出型の判定閾値
   - expected_return_threshold: 期待回収率フィルタ閾値
+  - top_n: 候補馬数
+  - prob_weight_r: 選定スコアの確率ウェイト係数
 """
 
 
@@ -18,7 +19,7 @@ import numpy as np
 import pandas as pd
 
 from .metrics import compute_metrics
-from .strategy import RacePattern, select_bets_for_race
+from .strategy import select_bets_for_race
 
 logger = logging.getLogger(__name__)
 
@@ -35,9 +36,7 @@ class OptimizationResult:
         max_drawdown: 最大ドローダウン (%)
         sharpe_ratio: シャープレシオ
         total_bets: 総賭け数
-        pattern_breakdown: パターン別の成績辞書
-            各キーは 'one_dominant' | 'standard'
-            各値は {"bets", "hits", "bet_amount", "return_amount", "recovery_rate"}
+        pattern_breakdown: 後方互換性のために残した空辞書
     """
 
     params: dict
@@ -140,11 +139,13 @@ class StrategyOptimizer:
 
     def _run_simulation(
         self,
-        p1: float,
         expected_return_threshold: float = 1.2,
         min_bet_amount: float = 100.0,
         min_prob_threshold: float = 0.0,
         prob_weight_r: float = 1.0,
+        top_n: int = 5,
+        # 後方互換性のための旧パラメータ（無視される）
+        p1: float | None = None,
         prob_weight_r_dominant: float | None = None,
         prob_weight_r_standard: float | None = None,
         top_n_dominant: int | None = None,
@@ -154,20 +155,16 @@ class StrategyOptimizer:
         指定パラメータでシミュレーションを実行する（内部メソッド）
 
         Args:
-            p1: 突出型判定閾値（ジニ係数の閾値）
-            expected_return_threshold: 期待回収率閾値（両パターン共通）
+            expected_return_threshold: 期待回収率閾値
             min_bet_amount: 最低賭け金 (円)
             min_prob_threshold: 軸馬の最低複勝率
-            prob_weight_r: 選定スコアの確率ウェイト係数のデフォルト値
-            prob_weight_r_dominant: 突出型の確率ウェイト係数（Noneなら prob_weight_r を使用）
-            prob_weight_r_standard: 標準型の確率ウェイト係数（Noneなら prob_weight_r を使用）
-            top_n_dominant: 突出型の候補馬数（Noneなら self.top_n を使用）
-            top_n_standard: 標準型の候補馬数（Noneなら self.top_n を使用）
+            prob_weight_r: 選定スコアの確率ウェイト係数
+            top_n: 候補馬数
 
         Returns:
             (history_df, pattern_stats) のタプル:
               - history_df: 賭け記録 DataFrame
-              - pattern_stats: パターン別の集計辞書
+              - pattern_stats: 互換性のための空辞書
         """
         # 日付・レースID でソート
         df = self.predictions_df.sort_values(
@@ -176,12 +173,6 @@ class StrategyOptimizer:
 
         capital = float(self.initial_capital)
         records: list[dict] = []
-
-        # パターン別集計用（2パターン）
-        pattern_stats: dict[str, dict] = {
-            "one_dominant": {"bets": 0, "hits": 0, "bet_amount": 0.0, "return_amount": 0.0},
-            "standard": {"bets": 0, "hits": 0, "bet_amount": 0.0, "return_amount": 0.0},
-        }
 
         for race_id, race_group in df.groupby("race_id", sort=False):
             race_date = race_group["race_date"].iloc[0]
@@ -219,29 +210,23 @@ class StrategyOptimizer:
             else:
                 race_combo_df = pd.DataFrame()
 
-            # パターン判定と賭け選定
+            # 賭け選定
             try:
-                bets, race_pattern = select_bets_for_race(
+                bets = select_bets_for_race(
                     race_df=race_df,
                     combo_odds_df=race_combo_df,
                     budget_per_race=self.budget_per_race,
-                    p1=p1,
                     expected_return_threshold=expected_return_threshold,
                     min_bet_amount=min_bet_amount,
                     min_prob_threshold=min_prob_threshold,
                     prob_weight_r=prob_weight_r,
-                    prob_weight_r_dominant=prob_weight_r_dominant,
-                    prob_weight_r_standard=prob_weight_r_standard,
-                    top_n_dominant=top_n_dominant,
-                    top_n_standard=top_n_standard,
+                    top_n=top_n,
                 )
             except ValueError:
                 continue
 
             if not bets:
                 continue
-
-            pattern_name = race_pattern.pattern
 
             # finish_position マップを作成
             finish_map = {}
@@ -293,17 +278,9 @@ class StrategyOptimizer:
                 profit = return_amount - bet_amount
                 capital += profit
 
-                # パターン別集計
-                ps = pattern_stats[pattern_name]
-                ps["bets"] += 1
-                ps["hits"] += int(is_hit)
-                ps["bet_amount"] += bet_amount
-                ps["return_amount"] += return_amount
-
                 # horse_id: place/win なら bet から取得、それ以外はNone
                 horse_id = bet.get("horse_id", None)
-                # horse_number: 代表値（単一or複数）
-                horse_number_repr = horse_numbers[0] if len(horse_numbers) == 1 else horse_numbers[0]
+                horse_number_repr = horse_numbers[0]
 
                 # win_place_prob: place/win なら race_dfから取得
                 win_place_prob_val = None
@@ -333,107 +310,89 @@ class StrategyOptimizer:
                         "return_amount": return_amount,
                         "profit": profit,
                         "capital_after": capital,
-                        "pattern": pattern_name,
+                        "pattern": "unified",
                     }
                 )
 
         history_df = pd.DataFrame(records) if records else pd.DataFrame()
 
-        # パターン別の回収率を計算
-        for pname, ps in pattern_stats.items():
-            ba = ps["bet_amount"]
-            ps["recovery_rate"] = (
-                ps["return_amount"] / ba * 100.0 if ba > 0 else 0.0
-            )
+        # 後方互換性のために空の pattern_stats を返す
+        pattern_stats: dict[str, dict] = {}
 
         return history_df, pattern_stats
 
     def run_grid_search(
         self,
-        p1_range: list[float] | None = None,
         threshold_range: list[float] | None = None,
+        top_n_range: list[int] | None = None,
+        r_range: list[float] | None = None,
+        min_prob_threshold: float = 0.0,
+        # 後方互換性のための旧パラメータ（無視される）
+        p1_range: list[float] | None = None,
         top_n_dominant_range: list[int] | None = None,
         top_n_standard_range: list[int] | None = None,
         r_dominant_range: list[float] | None = None,
         r_standard_range: list[float] | None = None,
-        min_prob_threshold: float = 0.0,
     ) -> list[OptimizationResult]:
         """
         グリッドサーチを実行し、全パラメータ組み合わせのバックテスト結果を返す
 
         デフォルト探索範囲:
-          - p1:              [0.5, 0.55, 0.6]       （ジニ係数の閾値）
-          - threshold:       [1.2, 1.35, 1.5]      （期待回収率閾値・両パターン共通）
-          - top_n_dominant:  [4, 5, 6]             （突出型の候補馬数）
-          - top_n_standard:  [5, 6, 7]             （標準型の候補馬数）
-          - r_dominant:      [0.8, 1.0, 1.2, 1.5]  （突出型の prob_weight_r）
-          - r_standard:      [0.8, 1.0, 1.2, 1.5]  （標準型の prob_weight_r）
-        総組み合わせ数: 3×3×3×3×4×4 = 1296通り
+          - threshold:  [1.2, 1.35, 1.5, 1.75]  （期待回収率閾値）
+          - top_n:      [2, 3, 4, 5]             （候補馬数）
+          - r:          [0.6, 0.8, 1.0, 1.2, 1.5]（prob_weight_r）
+        総組み合わせ数: 4×4×5 = 80通り
 
         Args:
-            p1_range: p1 の探索値リスト（ジニ係数の閾値）
-            threshold_range: 期待回収率閾値の探索値リスト（両パターン共通）
-            top_n_dominant_range: 突出型の候補馬数の探索値リスト
-            top_n_standard_range: 標準型の候補馬数の探索値リスト
-            r_dominant_range: 突出型の prob_weight_r 探索値リスト
-            r_standard_range: 標準型の prob_weight_r 探索値リスト
+            threshold_range: 期待回収率閾値の探索値リスト
+            top_n_range: 候補馬数の探索値リスト
+            r_range: prob_weight_r の探索値リスト
             min_prob_threshold: 軸馬の最低複勝率（固定パラメータ。全組み合わせで共通適用）
+            p1_range: 廃止済み（無視される）
+            top_n_dominant_range: 廃止済み（無視される）
+            top_n_standard_range: 廃止済み（無視される）
+            r_dominant_range: 廃止済み（r_range にリネームされた）
+            r_standard_range: 廃止済み（無視される）
 
         Returns:
             OptimizationResult のリスト（全パラメータ組み合わせ分）
         """
-        if p1_range is None:
-            p1_range = [0.5, 0.55, 0.6]
+        # 後方互換性: r_dominant_range が指定されていれば r_range として使用
+        if r_range is None and r_dominant_range is not None:
+            r_range = r_dominant_range
+
         if threshold_range is None:
-            threshold_range = [1.2, 1.35, 1.5]
-        if top_n_dominant_range is None:
-            top_n_dominant_range = [4, 5, 6]
-        if top_n_standard_range is None:
-            top_n_standard_range = [5, 6, 7]
-        if r_dominant_range is None:
-            r_dominant_range = [0.8, 1.0, 1.2, 1.5]
-        if r_standard_range is None:
-            r_standard_range = [0.8, 1.0, 1.2, 1.5]
+            threshold_range = [1.2, 1.35, 1.5, 1.75]
+        if top_n_range is None:
+            top_n_range = [2, 3, 4, 5]
+        if r_range is None:
+            r_range = [0.6, 0.8, 1.0, 1.2, 1.5]
 
         # 全パラメータ組み合わせを生成
-        param_grid = list(product(
-            p1_range,
-            threshold_range,
-            top_n_dominant_range,
-            top_n_standard_range,
-            r_dominant_range,
-            r_standard_range,
-        ))
+        param_grid = list(product(threshold_range, top_n_range, r_range))
 
         total = len(param_grid)
         logger.info(f"グリッドサーチ開始: {total} パラメータ組み合わせ (min_prob_threshold={min_prob_threshold})")
 
         results: list[OptimizationResult] = []
 
-        for i, (p1, th, tn_dom, tn_std, r_dom, r_std) in enumerate(param_grid):
+        for i, (th, tn, r) in enumerate(param_grid):
             params = {
-                "p1": p1,
                 "expected_return_threshold": th,
-                "top_n_dominant": tn_dom,
-                "top_n_standard": tn_std,
-                "prob_weight_r_dominant": r_dom,
-                "prob_weight_r_standard": r_std,
+                "top_n": tn,
+                "prob_weight_r": r,
             }
 
-            if (i + 1) % 100 == 0 or (i + 1) == total:
+            if (i + 1) % 20 == 0 or (i + 1) == total:
                 logger.info(
-                    f"  [{i + 1}/{total}] p1={p1} th={th}"
-                    f" tn_dom={tn_dom} tn_std={tn_std} r_dom={r_dom} r_std={r_std}"
+                    f"  [{i + 1}/{total}] th={th} top_n={tn} r={r}"
                 )
 
             history_df, pattern_stats = self._run_simulation(
-                p1=p1,
                 expected_return_threshold=th,
                 min_prob_threshold=min_prob_threshold,
-                prob_weight_r_dominant=r_dom,
-                prob_weight_r_standard=r_std,
-                top_n_dominant=tn_dom,
-                top_n_standard=tn_std,
+                prob_weight_r=r,
+                top_n=tn,
             )
 
             metrics = compute_metrics(history_df, self.initial_capital)
@@ -522,66 +481,3 @@ class StrategyOptimizer:
             and r.max_drawdown <= max_max_drawdown
         ]
         return sorted(filtered, key=lambda r: r.recovery_rate, reverse=True)
-
-    def summary_by_pattern(
-        self, results: list[OptimizationResult]
-    ) -> pd.DataFrame:
-        """
-        全グリッドサーチ結果のパターン別成績サマリーを DataFrame で返す
-
-        各パターン（one_dominant / standard）について、
-        全パラメータ設定の平均・最大・最小の成績を集計する。
-
-        Args:
-            results: run_grid_search の戻り値
-
-        Returns:
-            パターン別の成績サマリー DataFrame
-            インデックス: パターン名
-            カラム: avg_recovery_rate, max_recovery_rate, min_recovery_rate,
-                    avg_hit_rate, total_bets（全設定合計）
-        """
-        if not results:
-            return pd.DataFrame()
-
-        patterns = ["one_dominant", "standard"]
-        rows = []
-
-        for pname in patterns:
-            recovery_rates = []
-            hit_rates = []
-            total_bets_sum = 0
-
-            for r in results:
-                pb = r.pattern_breakdown.get(pname, {})
-                if pb.get("bets", 0) > 0:
-                    recovery_rates.append(pb.get("recovery_rate", 0.0))
-                    ba = pb.get("bets", 0)
-                    ha = pb.get("hits", 0)
-                    hit_rates.append(ha / ba * 100.0 if ba > 0 else 0.0)
-                    total_bets_sum += ba
-
-            if recovery_rates:
-                rows.append(
-                    {
-                        "pattern": pname,
-                        "avg_recovery_rate": float(np.mean(recovery_rates)),
-                        "max_recovery_rate": float(np.max(recovery_rates)),
-                        "min_recovery_rate": float(np.min(recovery_rates)),
-                        "avg_hit_rate": float(np.mean(hit_rates)),
-                        "total_bets": total_bets_sum,
-                    }
-                )
-            else:
-                rows.append(
-                    {
-                        "pattern": pname,
-                        "avg_recovery_rate": 0.0,
-                        "max_recovery_rate": 0.0,
-                        "min_recovery_rate": 0.0,
-                        "avg_hit_rate": 0.0,
-                        "total_bets": 0,
-                    }
-                )
-
-        return pd.DataFrame(rows).set_index("pattern")

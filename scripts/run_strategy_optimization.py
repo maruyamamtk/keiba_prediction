@@ -144,17 +144,13 @@ def save_best_params_to_yaml(
     with open(STRATEGY_CONFIG_PATH) as f:
         config = yaml.safe_load(f)
 
-    config["p1"] = best.params["p1"]
     config["expected_return_threshold"] = best.params["expected_return_threshold"]
-    config["top_n_dominant"] = best.params["top_n_dominant"]
-    config["top_n_standard"] = best.params["top_n_standard"]
-    config["prob_weight_r_dominant"] = best.params["prob_weight_r_dominant"]
-    config["prob_weight_r_standard"] = best.params["prob_weight_r_standard"]
-    # 旧パラメータを削除（存在する場合）
-    config.pop("threshold_dominant", None)
-    config.pop("threshold_standard", None)
-    config.pop("prob_weight_r", None)
-    config.pop("top_n", None)
+    config["top_n"] = best.params["top_n"]
+    config["prob_weight_r"] = best.params["prob_weight_r"]
+    # 廃止済みパラメータを削除（存在する場合）
+    for key in ["p1", "top_n_dominant", "top_n_standard", "prob_weight_r_dominant",
+                "prob_weight_r_standard", "threshold_dominant", "threshold_standard"]:
+        config.pop(key, None)
     config["optimization"] = {
         "last_run": datetime.datetime.now().isoformat(timespec="seconds"),
         "metric": metric,
@@ -171,12 +167,9 @@ def save_best_params_to_yaml(
 
     logger.info(f"最適パラメータを保存: {STRATEGY_CONFIG_PATH}")
     logger.info(
-        f"  p1={best.params['p1']}, "
-        f"expected_return_threshold={best.params['expected_return_threshold']}, "
-        f"top_n_dominant={best.params['top_n_dominant']}, "
-        f"top_n_standard={best.params['top_n_standard']}, "
-        f"prob_weight_r_dominant={best.params['prob_weight_r_dominant']}, "
-        f"prob_weight_r_standard={best.params['prob_weight_r_standard']}"
+        f"  expected_return_threshold={best.params['expected_return_threshold']}, "
+        f"top_n={best.params['top_n']}, "
+        f"prob_weight_r={best.params['prob_weight_r']}"
     )
     logger.info(f"  回収率={best.recovery_rate:.2f}%, 的中率={best.hit_rate:.2f}%, "
                 f"最大ドローダウン={best.max_drawdown:.2f}%")
@@ -206,46 +199,25 @@ def main() -> None:
     parser.add_argument("--output-csv", help="全グリッドサーチ結果のCSV保存先")
     parser.add_argument("--top-n", type=int, default=10, help="上位N件の結果を表示")
     parser.add_argument(
-        "--r-dominant-range",
+        "--r-range",
         type=float,
         nargs="+",
         default=None,
-        help="prob_weight_r_dominant の探索値（複数指定可、デフォルト: 0.8 1.0 1.2 1.5）",
-    )
-    parser.add_argument(
-        "--r-standard-range",
-        type=float,
-        nargs="+",
-        default=None,
-        help="prob_weight_r_standard の探索値（複数指定可、デフォルト: 0.8 1.0 1.2 1.5）",
-    )
-    parser.add_argument(
-        "--p1-range",
-        type=float,
-        nargs="+",
-        default=None,
-        help="p1 の探索値（複数指定可、デフォルト: 0.5 0.55 0.6）",
+        help="prob_weight_r の探索値（複数指定可、デフォルト: 0.6 0.8 1.0 1.2 1.5）",
     )
     parser.add_argument(
         "--threshold-range",
         type=float,
         nargs="+",
         default=None,
-        help="expected_return_threshold の探索値（複数指定可、デフォルト: 1.2 1.35 1.5）",
+        help="expected_return_threshold の探索値（複数指定可、デフォルト: 1.2 1.35 1.5 1.75）",
     )
     parser.add_argument(
-        "--top-n-dominant-range",
+        "--top-n-range",
         type=int,
         nargs="+",
         default=None,
-        help="top_n_dominant の探索値（複数指定可、デフォルト: 4 5 6）",
-    )
-    parser.add_argument(
-        "--top-n-standard-range",
-        type=int,
-        nargs="+",
-        default=None,
-        help="top_n_standard の探索値（複数指定可、デフォルト: 5 6 7）",
+        help="top_n の探索値（複数指定可、デフォルト: 2 3 4 5）",
     )
     args = parser.parse_args()
 
@@ -347,12 +319,9 @@ def main() -> None:
         budget_per_race=budget_per_race,
     )
     results = optimizer.run_grid_search(
-        p1_range=args.p1_range,
         threshold_range=args.threshold_range,
-        top_n_dominant_range=args.top_n_dominant_range,
-        top_n_standard_range=args.top_n_standard_range,
-        r_dominant_range=args.r_dominant_range,
-        r_standard_range=args.r_standard_range,
+        top_n_range=args.top_n_range,
+        r_range=args.r_range,
         min_prob_threshold=min_prob_threshold,
     )
 
@@ -369,12 +338,9 @@ def main() -> None:
     logger.info(f"\n=== 上位{args.top_n}パラメータ（{args.metric} 順）===")
     for i, res in enumerate(sorted_results[: args.top_n]):
         logger.info(
-            f"  #{i + 1}: p1={res.params['p1']} "
-            f"th={res.params.get('expected_return_threshold', '?')} "
-            f"tn_dom={res.params.get('top_n_dominant', '?')} "
-            f"tn_std={res.params.get('top_n_standard', '?')} "
-            f"r_dom={res.params.get('prob_weight_r_dominant', 1.0)} "
-            f"r_std={res.params.get('prob_weight_r_standard', 1.0)} "
+            f"  #{i + 1}: th={res.params.get('expected_return_threshold', '?')} "
+            f"top_n={res.params.get('top_n', '?')} "
+            f"r={res.params.get('prob_weight_r', 1.0)} "
             f"→ 回収率={res.recovery_rate:.1f}% 的中率={res.hit_rate:.1f}% "
             f"ドローダウン={res.max_drawdown:.1f}%"
         )

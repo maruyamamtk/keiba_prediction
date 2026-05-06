@@ -64,9 +64,9 @@ class TestRefreshInvestmentDecisions:
     @patch("scripts.run_strategy.save_decisions_to_bq", return_value=1)
     @patch("scripts.run_strategy.fetch_combo_odds_for_date", return_value=pd.DataFrame())
     @patch("scripts.run_strategy.load_strategy_config", return_value={
-        "p1": 0.3, "expected_return_threshold": 1.2, "budget_per_race": 3000,
+        "expected_return_threshold": 1.2, "budget_per_race": 3000,
         "top_n": 5, "min_bet_amount": 100, "min_prob_threshold": 0.10,
-        "prob_weight_r_dominant": 1.0, "prob_weight_r_standard": 1.0,
+        "prob_weight_r": 1.0,
     })
     @patch("scripts.run_strategy.build_race_df")
     @patch("src.backtest.strategy.select_bets_for_race")
@@ -90,12 +90,9 @@ class TestRefreshInvestmentDecisions:
         mock_client.query.return_value.to_dataframe.side_effect = [pred_df, odds_df]
         mock_build.return_value = merged_df
 
-        fake_pattern = MagicMock()
-        fake_pattern.pattern = "standard"
-        mock_select.return_value = (
-            [{"horse_numbers": [1], "bet_type": "place", "odds": 2.0, "bet_amount": 300.0}],
-            fake_pattern,
-        )
+        mock_select.return_value = [
+            {"horse_numbers": [1], "bet_type": "place", "odds": 2.0, "bet_amount": 300.0}
+        ]
 
         result = _refresh_investment_decisions_for_race(PROJECT_ID, RACE_ID, TARGET_DATE)
 

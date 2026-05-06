@@ -654,25 +654,27 @@ def run_full_strategy_backtest_pipeline(
     start_date: datetime.date,
     end_date: datetime.date,
     config: dict,
-    p1: float,
     budget_per_race: float,
     min_prob_threshold: float,
     expected_return_threshold: float = 1.2,
-    prob_weight_r_dominant: float = 1.0,
-    prob_weight_r_standard: float = 1.0,
-    top_n_dominant: int = 5,
-    top_n_standard: int = 5,
+    prob_weight_r: float = 1.0,
+    top_n: int = 5,
     initial_capital: float = 100_000.0,
     output_csv: str | None = None,
     save_bq: bool = False,
     output_chart: str | None = None,
     run_id: str | None = None,
-    top_n: int | None = None,
+    # 後方互換性のための旧パラメータ（無視される）
+    p1: float | None = None,
+    prob_weight_r_dominant: float | None = None,
+    prob_weight_r_standard: float | None = None,
+    top_n_dominant: int | None = None,
+    top_n_standard: int | None = None,
 ) -> tuple[pd.DataFrame, dict]:
     """
     フル戦略バックテストパイプラインを実行する
 
-    select_bets_for_race() を使い、複勝・ワイド・三連複・馬連・単勝を含む
+    select_bets_for_race() を使い、複勝・ワイド・三連複・馬連を含む
     フル戦略でシミュレーションを行う。
     strategy_config.yaml と同一ロジックで試算したい場合に使用する。
 
@@ -682,27 +684,20 @@ def run_full_strategy_backtest_pipeline(
         start_date: バックテスト開始日
         end_date: バックテスト終了日
         config: モデル設定辞書
-        p1: 突出型判定閾値（ジニ係数の閾値）
         budget_per_race: 1レースあたりの固定予算 (円)
         min_prob_threshold: 軸馬の最低複勝率
-        expected_return_threshold: 期待回収率閾値（両パターン共通）
-        prob_weight_r_dominant: 突出型の選定スコア係数 (score = odds * prob^r)
-        prob_weight_r_standard: 標準型の選定スコア係数
-        top_n_dominant: 突出型の候補馬数
-        top_n_standard: 標準型の候補馬数
+        expected_return_threshold: 期待回収率閾値
+        prob_weight_r: 選定スコア係数 (score = odds * prob^r)
+        top_n: 候補馬数
         initial_capital: 初期資金 (円)
         output_csv: CSV 出力パス (None でスキップ)
         save_bq: BigQuery 保存フラグ
         output_chart: グラフ出力パス (None でスキップ)
         run_id: 実行 ID (BigQuery 保存時に使用)
-        top_n: 後方互換: 指定時は top_n_dominant/standard 両方に適用
 
     Returns:
         (history_df, metrics) のタプル
     """
-    if top_n is not None:
-        top_n_dominant = top_n_dominant if top_n_dominant != 5 else top_n
-        top_n_standard = top_n_standard if top_n_standard != 5 else top_n
     data_config = config["data"]
 
     # 1. データ取得
@@ -782,27 +777,15 @@ def run_full_strategy_backtest_pipeline(
         budget_per_race=budget_per_race,
     )
 
-    history_df, pattern_stats = optimizer._run_simulation(
-        p1=p1,
+    history_df, _ = optimizer._run_simulation(
         expected_return_threshold=expected_return_threshold,
         min_prob_threshold=min_prob_threshold,
-        prob_weight_r_dominant=prob_weight_r_dominant,
-        prob_weight_r_standard=prob_weight_r_standard,
-        top_n_dominant=top_n_dominant,
-        top_n_standard=top_n_standard,
+        prob_weight_r=prob_weight_r,
+        top_n=top_n,
     )
 
     # 6. 評価指標計算
     metrics = compute_metrics(history_df, initial_capital)
-
-    # パターン別サマリーをログ出力
-    logger.info("=== パターン別成績 ===")
-    for pname, ps in pattern_stats.items():
-        if ps["bets"] > 0:
-            logger.info(
-                f"  [{pname}] bets={ps['bets']} hits={ps['hits']} "
-                f"bet={ps['bet_amount']:,.0f}円 回収率={ps['recovery_rate']:.1f}%"
-            )
 
     # 7. 結果保存
     if output_csv and len(history_df) > 0:
@@ -902,12 +885,6 @@ def main() -> int:
         help=f"戦略パラメータYAMLのパス（デフォルト: {_STRATEGY_CONFIG_PATH}）",
     )
     parser.add_argument(
-        "--p1",
-        type=float,
-        default=None,
-        help="突出型判定閾値（ジニ係数閾値）。指定時はYAMLの値より優先",
-    )
-    parser.add_argument(
         "--prob-weight-r",
         type=float,
         default=None,
@@ -959,34 +936,24 @@ def main() -> int:
     # strategy_config.yaml を読み込み、CLIオプションで上書き
     strategy_cfg = _load_strategy_config(args.strategy_config)
 
-    p1 = args.p1 if args.p1 is not None else float(strategy_cfg.get("p1", 0.3))
     budget = args.budget_per_race if args.budget_per_race is not None else \
         float(strategy_cfg.get("budget_per_race", 3000.0))
     min_prob = args.min_prob_threshold if args.min_prob_threshold is not None else \
-        float(strategy_cfg.get("min_prob_threshold", 0.0))
+        float(strategy_cfg.get("min_prob_threshold", 0.10))
     expected_return_threshold = float(strategy_cfg.get("expected_return_threshold", 1.2))
-    _legacy_top_n = int(strategy_cfg.get("top_n", 5))
-    top_n_dominant = int(strategy_cfg.get("top_n_dominant", _legacy_top_n))
-    top_n_standard = int(strategy_cfg.get("top_n_standard", _legacy_top_n))
-    if args.top_n is not None:
-        top_n_dominant = args.top_n
-        top_n_standard = args.top_n
-    r_dominant = args.prob_weight_r if args.prob_weight_r is not None else \
-        float(strategy_cfg.get("prob_weight_r_dominant", 1.0))
-    r_standard = float(strategy_cfg.get("prob_weight_r_standard", r_dominant))
+    top_n = args.top_n if args.top_n is not None else int(strategy_cfg.get("top_n", 5))
+    prob_weight_r = args.prob_weight_r if args.prob_weight_r is not None else \
+        float(strategy_cfg.get("prob_weight_r", 1.0))
 
     print(f"\nバックテスト設定:")
     print(f"  期間:                          {start_date} ~ {end_date}")
     print(f"  モデル:                        {args.model_path}")
     print(f"  初期資金:                      ¥{args.initial_capital:,.0f}")
-    print(f"  p1（ジニ係数閾値）:            {p1}")
     print(f"  expected_return_threshold:     {expected_return_threshold}")
-    print(f"  top_n_dominant:                {top_n_dominant}")
-    print(f"  top_n_standard:                {top_n_standard}")
+    print(f"  top_n:                         {top_n}")
     print(f"  1レースあたり予算:             ¥{budget:,.0f}")
     print(f"  min_prob_threshold:            {min_prob}")
-    print(f"  prob_weight_r_dominant:        {r_dominant}")
-    print(f"  prob_weight_r_standard:        {r_standard}")
+    print(f"  prob_weight_r:                 {prob_weight_r}")
 
     history_df, metrics = run_full_strategy_backtest_pipeline(
         project_id=args.project_id,
@@ -994,14 +961,11 @@ def main() -> int:
         start_date=start_date,
         end_date=end_date,
         config=config,
-        p1=p1,
         budget_per_race=budget,
         min_prob_threshold=min_prob,
         expected_return_threshold=expected_return_threshold,
-        prob_weight_r_dominant=r_dominant,
-        prob_weight_r_standard=r_standard,
-        top_n_dominant=top_n_dominant,
-        top_n_standard=top_n_standard,
+        prob_weight_r=prob_weight_r,
+        top_n=top_n,
         initial_capital=args.initial_capital,
         output_csv=args.output_csv,
         save_bq=args.save_to_bq,

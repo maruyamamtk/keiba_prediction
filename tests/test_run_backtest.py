@@ -225,11 +225,9 @@ class TestRunFullStrategyBacktestPipeline:
             }
         }
         strategy_params = {
-            "p1": 0.1,
             "expected_return_threshold": 1.2,
-            "prob_weight_r_dominant": 1.0,
-            "prob_weight_r_standard": 1.0,
             "min_prob_threshold": 0.10,
+            "prob_weight_r": 1.0,
             "top_n": 5,
             "budget_per_race": 3000,
         }
@@ -257,18 +255,15 @@ class TestRunFullStrategyBacktestPipeline:
                 start_date=datetime.date(2025, 1, 1),
                 end_date=datetime.date(2025, 12, 31),
                 config=config,
-                p1=strategy_params["p1"],
                 expected_return_threshold=strategy_params["expected_return_threshold"],
                 budget_per_race=strategy_params["budget_per_race"],
                 min_prob_threshold=strategy_params["min_prob_threshold"],
-                prob_weight_r_dominant=strategy_params["prob_weight_r_dominant"],
-                prob_weight_r_standard=strategy_params["prob_weight_r_standard"],
+                prob_weight_r=strategy_params["prob_weight_r"],
                 top_n=strategy_params["top_n"],
             )
 
         assert len(captured_sim_calls) == 1, "StrategyOptimizer._run_simulation が呼ばれていない"
         call_kwargs = captured_sim_calls[0]
-        assert call_kwargs["p1"] == 0.1
         assert call_kwargs["expected_return_threshold"] == 1.2
 
     def test_full_strategy_aborts_when_no_odds(self):
@@ -324,17 +319,17 @@ class TestLoadStrategyConfig:
         """有効な YAML ファイルから値を読み込めることを検証"""
         import yaml as _yaml
         config_data = {
-            "p1": 0.15,
             "expected_return_threshold": 1.3,
             "budget_per_race": 5000,
+            "top_n": 3,
         }
         config_file = tmp_path / "strategy_config.yaml"
         config_file.write_text(_yaml.dump(config_data))
 
         result = rb._load_strategy_config(config_file)
-        assert result["p1"] == 0.15
         assert result["expected_return_threshold"] == 1.3
         assert result["budget_per_race"] == 5000
+        assert result["top_n"] == 3
 
 
 # ---------------------------------------------------------------------------
@@ -408,18 +403,17 @@ class TestFetchPlaceOddsWinOdds:
 
 class TestWinOddsMergeEnablesWinBets:
     """
-    one_dominant パターンの馬券選定動作を検証する。
-    ※ Issue #202 により単勝・複勝の自動追加は廃止済み。
+    統一ロジックでの馬券選定動作を検証する。
+    ※ Issue #260 によりパターン分類は廃止済み。全レース統一ロジックを使用。
     """
 
     def test_win_odds_merged_into_predictions_df(self):
         """
-        Issue #202: one_dominant パターンで win_odds があっても単勝は自動追加されない。
-        代わりに馬連（umaren）のみが追加される。
+        Issue #202/#260: win_odds があっても単勝は自動追加されない。
+        select_bets_for_race は list[dict] を返す（パターン分類なし）。
         """
         from src.backtest.strategy import select_bets_for_race
 
-        # one_dominant パターン：top1馬の複勝率が突出している
         race_df = pd.DataFrame({
             "race_id": ["r001"] * 3,
             "race_date": [datetime.date(2025, 1, 5)] * 3,
@@ -430,18 +424,16 @@ class TestWinOddsMergeEnablesWinBets:
             "win_odds": [4.0, 8.0, 12.0],  # win_odds（単勝）
         })
 
-        bets, pattern = select_bets_for_race(
+        bets = select_bets_for_race(
             race_df=race_df,
             combo_odds_df=pd.DataFrame(),
             budget_per_race=3000,
-            p1=0.1,              # top1 - top2 = 0.35 > 0.1 → one_dominant
             expected_return_threshold=1.0,  # 低めに設定して馬券が通るように
         )
 
         bet_types = [b["bet_type"] for b in bets]
-        assert pattern.pattern == "one_dominant", f"パターン判定が one_dominant でない: {pattern}"
-        # Issue #202: 単勝は自動追加されない（馬連のみ追加される）
+        # 単勝は自動追加されない
         assert "win" not in bet_types, (
-            f"Issue #202 で単勝自動追加は廃止済みだが、単勝が含まれている。"
+            f"単勝が自動追加されている（自動追加は廃止済み）。"
             f"実際の馬券種: {bet_types}"
         )
