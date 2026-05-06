@@ -432,7 +432,7 @@ def run_daily_strategy(
     """
     当日の投資戦略を実行し、投資判断リストを返す。
 
-    全馬券種（複勝/ワイド/三連複/単勝/馬連）に対応するため、
+    全馬券種（複勝/ワイド/三連複/馬連）に対応するため、
     combo_odds_df を取得して select_bets_for_race() に渡す。
 
     Args:
@@ -444,25 +444,20 @@ def run_daily_strategy(
         投資判断リスト（1行/馬券形式）
     """
     config = load_strategy_config()
-    p1 = float(config.get("p1", 0.3))
     expected_return_threshold = float(config.get("expected_return_threshold", 1.2))
-    _legacy_top_n = int(config.get("top_n", 5))
-    top_n_dominant = int(config.get("top_n_dominant", _legacy_top_n))
-    top_n_standard = int(config.get("top_n_standard", _legacy_top_n))
+    top_n = int(config.get("top_n", 5))
     budget_per_race = float(config.get("budget_per_race", 3000.0))
     min_bet_amount = config.get("min_bet_amount", 100.0)
     min_prob_threshold = config.get("min_prob_threshold", 0.10)
-    prob_weight_r_dominant = float(config.get("prob_weight_r_dominant", 1.0))
-    prob_weight_r_standard = float(config.get("prob_weight_r_standard", 1.0))
+    prob_weight_r = float(config.get("prob_weight_r", 1.0))
 
     opt = config.get("optimization", {})
     logger.info(f"=== 日次投資戦略策定 ({target_date}) ===")
     logger.info(
-        f"パラメータ: p1={p1}, expected_return_threshold={expected_return_threshold}, "
-        f"top_n_dominant={top_n_dominant}, top_n_standard={top_n_standard}, "
-        f"budget_per_race={budget_per_race}, min_bet_amount={min_bet_amount}, "
-        f"min_prob_threshold={min_prob_threshold}, "
-        f"prob_weight_r_dominant={prob_weight_r_dominant}, prob_weight_r_standard={prob_weight_r_standard}"
+        f"パラメータ: expected_return_threshold={expected_return_threshold}, "
+        f"top_n={top_n}, budget_per_race={budget_per_race}, "
+        f"min_bet_amount={min_bet_amount}, min_prob_threshold={min_prob_threshold}, "
+        f"prob_weight_r={prob_weight_r}"
     )
     if opt.get("last_run"):
         logger.info(f"最終最適化: {opt['last_run']} "
@@ -501,18 +496,15 @@ def run_daily_strategy(
         race_combo_df = combo_odds_by_race.get(race_id_str, pd.DataFrame())
 
         try:
-            bets, race_pattern = select_bets_for_race(
+            bets = select_bets_for_race(
                 race_df=race_group,
                 combo_odds_df=race_combo_df if not race_combo_df.empty else None,
                 budget_per_race=budget_per_race,
-                p1=p1,
                 expected_return_threshold=expected_return_threshold,
                 min_bet_amount=min_bet_amount,
                 min_prob_threshold=min_prob_threshold,
-                prob_weight_r_dominant=prob_weight_r_dominant,
-                prob_weight_r_standard=prob_weight_r_standard,
-                top_n_dominant=top_n_dominant,
-                top_n_standard=top_n_standard,
+                prob_weight_r=prob_weight_r,
+                top_n=top_n,
             )
         except ValueError as e:
             logger.debug(f"レース {race_id} スキップ: {e}")
@@ -531,7 +523,7 @@ def run_daily_strategy(
                 meta_row=meta_row,
                 race_group=race_group,
                 bet=bet,
-                race_pattern_str=race_pattern.pattern,
+                race_pattern_str="unified",
                 created_at=created_at,
             )
             decisions.append(row)
@@ -539,14 +531,11 @@ def run_daily_strategy(
     logger.info(f"投資判断: {len(decisions)}件")
     if decisions:
         total_bet = 0.0
-        patterns: dict[str, int] = {}
         bet_types: dict[str, int] = {}
         for d in decisions:
             total_bet += d["bet_amount"]
-            patterns[d["race_pattern"]] = patterns.get(d["race_pattern"], 0) + 1
             bet_types[d["bet_type"]] = bet_types.get(d["bet_type"], 0) + 1
         logger.info(f"  総賭け金: {total_bet:,.0f}円")
-        logger.info(f"  パターン別: {patterns}")
         logger.info(f"  馬券種別: {bet_types}")
 
     if not dry_run:

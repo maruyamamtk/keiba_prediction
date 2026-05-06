@@ -50,10 +50,11 @@ BET_TYPE_LABELS: dict[str, str] = {
     "sanrenpuku": "三連複",
 }
 
-# レースパターンの日本語ラベル
+# レースパターンの日本語ラベル（Issue #260: 統一型のみ）
 PATTERN_LABELS: dict[str, str] = {
-    "one_dominant": "突出型",
-    "standard": "標準型",
+    "unified": "統一型",
+    "one_dominant": "統一型",
+    "standard": "統一型",
 }
 
 
@@ -468,41 +469,34 @@ def _run_strategy_for_race(
     if config_path.exists():
         with open(config_path) as f:
             cfg = yaml.safe_load(f)
-        p1 = float(cfg.get("p1", 0.2))
         expected_return_threshold = float(cfg.get("expected_return_threshold", 1.2))
         budget_per_race = float(cfg.get("budget_per_race", 3000.0))
         min_bet_amount = float(cfg.get("min_bet_amount", 100.0))
         min_prob_threshold = float(cfg.get("min_prob_threshold", 0.10))
-        prob_weight_r_dominant = float(cfg.get("prob_weight_r_dominant", 1.0))
-        prob_weight_r_standard = float(cfg.get("prob_weight_r_standard", 1.0))
-        _legacy_top_n = int(cfg.get("top_n", 5))
-        top_n_dominant = int(cfg.get("top_n_dominant", _legacy_top_n))
-        top_n_standard = int(cfg.get("top_n_standard", _legacy_top_n))
+        prob_weight_r = float(cfg.get("prob_weight_r", 1.0))
+        top_n = int(cfg.get("top_n", 5))
     else:
-        p1, budget_per_race, min_bet_amount = 0.2, 3000.0, 100.0
+        budget_per_race, min_bet_amount = 3000.0, 100.0
         min_prob_threshold = 0.10
         expected_return_threshold = 1.2
-        prob_weight_r_dominant, prob_weight_r_standard = 1.0, 1.0
-        top_n_dominant, top_n_standard = 5, 5
+        prob_weight_r = 1.0
+        top_n = 5
 
     try:
-        bets, pattern = select_bets_for_race(
+        bets = select_bets_for_race(
             race_df=race_df,
             combo_odds_df=combo_odds_df if not combo_odds_df.empty else None,
             budget_per_race=budget_per_race,
-            p1=p1,
             expected_return_threshold=expected_return_threshold,
             min_bet_amount=min_bet_amount,
             min_prob_threshold=min_prob_threshold,
-            prob_weight_r_dominant=prob_weight_r_dominant,
-            prob_weight_r_standard=prob_weight_r_standard,
-            top_n_dominant=top_n_dominant,
-            top_n_standard=top_n_standard,
+            prob_weight_r=prob_weight_r,
+            top_n=top_n,
         )
-        return bets, pattern.pattern
+        return bets, "unified"
     except ValueError as e:
         logger.warning(f"select_bets_for_race エラー: {e}")
-        return [], "standard"
+        return [], "unified"
 
 
 # --- インテントハンドラ ---------------------------------------------------------

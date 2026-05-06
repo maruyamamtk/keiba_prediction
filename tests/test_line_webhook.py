@@ -207,9 +207,9 @@ class TestFormatBetRecommendations:
 
     def test_contains_pattern_label(self, sample_merged_df, sample_bets):
         result = _format_bet_recommendations(
-            date(2026, 3, 8), "阪神", 12, sample_bets, "one_dominant", sample_merged_df
+            date(2026, 3, 8), "阪神", 12, sample_bets, "unified", sample_merged_df
         )
-        assert "突出型" in result
+        assert "統一型" in result
 
     def test_contains_bet_type_label(self, sample_merged_df, sample_bets):
         result = _format_bet_recommendations(
@@ -254,8 +254,8 @@ class TestHandleRaceQuery:
     def _make_odds_df(self):
         return pd.DataFrame({
             "horse_number": [12, 13, 11, 1, 10],
-            "win_odds": [3.5, 4.0, 7.0, 9.0, 12.0],
-            "place_odds": [2.5, 3.0, 4.2, 5.1, 6.0],
+            "win_odds": [7.0, 8.0, 14.0, 18.0, 24.0],
+            "place_odds": [3.5, 4.0, 5.5, 7.0, 9.0],
         })
 
     @patch("src.automation.api.line_webhook._fetch_race_predictions")
@@ -585,8 +585,8 @@ class TestFormatPushNotification:
 
     def test_pattern_labels_shown(self):
         full_text = "\n".join(m["text"] for m in format_push_notification(date(2026, 3, 16), self._make_decisions()))
-        assert "標準型" in full_text
-        assert "突出型" in full_text
+        # Issue #260: パターン分類廃止により全レースが「統一型」
+        assert "統一型" in full_text
 
     def test_races_sorted_by_venue_then_race_number(self):
         """競馬場コード順 → レース番号順でソートされる"""

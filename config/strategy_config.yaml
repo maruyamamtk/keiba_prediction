@@ -1,12 +1,9 @@
-p1: 0.0
 expected_return_threshold: 1.75
-prob_weight_r_dominant: 0.8
-prob_weight_r_standard: 0.8
+prob_weight_r: 0.8
 budget_per_race: 1000
 min_bet_amount: 100
 min_prob_threshold: 0.1
-top_n_dominant: 2
-top_n_standard: 4
+top_n: 2
 optimization:
   last_run: '2026-05-04T18:20:51'
   metric: recovery_rate

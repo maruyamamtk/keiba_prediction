@@ -1371,30 +1371,23 @@ def _refresh_investment_decisions_for_race(
 
         # 戦略パラメータを読み込み
         config = load_strategy_config()
-        p1 = float(config.get("p1", 0.3))
         expected_return_threshold = float(config.get("expected_return_threshold", 1.2))
-        _legacy_top_n = int(config.get("top_n", 5))
-        top_n_dominant = int(config.get("top_n_dominant", _legacy_top_n))
-        top_n_standard = int(config.get("top_n_standard", _legacy_top_n))
+        top_n = int(config.get("top_n", 5))
         budget_per_race = float(config.get("budget_per_race", 3000.0))
         min_bet_amount = float(config.get("min_bet_amount", 100.0))
         min_prob_threshold = float(config.get("min_prob_threshold", 0.10))
-        prob_weight_r_dominant = float(config.get("prob_weight_r_dominant", 1.0))
-        prob_weight_r_standard = float(config.get("prob_weight_r_standard", 1.0))
+        prob_weight_r = float(config.get("prob_weight_r", 1.0))
 
         # 推奨馬券を再計算
-        bets, race_pattern = select_bets_for_race(
+        bets = select_bets_for_race(
             race_df=race_df,
             combo_odds_df=race_combo_df if not race_combo_df.empty else None,
             budget_per_race=budget_per_race,
-            p1=p1,
             expected_return_threshold=expected_return_threshold,
             min_bet_amount=min_bet_amount,
             min_prob_threshold=min_prob_threshold,
-            prob_weight_r_dominant=prob_weight_r_dominant,
-            prob_weight_r_standard=prob_weight_r_standard,
-            top_n_dominant=top_n_dominant,
-            top_n_standard=top_n_standard,
+            prob_weight_r=prob_weight_r,
+            top_n=top_n,
         )
 
         # 投資判断 dict を構築して MERGE UPSERT 保存
@@ -1407,7 +1400,7 @@ def _refresh_investment_decisions_for_race(
                 meta_row=meta_row,
                 race_group=race_df,
                 bet=bet,
-                race_pattern_str=race_pattern.pattern,
+                race_pattern_str="unified",
                 created_at=created_at,
             )
             for bet in bets
@@ -1417,7 +1410,7 @@ def _refresh_investment_decisions_for_race(
         save_decisions_to_bq(decisions, project_id)
         logger.info(
             f"_refresh: race_id={race_id} の investment_decisions を更新 "
-            f"({len(decisions)}件, パターン={race_pattern.pattern})"
+            f"({len(decisions)}件, パターン=unified)"
         )
         return True
 
