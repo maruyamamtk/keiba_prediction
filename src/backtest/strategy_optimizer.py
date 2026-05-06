@@ -326,6 +326,8 @@ class StrategyOptimizer:
         threshold_range: list[float] | None = None,
         top_n_range: list[int] | None = None,
         r_range: list[float] | None = None,
+        min_prob_threshold_range: list[float] | None = None,
+        # 後方互換性: min_prob_threshold_range が None の場合に使用する固定値
         min_prob_threshold: float = 0.0,
         # 後方互換性のための旧パラメータ（無視される）
         p1_range: list[float] | None = None,
@@ -337,17 +339,22 @@ class StrategyOptimizer:
         """
         グリッドサーチを実行し、全パラメータ組み合わせのバックテスト結果を返す
 
-        デフォルト探索範囲:
+        デフォルト探索範囲（min_prob_threshold_range=None の場合）:
           - threshold:  [1.2, 1.35, 1.5, 1.75]  （期待回収率閾値）
           - top_n:      [2, 3, 4, 5]             （候補馬数）
           - r:          [0.6, 0.8, 1.0, 1.2, 1.5]（prob_weight_r）
         総組み合わせ数: 4×4×5 = 80通り
 
+        min_prob_threshold_range を指定した場合は4次元サーチになる:
+          - threshold × top_n × r × min_prob 全組み合わせを探索
+
         Args:
             threshold_range: 期待回収率閾値の探索値リスト
             top_n_range: 候補馬数の探索値リスト
             r_range: prob_weight_r の探索値リスト
-            min_prob_threshold: 軸馬の最低複勝率（固定パラメータ。全組み合わせで共通適用）
+            min_prob_threshold_range: 全候補馬共通の最低複勝率の探索値リスト。
+                None の場合は min_prob_threshold 固定値を全組み合わせに適用（後方互換）
+            min_prob_threshold: min_prob_threshold_range=None 時の固定値（後方互換）
             p1_range: 廃止済み（無視される）
             top_n_dominant_range: 廃止済み（無視される）
             top_n_standard_range: 廃止済み（無視される）
@@ -368,29 +375,39 @@ class StrategyOptimizer:
         if r_range is None:
             r_range = [0.6, 0.8, 1.0, 1.2, 1.5]
 
-        # 全パラメータ組み合わせを生成
-        param_grid = list(product(threshold_range, top_n_range, r_range))
-
-        total = len(param_grid)
-        logger.info(f"グリッドサーチ開始: {total} パラメータ組み合わせ (min_prob_threshold={min_prob_threshold})")
+        # min_prob_threshold_range が指定された場合のみ4次元グリッドサーチ
+        if min_prob_threshold_range is not None:
+            param_grid = list(product(threshold_range, top_n_range, r_range, min_prob_threshold_range))
+            total = len(param_grid)
+            logger.info(
+                f"グリッドサーチ開始: {total} パラメータ組み合わせ "
+                f"(threshold×top_n×r×min_prob = "
+                f"{len(threshold_range)}×{len(top_n_range)}×{len(r_range)}×{len(min_prob_threshold_range)})"
+            )
+        else:
+            param_grid_3d = list(product(threshold_range, top_n_range, r_range))
+            param_grid = [(th, tn, r, min_prob_threshold) for th, tn, r in param_grid_3d]
+            total = len(param_grid)
+            logger.info(f"グリッドサーチ開始: {total} パラメータ組み合わせ (min_prob_threshold={min_prob_threshold} 固定)")
 
         results: list[OptimizationResult] = []
 
-        for i, (th, tn, r) in enumerate(param_grid):
+        for i, (th, tn, r, mpt) in enumerate(param_grid):
             params = {
                 "expected_return_threshold": th,
                 "top_n": tn,
                 "prob_weight_r": r,
+                "min_prob_threshold": mpt,
             }
 
             if (i + 1) % 20 == 0 or (i + 1) == total:
                 logger.info(
-                    f"  [{i + 1}/{total}] th={th} top_n={tn} r={r}"
+                    f"  [{i + 1}/{total}] th={th} top_n={tn} r={r} min_prob={mpt}"
                 )
 
             history_df, pattern_stats = self._run_simulation(
                 expected_return_threshold=th,
-                min_prob_threshold=min_prob_threshold,
+                min_prob_threshold=mpt,
                 prob_weight_r=r,
                 top_n=tn,
             )

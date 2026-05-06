@@ -147,6 +147,7 @@ def save_best_params_to_yaml(
     config["expected_return_threshold"] = best.params["expected_return_threshold"]
     config["top_n"] = best.params["top_n"]
     config["prob_weight_r"] = best.params["prob_weight_r"]
+    config["min_prob_threshold"] = best.params["min_prob_threshold"]
     # 廃止済みパラメータを削除（存在する場合）
     for key in ["p1", "top_n_dominant", "top_n_standard", "prob_weight_r_dominant",
                 "prob_weight_r_standard", "threshold_dominant", "threshold_standard"]:
@@ -169,7 +170,8 @@ def save_best_params_to_yaml(
     logger.info(
         f"  expected_return_threshold={best.params['expected_return_threshold']}, "
         f"top_n={best.params['top_n']}, "
-        f"prob_weight_r={best.params['prob_weight_r']}"
+        f"prob_weight_r={best.params['prob_weight_r']}, "
+        f"min_prob_threshold={best.params['min_prob_threshold']}"
     )
     logger.info(f"  回収率={best.recovery_rate:.2f}%, 的中率={best.hit_rate:.2f}%, "
                 f"最大ドローダウン={best.max_drawdown:.2f}%")
@@ -218,6 +220,13 @@ def main() -> None:
         nargs="+",
         default=None,
         help="top_n の探索値（複数指定可、デフォルト: 2 3 4 5）",
+    )
+    parser.add_argument(
+        "--min-prob-threshold-range",
+        type=float,
+        nargs="+",
+        default=None,
+        help="min_prob_threshold の探索値（複数指定可）。指定時は4次元グリッドサーチ。未指定時は strategy_config.yaml の固定値を使用",
     )
     args = parser.parse_args()
 
@@ -307,7 +316,10 @@ def main() -> None:
     min_prob_threshold = float(_strategy_cfg.get("min_prob_threshold", 0.10))
     budget_per_race = args.budget_per_race if args.budget_per_race is not None else \
         float(_strategy_cfg.get("budget_per_race", 3000.0))
-    logger.info(f"min_prob_threshold={min_prob_threshold} (固定パラメータ)")
+    if args.min_prob_threshold_range is not None:
+        logger.info(f"min_prob_threshold_range={args.min_prob_threshold_range} (探索パラメータ)")
+    else:
+        logger.info(f"min_prob_threshold={min_prob_threshold} (固定パラメータ)")
     logger.info(f"budget_per_race={budget_per_race} (固定パラメータ)")
 
     # グリッドサーチ最適化
@@ -322,6 +334,7 @@ def main() -> None:
         threshold_range=args.threshold_range,
         top_n_range=args.top_n_range,
         r_range=args.r_range,
+        min_prob_threshold_range=args.min_prob_threshold_range,
         min_prob_threshold=min_prob_threshold,
     )
 

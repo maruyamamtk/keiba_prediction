@@ -233,7 +233,7 @@ class TestStrategyOptimizerRunGridSearch:
         assert len(results) == 80  # 4×4×5
 
     def test_grid_search_results_have_params(self):
-        """各結果に expected_return_threshold / top_n / prob_weight_r が含まれる（p1 は含まれない）"""
+        """各結果に expected_return_threshold / top_n / prob_weight_r / min_prob_threshold が含まれる"""
         df = _make_predictions_df(n_races=2, n_horses=5, win_place_prob=0.5, odds=3.0)
         optimizer = StrategyOptimizer(df, None, combo_odds_df=None)
         results = optimizer.run_grid_search()
@@ -241,6 +241,7 @@ class TestStrategyOptimizerRunGridSearch:
             assert "expected_return_threshold" in r.params
             assert "top_n" in r.params
             assert "prob_weight_r" in r.params
+            assert "min_prob_threshold" in r.params
             # 旧パラメータは含まれない
             assert "p1" not in r.params
             assert "p2" not in r.params
@@ -256,6 +257,46 @@ class TestStrategyOptimizerRunGridSearch:
             r_range=[1.0],
         )
         assert len(results) == 6  # threshold(3)×top_n(2)×r(1)
+
+    def test_min_prob_threshold_range_creates_4d_grid(self):
+        """Issue #261: min_prob_threshold_range 指定で4次元グリッドサーチになる"""
+        df = _make_predictions_df(n_races=2, n_horses=5, win_place_prob=0.5, odds=3.0)
+        optimizer = StrategyOptimizer(df, None, combo_odds_df=None)
+        results = optimizer.run_grid_search(
+            threshold_range=[1.0, 1.2],
+            top_n_range=[3],
+            r_range=[1.0],
+            min_prob_threshold_range=[0.0, 0.1, 0.2],
+        )
+        assert len(results) == 6  # threshold(2)×top_n(1)×r(1)×min_prob(3)
+
+    def test_min_prob_threshold_range_stored_in_params(self):
+        """Issue #261: min_prob_threshold が params に含まれ探索値が正しく記録される"""
+        df = _make_predictions_df(n_races=2, n_horses=5, win_place_prob=0.5, odds=3.0)
+        optimizer = StrategyOptimizer(df, None, combo_odds_df=None)
+        results = optimizer.run_grid_search(
+            threshold_range=[1.0],
+            top_n_range=[3],
+            r_range=[1.0],
+            min_prob_threshold_range=[0.0, 0.15],
+        )
+        mpt_values = {r.params["min_prob_threshold"] for r in results}
+        assert mpt_values == {0.0, 0.15}
+
+    def test_min_prob_threshold_fixed_when_range_is_none(self):
+        """min_prob_threshold_range=None の場合は固定値が全結果に適用される"""
+        df = _make_predictions_df(n_races=2, n_horses=5, win_place_prob=0.5, odds=3.0)
+        optimizer = StrategyOptimizer(df, None, combo_odds_df=None)
+        results = optimizer.run_grid_search(
+            threshold_range=[1.0, 1.2],
+            top_n_range=[3],
+            r_range=[1.0],
+            min_prob_threshold_range=None,
+            min_prob_threshold=0.1,
+        )
+        assert len(results) == 2  # threshold(2)×top_n(1)×r(1)（min_prob次元は追加されない）
+        for r in results:
+            assert r.params["min_prob_threshold"] == 0.1
 
 
 # ---------------------------------------------------------------------------
