@@ -1377,6 +1377,8 @@ def _refresh_investment_decisions_for_race(
         min_bet_amount = float(config.get("min_bet_amount", 100.0))
         min_prob_threshold = float(config.get("min_prob_threshold", 0.10))
         prob_weight_r = float(config.get("prob_weight_r", 1.0))
+        _mwo = config.get("max_wide_odds", None)
+        max_wide_odds = float(_mwo) if _mwo is not None else None
 
         # 推奨馬券を再計算
         bets = select_bets_for_race(
@@ -1388,6 +1390,7 @@ def _refresh_investment_decisions_for_race(
             min_prob_threshold=min_prob_threshold,
             prob_weight_r=prob_weight_r,
             top_n=top_n,
+            max_wide_odds=max_wide_odds,
         )
 
         # 投資判断 dict を構築して MERGE UPSERT 保存

@@ -793,3 +793,131 @@ class TestDeduplication:
         wide_bets = [b for b in bets if b["bet_type"] == "wide" and b["horse_numbers"] == [1, 2]]
         assert len(wide_bets) == 1
         assert wide_bets[0]["odds"] == 5.0
+
+
+# ---------------------------------------------------------------------------
+# max_wide_odds フィルタのテスト（Issue #262）
+# ---------------------------------------------------------------------------
+
+
+class TestMaxWideOdds:
+    """max_wide_odds（ワイドオッズ上限フィルタ）のテスト"""
+
+    def test_wide_skipped_when_odds_exceed_limit(self):
+        """max_wide_odds を超えるワイドはスキップされる"""
+        race_df = _make_race_df(
+            n_horses=3,
+            probs=[0.40, 0.30, 0.20],
+            odds=[3.0, 4.0, 5.0],
+        )
+        combo_df = _make_combo_odds_df([
+            {"bet_type": "wide", "horse_number_1": 1, "horse_number_2": 2, "odds_value": 60.0},
+            {"bet_type": "umaren", "horse_number_1": 1, "horse_number_2": 2, "odds_value": 80.0},
+        ])
+        bets = select_base_bets(
+            race_df,
+            combo_df,
+            expected_return_threshold=1.2,
+            top_n=3,
+            max_wide_odds=50.0,
+        )
+        wide_bets = [b for b in bets if b["bet_type"] == "wide"]
+        assert len(wide_bets) == 0
+
+    def test_wide_selected_when_odds_within_limit(self):
+        """max_wide_odds 以下のワイドは通常通り選定される"""
+        race_df = _make_race_df(
+            n_horses=3,
+            probs=[0.40, 0.30, 0.20],
+            odds=[3.0, 4.0, 5.0],
+        )
+        combo_df = _make_combo_odds_df([
+            {"bet_type": "wide", "horse_number_1": 1, "horse_number_2": 2, "odds_value": 10.0},
+            {"bet_type": "umaren", "horse_number_1": 1, "horse_number_2": 2, "odds_value": 15.0},
+        ])
+        bets = select_base_bets(
+            race_df,
+            combo_df,
+            expected_return_threshold=1.0,
+            top_n=3,
+            max_wide_odds=50.0,
+        )
+        wide_bets = [b for b in bets if b["bet_type"] == "wide"]
+        assert len(wide_bets) == 1
+        assert wide_bets[0]["horse_numbers"] == [1, 2]
+
+    def test_umaren_also_skipped_when_wide_skipped(self):
+        """ワイドがスキップされた場合は馬連も追加されない"""
+        race_df = _make_race_df(
+            n_horses=3,
+            probs=[0.40, 0.30, 0.20],
+            odds=[3.0, 4.0, 5.0],
+        )
+        combo_df = _make_combo_odds_df([
+            {"bet_type": "wide", "horse_number_1": 1, "horse_number_2": 2, "odds_value": 60.0},
+            {"bet_type": "umaren", "horse_number_1": 1, "horse_number_2": 2, "odds_value": 80.0},
+        ])
+        bets = select_base_bets(
+            race_df,
+            combo_df,
+            expected_return_threshold=1.2,
+            top_n=3,
+            max_wide_odds=50.0,
+        )
+        umaren_bets = [b for b in bets if b["bet_type"] == "umaren"]
+        assert len(umaren_bets) == 0
+
+    def test_none_max_wide_odds_allows_all(self):
+        """max_wide_odds=None (デフォルト) では制限なしにすべてのワイドが対象"""
+        race_df = _make_race_df(
+            n_horses=3,
+            probs=[0.40, 0.30, 0.20],
+            odds=[3.0, 4.0, 5.0],
+        )
+        combo_df = _make_combo_odds_df([
+            {"bet_type": "wide", "horse_number_1": 1, "horse_number_2": 2, "odds_value": 200.0},
+            {"bet_type": "umaren", "horse_number_1": 1, "horse_number_2": 2, "odds_value": 250.0},
+        ])
+        bets = select_base_bets(
+            race_df,
+            combo_df,
+            expected_return_threshold=1.0,
+            top_n=3,
+            max_wide_odds=None,
+        )
+        wide_bets = [b for b in bets if b["bet_type"] == "wide"]
+        assert len(wide_bets) == 1
+
+    def test_select_bets_for_race_passes_max_wide_odds(self):
+        """select_bets_for_race が max_wide_odds を select_base_bets に正しく渡す"""
+        race_df = _make_race_df(
+            n_horses=3,
+            probs=[0.40, 0.30, 0.20],
+            odds=[3.0, 4.0, 5.0],
+        )
+        # wide_odds=10.0: prob_i*prob_j*odds = 0.40*0.30*10 = 1.2 > 1.0 で期待値フィルタを通過し、
+        # かつ 3000 円予算での配分額が 100 円以上になる
+        combo_df = _make_combo_odds_df([
+            {"bet_type": "wide", "horse_number_1": 1, "horse_number_2": 2, "odds_value": 10.0},
+            {"bet_type": "umaren", "horse_number_1": 1, "horse_number_2": 2, "odds_value": 15.0},
+        ])
+
+        # max_wide_odds=9.0 → ワイドは除外（オッズ10.0 > 9.0）
+        bets_filtered = select_bets_for_race(
+            race_df,
+            combo_df,
+            expected_return_threshold=1.0,
+            max_wide_odds=9.0,
+        )
+        wide_filtered = [b for b in bets_filtered if b["bet_type"] == "wide"]
+        assert len(wide_filtered) == 0
+
+        # max_wide_odds=None → ワイドは除外されない（期待値チェックを通れば選定）
+        bets_no_limit = select_bets_for_race(
+            race_df,
+            combo_df,
+            expected_return_threshold=1.0,
+            max_wide_odds=None,
+        )
+        wide_no_limit = [b for b in bets_no_limit if b["bet_type"] == "wide"]
+        assert len(wide_no_limit) == 1

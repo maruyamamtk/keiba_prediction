@@ -69,6 +69,7 @@ def select_base_bets(
     top_n: int = 5,
     min_prob_threshold: float = 0.0,
     prob_weight_r: float = 1.0,
+    max_wide_odds: float | None = None,
 ) -> list[dict]:
     """
     複勝/ワイド/三連複/馬連の候補を選定する（配分前）
@@ -89,6 +90,8 @@ def select_base_bets(
             複勝単体買いだけでなく、ワイド・三連複の候補馬（top_n）にも同フィルタを適用する。
         prob_weight_r: 選定スコアの確率ウェイト係数。スコア = odds * prob^r
             r=1 で通常の期待値と同等。r>1 で高確率馬が有利になる
+        max_wide_odds: ワイド購入の上限オッズ。これを超えるワイドはスキップ（馬連も連動スキップ）。
+            None の場合は上限なし
 
     Returns:
         bet dict のリスト（bet_amount は未設定）
@@ -157,6 +160,8 @@ def select_base_bets(
             prob_i = float(top_prob_map.get(h1, 0))
             prob_j = float(top_prob_map.get(h2, 0))
             wide_odds = float(row["odds_value"])
+            if max_wide_odds is not None and wide_odds > max_wide_odds:
+                continue
             if prob_i * prob_j * wide_odds > expected_return_threshold:
                 pair = tuple(sorted([h1, h2]))
                 combo_bets.append({
@@ -222,6 +227,7 @@ def select_bets_for_race(
     top_n: int = 5,
     min_prob_threshold: float = 0.0,
     prob_weight_r: float = 1.0,
+    max_wide_odds: float | None = None,
     # 後方互換性のための旧パラメータ（無視される）
     p1: float | None = None,
     top_n_dominant: int | None = None,
@@ -247,6 +253,7 @@ def select_bets_for_race(
         top_n: ワイド/三連複/馬連の候補数
         min_prob_threshold: 軸馬の最低複勝率（複勝単体買いの最低条件）
         prob_weight_r: 選定スコアの確率ウェイト係数（odds * prob^r）
+        max_wide_odds: ワイド購入の上限オッズ（None で無制限）。馬連も連動してスキップ
         p1: 廃止済み（無視される）
         top_n_dominant: 廃止済み（無視される）
         top_n_standard: 廃止済み（無視される）
@@ -287,6 +294,7 @@ def select_bets_for_race(
         top_n=top_n,
         min_prob_threshold=min_prob_threshold,
         prob_weight_r=prob_weight_r,
+        max_wide_odds=max_wide_odds,
     )
 
     # 同一 (bet_type, horse_numbers) の重複排除（先着優先）
