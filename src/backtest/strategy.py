@@ -4,8 +4,6 @@
 全レースを統一ロジックで処理し、複勝＋ワイド＋三連複＋馬連（ワイドと同組み合わせ）を選定する。
 """
 
-
-
 import logging
 from itertools import combinations
 

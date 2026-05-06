@@ -468,7 +468,7 @@ def save_predictions_to_gcs(
     return gcs_uri
 
 
-def format_predictions(result_df: pd.DataFrame, p1: float | None = None) -> str:
+def format_predictions(result_df: pd.DataFrame) -> str:
     """予測結果を見やすい文字列に整形する"""
     if len(result_df) == 0:
         return "推論対象データがありません"
@@ -585,13 +585,6 @@ def main():
     config = load_config(args.config)
     execution_date = datetime.date.fromisoformat(args.execution_date)
 
-    strategy_config_path = Path(__file__).resolve().parents[2] / "config" / "strategy_config.yaml"
-    p1 = 0.3
-    if strategy_config_path.exists():
-        with open(strategy_config_path) as f:
-            strategy_cfg = yaml.safe_load(f)
-        p1 = float(strategy_cfg.get("p1", 0.3))
-
     parsed_target_dates = None
     if args.target_dates:
         try:
@@ -611,7 +604,7 @@ def main():
     )
 
     # 結果表示
-    print(format_predictions(result_df, p1=p1))
+    print(format_predictions(result_df))
 
     # CSV出力
     if args.output_csv and len(result_df) > 0:
