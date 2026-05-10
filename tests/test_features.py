@@ -99,6 +99,75 @@ class TestSQLTemplate:
             f"ハードコードされた日付が見つかりました: {date_literals}"
         )
 
+    def test_sql_template_has_rotation_features(self):
+        """SQLテンプレートにローテーション特徴量が含まれること（Issue #268）"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        assert "is_fresh" in content, "is_fresh が見つかりません"
+        assert "is_renso" in content, "is_renso が見つかりません"
+        assert "idm_trend_3" in content, "idm_trend_3 が見つかりません"
+        assert "finish_position_trend_3" in content, "finish_position_trend_3 が見つかりません"
+        assert "weight_carried_diff" in content, "weight_carried_diff が見つかりません"
+        assert "continuous_run_count" in content, "continuous_run_count が見つかりません"
+
+    def test_sql_rotation_features_threshold_values(self):
+        """ローテーション特徴量の閾値が正しいこと"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        # is_fresh の閾値が12週であること
+        assert "race_date_diff_1 >= 12" in content, "is_fresh の閾値(12週)が見つかりません"
+        # is_renso の閾値が1週以下であること
+        assert "race_date_diff_1 <= 1" in content, "is_renso の閾値(1週)が見つかりません"
+
+    def test_sql_continuous_run_count_uses_5_race_diffs(self):
+        """continuous_run_count が5走前まで参照していること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        assert "race_date_diff_3" in content
+        assert "race_date_diff_4" in content
+        assert "race_date_diff_5" in content
+
+    def test_sql_rotation_features_no_future_data_leak(self):
+        """ローテーション特徴量に未来データ漏洩がないこと"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        # 全ての過去走JOIN（r_r_1〜r_r_5）に race_date < t_b_r_e.race_date 条件があること
+        import re
+        future_guards = re.findall(
+            r"r_r_\d\.race_date < t_b_r_e\.race_date", content
+        )
+        assert len(future_guards) == 5, (
+            f"時系列境界ガードが5つあるべき所: {len(future_guards)}つしかありません"
+        )
+
+    def test_sql_weight_carried_diff_uses_past_race(self):
+        """weight_carried_diff が r_r_1（過去走）の斤量を参照していること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        assert "r_r_1.weight_carried" in content, (
+            "weight_carried_diff が r_r_1.weight_carried を参照していません"
+        )
+
+    def test_sql_normalized_features_have_time_boundary(self):
+        """finish_time_normalized と last_3f_normalized が時系列ガードを持つこと"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        # ORDER BY race_date + RANGE が両方の正規化に適用されていることを確認
+        assert content.count("range between unbounded preceding and current row") >= 2, (
+            "finish_time_normalized または last_3f_normalized の時系列ガードが不足しています"
+        )
+        # 全体集計（ORDER BY なし）が残っていないことを確認
+        import re
+        bad_windows = re.findall(
+            r"partition by t_p_r_f\.venue_code_prev_1.*?(?:\n.*?){0,2}(?<!\border by\b)",
+            content,
+        )
+        # finish_time_normalized と last_3f_normalized の partition に order by が付いていること
+        finish_idx = content.find("finish_time_normalized")
+        last3f_idx = content.find("last_3f_normalized")
+        finish_section = content[max(0, finish_idx - 300): finish_idx + 50]
+        last3f_section = content[max(0, last3f_idx - 300): last3f_idx + 50]
+        assert "order by t_p_r_f.race_date" in finish_section, (
+            "finish_time_normalized のウィンドウに ORDER BY race_date がありません"
+        )
+        assert "order by t_p_r_f.race_date" in last3f_section, (
+            "last_3f_normalized のウィンドウに ORDER BY race_date がありません"
+        )
+
 
 class TestFeaturePipeline:
     """FeaturePipelineのテスト"""
