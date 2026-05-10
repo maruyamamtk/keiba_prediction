@@ -251,22 +251,27 @@ with temp_race_horse_count as (
     temp_base_race_entries as t_b_r_e
     left join `{project_id}`.raw.race_results as r_r_1
       on t_b_r_e.prev_race_key_1 = concat(r_r_1.horse_id, format_date('%Y%m%d', r_r_1.race_date))
+      and r_r_1.race_date < t_b_r_e.race_date
     left join temp_race_horse_count as t_r_h_c_1
       on r_r_1.race_id = t_r_h_c_1.race_id
     left join `{project_id}`.raw.race_results as r_r_2
       on t_b_r_e.prev_race_key_2 = concat(r_r_2.horse_id, format_date('%Y%m%d', r_r_2.race_date))
+      and r_r_2.race_date < t_b_r_e.race_date
     left join temp_race_horse_count as t_r_h_c_2
       on r_r_2.race_id = t_r_h_c_2.race_id
     left join `{project_id}`.raw.race_results as r_r_3
       on t_b_r_e.prev_race_key_3 = concat(r_r_3.horse_id, format_date('%Y%m%d', r_r_3.race_date))
+      and r_r_3.race_date < t_b_r_e.race_date
     left join temp_race_horse_count as t_r_h_c_3
       on r_r_3.race_id = t_r_h_c_3.race_id
     left join `{project_id}`.raw.race_results as r_r_4
       on t_b_r_e.prev_race_key_4 = concat(r_r_4.horse_id, format_date('%Y%m%d', r_r_4.race_date))
+      and r_r_4.race_date < t_b_r_e.race_date
     left join temp_race_horse_count as t_r_h_c_4
       on r_r_4.race_id = t_r_h_c_4.race_id
     left join `{project_id}`.raw.race_results as r_r_5
       on t_b_r_e.prev_race_key_5 = concat(r_r_5.horse_id, format_date('%Y%m%d', r_r_5.race_date))
+      and r_r_5.race_date < t_b_r_e.race_date
     left join temp_race_horse_count as t_r_h_c_5
       on r_r_5.race_id = t_r_h_c_5.race_id
 )
@@ -577,7 +582,16 @@ with temp_race_horse_count as (
     `{project_id}`.raw.race_info as r_i
     left join `{project_id}`.raw.horse_extended as h_e
       on r_i.race_id = h_e.race_id
-    left join `{project_id}`.raw.venue_info as v_i
+    -- data_categoryが複数存在する場合は最大値（最新段階）を優先して参照する
+    -- KAAは木曜以降に段階的に更新される（1:特別登録→2:想定確定→3:枠確定→4:前日）
+    left join (
+      select *
+      from `{project_id}`.raw.venue_info
+      qualify row_number() over (
+        partition by venue_code, race_date
+        order by coalesce(data_category, 0) desc
+      ) = 1
+    ) as v_i
       on r_i.race_date = v_i.race_date
       and r_i.venue_code = v_i.venue_code
     left join `{project_id}`.raw.horse_results as h_r
