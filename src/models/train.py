@@ -92,9 +92,11 @@ def fetch_training_data(
         finish_position ラベル付きの全データDataFrame
     """
     client = bigquery.Client(project=project_id)
+    # training_data に finish_position 列が存在しない場合を考慮し、
+    # raw.race_results から finish_position を直接 JOIN する
     query = f"""
     SELECT
-        t.* EXCEPT(finish_position),
+        t.*,
         r_r.finish_position
     FROM `{project_id}.{dataset}.{table}` AS t
     LEFT JOIN `{project_id}.raw.race_results` AS r_r
