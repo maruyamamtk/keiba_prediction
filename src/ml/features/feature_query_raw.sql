@@ -355,6 +355,12 @@ with temp_race_horse_count as (
         case when r_l3f_5.last_3f_rank_in_race is not null then 1 else 0 end)
         , 0)
     ) as mean_last_3f_rank
+    -- ローテーション特徴量用: 2〜5走前までの週数差分
+    ,round(safe_divide(date_diff(t_b_r_e.race_date, r_r_3.race_date, day), 7))-1 as race_date_diff_3
+    ,round(safe_divide(date_diff(t_b_r_e.race_date, r_r_4.race_date, day), 7))-1 as race_date_diff_4
+    ,round(safe_divide(date_diff(t_b_r_e.race_date, r_r_5.race_date, day), 7))-1 as race_date_diff_5
+    -- 前走との斤量差（horse_results=当日予定斤量, race_results=前走実績斤量）
+    ,t_b_r_e.weight_carried - r_r_1.weight_carried as weight_carried_diff
   from
     temp_base_race_entries as t_b_r_e
     left join `{project_id}`.raw.race_results as r_r_1
@@ -483,24 +489,63 @@ with temp_race_horse_count as (
     ) as ema_upside_rate
     ,(SELECT MAX(v) FROM UNNEST([upside_rate_1, upside_rate_2, upside_rate_3, upside_rate_4, upside_rate_5]) v WHERE v IS NOT NULL) as max_upside_rate
     ,(SELECT MIN(v) FROM UNNEST([upside_rate_1, upside_rate_2, upside_rate_3, upside_rate_4, upside_rate_5]) v WHERE v IS NOT NULL) as min_upside_rate
-    /* 走破タイム正規化: 1走前の同場・同距離・同馬場状態での偏差値 */
+    /* 走破タイム正規化: 1走前の同場・同距離・同馬場状態での偏差値（当該レース日付以前のデータのみ使用） */
     ,safe_divide(
       t_p_r_f.finish_time_1 - avg(t_p_r_f.finish_time_1) over (
         partition by t_p_r_f.venue_code_prev_1, t_p_r_f.distance_prev_1, t_p_r_f.track_condition_prev_1
+        order by t_p_r_f.race_date
+        range between unbounded preceding and current row
       )
       ,nullif(stddev(t_p_r_f.finish_time_1) over (
         partition by t_p_r_f.venue_code_prev_1, t_p_r_f.distance_prev_1, t_p_r_f.track_condition_prev_1
+        order by t_p_r_f.race_date
+        range between unbounded preceding and current row
       ), 0)
     ) as finish_time_normalized
-    /* 上がり3F正規化: 1走前の同場・同距離・同馬場状態での偏差値 */
+    /* 上がり3F正規化: 1走前の同場・同距離・同馬場状態での偏差値（当該レース日付以前のデータのみ使用） */
     ,safe_divide(
       t_p_r_f.last_3f_1 - avg(t_p_r_f.last_3f_1) over (
         partition by t_p_r_f.venue_code_prev_1, t_p_r_f.distance_prev_1, t_p_r_f.track_condition_prev_1
+        order by t_p_r_f.race_date
+        range between unbounded preceding and current row
       )
       ,nullif(stddev(t_p_r_f.last_3f_1) over (
         partition by t_p_r_f.venue_code_prev_1, t_p_r_f.distance_prev_1, t_p_r_f.track_condition_prev_1
+        order by t_p_r_f.race_date
+        range between unbounded preceding and current row
       ), 0)
     ) as last_3f_normalized
+    -- ローテーション特徴量
+    ,case
+      when t_p_r_f.race_date_diff_1 is null then null
+      when t_p_r_f.race_date_diff_1 >= 12 then 1
+      else 0
+    end as is_fresh
+    ,case
+      when t_p_r_f.race_date_diff_1 is null then null
+      when t_p_r_f.race_date_diff_1 <= 1 then 1
+      else 0
+    end as is_renso
+    ,IF(
+      t_p_r_f.idm_1 is not null and t_p_r_f.idm_3 is not null,
+      t_p_r_f.idm_1 - t_p_r_f.idm_3,
+      null
+    ) as idm_trend_3
+    ,IF(
+      t_p_r_f.finish_position_1 is not null and t_p_r_f.finish_position_1 > 0
+      and t_p_r_f.finish_position_3 is not null and t_p_r_f.finish_position_3 > 0,
+      t_p_r_f.finish_position_3 - t_p_r_f.finish_position_1,
+      null
+    ) as finish_position_trend_3
+    ,case
+      when t_p_r_f.race_date_diff_1 is null then 1
+      when t_p_r_f.race_date_diff_1 >= 12 then 1
+      when t_p_r_f.race_date_diff_2 is null or (t_p_r_f.race_date_diff_2 - t_p_r_f.race_date_diff_1) >= 12 then 2
+      when t_p_r_f.race_date_diff_3 is null or (t_p_r_f.race_date_diff_3 - t_p_r_f.race_date_diff_2) >= 12 then 3
+      when t_p_r_f.race_date_diff_4 is null or (t_p_r_f.race_date_diff_4 - t_p_r_f.race_date_diff_3) >= 12 then 4
+      when t_p_r_f.race_date_diff_5 is null or (t_p_r_f.race_date_diff_5 - t_p_r_f.race_date_diff_4) >= 12 then 5
+      else 6
+    end as continuous_run_count
   from
     temp_past_race_features as t_p_r_f
 )
