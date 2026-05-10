@@ -1,5 +1,6 @@
 ---
-user-invocable: false
+description: 特徴量SQLやfeature_pipeline.pyのデータリーク（未来情報混入・同一レース参照・時系列境界）を検出する
+user-invocable: true
 ---
 
 特徴量エンジニアリングのコードや SQL が変更された際に、データリーク観点でレビューします。

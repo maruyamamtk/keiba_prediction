@@ -1,0 +1,30 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash scripts/hooks/check_leak_hook.sh"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash scripts/hooks/pre_commit_test.sh"
+          },
+          {
+            "type": "command",
+            "command": "bash scripts/hooks/pre_pr_check.sh"
+          }
+        ]
+      }
+    ]
+  }
+}
