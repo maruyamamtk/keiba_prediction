@@ -16,6 +16,7 @@ import argparse
 import datetime
 import logging
 import os
+import tempfile
 from pathlib import Path
 
 
@@ -220,7 +221,26 @@ def predict_pipeline(
 
     # 1. モデル読み込み
     ranker = LGBMRanker()
-    ranker.load(model_path)
+    if model_path.startswith("gs://"):
+        # GCS URI の場合は一時ディレクトリにダウンロードしてからロード
+        gcs_uri = model_path  # e.g. gs://bucket/path/to/model.txt
+        parts = gcs_uri[len("gs://"):].split("/", 1)
+        bucket_name, blob_name = parts[0], parts[1]
+        client = storage.Client(project=project_id)
+        bucket = client.bucket(bucket_name)
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            local_model = Path(tmp_dir) / Path(blob_name).name
+            bucket.blob(blob_name).download_to_filename(str(local_model))
+            logger.info(f"Downloaded {gcs_uri} to {local_model}")
+            # .meta.json も同じフォルダからダウンロード（存在すれば）
+            meta_blob_name = blob_name.rsplit(".", 1)[0] + ".meta.json"
+            local_meta = Path(tmp_dir) / Path(meta_blob_name).name
+            meta_blob = bucket.blob(meta_blob_name)
+            if meta_blob.exists():
+                meta_blob.download_to_filename(str(local_meta))
+            ranker.load(str(local_model))
+    else:
+        ranker.load(model_path)
 
     # 2. 推論対象日の決定
     if target_dates is None:
