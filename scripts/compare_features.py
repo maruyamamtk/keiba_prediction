@@ -191,7 +191,6 @@ def evaluate_baseline(
     logger.info(f"ベースライン特徴量数: {len(baseline_features)}")
 
     data_config = config["data"]
-    exclude_cols = set(data_config["exclude_columns"])
     cat_cols = data_config.get("categorical_columns", [])
 
     # ベースラインモデルが使う特徴量のみ選択
@@ -215,6 +214,8 @@ def evaluate_baseline(
     metrics = evaluate_predictions(y_true_positions, y_pred, groups_valid)
     metrics["best_iteration"] = meta.get("best_iteration", "N/A")
     metrics["feature_count"] = len(available)
+    # meta.json に学習期間が記録されていれば取得
+    metrics["training_period"] = meta.get("training_period", None)
     return metrics
 
 
@@ -303,12 +304,12 @@ def build_report(
         sign = "+" if d >= 0 else ""
         return f"{sign}{d:.4f}"
 
-    def judge(new_val, base_val, threshold) -> str:
+    def judge(new_val, base_val, thr) -> str:
         d = new_val - base_val
         if d >= 0:
             return "✅ 改善"
-        elif d >= -threshold:
-            return f"✅ 同等 (±{threshold}以内)"
+        elif d >= -thr:
+            return f"✅ 同等 (±{thr}以内)"
         else:
             return "❌ 悪化"
 
@@ -317,23 +318,43 @@ def build_report(
     rec_b, rec_n = baseline_metrics["recall@3"], new_metrics["recall@3"]
 
     passed = all([
-        new_metrics["ndcg@3"] >= baseline_metrics["ndcg@3"] - threshold,
-        new_metrics["auc"] >= baseline_metrics["auc"] - threshold,
-        new_metrics["recall@3"] >= baseline_metrics["recall@3"] - threshold,
+        ndcg_n >= ndcg_b - threshold,
+        auc_n >= auc_b - threshold,
+        rec_n >= rec_b - threshold,
     ])
     verdict = "✅ **マージ可（全指標が合格基準を満たす）**" if passed else "❌ **要修正（一部指標が合格基準を下回る）**"
+
+    # 既存モデルの学習期間（meta.jsonに記録があれば表示、なければ「不明」）
+    bp = baseline_metrics.get("training_period")
+    if bp:
+        baseline_train_period = f"{bp['train_from']} 〜 {bp['train_to']} ({bp['train_rows']:,}行 / {bp['train_races']:,}レース)"
+        baseline_valid_period = f"{bp['valid_from']} 〜 {bp['valid_to']} ({bp['valid_rows']:,}行 / {bp['valid_races']:,}レース)"
+    else:
+        baseline_train_period = "不明（meta.json に未記録）"
+        baseline_valid_period = "不明（meta.json に未記録）"
+
+    new_train_period = (
+        f"{period_info['train_from']} 〜 {period_info['train_to']} "
+        f"({period_info['train_rows']:,}行 / {period_info['train_races']:,}レース)"
+    )
+    new_valid_period = (
+        f"{period_info['valid_from']} 〜 {period_info['valid_to']} "
+        f"({period_info['valid_rows']:,}行 / {period_info['valid_races']:,}レース)"
+    )
 
     report = f"""# 特徴量変更 精度比較レポート
 
 生成日時: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 実行日: {execution_date}
 
-## データ期間
+## モデル別 学習・検証期間
 
-| | 期間 | 行数 | レース数 |
-|---|---|---|---|
-| **学習** | {period_info['train_from']} 〜 {period_info['train_to']} | {period_info['train_rows']:,} | {period_info['train_races']:,} |
-| **検証** | {period_info['valid_from']} 〜 {period_info['valid_to']} | {period_info['valid_rows']:,} | {period_info['valid_races']:,} |
+| | 既存モデル | 新モデル |
+|---|---|---|
+| **学習期間** | {baseline_train_period} | {new_train_period} |
+| **検証期間** | {baseline_valid_period} | {new_valid_period} |
+
+> ※ 精度比較は両モデルとも同一の検証データ（{period_info['valid_from']} 〜 {period_info['valid_to']}）で実施
 
 ## 精度比較
 
