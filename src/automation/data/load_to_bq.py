@@ -62,7 +62,7 @@ TABLE_UNIQUE_KEYS = {
     "race_results": ["race_id", "horse_number"],
     "horse_master": ["horse_id"],
     "horse_extended": ["race_id", "horse_number"],
-    "venue_info": ["venue_id"],
+    "venue_info": ["venue_id", "data_category"],
     "payouts": ["race_id", "bet_type", "rank"],
     "odds": ["race_id", "horse_number", "odds_type"],
     "combo_odds": ["race_id", "bet_type", "horse_number_1", "horse_number_2", "horse_number_3"],
