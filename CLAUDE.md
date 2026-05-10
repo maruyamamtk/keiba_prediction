@@ -337,8 +337,18 @@ GitHub Issueの実装時は以下の手順を遵守してください:
   - この手順については全ての実装時に必ず守ること
 2. 実装 & テスト作成
 3. テスト実行と修正
-4. PR作成 & 自己レビュー
-5. マージ
+4. **特徴量・モデル変更を含む場合は必ずモデル精度比較を実施**（PR作成前）
+  - `scripts/compare_features.py` を実行して新旧モデルの学習・検証期間と精度を比較
+  - 比較結果（学習期間・検証期間・NDCG@3・AUC・Recall@3）をPR説明文に記載
+  - コマンド例:
+    ```bash
+    .venv/bin/python scripts/compare_features.py \
+        --project-id <PROJECT_ID> \
+        --skip-feature-pipeline \
+        --n-trials 50 --timeout 1800
+    ```
+5. PR作成 & 自己レビュー
+6. マージ
 
 ### テストと検証
 - ファイルの移動または名前変更後は、すべてのテストファイルでモックターゲットパスとインポートパスを必ず更新すること

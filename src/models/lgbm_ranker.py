@@ -177,12 +177,13 @@ class LGBMRanker:
 
         return X_pred
 
-    def save(self, path: str) -> None:
+    def save(self, path: str, training_period: dict | None = None) -> None:
         """
         モデルをローカルに保存する
 
         Args:
             path: 保存先パス（.txtファイル）
+            training_period: 学習・検証期間の辞書（train_from/train_to/valid_from/valid_to/train_rows/valid_rows）
         """
         if self.model is None:
             raise RuntimeError("保存するモデルがありません。")
@@ -192,13 +193,15 @@ class LGBMRanker:
 
         self.model.save_model(str(model_path))
 
-        # 特徴量名を別ファイルに保存
+        # 特徴量名・学習期間を別ファイルに保存
         meta_path = model_path.with_suffix(".meta.json")
         meta = {
             "feature_names": self.feature_names,
             "best_iteration": self.model.best_iteration,
             "params": self.config.params,
         }
+        if training_period:
+            meta["training_period"] = training_period
         meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2))
 
         logger.info(f"Model saved to {model_path}")

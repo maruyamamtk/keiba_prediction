@@ -92,9 +92,11 @@ def fetch_training_data(
         finish_position ラベル付きの全データDataFrame
     """
     client = bigquery.Client(project=project_id)
+    # training_data に finish_position 列が存在しない場合を考慮し、
+    # raw.race_results から finish_position を直接 JOIN する
     query = f"""
     SELECT
-        t.* EXCEPT(finish_position),
+        t.*,
         r_r.finish_position
     FROM `{project_id}.{dataset}.{table}` AS t
     LEFT JOIN `{project_id}.raw.race_results` AS r_r
@@ -483,7 +485,17 @@ def train_pipeline(
 
     date_str = execution_date.strftime("%Y%m%d")
     model_path = str(Path(output_dir) / f"lgbm_ranker_{date_str}.txt")
-    ranker.save(model_path)
+    training_period = {
+        "train_from": str(train_df[data_config["date_column"]].min()),
+        "train_to": str(train_df[data_config["date_column"]].max()),
+        "train_rows": len(train_df),
+        "train_races": train_df[data_config["group_column"]].nunique(),
+        "valid_from": str(valid_df[data_config["date_column"]].min()),
+        "valid_to": str(valid_df[data_config["date_column"]].max()),
+        "valid_rows": len(valid_df),
+        "valid_races": valid_df[data_config["group_column"]].nunique(),
+    }
+    ranker.save(model_path, training_period=training_period)
 
     # チューニング結果のパラメータも保存
     if tuning_result is not None:

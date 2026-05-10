@@ -8,6 +8,17 @@ with temp_race_horse_count as (
   group by race_id
 )
 
+/* レース内の上がり3Fタイム順位を事前計算 */
+,temp_race_last3f_ranks as (
+  select
+    race_id
+    ,horse_id
+    ,rank() over (partition by race_id order by last_3f_time asc) as last_3f_rank_in_race
+  from `{project_id}`.raw.race_results
+  where last_3f_time is not null
+  qualify row_number() over (partition by race_id, horse_id order by last_3f_time asc) = 1
+)
+
 /* 直接的に馬柱を見て集計できる特徴量 */
 ,temp_base_race_entries as (
   select
@@ -125,6 +136,13 @@ with temp_race_horse_count as (
     ,r_r_1.late_start as late_start_1
     ,r_r_1.position_fault as position_fault_1
     ,r_r_1.disadvantage as disadvantage_1
+    ,r_r_1.finish_time as finish_time_1
+    ,r_r_1.last_3f_time as last_3f_1
+    ,r_r_1.corner_position_4 as corner_position_1
+    ,r_l3f_1.last_3f_rank_in_race as last_3f_rank_in_race_1
+    ,SUBSTR(r_r_1.race_id, 1, 2) as venue_code_prev_1
+    ,r_r_1.distance as distance_prev_1
+    ,r_r_1.track_condition as track_condition_prev_1
     -- 2走前のレース結果
     ,r_r_2.race_name as race_name_2
     ,round(safe_divide(date_diff(t_b_r_e.race_date, r_r_2.race_date, day), 7))-1 as race_date_diff_2
@@ -139,6 +157,10 @@ with temp_race_horse_count as (
     ,r_r_2.late_start as late_start_2
     ,r_r_2.position_fault as position_fault_2
     ,r_r_2.disadvantage as disadvantage_2
+    ,r_r_2.finish_time as finish_time_2
+    ,r_r_2.last_3f_time as last_3f_2
+    ,r_r_2.corner_position_4 as corner_position_2
+    ,r_l3f_2.last_3f_rank_in_race as last_3f_rank_in_race_2
     -- 3走前のレース結果
     ,r_r_3.race_name as race_name_3
     ,r_r_3.finish_position as finish_position_3
@@ -152,6 +174,10 @@ with temp_race_horse_count as (
     ,r_r_3.late_start as late_start_3
     ,r_r_3.position_fault as position_fault_3
     ,r_r_3.disadvantage as disadvantage_3
+    ,r_r_3.finish_time as finish_time_3
+    ,r_r_3.last_3f_time as last_3f_3
+    ,r_r_3.corner_position_4 as corner_position_3
+    ,r_l3f_3.last_3f_rank_in_race as last_3f_rank_in_race_3
     -- 4走前のレース結果
     ,r_r_4.race_name as race_name_4
     ,r_r_4.finish_position as finish_position_4
@@ -165,6 +191,10 @@ with temp_race_horse_count as (
     ,r_r_4.late_start as late_start_4
     ,r_r_4.position_fault as position_fault_4
     ,r_r_4.disadvantage as disadvantage_4
+    ,r_r_4.finish_time as finish_time_4
+    ,r_r_4.last_3f_time as last_3f_4
+    ,r_r_4.corner_position_4 as corner_position_4
+    ,r_l3f_4.last_3f_rank_in_race as last_3f_rank_in_race_4
     -- 5走前のレース結果
     ,r_r_5.race_name as race_name_5
     ,r_r_5.finish_position as finish_position_5
@@ -178,6 +208,10 @@ with temp_race_horse_count as (
     ,r_r_5.late_start as late_start_5
     ,r_r_5.position_fault as position_fault_5
     ,r_r_5.disadvantage as disadvantage_5
+    ,r_r_5.finish_time as finish_time_5
+    ,r_r_5.last_3f_time as last_3f_5
+    ,r_r_5.corner_position_4 as corner_position_5
+    ,r_l3f_5.last_3f_rank_in_race as last_3f_rank_in_race_5
     -- 直近5走の平均情報
     ,safe_divide(
       (coalesce(r_r_1.idm, 0) + coalesce(r_r_2.idm, 0) + coalesce(r_r_3.idm, 0) + coalesce(r_r_4.idm, 0) + coalesce(r_r_5.idm, 0))
@@ -247,6 +281,80 @@ with temp_race_horse_count as (
     ) as ema_win_popularity
     ,(SELECT MAX(v) FROM UNNEST([r_r_1.win_popularity, r_r_2.win_popularity, r_r_3.win_popularity, r_r_4.win_popularity, r_r_5.win_popularity]) v WHERE v IS NOT NULL) as max_win_popularity
     ,(SELECT MIN(v) FROM UNNEST([r_r_1.win_popularity, r_r_2.win_popularity, r_r_3.win_popularity, r_r_4.win_popularity, r_r_5.win_popularity]) v WHERE v IS NOT NULL) as min_win_popularity
+    /* finish_time (走破タイム) */
+    ,safe_divide(
+      (coalesce(r_r_1.finish_time, 0) + coalesce(r_r_2.finish_time, 0) + coalesce(r_r_3.finish_time, 0) + coalesce(r_r_4.finish_time, 0) + coalesce(r_r_5.finish_time, 0))
+      ,nullif(
+        (case when r_r_1.finish_time is not null then 1 else 0 end +
+        case when r_r_2.finish_time is not null then 1 else 0 end +
+        case when r_r_3.finish_time is not null then 1 else 0 end +
+        case when r_r_4.finish_time is not null then 1 else 0 end +
+        case when r_r_5.finish_time is not null then 1 else 0 end)
+        , 0)
+    ) as mean_finish_time
+    ,safe_divide(
+      (coalesce(r_r_1.finish_time*1.5, 0) + coalesce(r_r_2.finish_time*1.25, 0) + coalesce(r_r_3.finish_time*1, 0) + coalesce(r_r_4.finish_time*0.75, 0) + coalesce(r_r_5.finish_time*0.5, 0))
+      ,nullif(
+        (case when r_r_1.finish_time is not null then 1.5 else 0 end +
+        case when r_r_2.finish_time is not null then 1.25 else 0 end +
+        case when r_r_3.finish_time is not null then 1 else 0 end +
+        case when r_r_4.finish_time is not null then 0.75 else 0 end +
+        case when r_r_5.finish_time is not null then 0.5 else 0 end)
+        , 0)
+    ) as ema_finish_time
+    /* last_3f (上がり3Fタイム) */
+    ,safe_divide(
+      (coalesce(r_r_1.last_3f_time, 0) + coalesce(r_r_2.last_3f_time, 0) + coalesce(r_r_3.last_3f_time, 0) + coalesce(r_r_4.last_3f_time, 0) + coalesce(r_r_5.last_3f_time, 0))
+      ,nullif(
+        (case when r_r_1.last_3f_time is not null then 1 else 0 end +
+        case when r_r_2.last_3f_time is not null then 1 else 0 end +
+        case when r_r_3.last_3f_time is not null then 1 else 0 end +
+        case when r_r_4.last_3f_time is not null then 1 else 0 end +
+        case when r_r_5.last_3f_time is not null then 1 else 0 end)
+        , 0)
+    ) as mean_last_3f
+    ,safe_divide(
+      (coalesce(r_r_1.last_3f_time*1.5, 0) + coalesce(r_r_2.last_3f_time*1.25, 0) + coalesce(r_r_3.last_3f_time*1, 0) + coalesce(r_r_4.last_3f_time*0.75, 0) + coalesce(r_r_5.last_3f_time*0.5, 0))
+      ,nullif(
+        (case when r_r_1.last_3f_time is not null then 1.5 else 0 end +
+        case when r_r_2.last_3f_time is not null then 1.25 else 0 end +
+        case when r_r_3.last_3f_time is not null then 1 else 0 end +
+        case when r_r_4.last_3f_time is not null then 0.75 else 0 end +
+        case when r_r_5.last_3f_time is not null then 0.5 else 0 end)
+        , 0)
+    ) as ema_last_3f
+    /* corner_position (4角通過順位) */
+    ,safe_divide(
+      (coalesce(r_r_1.corner_position_4, 0) + coalesce(r_r_2.corner_position_4, 0) + coalesce(r_r_3.corner_position_4, 0) + coalesce(r_r_4.corner_position_4, 0) + coalesce(r_r_5.corner_position_4, 0))
+      ,nullif(
+        (case when r_r_1.corner_position_4 is not null then 1 else 0 end +
+        case when r_r_2.corner_position_4 is not null then 1 else 0 end +
+        case when r_r_3.corner_position_4 is not null then 1 else 0 end +
+        case when r_r_4.corner_position_4 is not null then 1 else 0 end +
+        case when r_r_5.corner_position_4 is not null then 1 else 0 end)
+        , 0)
+    ) as mean_corner_position
+    ,safe_divide(
+      (coalesce(r_r_1.corner_position_4*1.5, 0) + coalesce(r_r_2.corner_position_4*1.25, 0) + coalesce(r_r_3.corner_position_4*1, 0) + coalesce(r_r_4.corner_position_4*0.75, 0) + coalesce(r_r_5.corner_position_4*0.5, 0))
+      ,nullif(
+        (case when r_r_1.corner_position_4 is not null then 1.5 else 0 end +
+        case when r_r_2.corner_position_4 is not null then 1.25 else 0 end +
+        case when r_r_3.corner_position_4 is not null then 1 else 0 end +
+        case when r_r_4.corner_position_4 is not null then 0.75 else 0 end +
+        case when r_r_5.corner_position_4 is not null then 0.5 else 0 end)
+        , 0)
+    ) as ema_corner_position
+    /* last_3f_rank (レース内上がり順位) の集計 */
+    ,safe_divide(
+      (coalesce(r_l3f_1.last_3f_rank_in_race, 0) + coalesce(r_l3f_2.last_3f_rank_in_race, 0) + coalesce(r_l3f_3.last_3f_rank_in_race, 0) + coalesce(r_l3f_4.last_3f_rank_in_race, 0) + coalesce(r_l3f_5.last_3f_rank_in_race, 0))
+      ,nullif(
+        (case when r_l3f_1.last_3f_rank_in_race is not null then 1 else 0 end +
+        case when r_l3f_2.last_3f_rank_in_race is not null then 1 else 0 end +
+        case when r_l3f_3.last_3f_rank_in_race is not null then 1 else 0 end +
+        case when r_l3f_4.last_3f_rank_in_race is not null then 1 else 0 end +
+        case when r_l3f_5.last_3f_rank_in_race is not null then 1 else 0 end)
+        , 0)
+    ) as mean_last_3f_rank
   from
     temp_base_race_entries as t_b_r_e
     left join `{project_id}`.raw.race_results as r_r_1
@@ -274,6 +382,21 @@ with temp_race_horse_count as (
       and r_r_5.race_date < t_b_r_e.race_date
     left join temp_race_horse_count as t_r_h_c_5
       on r_r_5.race_id = t_r_h_c_5.race_id
+    left join temp_race_last3f_ranks as r_l3f_1
+      on r_r_1.race_id = r_l3f_1.race_id
+      and r_r_1.horse_id = r_l3f_1.horse_id
+    left join temp_race_last3f_ranks as r_l3f_2
+      on r_r_2.race_id = r_l3f_2.race_id
+      and r_r_2.horse_id = r_l3f_2.horse_id
+    left join temp_race_last3f_ranks as r_l3f_3
+      on r_r_3.race_id = r_l3f_3.race_id
+      and r_r_3.horse_id = r_l3f_3.horse_id
+    left join temp_race_last3f_ranks as r_l3f_4
+      on r_r_4.race_id = r_l3f_4.race_id
+      and r_r_4.horse_id = r_l3f_4.horse_id
+    left join temp_race_last3f_ranks as r_l3f_5
+      on r_r_5.race_id = r_l3f_5.race_id
+      and r_r_5.horse_id = r_l3f_5.horse_id
 )
 
 ,temp_past_race_features2 as (
@@ -360,6 +483,24 @@ with temp_race_horse_count as (
     ) as ema_upside_rate
     ,(SELECT MAX(v) FROM UNNEST([upside_rate_1, upside_rate_2, upside_rate_3, upside_rate_4, upside_rate_5]) v WHERE v IS NOT NULL) as max_upside_rate
     ,(SELECT MIN(v) FROM UNNEST([upside_rate_1, upside_rate_2, upside_rate_3, upside_rate_4, upside_rate_5]) v WHERE v IS NOT NULL) as min_upside_rate
+    /* 走破タイム正規化: 1走前の同場・同距離・同馬場状態での偏差値 */
+    ,safe_divide(
+      t_p_r_f.finish_time_1 - avg(t_p_r_f.finish_time_1) over (
+        partition by t_p_r_f.venue_code_prev_1, t_p_r_f.distance_prev_1, t_p_r_f.track_condition_prev_1
+      )
+      ,nullif(stddev(t_p_r_f.finish_time_1) over (
+        partition by t_p_r_f.venue_code_prev_1, t_p_r_f.distance_prev_1, t_p_r_f.track_condition_prev_1
+      ), 0)
+    ) as finish_time_normalized
+    /* 上がり3F正規化: 1走前の同場・同距離・同馬場状態での偏差値 */
+    ,safe_divide(
+      t_p_r_f.last_3f_1 - avg(t_p_r_f.last_3f_1) over (
+        partition by t_p_r_f.venue_code_prev_1, t_p_r_f.distance_prev_1, t_p_r_f.track_condition_prev_1
+      )
+      ,nullif(stddev(t_p_r_f.last_3f_1) over (
+        partition by t_p_r_f.venue_code_prev_1, t_p_r_f.distance_prev_1, t_p_r_f.track_condition_prev_1
+      ), 0)
+    ) as last_3f_normalized
   from
     temp_past_race_features as t_p_r_f
 )
