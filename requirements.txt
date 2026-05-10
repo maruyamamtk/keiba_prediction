@@ -1,7 +1,9 @@
 # Google Cloud Platform
 google-cloud-bigquery==3.27.0
+google-cloud-bigquery-storage==2.27.0
 google-cloud-storage==2.19.0
 db-dtypes==1.4.2  # BigQuery to_dataframe()に必要
+pyarrow==19.0.1  # BigQuery Storage API (Arrow形式でのデータ転送)
 
 # Data Processing
 pandas==2.2.3

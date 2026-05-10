@@ -94,7 +94,7 @@ gcloud run deploy "${SERVICE_NAME}" \
     --platform=managed \
     --region="${GCP_REGION}" \
     --service-account="${PIPELINE_SA_EMAIL}" \
-    --memory=4Gi \
+    --memory=8Gi \
     --cpu=2 \
     --timeout=900 \
     --concurrency=1 \

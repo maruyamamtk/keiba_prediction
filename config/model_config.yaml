@@ -100,12 +100,12 @@ tuning:
       high: 100
     reg_alpha:
       type: float
-      low: 1e-8
+      low: 1.0e-8
       high: 10.0
       log: true
     reg_lambda:
       type: float
-      low: 1e-8
+      low: 1.0e-8
       high: 10.0
       log: true
 
