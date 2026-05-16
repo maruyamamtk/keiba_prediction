@@ -9,6 +9,15 @@
             "command": "bash scripts/hooks/check_leak_hook.sh"
           }
         ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash scripts/hooks/post_deploy_check.sh"
+          }
+        ]
       }
     ],
     "PreToolUse": [
