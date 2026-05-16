@@ -190,23 +190,10 @@ def print_summary(result: dict, args: argparse.Namespace) -> None:
     print("=" * 70)
     print(f"期間: {args.start_date} 〜 {args.end_date}")
     print("-" * 70)
-    print(f"対象レース数:   {result['total_races']:,}")
-    print(f"処理成功:       {result['processed_races']:,}")
-    print(f"エラー:         {result['errors']:,}")
+    print(f"削除行数:       {result['deleted_rows']:,}")
+    print(f"挿入行数:       {result['inserted_rows']:,}")
     print(f"処理時間:       {result['elapsed_time']:.1f}秒")
-
-    if result["total_races"] > 0:
-        success_rate = (result["processed_races"] / result["total_races"]) * 100
-        races_per_sec = result["processed_races"] / max(result["elapsed_time"], 0.1)
-        print(f"成功率:         {success_rate:.1f}%")
-        print(f"処理速度:       {races_per_sec:.1f} レース/秒")
-
     print("=" * 70)
-
-    if result["errors"] > 0:
-        print()
-        print("警告: 一部のレースでエラーが発生しました。")
-        print("詳細はログを確認してください。")
 
 
 def main() -> int:
@@ -251,37 +238,29 @@ def main() -> int:
         config = FeaturePipelineConfig(
             output_dataset=args.output_dataset,
             output_table=args.output_table,
-            max_workers=args.max_workers,
             max_retries=args.max_retries,
             retry_base_delay=args.retry_delay,
-            progress_log_interval=args.progress_interval,
         )
 
         # パイプライン実行
         pipeline = FeaturePipeline(args.project_id, config)
 
         if args.dry_run:
-            # ドライランモード：対象レース数のみ確認
-            races = pipeline._fetch_target_races(args.start_date, args.end_date)
-            result = {
-                "total_races": len(races),
-                "processed_races": 0,
-                "errors": 0,
-                "elapsed_time": 0.0,
-            }
-            logger.info(f"ドライラン: {len(races)}件のレースが処理対象です")
+            # ドライランモード：生成されるSQLを表示するのみ
+            query = pipeline.generate_query(args.start_date, args.end_date)
+            logger.info("ドライランモード: 生成SQLを表示します（BQ保存なし）")
+            print(query)
+            return 0
         else:
             result = pipeline.run(
                 start_date=args.start_date,
                 end_date=args.end_date,
-                batch_size=args.batch_size,
-                parallel=not args.no_parallel,
             )
 
         # サマリー出力
         print_summary(result, args)
 
-        return 0 if result["errors"] == 0 else 1
+        return 0
 
     except KeyboardInterrupt:
         logger.warning("ユーザーによって処理が中断されました")

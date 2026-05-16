@@ -559,6 +559,29 @@ with temp_race_horse_count as (
       when t_p_r_f.race_date_diff_5 is null or (t_p_r_f.race_date_diff_5 - t_p_r_f.race_date_diff_4) >= 12 then 5
       else 6
     end as continuous_run_count
+    -- レース内相対指標（斤量）
+    ,rank() over (partition by t_p_r_f.race_id order by t_p_r_f.weight_carried) as weight_carried_rank
+    ,t_p_r_f.weight_carried - avg(t_p_r_f.weight_carried) over (partition by t_p_r_f.race_id) as weight_carried_diff_from_mean
+    -- レース内相対指標（先行力・脚質分布）
+    ,count(case when t_p_r_f.running_style <= 2 then 1 end) over (partition by t_p_r_f.race_id) as running_style_front_count
+    ,safe_divide(
+      count(case when t_p_r_f.running_style <= 2 then 1 end) over (partition by t_p_r_f.race_id),
+      t_p_r_f.num_horses
+    ) as running_style_front_ratio
+    ,case
+      when t_p_r_f.running_style = 1
+        and count(case when t_p_r_f.running_style = 1 then 1 end) over (partition by t_p_r_f.race_id) = 1
+      then 1
+      else 0
+    end as is_sole_leader
+    -- レース内相対指標（混戦度: idm分散）
+    ,stddev(t_p_r_f.idm) over (partition by t_p_r_f.race_id) as race_idm_std
+    ,safe_divide(
+      stddev(t_p_r_f.idm) over (partition by t_p_r_f.race_id),
+      nullif(avg(t_p_r_f.idm) over (partition by t_p_r_f.race_id), 0)
+    ) as race_idm_cv
+    -- レース内相対指標（馬番の内外位置）
+    ,safe_divide(t_p_r_f.horse_number, t_p_r_f.num_horses) as horse_number_ratio
   from
     temp_past_race_features as t_p_r_f
 )
