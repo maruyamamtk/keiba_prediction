@@ -382,6 +382,60 @@ class TestSQLTemplate:
             "last_3f_normalized のウィンドウに ORDER BY race_date がありません"
         )
 
+    def test_sql_has_intra_race_relative_features(self):
+        """レース内相対指標が SQL に含まれること（Issue #269）"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        expected = [
+            "weight_carried_rank",
+            "weight_carried_diff_from_mean",
+            "running_style_front_count",
+            "running_style_front_ratio",
+            "is_sole_leader",
+            "race_idm_std",
+            "race_idm_cv",
+            "horse_number_ratio",
+        ]
+        for col in expected:
+            assert col in content, f"レース内相対指標 '{col}' が見つかりません"
+
+    def test_sql_intra_race_features_use_race_id_partition(self):
+        """レース内相対指標が race_id でパーティションされていること（Issue #269）"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        # weight_carried_rank の Window 関数が race_id でパーティションされていること
+        rank_idx = content.find("weight_carried_rank")
+        rank_section = content[max(0, rank_idx - 200): rank_idx + 10]
+        assert "partition by t_p_r_f.race_id" in rank_section, (
+            "weight_carried_rank が race_id でパーティションされていません"
+        )
+
+    def test_sql_intra_race_features_no_time_window(self):
+        """レース内相対指標に time-series window がないこと（事前情報のみ使用）"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        # race_idm_std の周辺に ORDER BY race_date が存在しないことを確認
+        std_idx = content.find("race_idm_std")
+        std_section = content[max(0, std_idx - 100): std_idx + 200]
+        assert "order by" not in std_section, (
+            "race_idm_std のウィンドウに不要な ORDER BY が含まれています（事前情報のみ使用すべき）"
+        )
+
+    def test_sql_is_sole_leader_checks_running_style_1(self):
+        """is_sole_leader が running_style = 1（逃げ）のみを対象にしていること（Issue #269）"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        sole_idx = content.find("is_sole_leader")
+        sole_section = content[max(0, sole_idx - 300): sole_idx + 10]
+        assert "running_style = 1" in sole_section, (
+            "is_sole_leader が running_style = 1 を参照していません"
+        )
+
+    def test_sql_horse_number_ratio_uses_num_horses(self):
+        """horse_number_ratio が num_horses で除算していること（Issue #269）"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        ratio_idx = content.find("horse_number_ratio")
+        ratio_section = content[max(0, ratio_idx - 100): ratio_idx + 10]
+        assert "num_horses" in ratio_section, (
+            "horse_number_ratio が num_horses を使用していません"
+        )
+
 
 class TestFeaturePipeline:
     """FeaturePipelineのテスト"""
