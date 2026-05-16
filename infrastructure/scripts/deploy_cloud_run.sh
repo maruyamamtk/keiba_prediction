@@ -94,13 +94,12 @@ gcloud run deploy "${SERVICE_NAME}" \
     --platform=managed \
     --region="${GCP_REGION}" \
     --service-account="${PIPELINE_SA_EMAIL}" \
-    --memory=8Gi \
+    --memory=4Gi \
     --cpu=2 \
     --timeout=900 \
     --concurrency=1 \
-    --min-instances=1 \
-    --max-instances=1 \
-    --no-cpu-throttling \
+    --min-instances=0 \
+    --max-instances=5 \
     --no-allow-unauthenticated \
     --set-env-vars="GCP_PROJECT_ID=${GCP_PROJECT_ID},GCP_REGION=${GCP_REGION},GCS_BUCKET_RAW=${GCS_BUCKET_RAW:-keiba-raw-data},GCS_BUCKET_MODELS=${GCS_BUCKET_MODELS:-keiba-models},BQ_DATASET_RAW=raw,BQ_DATASET_FEATURES=features,BQ_DATASET_PREDICTIONS=predictions,LOG_LEVEL=INFO" \
     --set-secrets="JRDB_USER=jrdb-user:latest,JRDB_PASSWORD=jrdb-password:latest,LINE_CHANNEL_ACCESS_TOKEN=line-channel-access-token:latest,LINE_CHANNEL_SECRET=line-channel-secret:latest,LINE_USER_ID=line-user-id:latest,IPAT_MEMBER_ID=ipat-member-id:latest,IPAT_PIN=ipat-pin:latest,IPAT_PAT_NUMBER=ipat-pat-number:latest" \

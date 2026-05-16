@@ -12,14 +12,16 @@ platform: managed
 region: asia-northeast1
 
 # リソース設定
-# 予測処理（LightGBM + BigQuery取得）を考慮して 4Gi に増設
+# 予測処理（LightGBM + BigQuery取得）を考慮して 4Gi を確保
+# モデル再学習は Cloud Run Jobs（keiba-model-retrain）で実行するため Service は 4Gi で十分
 memory: 4Gi
 cpu: 2
 timeout: 900  # 15分（予測処理の長時間実行に対応）
 
 # 同時実行設定
 concurrency: 1  # パイプラインは1リクエストずつ処理
-max-instances: 1  # 同時に1インスタンスのみ
+min-instances: 0  # アイドル課金ゼロ（コールドスタートを許容）
+max-instances: 5  # 日次ジョブ並列実行に対応
 
 # 認証設定
 # Cloud Scheduler/内部呼び出しのみ許可
