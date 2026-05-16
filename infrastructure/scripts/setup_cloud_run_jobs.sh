@@ -113,9 +113,6 @@ gcloud projects add-iam-policy-binding "${GCP_PROJECT_ID}" \
     log_warn "roles/run.invoker の付与をスキップしました（既に付与済みの可能性があります）"
 }
 
-# GCSバケット名（プロジェクトIDをプレフィックスとして使用）
-GCS_BUCKET_MODELS_FULL="${GCP_PROJECT_ID}-${GCS_BUCKET_MODELS:-keiba-models}"
-
 # Cloud Run Jobs の作成または更新
 if gcloud run jobs describe "${JOB_NAME}" --region="${GCP_REGION}" > /dev/null 2>&1; then
     log_info "既存のCloud Run Jobs '${JOB_NAME}' を更新します..."
