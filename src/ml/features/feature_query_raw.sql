@@ -54,6 +54,12 @@ with temp_race_horse_count as (
     ,h_r.total_index
     ,h_r.running_style -- 脚質(1逃げ、2先行、3差し、4追込)
     ,h_r.distance_aptitude -- 距離適性
+    ,case
+      when r_i.distance < 1400 then 'sprint'
+      when r_i.distance < 1800 then 'mile'
+      when r_i.distance < 2200 then 'intermediate'
+      else 'long'
+    end as distance_band
     ,h_r.improvement -- 上昇度
     ,h_r.base_odds -- 想定オッズ
     ,h_r.base_popularity -- 想定人気
@@ -143,6 +149,13 @@ with temp_race_horse_count as (
     ,SUBSTR(r_r_1.race_id, 1, 2) as venue_code_prev_1
     ,r_r_1.distance as distance_prev_1
     ,r_r_1.track_condition as track_condition_prev_1
+    ,t_b_r_e.distance - r_r_1.distance as distance_change
+    ,case
+      when r_r_1.distance is null then null
+      when t_b_r_e.distance > r_r_1.distance then 1
+      when t_b_r_e.distance < r_r_1.distance then -1
+      else 0
+    end as distance_change_flag
     -- 2走前のレース結果
     ,r_r_2.race_name as race_name_2
     ,round(safe_divide(date_diff(t_b_r_e.race_date, r_r_2.race_date, day), 7))-1 as race_date_diff_2
@@ -1172,6 +1185,167 @@ with temp_race_horse_count as (
     cross join temp_global_mean_te as g
 )
 
+/* 馬の距離帯別・距離別 TE 計算の元データ */
+,temp_horse_distance_base as (
+  select
+    r_r.race_id
+    ,h_r.horse_number
+    ,h_r.horse_id
+    ,r_i.race_date
+    ,r_i.distance
+    ,case
+      when r_i.distance < 1400 then 'sprint'
+      when r_i.distance < 1800 then 'mile'
+      when r_i.distance < 2200 then 'intermediate'
+      else 'long'
+    end as distance_band
+    ,case when r_r.finish_position between 1 and 3 then 1 else 0 end as is_top3
+    ,case when r_r.finish_position = 1 then 1 else 0 end as is_top1
+  from `{project_id}`.raw.race_results as r_r
+    inner join `{project_id}`.raw.race_info as r_i
+      on r_r.race_id = r_i.race_id
+    inner join `{project_id}`.raw.horse_results as h_r
+      on r_r.race_id = h_r.race_id
+      and r_r.horse_number = h_r.horse_number
+  where r_r.finish_position > 0
+)
+
+/* 馬の距離帯別 TE（累積3着以内率・1着率、スムージング係数m=10、同日除外） */
+,temp_horse_distance_band_te as (
+  select
+    race_id
+    ,horse_number
+    -- 距離帯別3着以内率
+    ,safe_divide(
+      coalesce(sum(is_top3) over (
+        partition by horse_id, distance_band
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10 * g.global_top3_rate,
+      coalesce(count(*) over (
+        partition by horse_id, distance_band
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10
+    ) as distance_band_top3_finish_rate
+    -- 距離帯別1着率
+    ,safe_divide(
+      coalesce(sum(is_top1) over (
+        partition by horse_id, distance_band
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10 * g.global_top3_rate,
+      coalesce(count(*) over (
+        partition by horse_id, distance_band
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10
+    ) as distance_band_top1_finish_rate
+    -- 距離帯成績 − 全体成績の差分
+    ,safe_divide(
+      coalesce(sum(is_top3) over (
+        partition by horse_id, distance_band
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10 * g.global_top3_rate,
+      coalesce(count(*) over (
+        partition by horse_id, distance_band
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10
+    ) - safe_divide(
+      coalesce(sum(is_top3) over (
+        partition by horse_id
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10 * g.global_top3_rate,
+      coalesce(count(*) over (
+        partition by horse_id
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10
+    ) as distance_band_rate_diff
+    -- その距離帯での初出走フラグ
+    ,case
+      when coalesce(count(*) over (
+        partition by horse_id, distance_band
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) = 0 then 1
+      else 0
+    end as new_distance_band_flag
+  from temp_horse_distance_base
+    cross join temp_global_mean_te as g
+)
+
+/* 馬の距離別 TE（累積3着以内率・1着率、スムージング係数m=10、同日除外） */
+,temp_horse_distance_te as (
+  select
+    race_id
+    ,horse_number
+    -- 距離別3着以内率
+    ,safe_divide(
+      coalesce(sum(is_top3) over (
+        partition by horse_id, distance
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10 * g.global_top3_rate,
+      coalesce(count(*) over (
+        partition by horse_id, distance
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10
+    ) as distance_top3_finish_rate
+    -- 距離別1着率
+    ,safe_divide(
+      coalesce(sum(is_top1) over (
+        partition by horse_id, distance
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10 * g.global_top3_rate,
+      coalesce(count(*) over (
+        partition by horse_id, distance
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10
+    ) as distance_top1_finish_rate
+    -- 距離別成績 − 全体成績の差分
+    ,safe_divide(
+      coalesce(sum(is_top3) over (
+        partition by horse_id, distance
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10 * g.global_top3_rate,
+      coalesce(count(*) over (
+        partition by horse_id, distance
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10
+    ) - safe_divide(
+      coalesce(sum(is_top3) over (
+        partition by horse_id
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10 * g.global_top3_rate,
+      coalesce(count(*) over (
+        partition by horse_id
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10
+    ) as distance_rate_diff
+    -- その距離での初出走フラグ
+    ,case
+      when coalesce(count(*) over (
+        partition by horse_id, distance
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) = 0 then 1
+      else 0
+    end as new_distance_flag
+  from temp_horse_distance_base
+    cross join temp_global_mean_te as g
+)
+
 select
   t_p_r_f.*
   ,t_h_m_f.* except(
@@ -1246,6 +1420,16 @@ select
   ,t_s_te.sire_course_type_venue_te
   ,t_s_te.sire_course_type_distance_te
   ,t_s_te.sire_course_type_distance_venue_te
+  -- 距離帯別特徴量
+  ,t_h_db_te.distance_band_top3_finish_rate
+  ,t_h_db_te.distance_band_top1_finish_rate
+  ,t_h_db_te.distance_band_rate_diff
+  ,t_h_db_te.new_distance_band_flag
+  -- 距離別特徴量
+  ,t_h_d_te.distance_top3_finish_rate
+  ,t_h_d_te.distance_top1_finish_rate
+  ,t_h_d_te.distance_rate_diff
+  ,t_h_d_te.new_distance_flag
 from
   temp_past_race_features2 as t_p_r_f
   left join temp_horse_master_feature2 as t_h_m_f
@@ -1260,3 +1444,9 @@ from
   left join temp_sire_te as t_s_te
     on t_p_r_f.race_id = t_s_te.race_id
     and t_p_r_f.horse_number = t_s_te.horse_number
+  left join temp_horse_distance_band_te as t_h_db_te
+    on t_p_r_f.race_id = t_h_db_te.race_id
+    and t_p_r_f.horse_number = t_h_db_te.horse_number
+  left join temp_horse_distance_te as t_h_d_te
+    on t_p_r_f.race_id = t_h_d_te.race_id
+    and t_p_r_f.horse_number = t_h_d_te.horse_number
