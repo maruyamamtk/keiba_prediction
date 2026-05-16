@@ -123,15 +123,45 @@ python3 -m src.ml.features.feature_pipeline --start-date 2024-01-01 --end-date 2
 
 ### 5. モデル学習・推論
 
-```bash
-# モデル学習
-python3 -m src.models.train --project-id <PROJECT_ID>
+**モデル学習はローカルで実行します。** Cloud Run Jobs（`keiba-model-retrain`）はメモリ不足になるため使用しません。
 
-# 推論実行（今週の土日を自動で対象とする）
-python3 -m src.models.predict --project-id <PROJECT_ID> --model-path ./models/lgbm_ranker.txt
+#### 学習（ローカル推奨）
+
+```bash
+# Optunaハイパーパラメータチューニングあり（本番推奨）
+.venv/bin/python -m src.models.train --tune --project-id <PROJECT_ID>
+
+# チューニングなし（動作確認・高速確認用）
+.venv/bin/python -m src.models.train --project-id <PROJECT_ID>
 ```
 
+**学習完了後、モデルは自動的にGCSへアップロードされます。**
+
+```
+保存先: gs://{PROJECT_ID}-keiba-models/lgbm_ranker/{YYYYMMDD}/lgbm_ranker_{YYYYMMDD}.txt
+```
+
+翌朝の `race-day-predict`（AM 8:00）が GCS から自動的に最新モデルを選択して推論します。
+
+**主なオプション:**
+
+| オプション | 説明 | デフォルト |
+|---|---|---|
+| `--project-id` | GCPプロジェクトID | `$GCP_PROJECT_ID` |
+| `--tune` | Optunaチューニングを有効化 | なし（固定パラメータ） |
+| `--n-trials` | Optunaのtrial数 | config依存 |
+| `--tune-timeout` | チューニングタイムアウト（秒） | config依存 |
+| `--output-dir` | ローカルの出力先ディレクトリ | 一時ディレクトリ |
+| `--skip-gcs-upload` | GCSへのアップロードをスキップ | なし（常にアップロード） |
+
 詳細なオプションは [src/models/README.md](./src/models/README.md) を参照してください。
+
+#### 推論実行（手動・確認用）
+
+```bash
+# 推論実行（今週の土日を自動で対象とする）
+.venv/bin/python -m src.models.predict --project-id <PROJECT_ID> --model-path ./models/lgbm_ranker.txt
+```
 
 ### 6. バックテスト
 
@@ -231,25 +261,26 @@ GCP_PROJECT_ID=your-project-id streamlit run src/dashboard/app.py
 
 ---
 
-### 9. Cloud Runデプロイ（本番環境）
+### 9. コード変更後の完全な作業フロー
+
+特徴量・モデルコードを変更して本番に反映するときの手順です。
 
 ```bash
-# 1. Dockerイメージのビルド・プッシュ
+# ① コードをGCPイメージ化・デプロイ
 ./infrastructure/scripts/build_and_push.sh
-
-# 2. Cloud Run Jobs（keiba-model-retrain）のイメージを更新
-#    ★ 特徴量・モデルコードを変更した場合は必ず実行すること
-#    （Serviceとは独立して管理されているため、別途更新が必要）
-./infrastructure/scripts/setup_cloud_run_jobs.sh
-
-# 3. Cloud Run Service（keiba-pipeline）にデプロイ
+./infrastructure/scripts/setup_cloud_run_jobs.sh   # Cloud Run Jobs のイメージも更新
 ./infrastructure/scripts/deploy_cloud_run.sh
-
-# 4. デプロイ後の動作確認
 ./infrastructure/scripts/verify_deployment.sh
+
+# ② ローカルでモデルを学習（Cloud Run Jobs はメモリ不足のためローカルで実行）
+.venv/bin/python -m src.models.train --tune --project-id <PROJECT_ID>
+# → 完了後、自動的に GCS へアップロードされる
+#    gs://{PROJECT_ID}-keiba-models/lgbm_ranker/{YYYYMMDD}/lgbm_ranker_{YYYYMMDD}.txt
+
+# ③ 翌日の race-day-predict（AM 8:00）が自動的に最新モデルで予測
 ```
 
-> **注意**: `setup_cloud_run_jobs.sh` を省略すると、Cloud Run Service は新しいコードで動くのに対し、週次モデル再学習 Job（`keiba-model-retrain`）は古いイメージのまま実行されます。
+> **`setup_cloud_run_jobs.sh` について**: Cloud Run Jobs のイメージは Service とは独立して管理されます。省略すると週次 Job が古いコードのままになりますが、現在はローカル学習を主フローとしているため `weekly-model-retrain` Job は実質使用しません。それでも省略しないことを推奨します（コードの整合性維持のため）。
 
 詳細な手順は [infrastructure/README.md](./infrastructure/README.md) を参照してください。
 
@@ -781,7 +812,7 @@ gcloud scheduler jobs run daily-data-pipeline --location=asia-northeast1
 | `race-day-predict` | 毎日 AM 8:00 | レース予測 |
 | `race-day-odds-scrape` | 毎日 AM 8:15 | netkeibaオッズ取得 |
 | `race-day-strategy` | 毎日 AM 8:30 | 投資戦略策定（dry_run=true） |
-| `weekly-model-retrain` | 毎週月曜 AM 8:00 | モデル週次再学習 |
+| `weekly-model-retrain` | 毎週月曜 AM 8:00 | モデル週次再学習（※ローカル学習を推奨。Cloud Run Jobsはメモリ不足のため実質未使用） |
 | `race-day-purchase` | 土日 8:00〜17:55 の5分おき | 発走直前IPAT自動馬券購入 |
 
 詳細な設定内容・操作コマンド・障害対応は [SCHEDULE.md](./SCHEDULE.md) を参照してください。
