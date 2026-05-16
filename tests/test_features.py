@@ -242,6 +242,121 @@ class TestSQLTemplate:
             "グローバル平均で 3着以内判定 (finish_position between 1 and 3) が見つかりません"
         )
 
+    def test_sql_has_distance_band_in_base_entries(self):
+        """temp_base_race_entries に distance_band が含まれること（Issue #271）"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        base_section = content[
+            content.find("temp_base_race_entries"): content.find("temp_past_race_features")
+        ]
+        assert "distance_band" in base_section, "distance_band が temp_base_race_entries に見つかりません"
+        assert "'sprint'" in base_section, "距離帯 sprint の定義が見つかりません"
+        assert "'mile'" in base_section, "距離帯 mile の定義が見つかりません"
+        assert "'intermediate'" in base_section, "距離帯 intermediate の定義が見つかりません"
+        assert "'long'" in base_section, "距離帯 long の定義が見つかりません"
+
+    def test_sql_distance_band_thresholds_correct(self):
+        """distance_band の閾値が仕様通りであること（sprint<1400, mile<1800, intermediate<2200）（Issue #271）"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        base_section = content[
+            content.find("temp_base_race_entries"): content.find("temp_past_race_features")
+        ]
+        assert "distance < 1400" in base_section, "sprint の閾値 <1400 が見つかりません"
+        assert "distance < 1800" in base_section, "mile の閾値 <1800 が見つかりません"
+        assert "distance < 2200" in base_section, "intermediate の閾値 <2200 が見つかりません"
+
+    def test_sql_has_distance_change_features(self):
+        """temp_past_race_features に distance_change と distance_change_flag が含まれること（Issue #271）"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        past_section = content[
+            content.find("temp_past_race_features"): content.find("temp_past_race_features2")
+        ]
+        assert "distance_change" in past_section, "distance_change が見つかりません"
+        assert "distance_change_flag" in past_section, "distance_change_flag が見つかりません"
+
+    def test_sql_distance_change_uses_past_race_distance(self):
+        """distance_change が当日距離と1走前距離の差分を使っていること（Issue #271）"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        assert "t_b_r_e.distance - r_r_1.distance" in content, (
+            "distance_change の計算式 (t_b_r_e.distance - r_r_1.distance) が見つかりません"
+        )
+
+    def test_sql_distance_change_flag_handles_null(self):
+        """distance_change_flag が NULL（初出走）を正しく扱うこと（Issue #271）"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        assert "r_r_1.distance is null then null" in content, (
+            "distance_change_flag の NULL ハンドリングが見つかりません"
+        )
+
+    def test_sql_has_horse_distance_ctes(self):
+        """距離帯別・距離別 TE 用 CTE が存在すること（Issue #271）"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        assert "temp_horse_distance_base" in content, "temp_horse_distance_base CTE が見つかりません"
+        assert "temp_horse_distance_band_te" in content, "temp_horse_distance_band_te CTE が見つかりません"
+        assert "temp_horse_distance_te" in content, "temp_horse_distance_te CTE が見つかりません"
+
+    def test_sql_horse_distance_band_te_columns_present(self):
+        """距離帯別特徴量が最終 SELECT に含まれること（Issue #271）"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        expected = [
+            "distance_band_top3_finish_rate",
+            "distance_band_top1_finish_rate",
+            "distance_band_rate_diff",
+            "new_distance_band_flag",
+        ]
+        for col in expected:
+            assert col in content, f"距離帯別特徴量 '{col}' が見つかりません"
+
+    def test_sql_horse_distance_te_columns_present(self):
+        """距離別特徴量が最終 SELECT に含まれること（Issue #271）"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        expected = [
+            "distance_top3_finish_rate",
+            "distance_top1_finish_rate",
+            "distance_rate_diff",
+            "new_distance_flag",
+        ]
+        for col in expected:
+            assert col in content, f"距離別特徴量 '{col}' が見つかりません"
+
+    def test_sql_horse_distance_base_excludes_non_finishers(self):
+        """temp_horse_distance_base が取消・除外馬を除外していること（Issue #271）"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        base_section = content[
+            content.find("temp_horse_distance_base"): content.find("temp_horse_distance_band_te")
+        ]
+        assert "finish_position > 0" in base_section, (
+            "temp_horse_distance_base で finish_position > 0 フィルタが見つかりません"
+        )
+
+    def test_sql_horse_distance_te_uses_range_window(self):
+        """距離 TE Window 関数が RANGE で同日除外していること（Issue #271）"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        dist_te_section = content[content.find("temp_horse_distance_band_te"):]
+        assert "range between unbounded preceding and 1 preceding" in dist_te_section, (
+            "距離 TE Window 関数で同日除外 (RANGE BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING) が見つかりません"
+        )
+
+    def test_sql_horse_distance_te_partitions_by_horse_id(self):
+        """距離 TE が horse_id で正しくパーティションされていること（Issue #271）"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        dist_section = content[content.find("temp_horse_distance_band_te"):]
+        assert "partition by horse_id, distance_band" in dist_section, (
+            "距離帯 TE で 'partition by horse_id, distance_band' が見つかりません"
+        )
+        assert "partition by horse_id, distance" in dist_section, (
+            "距離 TE で 'partition by horse_id, distance' が見つかりません"
+        )
+
+    def test_sql_horse_distance_te_final_joins(self):
+        """距離帯別・距離別 TE が最終 SELECT で JOIN されていること（Issue #271）"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        assert "left join temp_horse_distance_band_te as t_h_db_te" in content, (
+            "temp_horse_distance_band_te の JOIN が見つかりません"
+        )
+        assert "left join temp_horse_distance_te as t_h_d_te" in content, (
+            "temp_horse_distance_te の JOIN が見つかりません"
+        )
+
     def test_sql_normalized_features_have_time_boundary(self):
         """finish_time_normalized と last_3f_normalized が時系列ガードを持つこと"""
         content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
