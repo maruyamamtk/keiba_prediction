@@ -854,6 +854,12 @@ with temp_race_horse_count as (
     ,r_i.course_type
     ,r_i.venue_code
     ,r_i.distance
+    ,case
+      when r_i.distance < 1400 then 'sprint'
+      when r_i.distance < 1800 then 'mile'
+      when r_i.distance < 2200 then 'intermediate'
+      else 'long'
+    end as distance_band
     ,r_i.direction
     ,h_r.jockey_code
     ,h_r.trainer_code
@@ -911,6 +917,18 @@ with temp_race_horse_count as (
         range between unbounded preceding and 1 preceding
       ), 0) + 10
     ) as jockey_venue_te
+    ,safe_divide(
+      coalesce(sum(is_top3) over (
+        partition by jockey_code, distance_band
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10 * g.global_top3_rate,
+      coalesce(count(*) over (
+        partition by jockey_code, distance_band
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10
+    ) as jockey_distance_band_te
     ,safe_divide(
       coalesce(sum(is_top3) over (
         partition by jockey_code, distance
@@ -1018,6 +1036,18 @@ with temp_race_horse_count as (
     ) as trainer_venue_te
     ,safe_divide(
       coalesce(sum(is_top3) over (
+        partition by trainer_code, distance_band
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10 * g.global_top3_rate,
+      coalesce(count(*) over (
+        partition by trainer_code, distance_band
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10
+    ) as trainer_distance_band_te
+    ,safe_divide(
+      coalesce(sum(is_top3) over (
         partition by trainer_code, distance
         order by unix_date(race_date)
         range between unbounded preceding and 1 preceding
@@ -1121,6 +1151,18 @@ with temp_race_horse_count as (
         range between unbounded preceding and 1 preceding
       ), 0) + 10
     ) as sire_venue_te
+    ,safe_divide(
+      coalesce(sum(is_top3) over (
+        partition by sire_name, distance_band
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10 * g.global_top3_rate,
+      coalesce(count(*) over (
+        partition by sire_name, distance_band
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10
+    ) as sire_distance_band_te
     ,safe_divide(
       coalesce(sum(is_top3) over (
         partition by sire_name, distance
@@ -1397,29 +1439,59 @@ select
   ,t_j_te.jockey_te
   ,t_j_te.jockey_course_type_te
   ,t_j_te.jockey_venue_te
+  ,t_j_te.jockey_distance_band_te
   ,t_j_te.jockey_distance_te
   ,t_j_te.jockey_direction_te
   ,t_j_te.jockey_course_type_venue_te
   ,t_j_te.jockey_course_type_distance_te
   ,t_j_te.jockey_course_type_distance_venue_te
+  -- 騎手TE差分（条件別TE − 全体TE）
+  ,t_j_te.jockey_course_type_te - t_j_te.jockey_te as jockey_course_type_te_diff
+  ,t_j_te.jockey_venue_te - t_j_te.jockey_te as jockey_venue_te_diff
+  ,t_j_te.jockey_distance_band_te - t_j_te.jockey_te as jockey_distance_band_te_diff
+  ,t_j_te.jockey_distance_te - t_j_te.jockey_te as jockey_distance_te_diff
+  ,t_j_te.jockey_direction_te - t_j_te.jockey_te as jockey_direction_te_diff
+  ,t_j_te.jockey_course_type_venue_te - t_j_te.jockey_te as jockey_course_type_venue_te_diff
+  ,t_j_te.jockey_course_type_distance_te - t_j_te.jockey_te as jockey_course_type_distance_te_diff
+  ,t_j_te.jockey_course_type_distance_venue_te - t_j_te.jockey_te as jockey_course_type_distance_venue_te_diff
   -- 調教師TE
   ,t_tr_te.trainer_te
   ,t_tr_te.trainer_course_type_te
   ,t_tr_te.trainer_venue_te
+  ,t_tr_te.trainer_distance_band_te
   ,t_tr_te.trainer_distance_te
   ,t_tr_te.trainer_direction_te
   ,t_tr_te.trainer_course_type_venue_te
   ,t_tr_te.trainer_course_type_distance_te
   ,t_tr_te.trainer_course_type_distance_venue_te
+  -- 調教師TE差分（条件別TE − 全体TE）
+  ,t_tr_te.trainer_course_type_te - t_tr_te.trainer_te as trainer_course_type_te_diff
+  ,t_tr_te.trainer_venue_te - t_tr_te.trainer_te as trainer_venue_te_diff
+  ,t_tr_te.trainer_distance_band_te - t_tr_te.trainer_te as trainer_distance_band_te_diff
+  ,t_tr_te.trainer_distance_te - t_tr_te.trainer_te as trainer_distance_te_diff
+  ,t_tr_te.trainer_direction_te - t_tr_te.trainer_te as trainer_direction_te_diff
+  ,t_tr_te.trainer_course_type_venue_te - t_tr_te.trainer_te as trainer_course_type_venue_te_diff
+  ,t_tr_te.trainer_course_type_distance_te - t_tr_te.trainer_te as trainer_course_type_distance_te_diff
+  ,t_tr_te.trainer_course_type_distance_venue_te - t_tr_te.trainer_te as trainer_course_type_distance_venue_te_diff
   -- 種牡馬TE
   ,t_s_te.sire_te
   ,t_s_te.sire_course_type_te
   ,t_s_te.sire_venue_te
+  ,t_s_te.sire_distance_band_te
   ,t_s_te.sire_distance_te
   ,t_s_te.sire_direction_te
   ,t_s_te.sire_course_type_venue_te
   ,t_s_te.sire_course_type_distance_te
   ,t_s_te.sire_course_type_distance_venue_te
+  -- 種牡馬TE差分（条件別TE − 全体TE）
+  ,t_s_te.sire_course_type_te - t_s_te.sire_te as sire_course_type_te_diff
+  ,t_s_te.sire_venue_te - t_s_te.sire_te as sire_venue_te_diff
+  ,t_s_te.sire_distance_band_te - t_s_te.sire_te as sire_distance_band_te_diff
+  ,t_s_te.sire_distance_te - t_s_te.sire_te as sire_distance_te_diff
+  ,t_s_te.sire_direction_te - t_s_te.sire_te as sire_direction_te_diff
+  ,t_s_te.sire_course_type_venue_te - t_s_te.sire_te as sire_course_type_venue_te_diff
+  ,t_s_te.sire_course_type_distance_te - t_s_te.sire_te as sire_course_type_distance_te_diff
+  ,t_s_te.sire_course_type_distance_venue_te - t_s_te.sire_te as sire_course_type_distance_venue_te_diff
   -- 距離帯別特徴量
   ,t_h_db_te.distance_band_top3_finish_rate
   ,t_h_db_te.distance_band_top1_finish_rate
