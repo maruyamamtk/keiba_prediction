@@ -12,14 +12,20 @@
 | `race-day-predict` | 毎日 AM 8:00 | `0 8 * * *` | `POST /api/v1/predict/daily` | レース予測・BQ/GCS保存 |
 | `race-day-odds-scrape` | 毎日 AM 8:15 | `15 8 * * *` | `POST /api/v1/odds/scrape` | netkeibaオッズ取得 |
 | `race-day-strategy` | 毎日 AM 8:30 | `30 8 * * *` | `POST /api/v1/strategy/daily` | 投資戦略策定（dry_run=true） |
-| `weekly-model-retrain` | 毎週月曜 AM 8:00 | `0 8 * * 1` | `POST /api/v1/model/retrain/async` | モデル週次再学習 |
+| `weekly-model-retrain` | 毎週月曜 AM 8:00 | `0 8 * * 1` | Cloud Run Jobs API（`keiba-model-retrain` 起動） | モデル週次再学習 |
 | `race-day-purchase` | 土日 8:00〜17:00 5分おき | `*/5 8-17 * * 6,0` | `POST /api/v1/purchase/daily` | 発走直前IPAT自動馬券購入 |
 
-**全ジョブ共通設定:**
+**全ジョブ共通設定（`weekly-model-retrain` を除く）:**
 - 認証: OIDCトークン（`keiba-pipeline-sa` サービスアカウント）
 - タイムアウト: 900秒（15分）
 - リトライ: 最大3回、バックオフ 5秒〜300秒
 - タイムゾーン: Asia/Tokyo
+
+**`weekly-model-retrain` ジョブの設定:**
+- 認証: OAuth2（`keiba-pipeline-sa`、スコープ: `https://www.googleapis.com/auth/cloud-platform`）
+- タイムアウト: 180秒（Cloud Run Jobs API 呼び出し完了まで。Job本体の実行は非同期）
+- リトライ: 0回（再学習の重複実行を防ぐため）
+- ターゲット: Cloud Run Jobs API（`keiba-model-retrain` Job を起動）
 
 ---
 
@@ -104,16 +110,38 @@
 
 **スケジュール**: 毎週月曜日 AM 8:00 JST
 
-**概要**: BigQueryの学習用データを用いてLightGBM LambdaRankモデルを再学習し、GCSに保存します。
+**概要**: Cloud Scheduler が Cloud Run Jobs API を呼び出し、`keiba-model-retrain` Job を起動します。Job は `python -m src.models.train --tune --project-id {PROJECT_ID}` を実行してLightGBM LambdaRankモデルを再学習し、GCSに保存します。
+
+**重要**: このジョブは従来の `POST /api/v1/model/retrain/async`（FastAPI BackgroundTasks）ではなく、**Cloud Run Jobs**（`keiba-model-retrain`）を使用します。Cloud Run Jobsはタスク完了まで実行を保証し、最大24時間のタスクタイムアウトをサポートします。keiba-pipeline Serviceが`min-instances=0`でコールドスタートする場合でも再学習が中断されません。
+
+**Cloud Run Jobs 設定**（`keiba-model-retrain`）:
+- メモリ: 8Gi、CPU: 4
+- タスクタイムアウト: 7200秒（2時間）
+- 最大リトライ: 0回
+- コマンド: `python -m src.models.train --tune --project-id {PROJECT_ID}`
+- セットアップ: `./infrastructure/scripts/setup_cloud_run_jobs.sh`
 
 **処理フロー**:
-1. `features.training_data` から学習データを取得
-2. 時系列分割（学習/検証/推論）
-3. Optuna/設定済みパラメータでLambdaRank学習
-4. NDCG@3・Recall@3・AUCを評価
-5. GCS `gs://{project}-keiba-models/lgbm_ranker/{YYYYMMDD}/` に保存
+1. Cloud Scheduler が Cloud Run Jobs API（OAuth2認証）を呼び出し Job を非同期起動
+2. `features.training_data` から学習データを取得
+3. 時系列分割（学習/検証/推論）
+4. Optuna ベイズ最適化でハイパーパラメータチューニング
+5. NDCG@3・Recall@3・AUCを評価
+6. GCS `gs://{project}-keiba-models/lgbm_ranker/{YYYYMMDD}/` に保存
 
-**リクエストボディ**: `{}` （空ボディ）
+**認証**: Cloud Scheduler → Cloud Run Jobs API は OAuth2（`cloud-platform` スコープ）を使用します（OIDCではなく）。
+
+**手動実行**:
+```bash
+# Cloud Schedulerジョブ経由（Jobs API 呼び出し）
+gcloud scheduler jobs run weekly-model-retrain --location=asia-northeast1
+
+# Cloud Run Jobs を直接実行
+gcloud run jobs execute keiba-model-retrain --region=asia-northeast1
+
+# 実行状況の確認
+gcloud run jobs executions list --job=keiba-model-retrain --region=asia-northeast1
+```
 
 ---
 
@@ -370,10 +398,20 @@ curl -X POST <CLOUD_RUN_URL>/api/v1/purchase/daily \
 
 ## ジョブ設定スクリプト
 
-ジョブの作成・更新は `infrastructure/scripts/setup_scheduler.sh` で行います:
+### Cloud Run Jobs のセットアップ（初回のみ）
+
+`weekly-model-retrain` Cloud Scheduler ジョブが依存する Cloud Run Job を作成します:
+
+```bash
+./infrastructure/scripts/setup_cloud_run_jobs.sh
+```
+
+### Cloud Scheduler ジョブの作成・更新
 
 ```bash
 ./infrastructure/scripts/setup_scheduler.sh
 ```
+
+**注意**: `setup_scheduler.sh` は `keiba-model-retrain` Cloud Run Job が存在することを確認してから実行します。未作成の場合はエラーになるため、先に `setup_cloud_run_jobs.sh` を実行してください。
 
 詳細なインフラセットアップ手順は [infrastructure/README.md](./infrastructure/README.md) を参照してください。

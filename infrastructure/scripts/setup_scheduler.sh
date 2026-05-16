@@ -10,7 +10,7 @@
 #   2. race-day-predict       AM 8:00 JST  翌日レース予測
 #   3. race-day-odds-scrape   AM 8:15 JST  netkeibaオッズ取得（単複＋組み合わせ）
 #   4. race-day-strategy      AM 8:30 JST  投資戦略策定・investment_decisions保存
-#   5. weekly-model-retrain   毎週月曜 AM 8:00 JST  LightGBMモデル週次再学習
+#   5. weekly-model-retrain   毎週月曜 AM 8:00 JST  Cloud Run Jobs keiba-model-retrain を起動
 #   6. race-day-purchase      土日 8:00〜17:00 5分おき  IPAT自動馬券購入
 #
 # 使用方法:
@@ -21,6 +21,8 @@
 #   2. 適切な権限を持つユーザーでログイン済み (gcloud auth login)
 #   3. .envファイルにGCP_PROJECT_IDが設定済み
 #   4. Cloud Runサービス keiba-pipeline がデプロイ済み
+#   5. Cloud Run Jobs keiba-model-retrain が作成済み
+#      （未作成の場合: ./infrastructure/scripts/setup_cloud_run_jobs.sh を先に実行）
 #
 # 【重要】deploy_cloud_run.sh 実行後は必ずこのスクリプトを再実行してください。
 # Cloud Runのサービスを新たにデプロイするとURLが変わる場合があり、
@@ -86,9 +88,10 @@ ODDS_SCRAPE_SCHEDULE="15 8 * * *"
 STRATEGY_JOB_NAME="race-day-strategy"
 STRATEGY_SCHEDULE="30 8 * * *"
 # 週次モデル再学習ジョブ（毎週月曜日 AM 8:00）
-# "0 8 * * 1" = 毎週月曜日の 8:00
+# Cloud Run Jobs keiba-model-retrain を起動する（Service のバックグラウンドタスクではなく Jobs で実行）
 RETRAIN_JOB_NAME="weekly-model-retrain"
 RETRAIN_SCHEDULE="0 8 * * 1"
+RETRAIN_CLOUD_RUN_JOB_NAME="keiba-model-retrain"
 # IPAT自動購入ジョブ（土日 8:00〜17:00 の5分おき）
 # race-day-strategy(AM 8:30) 完了後に稼働し、発走5分前のレースを自動購入する
 PURCHASE_JOB_NAME="race-day-purchase"
@@ -147,10 +150,10 @@ log_info "オッズ取得URI: ${ODDS_SCRAPE_TARGET_URI}"
 # ターゲットURL（投資戦略: 日次投資戦略エンドポイント）
 STRATEGY_TARGET_URI="${SERVICE_URL}/api/v1/strategy/daily"
 log_info "投資戦略URI: ${STRATEGY_TARGET_URI}"
-# ターゲットURL（週次モデル再学習: バックグラウンド実行エンドポイント）
-# /async を使用して Cloud Scheduler の attempt-deadline 超過を防ぐ
-RETRAIN_TARGET_URI="${SERVICE_URL}/api/v1/model/retrain/async"
-log_info "週次再学習URI: ${RETRAIN_TARGET_URI}"
+# ターゲットURL（週次モデル再学習: Cloud Run Jobs keiba-model-retrain を起動）
+# Cloud Run Jobs を Cloud Run API 経由で実行する（OAuth2 スコープが必要）
+RETRAIN_JOBS_URI="https://${GCP_REGION}-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/${GCP_PROJECT_ID}/jobs/${RETRAIN_CLOUD_RUN_JOB_NAME}:run"
+log_info "週次再学習Jobs起動URI: ${RETRAIN_JOBS_URI}"
 # ターゲットURL（IPAT自動購入: 発走5分前レースを自動購入）
 PURCHASE_TARGET_URI="${SERVICE_URL}/api/v1/purchase/daily"
 log_info "IPAT自動購入URI: ${PURCHASE_TARGET_URI}"
@@ -292,14 +295,50 @@ create_or_update_job \
     "800s"
 
 # 4-5. 週次モデル再学習ジョブ（weekly-model-retrain）
-# 毎週月曜日 AM 8:00 JST に /api/v1/model/retrain/async を呼び出す
-# バックグラウンド実行のため attempt-deadline=60s で即時レスポンスを受け取る
-log_info "--- 週次モデル再学習ジョブの設定 ---"
-create_or_update_job \
-    "${RETRAIN_JOB_NAME}" \
-    "${RETRAIN_SCHEDULE}" \
-    "${RETRAIN_TARGET_URI}" \
-    "60s"
+# 毎週月曜日 AM 8:00 JST に Cloud Run Jobs keiba-model-retrain を起動する
+# Cloud Run Jobs は OAuth2 スコープが必要なため create_or_update_job とは別実装
+# attempt-deadline=180s: Cloud Run API の呼び出し完了まで待機（Job 実行は非同期）
+log_info "--- 週次モデル再学習ジョブの設定（Cloud Run Jobs起動）---"
+
+# Cloud Run Jobs が存在するか確認
+if ! gcloud run jobs describe "${RETRAIN_CLOUD_RUN_JOB_NAME}" \
+    --region="${GCP_REGION}" > /dev/null 2>&1; then
+    log_error "Cloud Run Jobs '${RETRAIN_CLOUD_RUN_JOB_NAME}' が見つかりません"
+    log_error "先に以下を実行してください:"
+    log_error "  ./infrastructure/scripts/setup_cloud_run_jobs.sh"
+    exit 1
+fi
+
+if gcloud scheduler jobs describe "${RETRAIN_JOB_NAME}" \
+    --location="${GCP_REGION}" > /dev/null 2>&1; then
+    log_info "既存のジョブ ${RETRAIN_JOB_NAME} を更新します..."
+    gcloud scheduler jobs update http "${RETRAIN_JOB_NAME}" \
+        --location="${GCP_REGION}" \
+        --schedule="${RETRAIN_SCHEDULE}" \
+        --time-zone="${TIME_ZONE}" \
+        --uri="${RETRAIN_JOBS_URI}" \
+        --http-method=POST \
+        --oauth-service-account-email="${PIPELINE_SA_EMAIL}" \
+        --oauth-token-scope="https://www.googleapis.com/auth/cloud-platform" \
+        --attempt-deadline="180s" \
+        --max-retry-attempts=0 \
+        --quiet
+    log_info "ジョブを更新しました: ${RETRAIN_JOB_NAME}"
+else
+    log_info "新しいジョブ ${RETRAIN_JOB_NAME} を作成します..."
+    gcloud scheduler jobs create http "${RETRAIN_JOB_NAME}" \
+        --location="${GCP_REGION}" \
+        --schedule="${RETRAIN_SCHEDULE}" \
+        --time-zone="${TIME_ZONE}" \
+        --uri="${RETRAIN_JOBS_URI}" \
+        --http-method=POST \
+        --oauth-service-account-email="${PIPELINE_SA_EMAIL}" \
+        --oauth-token-scope="https://www.googleapis.com/auth/cloud-platform" \
+        --attempt-deadline="180s" \
+        --max-retry-attempts=0 \
+        --quiet
+    log_info "ジョブを作成しました: ${RETRAIN_JOB_NAME}"
+fi
 
 # 4-7. IPAT自動購入ジョブ（race-day-purchase）
 # 土日 8:00〜17:00 の5分おきに /api/v1/purchase/daily を呼び出す
