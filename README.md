@@ -234,15 +234,22 @@ GCP_PROJECT_ID=your-project-id streamlit run src/dashboard/app.py
 ### 9. Cloud Runデプロイ（本番環境）
 
 ```bash
-# Dockerイメージのビルド・プッシュ
+# 1. Dockerイメージのビルド・プッシュ
 ./infrastructure/scripts/build_and_push.sh
 
-# Cloud Runにデプロイ
+# 2. Cloud Run Jobs（keiba-model-retrain）のイメージを更新
+#    ★ 特徴量・モデルコードを変更した場合は必ず実行すること
+#    （Serviceとは独立して管理されているため、別途更新が必要）
+./infrastructure/scripts/setup_cloud_run_jobs.sh
+
+# 3. Cloud Run Service（keiba-pipeline）にデプロイ
 ./infrastructure/scripts/deploy_cloud_run.sh
 
-# デプロイ後の動作確認
+# 4. デプロイ後の動作確認
 ./infrastructure/scripts/verify_deployment.sh
 ```
+
+> **注意**: `setup_cloud_run_jobs.sh` を省略すると、Cloud Run Service は新しいコードで動くのに対し、週次モデル再学習 Job（`keiba-model-retrain`）は古いイメージのまま実行されます。
 
 詳細な手順は [infrastructure/README.md](./infrastructure/README.md) を参照してください。
 
@@ -742,13 +749,17 @@ curl http://localhost:8080/health
 詳細な手順は [infrastructure/README.md](./infrastructure/README.md) を参照してください。
 
 ```bash
-# Dockerイメージのビルド・プッシュ
+# 1. Dockerイメージのビルド・プッシュ
 ./infrastructure/scripts/build_and_push.sh
 
-# Cloud Runにデプロイ
+# 2. Cloud Run Jobs（keiba-model-retrain）のイメージを更新
+#    ★ 特徴量・モデルコードを変更した場合は必ず実行すること
+./infrastructure/scripts/setup_cloud_run_jobs.sh
+
+# 3. Cloud Run Service（keiba-pipeline）にデプロイ
 ./infrastructure/scripts/deploy_cloud_run.sh
 
-# デプロイ後の動作確認
+# 4. デプロイ後の動作確認
 ./infrastructure/scripts/verify_deployment.sh
 ```
 

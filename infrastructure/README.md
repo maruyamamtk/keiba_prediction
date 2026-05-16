@@ -104,7 +104,23 @@ GCP_PROJECT_ID=your-project-id
 
 > **注意（Apple Silicon Mac使用時）**: M1/M2/M3/M4 Macでは`--platform linux/amd64`オプションが必須です。スクリプトは自動的にこのオプションを付与します。
 
-### 5. Cloud Runへデプロイ
+### 5. Cloud Run Jobs（keiba-model-retrain）の作成・更新
+
+週次モデル再学習を実行する Cloud Run Job を作成または更新します。
+**コードを変更してイメージをプッシュした後は、Service と同様に Job のイメージも更新してください。**
+
+```bash
+./infrastructure/scripts/setup_cloud_run_jobs.sh [image-tag]
+```
+
+このスクリプトは以下を実行します：
+- `keiba-model-retrain` Cloud Run Job の作成または更新
+- メモリ: 8Gi、CPU: 4、タスクタイムアウト: 7200秒（2時間）
+- 実行コマンド: `python -m src.models.train --tune --project-id {PROJECT_ID}`
+
+> **なぜ必要か**: Cloud Run Service（`keiba-pipeline`）と Cloud Run Job（`keiba-model-retrain`）はイメージ参照を独立して管理しています。`deploy_cloud_run.sh` を実行しても Job のイメージは更新されません。省略すると週次再学習が古いコードで実行されます。
+
+### 6. Cloud Runへデプロイ
 
 ```bash
 ./infrastructure/scripts/deploy_cloud_run.sh [image-tag]
@@ -120,7 +136,7 @@ GCP_PROJECT_ID=your-project-id
 - `BQ_DATASET_PREDICTIONS`: 予測結果データセット名
 - Secret Managerからの認証情報 (`JRDB_USER`, `JRDB_PASSWORD`)
 
-### 6. デプロイ後の動作確認
+### 7. デプロイ後の動作確認
 
 ```bash
 ./infrastructure/scripts/verify_deployment.sh
@@ -132,7 +148,7 @@ GCP_PROJECT_ID=your-project-id
 - 日次ロード (`POST /api/v1/load/daily`) のテスト実行（対話的に選択可能）
 - OpenAPIドキュメント (`GET /docs`) の疎通
 
-### 7. Cloud Schedulerの設定
+### 8. Cloud Schedulerの設定
 
 日次パイプラインを自動実行するCloud Schedulerジョブを設定します：
 
@@ -154,14 +170,19 @@ GCP_PROJECT_ID=your-project-id
 | `race-day-predict` | `0 8 * * *`（AM 8:00） | `POST /api/v1/predict/daily` | レース予測・BQ/GCS保存 |
 | `race-day-odds-scrape` | `15 8 * * *`（AM 8:15） | `POST /api/v1/odds/scrape` | netkeibaオッズ取得 |
 | `race-day-strategy` | `30 8 * * *`（AM 8:30） | `POST /api/v1/strategy/daily` | 投資戦略策定（dry_run=true） |
-| `weekly-model-retrain` | `0 8 * * 1`（毎週月曜AM 8:00） | `POST /api/v1/model/retrain/async` | モデル週次再学習 |
+| `weekly-model-retrain` | `0 8 * * 1`（毎週月曜AM 8:00） | Cloud Run Jobs API（`keiba-model-retrain` 起動） | モデル週次再学習 |
 | `race-day-purchase` | `*/5 8-17 * * 6,0`（土日5分おき） | `POST /api/v1/purchase/daily` | 発走直前IPAT自動馬券購入 |
 
-**全ジョブ共通設定:**
+**全ジョブ共通設定（`weekly-model-retrain` を除く）:**
 - 認証: OIDCトークン（`keiba-pipeline-sa`）
 - タイムアウト: 900秒（15分）
 - リトライ: 最大3回、バックオフ5秒〜300秒
 - タイムゾーン: Asia/Tokyo
+
+**`weekly-model-retrain` のみ:**
+- 認証: OAuth2（`cloud-platform` スコープ）— Cloud Run Jobs API の要件
+- タイムアウト: 180秒（Job 起動 API 呼び出しまで。Job 本体は非同期で最大2時間実行）
+- リトライ: 0回（再学習の重複実行を防ぐため）
 
 ジョブの詳細説明・操作コマンド・障害対応手順は **[SCHEDULE.md](../SCHEDULE.md)** を参照してください。
 
@@ -176,14 +197,15 @@ GCPコンソール > Monitoring > Alerting > 「Cloud Scheduler ジョブ失敗�
 
 ## スクリプト一覧
 
-| スクリプト | 用途 |
-|-----------|------|
-| `setup_gcp.sh` | GCP初期セットアップ（API有効化、SA作成、権限付与） |
-| `verify_setup.sh` | セットアップ状態の確認 |
-| `build_and_push.sh` | Dockerイメージのビルド・プッシュ |
-| `deploy_cloud_run.sh` | Cloud Runサービスのデプロイ |
-| `verify_deployment.sh` | デプロイ後の動作確認 |
-| `setup_scheduler.sh` | Cloud Schedulerジョブの作成・更新 |
+| スクリプト | 用途 | タイミング |
+|-----------|------|-----------|
+| `setup_gcp.sh` | GCP初期セットアップ（API有効化、SA作成、権限付与） | 初回のみ |
+| `verify_setup.sh` | セットアップ状態の確認 | 初回のみ |
+| `build_and_push.sh` | Dockerイメージのビルド・プッシュ | コード変更のたびに |
+| `setup_cloud_run_jobs.sh` | Cloud Run Jobs（`keiba-model-retrain`）の作成・更新 | コード変更のたびに ★ |
+| `deploy_cloud_run.sh` | Cloud Run Service（`keiba-pipeline`）のデプロイ | コード変更のたびに |
+| `verify_deployment.sh` | デプロイ後の動作確認 | デプロイ後に |
+| `setup_scheduler.sh` | Cloud Schedulerジョブの作成・更新 | 初回・スケジュール変更時 |
 
 ## サービスアカウント
 
