@@ -824,6 +824,354 @@ with temp_race_horse_count as (
     temp_horse_master_feature as t_h_m_f
 )
 
+/* TEスムージング用グローバル平均（全期間3着以内率） */
+,temp_global_mean_te as (
+  select
+    avg(case when finish_position between 1 and 3 then 1.0 else 0.0 end) as global_top3_rate
+  from `{project_id}`.raw.race_results
+  where finish_position > 0
+)
+
+/* TE計算の元となる全期間の騎手・調教師・種牡馬実績履歴（当日同日レースは除外） */
+,temp_te_history_base as (
+  select
+    r_r.race_id
+    ,r_r.horse_number
+    ,r_i.race_date
+    ,r_i.course_type
+    ,r_i.venue_code
+    ,r_i.distance
+    ,r_i.direction
+    ,h_r.jockey_code
+    ,h_r.trainer_code
+    ,h_m.sire_name
+    ,case when r_r.finish_position between 1 and 3 then 1 else 0 end as is_top3
+  from `{project_id}`.raw.race_results as r_r
+    inner join `{project_id}`.raw.race_info as r_i
+      on r_r.race_id = r_i.race_id
+    inner join `{project_id}`.raw.horse_results as h_r
+      on r_r.race_id = h_r.race_id
+      and r_r.horse_number = h_r.horse_number
+    inner join `{project_id}`.raw.horse_master as h_m
+      on h_r.horse_id = h_m.horse_id
+  where r_r.finish_position > 0
+)
+
+/* 騎手 Target Encoding（累積3着以内率、スムージング係数m=10、同日除外） */
+,temp_jockey_te as (
+  select
+    race_id
+    ,horse_number
+    ,safe_divide(
+      coalesce(sum(is_top3) over (
+        partition by jockey_code
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10 * g.global_top3_rate,
+      coalesce(count(*) over (
+        partition by jockey_code
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10
+    ) as jockey_te
+    ,safe_divide(
+      coalesce(sum(is_top3) over (
+        partition by jockey_code, course_type
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10 * g.global_top3_rate,
+      coalesce(count(*) over (
+        partition by jockey_code, course_type
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10
+    ) as jockey_course_type_te
+    ,safe_divide(
+      coalesce(sum(is_top3) over (
+        partition by jockey_code, venue_code
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10 * g.global_top3_rate,
+      coalesce(count(*) over (
+        partition by jockey_code, venue_code
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10
+    ) as jockey_venue_te
+    ,safe_divide(
+      coalesce(sum(is_top3) over (
+        partition by jockey_code, distance
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10 * g.global_top3_rate,
+      coalesce(count(*) over (
+        partition by jockey_code, distance
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10
+    ) as jockey_distance_te
+    ,safe_divide(
+      coalesce(sum(is_top3) over (
+        partition by jockey_code, direction
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10 * g.global_top3_rate,
+      coalesce(count(*) over (
+        partition by jockey_code, direction
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10
+    ) as jockey_direction_te
+    ,safe_divide(
+      coalesce(sum(is_top3) over (
+        partition by jockey_code, course_type, venue_code
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10 * g.global_top3_rate,
+      coalesce(count(*) over (
+        partition by jockey_code, course_type, venue_code
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10
+    ) as jockey_course_type_venue_te
+    ,safe_divide(
+      coalesce(sum(is_top3) over (
+        partition by jockey_code, course_type, distance
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10 * g.global_top3_rate,
+      coalesce(count(*) over (
+        partition by jockey_code, course_type, distance
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10
+    ) as jockey_course_type_distance_te
+    ,safe_divide(
+      coalesce(sum(is_top3) over (
+        partition by jockey_code, course_type, distance, venue_code
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10 * g.global_top3_rate,
+      coalesce(count(*) over (
+        partition by jockey_code, course_type, distance, venue_code
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10
+    ) as jockey_course_type_distance_venue_te
+  from temp_te_history_base
+    cross join temp_global_mean_te as g
+)
+
+/* 調教師 Target Encoding（累積3着以内率、スムージング係数m=10、同日除外） */
+,temp_trainer_te as (
+  select
+    race_id
+    ,horse_number
+    ,safe_divide(
+      coalesce(sum(is_top3) over (
+        partition by trainer_code
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10 * g.global_top3_rate,
+      coalesce(count(*) over (
+        partition by trainer_code
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10
+    ) as trainer_te
+    ,safe_divide(
+      coalesce(sum(is_top3) over (
+        partition by trainer_code, course_type
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10 * g.global_top3_rate,
+      coalesce(count(*) over (
+        partition by trainer_code, course_type
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10
+    ) as trainer_course_type_te
+    ,safe_divide(
+      coalesce(sum(is_top3) over (
+        partition by trainer_code, venue_code
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10 * g.global_top3_rate,
+      coalesce(count(*) over (
+        partition by trainer_code, venue_code
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10
+    ) as trainer_venue_te
+    ,safe_divide(
+      coalesce(sum(is_top3) over (
+        partition by trainer_code, distance
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10 * g.global_top3_rate,
+      coalesce(count(*) over (
+        partition by trainer_code, distance
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10
+    ) as trainer_distance_te
+    ,safe_divide(
+      coalesce(sum(is_top3) over (
+        partition by trainer_code, direction
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10 * g.global_top3_rate,
+      coalesce(count(*) over (
+        partition by trainer_code, direction
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10
+    ) as trainer_direction_te
+    ,safe_divide(
+      coalesce(sum(is_top3) over (
+        partition by trainer_code, course_type, venue_code
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10 * g.global_top3_rate,
+      coalesce(count(*) over (
+        partition by trainer_code, course_type, venue_code
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10
+    ) as trainer_course_type_venue_te
+    ,safe_divide(
+      coalesce(sum(is_top3) over (
+        partition by trainer_code, course_type, distance
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10 * g.global_top3_rate,
+      coalesce(count(*) over (
+        partition by trainer_code, course_type, distance
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10
+    ) as trainer_course_type_distance_te
+    ,safe_divide(
+      coalesce(sum(is_top3) over (
+        partition by trainer_code, course_type, distance, venue_code
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10 * g.global_top3_rate,
+      coalesce(count(*) over (
+        partition by trainer_code, course_type, distance, venue_code
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10
+    ) as trainer_course_type_distance_venue_te
+  from temp_te_history_base
+    cross join temp_global_mean_te as g
+)
+
+/* 種牡馬 Target Encoding（累積3着以内率、スムージング係数m=10、同日除外） */
+,temp_sire_te as (
+  select
+    race_id
+    ,horse_number
+    ,safe_divide(
+      coalesce(sum(is_top3) over (
+        partition by sire_name
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10 * g.global_top3_rate,
+      coalesce(count(*) over (
+        partition by sire_name
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10
+    ) as sire_te
+    ,safe_divide(
+      coalesce(sum(is_top3) over (
+        partition by sire_name, course_type
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10 * g.global_top3_rate,
+      coalesce(count(*) over (
+        partition by sire_name, course_type
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10
+    ) as sire_course_type_te
+    ,safe_divide(
+      coalesce(sum(is_top3) over (
+        partition by sire_name, venue_code
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10 * g.global_top3_rate,
+      coalesce(count(*) over (
+        partition by sire_name, venue_code
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10
+    ) as sire_venue_te
+    ,safe_divide(
+      coalesce(sum(is_top3) over (
+        partition by sire_name, distance
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10 * g.global_top3_rate,
+      coalesce(count(*) over (
+        partition by sire_name, distance
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10
+    ) as sire_distance_te
+    ,safe_divide(
+      coalesce(sum(is_top3) over (
+        partition by sire_name, direction
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10 * g.global_top3_rate,
+      coalesce(count(*) over (
+        partition by sire_name, direction
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10
+    ) as sire_direction_te
+    ,safe_divide(
+      coalesce(sum(is_top3) over (
+        partition by sire_name, course_type, venue_code
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10 * g.global_top3_rate,
+      coalesce(count(*) over (
+        partition by sire_name, course_type, venue_code
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10
+    ) as sire_course_type_venue_te
+    ,safe_divide(
+      coalesce(sum(is_top3) over (
+        partition by sire_name, course_type, distance
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10 * g.global_top3_rate,
+      coalesce(count(*) over (
+        partition by sire_name, course_type, distance
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10
+    ) as sire_course_type_distance_te
+    ,safe_divide(
+      coalesce(sum(is_top3) over (
+        partition by sire_name, course_type, distance, venue_code
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10 * g.global_top3_rate,
+      coalesce(count(*) over (
+        partition by sire_name, course_type, distance, venue_code
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10
+    ) as sire_course_type_distance_venue_te
+  from temp_te_history_base
+    cross join temp_global_mean_te as g
+)
+
 select
   t_p_r_f.*
   ,t_h_m_f.* except(
@@ -871,8 +1219,44 @@ select
     coalesce(bracket_top2_finish_rate_diff, 0) +
     coalesce(bracket_top1_finish_rate_diff, 0)
   ) as total_diff_sum
+  -- 騎手TE
+  ,t_j_te.jockey_te
+  ,t_j_te.jockey_course_type_te
+  ,t_j_te.jockey_venue_te
+  ,t_j_te.jockey_distance_te
+  ,t_j_te.jockey_direction_te
+  ,t_j_te.jockey_course_type_venue_te
+  ,t_j_te.jockey_course_type_distance_te
+  ,t_j_te.jockey_course_type_distance_venue_te
+  -- 調教師TE
+  ,t_tr_te.trainer_te
+  ,t_tr_te.trainer_course_type_te
+  ,t_tr_te.trainer_venue_te
+  ,t_tr_te.trainer_distance_te
+  ,t_tr_te.trainer_direction_te
+  ,t_tr_te.trainer_course_type_venue_te
+  ,t_tr_te.trainer_course_type_distance_te
+  ,t_tr_te.trainer_course_type_distance_venue_te
+  -- 種牡馬TE
+  ,t_s_te.sire_te
+  ,t_s_te.sire_course_type_te
+  ,t_s_te.sire_venue_te
+  ,t_s_te.sire_distance_te
+  ,t_s_te.sire_direction_te
+  ,t_s_te.sire_course_type_venue_te
+  ,t_s_te.sire_course_type_distance_te
+  ,t_s_te.sire_course_type_distance_venue_te
 from
   temp_past_race_features2 as t_p_r_f
   left join temp_horse_master_feature2 as t_h_m_f
     on t_p_r_f.race_id = t_h_m_f.race_id
     and t_p_r_f.horse_number = t_h_m_f.horse_number
+  left join temp_jockey_te as t_j_te
+    on t_p_r_f.race_id = t_j_te.race_id
+    and t_p_r_f.horse_number = t_j_te.horse_number
+  left join temp_trainer_te as t_tr_te
+    on t_p_r_f.race_id = t_tr_te.race_id
+    and t_p_r_f.horse_number = t_tr_te.horse_number
+  left join temp_sire_te as t_s_te
+    on t_p_r_f.race_id = t_s_te.race_id
+    and t_p_r_f.horse_number = t_s_te.horse_number

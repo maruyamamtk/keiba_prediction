@@ -226,6 +226,9 @@ class FeaturePipeline:
             job_config = bigquery.QueryJobConfig(
                 destination=table_ref,
                 write_disposition=bigquery.WriteDisposition.WRITE_APPEND,
+                schema_update_options=[
+                    bigquery.SchemaUpdateOption.ALLOW_FIELD_ADDITION,
+                ],
                 time_partitioning=bigquery.TimePartitioning(
                     field="race_date",
                 ),

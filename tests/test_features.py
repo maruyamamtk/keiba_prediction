@@ -143,6 +143,105 @@ class TestSQLTemplate:
             "weight_carried_diff が r_r_1.weight_carried を参照していません"
         )
 
+    def test_sql_has_te_ctes(self):
+        """Target Encoding用のCTEが存在すること（Issue #270）"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        assert "temp_global_mean_te" in content, "グローバル平均CTE が見つかりません"
+        assert "temp_te_history_base" in content, "TE履歴ベースCTE が見つかりません"
+        assert "temp_jockey_te" in content, "騎手TE CTE が見つかりません"
+        assert "temp_trainer_te" in content, "調教師TE CTE が見つかりません"
+        assert "temp_sire_te" in content, "種牡馬TE CTE が見つかりません"
+
+    def test_sql_te_columns_present(self):
+        """TE特徴量カラムが最終SELECTに含まれること（Issue #270）"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        expected_columns = [
+            "jockey_te",
+            "jockey_course_type_te",
+            "jockey_venue_te",
+            "jockey_distance_te",
+            "jockey_direction_te",
+            "jockey_course_type_venue_te",
+            "jockey_course_type_distance_te",
+            "jockey_course_type_distance_venue_te",
+            "trainer_te",
+            "trainer_course_type_te",
+            "trainer_venue_te",
+            "trainer_distance_te",
+            "trainer_direction_te",
+            "trainer_course_type_venue_te",
+            "trainer_course_type_distance_te",
+            "trainer_course_type_distance_venue_te",
+            "sire_te",
+            "sire_course_type_te",
+            "sire_venue_te",
+            "sire_distance_te",
+            "sire_direction_te",
+            "sire_course_type_venue_te",
+            "sire_course_type_distance_te",
+            "sire_course_type_distance_venue_te",
+        ]
+        for col in expected_columns:
+            assert col in content, f"TE特徴量カラム '{col}' が見つかりません"
+
+    def test_sql_te_window_uses_range_for_same_day_exclusion(self):
+        """TE Window関数がRANGEを使って同日レースを除外すること（Issue #270）"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        assert "range between unbounded preceding and 1 preceding" in content, (
+            "TE Window関数で同日除外（RANGE BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING）が見つかりません"
+        )
+
+    def test_sql_te_window_uses_unix_date(self):
+        """TE Window関数がunix_dateで整数変換していること（同日を整数1単位として除外）（Issue #270）"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        assert "unix_date(race_date)" in content, (
+            "TE Window関数で unix_date(race_date) が見つかりません"
+        )
+
+    def test_sql_te_history_base_excludes_non_finishers(self):
+        """TE履歴ベースが取消・除外馬を除外していること（Issue #270）"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        te_base_section = content[
+            content.find("temp_te_history_base"): content.find("temp_jockey_te")
+        ]
+        assert "finish_position > 0" in te_base_section, (
+            "temp_te_history_base で finish_position > 0 フィルタが見つかりません"
+        )
+
+    def test_sql_te_history_base_joins_required_tables(self):
+        """TE履歴ベースが必要なテーブルをJOINしていること（Issue #270）"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        te_base_section = content[
+            content.find("temp_te_history_base"): content.find("temp_jockey_te")
+        ]
+        assert "raw.race_results" in te_base_section
+        assert "raw.race_info" in te_base_section
+        assert "raw.horse_results" in te_base_section
+        assert "raw.horse_master" in te_base_section
+
+    def test_sql_te_final_join_uses_race_id_and_horse_number(self):
+        """最終SELECTでTEテーブルをrace_id+horse_numberでJOINしていること（Issue #270）"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        assert "left join temp_jockey_te as t_j_te" in content
+        assert "left join temp_trainer_te as t_tr_te" in content
+        assert "left join temp_sire_te as t_s_te" in content
+        # JOINキーの確認
+        assert "t_j_te.race_id" in content
+        assert "t_j_te.horse_number" in content
+
+    def test_sql_te_global_mean_from_race_results(self):
+        """グローバル平均がrace_resultsから計算されること（Issue #270）"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        global_mean_section = content[
+            content.find("temp_global_mean_te"): content.find("temp_te_history_base")
+        ]
+        assert "raw.race_results" in global_mean_section, (
+            "temp_global_mean_te で raw.race_results が参照されていません"
+        )
+        assert "finish_position between 1 and 3" in global_mean_section, (
+            "グローバル平均で 3着以内判定 (finish_position between 1 and 3) が見つかりません"
+        )
+
     def test_sql_normalized_features_have_time_boundary(self):
         """finish_time_normalized と last_3f_normalized が時系列ガードを持つこと"""
         content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
