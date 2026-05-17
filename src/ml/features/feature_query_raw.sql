@@ -1411,6 +1411,28 @@ with temp_race_horse_count as (
     cross join temp_global_mean_te as g
 )
 
+/* 調教本追切データ (raw.cha_data から) */
+,temp_training as (
+  select
+    race_id
+    ,horse_number
+    ,training_count
+    ,training_furlongs
+    ,last_3f_time as training_last_3f
+    ,training_index as cha_training_index
+    ,intensity_code as training_intensity
+    -- 調教コースを坂路(1)/ウッド(2)/ダート(3)/芝(4)/その他(0) に分類
+    ,case
+      when training_course_code in ('01', '11') then 1
+      when training_course_code in ('02', '12', '25') then 2
+      when training_course_code in ('03', '13') then 3
+      when training_course_code in ('04', '16') then 4
+      else 0
+    end as training_course_type
+  from `{project_id}`.raw.cha_data
+  where training_index is not null and training_index > 0
+)
+
 select
   t_p_r_f.*
   ,t_h_m_f.* except(
@@ -1525,6 +1547,13 @@ select
   ,t_h_d_te.distance_top1_finish_rate
   ,t_h_d_te.distance_rate_diff
   ,t_h_d_te.new_distance_flag
+  -- 調教本追切特徴量 (CHAファイル由来)
+  ,t_cha.cha_training_index
+  ,t_cha.training_last_3f
+  ,t_cha.training_furlongs
+  ,t_cha.training_intensity
+  ,t_cha.training_course_type
+  ,t_cha.training_count
 from
   temp_past_race_features2 as t_p_r_f
   left join temp_horse_master_feature2 as t_h_m_f
@@ -1545,3 +1574,6 @@ from
   left join temp_horse_distance_te as t_h_d_te
     on t_p_r_f.race_id = t_h_d_te.race_id
     and t_p_r_f.horse_number = t_h_d_te.horse_number
+  left join temp_training as t_cha
+    on t_p_r_f.race_id = t_cha.race_id
+    and t_p_r_f.horse_number = t_cha.horse_number

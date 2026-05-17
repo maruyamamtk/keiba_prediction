@@ -53,6 +53,7 @@ TABLE_MAPPING = {
     "OZ": "odds",
     "OW": "combo_odds",
     "OT": "combo_odds",
+    "CHA": "cha_data",
 }
 
 # テーブルごとの一意キー (MERGE文で使用)
@@ -66,6 +67,7 @@ TABLE_UNIQUE_KEYS = {
     "payouts": ["race_id", "bet_type", "rank"],
     "odds": ["race_id", "horse_number", "odds_type"],
     "combo_odds": ["race_id", "bet_type", "horse_number_1", "horse_number_2", "horse_number_3"],
+    "cha_data": ["race_id", "horse_number"],
 }
 
 # パース後に行展開が必要なデータタイプ
