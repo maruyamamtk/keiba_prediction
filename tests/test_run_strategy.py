@@ -14,7 +14,7 @@ from unittest.mock import MagicMock, call, patch
 import pandas as pd
 import pytest
 
-from scripts.run_strategy import build_race_df, _build_decision_row, save_decisions_to_bq
+from scripts.run_strategy import build_race_df, _build_decision_row, fetch_daily_odds, save_decisions_to_bq
 
 
 # ---------------------------------------------------------------------------
@@ -209,6 +209,122 @@ def _make_decisions(n: int = 2) -> list[dict]:
         }
         for i in range(1, n + 1)
     ]
+
+
+# ---------------------------------------------------------------------------
+# fetch_daily_odds のフォールバックテスト（Issue #283）
+# ---------------------------------------------------------------------------
+
+
+def _make_odds_df(race_ids: list[str], include_win_odds: bool = True) -> pd.DataFrame:
+    rows = []
+    for race_id in race_ids:
+        for hn in range(1, 4):
+            row = {"race_id": race_id, "horse_number": hn, "place_odds_min": 2.0 + hn}
+            if include_win_odds:
+                row["win_odds"] = 5.0 + hn
+            rows.append(row)
+    return pd.DataFrame(rows)
+
+
+class TestFetchDailyOdds:
+    """fetch_daily_odds の2段フォールバックテスト（Issue #283）"""
+
+    @patch("scripts.run_strategy.bigquery.Client")
+    def test_returns_daily_odds_when_available(self, mock_bq_cls):
+        """predictions.daily_odds にデータがある場合はそれを返す"""
+        target_date = datetime.date(2026, 5, 17)
+        odds_data = _make_odds_df(["race_001"])
+
+        mock_client = MagicMock()
+        mock_bq_cls.return_value = mock_client
+        # Stage1: daily_odds にデータあり
+        mock_client.query.return_value.to_dataframe.return_value = odds_data
+
+        result = fetch_daily_odds(mock_client, "test-project", target_date)
+
+        assert len(result) == len(odds_data)
+        assert set(result["race_id"]) == {"race_001"}
+
+    @patch("scripts.run_strategy.bigquery.Client")
+    def test_falls_back_to_raw_odds_when_daily_odds_empty(self, mock_bq_cls):
+        """predictions.daily_odds が空のとき raw.odds にフォールバックする"""
+        target_date = datetime.date(2026, 1, 10)
+        raw_odds_data = _make_odds_df(["race_002"])
+
+        mock_client = MagicMock()
+        mock_bq_cls.return_value = mock_client
+
+        # Stage1 は空 DataFrame、Stage2 は raw.odds データを返す
+        mock_client.query.return_value.to_dataframe.side_effect = [
+            pd.DataFrame(),   # daily_odds: empty
+            raw_odds_data,    # raw.odds: has data
+        ]
+
+        result = fetch_daily_odds(mock_client, "test-project", target_date)
+
+        assert len(result) == len(raw_odds_data)
+        assert set(result["race_id"]) == {"race_002"}
+
+    @patch("scripts.run_strategy.bigquery.Client")
+    def test_falls_back_to_raw_odds_when_daily_odds_raises(self, mock_bq_cls):
+        """predictions.daily_odds の取得で例外が発生したとき raw.odds にフォールバックする"""
+        target_date = datetime.date(2026, 1, 10)
+        raw_odds_data = _make_odds_df(["race_003"])
+
+        mock_client = MagicMock()
+        mock_bq_cls.return_value = mock_client
+
+        # Stage1 は例外、Stage2 は raw.odds データを返す
+        def side_effect_query(q):
+            result_mock = MagicMock()
+            if "daily_odds" in q:
+                result_mock.to_dataframe.side_effect = Exception("table not found")
+            else:
+                result_mock.to_dataframe.return_value = raw_odds_data
+            return result_mock
+
+        mock_client.query.side_effect = side_effect_query
+
+        result = fetch_daily_odds(mock_client, "test-project", target_date)
+
+        assert len(result) == len(raw_odds_data)
+
+    @patch("scripts.run_strategy.bigquery.Client")
+    def test_supplements_missing_races_from_raw_odds(self, mock_bq_cls):
+        """daily_odds にない race_id のみ raw.odds から補完する"""
+        target_date = datetime.date(2026, 1, 10)
+        daily_data = _make_odds_df(["race_001"])
+        raw_data = _make_odds_df(["race_001", "race_002"])  # race_001 は重複
+
+        mock_client = MagicMock()
+        mock_bq_cls.return_value = mock_client
+        mock_client.query.return_value.to_dataframe.side_effect = [
+            daily_data,   # Stage 1: daily_odds
+            raw_data,     # Stage 2: raw.odds
+        ]
+
+        result = fetch_daily_odds(mock_client, "test-project", target_date)
+
+        # race_001 は daily_odds のみ、race_002 は raw.odds から補完
+        race_ids = set(result["race_id"].unique())
+        assert "race_001" in race_ids
+        assert "race_002" in race_ids
+        # race_001 は重複しない（daily_odds 優先）
+        assert len(result[result["race_id"] == "race_001"]) == len(daily_data)
+
+    @patch("scripts.run_strategy.bigquery.Client")
+    def test_returns_empty_df_when_both_sources_empty(self, mock_bq_cls):
+        """両ソースにデータがない場合は空 DataFrame を返す"""
+        target_date = datetime.date(2025, 6, 1)
+
+        mock_client = MagicMock()
+        mock_bq_cls.return_value = mock_client
+        mock_client.query.return_value.to_dataframe.return_value = pd.DataFrame()
+
+        result = fetch_daily_odds(mock_client, "test-project", target_date)
+
+        assert result.empty
 
 
 class TestSaveDecisionsToBq:

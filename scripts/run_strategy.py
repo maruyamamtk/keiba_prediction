@@ -204,15 +204,94 @@ def fetch_daily_odds(
     project_id: str,
     target_date: datetime.date,
 ) -> pd.DataFrame:
-    """predictions.daily_odds から当日のオッズを取得する"""
-    query = f"""
-    SELECT race_id, horse_number, win_odds, place_odds_min, place_odds_max, scraped_at
-    FROM `{project_id}.predictions.daily_odds`
-    WHERE race_date = '{target_date.isoformat()}'
     """
-    df = client.query(query).to_dataframe()
-    logger.info(f"オッズデータ取得: {len(df)}行 ({target_date})")
-    return df
+    当日のオッズを以下の優先順位で取得する
+
+    優先順位:
+      1. predictions.daily_odds（netkeibaスクレイプ）: 精度が高い
+      2. raw.odds（JRDB基準オッズ）: スクレイプ失敗時のフォールバック
+
+    レースIDでカバー済みのレースは後段のステージをスキップする。
+
+    Returns:
+        オッズ DataFrame (race_id, horse_number, place_odds_min, win_odds)
+    """
+    all_results: list[pd.DataFrame] = []
+
+    # Stage 1: predictions.daily_odds（netkeibaスクレイプ）
+    try:
+        query1 = f"""
+        SELECT race_id, horse_number, win_odds, place_odds_min, place_odds_max, scraped_at
+        FROM `{project_id}.predictions.daily_odds`
+        WHERE race_date = '{target_date.isoformat()}'
+        """
+        df1 = client.query(query1).to_dataframe()
+        if len(df1) > 0:
+            all_results.append(df1)
+            logger.info(
+                f"predictions.daily_odds から {len(df1)} 件取得"
+                f"（カバー: {df1['race_id'].nunique()} レース）"
+            )
+        else:
+            logger.info("predictions.daily_odds にデータなし → raw.odds へ")
+    except Exception as e:
+        logger.info(f"predictions.daily_odds が存在しないか取得失敗: {e} → raw.odds へ")
+
+    # Stage 2: raw.odds（JRDB基準オッズ）
+    # predictions.daily_odds でカバーできなかったレースのみ補完する
+    covered_ids_so_far = set()
+    if all_results:
+        covered_ids_so_far = set(all_results[0]["race_id"].unique())
+
+    try:
+        # 当日全レースを対象に raw.odds を取得し、未カバー分だけ使用する
+        query2 = f"""
+        SELECT
+            race_id, horse_number,
+            MAX(CASE WHEN odds_type = 'place' THEN odds_value END) AS place_odds_min,
+            MAX(CASE WHEN odds_type = 'win'   THEN odds_value END) AS win_odds
+        FROM (
+            SELECT race_id, horse_number, odds_type, odds_value,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY race_id, horse_number, odds_type
+                       ORDER BY odds_timestamp DESC
+                   ) AS rn
+            FROM `{project_id}.raw.odds`
+            WHERE odds_type IN ('place', 'win')
+              AND race_id IN (
+                  SELECT race_id FROM `{project_id}.raw.race_info`
+                  WHERE race_date = '{target_date.isoformat()}'
+              )
+        )
+        WHERE rn = 1
+        GROUP BY race_id, horse_number
+        """
+        df2 = client.query(query2).to_dataframe()
+        if len(df2) > 0:
+            # 既カバー済みレースを除外して補完
+            df2_supplement = df2[~df2["race_id"].isin(covered_ids_so_far)]
+            if len(df2_supplement) > 0:
+                # place_odds_min / win_odds の scraped_at 列を補完 DataFrame には付けない
+                df2_supplement = df2_supplement.copy()
+                all_results.append(df2_supplement)
+                logger.info(
+                    f"raw.odds からフォールバック: {len(df2_supplement)} 件取得"
+                    f"（補完レース: {df2_supplement['race_id'].nunique()} ）"
+                )
+            else:
+                logger.info("raw.odds: predictions.daily_odds でカバー済み（補完不要）")
+        else:
+            logger.info("raw.odds にもデータなし")
+    except Exception as e:
+        logger.warning(f"raw.odds からのオッズ取得に失敗しました: {e}")
+
+    if not all_results:
+        logger.warning(f"オッズデータが取得できませんでした ({target_date})")
+        return pd.DataFrame()
+
+    merged = pd.concat(all_results, ignore_index=True)
+    logger.info(f"オッズデータ取得: 合計{len(merged)}行 ({target_date})")
+    return merged
 
 
 
