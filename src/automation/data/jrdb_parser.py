@@ -1779,6 +1779,90 @@ class JRDBParser:
         return rows
 
     @staticmethod
+    def parse_cha_line(line: str) -> dict | None:
+        """
+        CHA (調教本追切データ) を解析
+
+        レコード長: 64BYTE (Shift-JIS)
+        曜日フィールド (Shift-JIS 11-12バイト) が全角1文字 (1 Python char) のため、
+        それ以降のフィールドは Shift-JIS 相対位置 - 2 が Python インデックスになる。
+
+        フィールドマッピング (Shift-JIS 相対位置 → Python インデックス):
+          場コード(1-2)→[0:2], 馬番(9-10)→[8:10], 曜日(11-12)→[10],
+          調教年月日(13-20)→[11:19], 回数(21)→[19], 調教コースコード(22-23)→[20:22],
+          追切種類(24)→[22], 乗り役(27)→[25], 調教F(28)→[26],
+          テンF(29-31)→[27:30], 中間F(32-34)→[30:33], 終いF(35-37)→[33:36],
+          テンF指数(38-40)→[36:39], 中間F指数(41-43)→[39:42],
+          終いF指数(44-46)→[42:45], 追切指数(47-49)→[45:48]
+
+        Args:
+            line: UTF-8変換済み文字列
+
+        Returns:
+            解析結果の辞書 or None
+        """
+        try:
+            if len(line) < 50:
+                logger.warning(f"CHA line too short: {len(line)} chars")
+                return None
+
+            race_key = line[0:8].strip()
+            if not race_key:
+                return None
+
+            horse_number = JRDBParser.safe_int(line[8:10])
+
+            # 調教年月日 (曜日=1 Python char の直後)
+            training_date_str = line[11:19].strip()
+            training_date = None
+            if len(training_date_str) == 8 and training_date_str.isdigit():
+                training_date = JRDBParser.parse_date(training_date_str)
+
+            training_count = JRDBParser.safe_int(line[19:20])
+            training_course_code = line[20:22].strip() if len(line) > 22 else None
+            intensity_code = JRDBParser.safe_int(line[22:23])
+            rider_type = JRDBParser.safe_int(line[25:26])
+            training_furlongs = JRDBParser.safe_int(line[26:27])
+
+            # タイム (ZZ9形式, 単位: 1/10秒 → 秒に変換)
+            ten_f_raw = JRDBParser.safe_int(line[27:30])
+            ten_f_time = ten_f_raw / 10.0 if ten_f_raw else None
+
+            middle_f_raw = JRDBParser.safe_int(line[30:33])
+            middle_f_time = middle_f_raw / 10.0 if middle_f_raw else None
+
+            last_f_raw = JRDBParser.safe_int(line[33:36])
+            last_3f_time = last_f_raw / 10.0 if last_f_raw else None
+
+            ten_f_index = JRDBParser.safe_int(line[36:39]) if len(line) > 39 else None
+            middle_f_index = JRDBParser.safe_int(line[39:42]) if len(line) > 42 else None
+            last_f_index = JRDBParser.safe_int(line[42:45]) if len(line) > 45 else None
+            training_index = JRDBParser.safe_int(line[45:48]) if len(line) > 48 else None
+
+            return {
+                'race_id': race_key,
+                'horse_number': horse_number,
+                'training_date': training_date,
+                'training_count': training_count,
+                'training_course_code': training_course_code,
+                'intensity_code': intensity_code,
+                'rider_type': rider_type,
+                'training_furlongs': training_furlongs,
+                'ten_f_time': ten_f_time,
+                'middle_f_time': middle_f_time,
+                'last_3f_time': last_3f_time,
+                'ten_f_index': ten_f_index,
+                'middle_f_index': middle_f_index,
+                'last_f_index': last_f_index,
+                'training_index': training_index,
+                'created_at': datetime.now(timezone.utc).isoformat(),
+            }
+
+        except Exception as e:
+            logger.error(f"Error parsing CHA line: {e}", exc_info=True)
+            return None
+
+    @staticmethod
     def parse_file(file_content: str, data_type: str) -> list[dict]:
         """
         ファイル全体を解析
@@ -1809,6 +1893,7 @@ class JRDBParser:
             'OZ': JRDBParser.parse_oz_line,
             'OW': JRDBParser.parse_ow_line,
             'OT': JRDBParser.parse_ot_line,
+            'CHA': JRDBParser.parse_cha_line,
         }
 
         parser_func = parser_map.get(data_type.upper())
