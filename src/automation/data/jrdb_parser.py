@@ -638,7 +638,9 @@ class JRDBParser:
 
             # === オッズ・人気 ===
             win_odds = JRDBParser.safe_float(line[115:121])
-            win_popularity = JRDBParser.safe_int(line[121:123])
+            _win_pop_raw = JRDBParser.safe_int(line[121:123])
+            # JRDB は取消馬に 99 (センチネル値) を使用する。競馬は最大18頭なので >18 は無効
+            win_popularity = _win_pop_raw if (_win_pop_raw is not None and _win_pop_raw <= 18) else None
 
             # === JRDB指数 ===
             idm = JRDBParser.safe_float(line[123:126])

@@ -328,3 +328,80 @@ class TestParseKyfLineBasePopularity:
         assert result is not None
         assert result["base_place_odds"] == pytest.approx(1.3)
         assert result["base_place_popularity"] == 1
+
+
+def _make_sec_line(
+    race_key: str = "06263309",
+    horse_num: str = "01",
+    finish_pos: str = "01",
+    abnormal_code: str = "0",
+    win_popularity: str = " 5",
+) -> str:
+    """
+    テスト用の SEC 固定長行を生成する。
+
+    SECフォーマット（抜粋）:
+      [0:8]    レースキー
+      [8:10]   馬番
+      [10:18]  血統登録番号
+      [18:26]  日付
+      [26:44]  馬名 (全角18文字スロット)
+      [44:93]  距離・コース等 (49文字)
+      [93:95]  着順
+      [95:96]  異常コード
+      [96:115] タイム・斤量等 (19文字)
+      [115:121] win_odds (6文字)
+      [121:123] win_popularity (2文字)
+      [123:]   残余
+    """
+    return (
+        race_key      # [0:8]
+        + horse_num   # [8:10]
+        + "00000000"  # [10:18] horse_id
+        + "20260404"  # [18:26] race_date
+        + "A" * 18    # [26:44] horse_name
+        + " " * 49    # [44:93] 距離・コース等
+        + finish_pos  # [93:95]
+        + abnormal_code  # [95:96]
+        + " " * 19    # [96:115] タイム・斤量等
+        + "      "    # [115:121] win_odds (空白)
+        + win_popularity  # [121:123]
+        + " " * 152   # 残余パディング（200文字以上確保）
+    )
+
+
+class TestParseSecLineWinPopularity:
+    """parse_sec_line の win_popularity フィールドに関するテスト"""
+
+    def test_normal_popularity_returned(self):
+        """1〜18番人気は正常に返されること"""
+        line = _make_sec_line(finish_pos="05", win_popularity=" 5")
+        result = JRDBParser.parse_sec_line(line)
+        assert result is not None
+        assert result["win_popularity"] == 5
+
+    def test_cancelled_horse_sentinel_99_returns_none(self):
+        """取消馬の JRDB センチネル値 99 は None に変換されること"""
+        line = _make_sec_line(
+            finish_pos="00", abnormal_code="2", win_popularity="99"
+        )
+        result = JRDBParser.parse_sec_line(line)
+        assert result is not None
+        assert result["finish_position"] == 0
+        assert result["win_popularity"] is None, (
+            "取消馬の win_popularity=99 は None でなければならない"
+        )
+
+    def test_value_above_18_returns_none(self):
+        """18 超の値は無効なため None を返すこと"""
+        line = _make_sec_line(win_popularity="99")
+        result = JRDBParser.parse_sec_line(line)
+        assert result is not None
+        assert result["win_popularity"] is None
+
+    def test_max_valid_popularity_18(self):
+        """18番人気（最大頭数）は正常に返されること"""
+        line = _make_sec_line(win_popularity="18")
+        result = JRDBParser.parse_sec_line(line)
+        assert result is not None
+        assert result["win_popularity"] == 18
