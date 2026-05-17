@@ -216,7 +216,6 @@ def fetch_daily_odds(
     Returns:
         オッズ DataFrame (race_id, horse_number, place_odds_min, win_odds)
     """
-    _BASE_COLS = ["race_id", "horse_number", "place_odds_min", "win_odds"]
     all_results: list[pd.DataFrame] = []
 
     # Stage 1: predictions.daily_odds（netkeibaスクレイプ）
@@ -229,16 +228,14 @@ def fetch_daily_odds(
         df1 = client.query(query1).to_dataframe()
         if len(df1) > 0:
             all_results.append(df1)
-            covered_ids = set(df1["race_id"].unique())
             logger.info(
                 f"predictions.daily_odds から {len(df1)} 件取得"
-                f"（カバー: {len(covered_ids)} レース）"
+                f"（カバー: {df1['race_id'].nunique()} レース）"
             )
         else:
             logger.info("predictions.daily_odds にデータなし → raw.odds へ")
     except Exception as e:
         logger.info(f"predictions.daily_odds が存在しないか取得失敗: {e} → raw.odds へ")
-        covered_ids = set()
 
     # Stage 2: raw.odds（JRDB基準オッズ）
     # predictions.daily_odds でカバーできなかったレースのみ補完する
