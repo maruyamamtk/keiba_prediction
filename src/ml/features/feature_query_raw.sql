@@ -868,11 +868,14 @@ with temp_race_horse_count as (
   where finish_position > 0
 )
 
-/* TE計算の元となる全期間の騎手・調教師・種牡馬実績履歴（当日同日レースは除外） */
+/* TE計算の元となる全期間の騎手・調教師・種牡馬実績履歴（当日同日レースは除外）
+   horse_results を起点にすることで、race_results にまだ存在しない当日予測レースも含める。
+   window関数の RANGE BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING が当日行を除外するため
+   学習時の分布に影響しない。 */
 ,temp_te_history_base as (
   select
-    r_r.race_id
-    ,r_r.horse_number
+    h_r.race_id
+    ,h_r.horse_number
     ,r_i.race_date
     ,r_i.course_type
     ,r_i.venue_code
@@ -888,15 +891,15 @@ with temp_race_horse_count as (
     ,h_r.trainer_code
     ,h_m.sire_name
     ,case when r_r.finish_position between 1 and 3 then 1 else 0 end as is_top3
-  from `{project_id}`.raw.race_results as r_r
+  from `{project_id}`.raw.horse_results as h_r
     inner join `{project_id}`.raw.race_info as r_i
-      on r_r.race_id = r_i.race_id
-    inner join `{project_id}`.raw.horse_results as h_r
-      on r_r.race_id = h_r.race_id
-      and r_r.horse_number = h_r.horse_number
+      on h_r.race_id = r_i.race_id
     inner join `{project_id}`.raw.horse_master as h_m
       on h_r.horse_id = h_m.horse_id
-  where r_r.finish_position > 0
+    left join `{project_id}`.raw.race_results as r_r
+      on h_r.race_id = r_r.race_id
+      and h_r.horse_number = r_r.horse_number
+  where r_r.finish_position > 0 or r_r.race_id is null
 )
 
 /* 騎手 Target Encoding（累積3着以内率、スムージング係数m=10、同日除外） */
@@ -1250,10 +1253,11 @@ with temp_race_horse_count as (
     cross join temp_global_mean_te as g
 )
 
-/* 馬の距離帯別・距離別 TE 計算の元データ */
+/* 馬の距離帯別・距離別 TE 計算の元データ
+   horse_results を起点にすることで、race_results にまだ存在しない当日予測レースも含める。 */
 ,temp_horse_distance_base as (
   select
-    r_r.race_id
+    h_r.race_id
     ,h_r.horse_number
     ,h_r.horse_id
     ,r_i.race_date
@@ -1266,13 +1270,13 @@ with temp_race_horse_count as (
     end as distance_band
     ,case when r_r.finish_position between 1 and 3 then 1 else 0 end as is_top3
     ,case when r_r.finish_position = 1 then 1 else 0 end as is_top1
-  from `{project_id}`.raw.race_results as r_r
+  from `{project_id}`.raw.horse_results as h_r
     inner join `{project_id}`.raw.race_info as r_i
-      on r_r.race_id = r_i.race_id
-    inner join `{project_id}`.raw.horse_results as h_r
-      on r_r.race_id = h_r.race_id
-      and r_r.horse_number = h_r.horse_number
-  where r_r.finish_position > 0
+      on h_r.race_id = r_i.race_id
+    left join `{project_id}`.raw.race_results as r_r
+      on h_r.race_id = r_r.race_id
+      and h_r.horse_number = r_r.horse_number
+  where r_r.finish_position > 0 or r_r.race_id is null
 )
 
 /* 馬の距離帯別 TE（累積3着以内率・1着率、スムージング係数m=10、同日除外） */
