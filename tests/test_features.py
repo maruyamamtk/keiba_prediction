@@ -357,6 +357,53 @@ class TestSQLTemplate:
             "temp_horse_distance_te の JOIN が見つかりません"
         )
 
+    def test_sql_te_history_base_includes_prediction_entries(self):
+        """temp_te_history_base が horse_results 起点で当日予測エントリも含むこと（Issue #284）"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        te_base_section = content[
+            content.find("temp_te_history_base"): content.find("temp_jockey_te")
+        ]
+        # horse_results が起点（FROM句の最初のテーブル）
+        assert "from `{project_id}`.raw.horse_results" in te_base_section, (
+            "temp_te_history_base が horse_results を起点にしていません"
+        )
+        # race_results は LEFT JOIN（当日レース未確定でも JOIN できるよう）
+        assert "left join `{project_id}`.raw.race_results" in te_base_section, (
+            "temp_te_history_base で race_results が LEFT JOIN になっていません"
+        )
+        # race_id IS NULL 条件で予測日エントリも取り込む
+        assert "r_r.race_id is null" in te_base_section, (
+            "temp_te_history_base に 'r_r.race_id is null' 条件がありません（予測日エントリが除外される）"
+        )
+
+    def test_sql_horse_distance_base_includes_prediction_entries(self):
+        """temp_horse_distance_base が horse_results 起点で当日予測エントリも含むこと（Issue #284）"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        base_section = content[
+            content.find("temp_horse_distance_base"): content.find("temp_horse_distance_band_te")
+        ]
+        # horse_results が起点
+        assert "from `{project_id}`.raw.horse_results" in base_section, (
+            "temp_horse_distance_base が horse_results を起点にしていません"
+        )
+        # race_results は LEFT JOIN
+        assert "left join `{project_id}`.raw.race_results" in base_section, (
+            "temp_horse_distance_base で race_results が LEFT JOIN になっていません"
+        )
+        # race_id IS NULL 条件で予測日エントリも取り込む
+        assert "r_r.race_id is null" in base_section, (
+            "temp_horse_distance_base に 'r_r.race_id is null' 条件がありません（予測日エントリが除外される）"
+        )
+
+    def test_sql_te_history_base_prediction_entries_excluded_from_own_window(self):
+        """予測日エントリが同日の TE ウィンドウ計算から除外されること（Issue #284）"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        # RANGE BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING が存在することで当日行は
+        # 自身の TE 計算から除外される（is_top3=0 の予測日エントリは分母・分子に寄与しない）
+        assert "range between unbounded preceding and 1 preceding" in content, (
+            "TE Window 関数の同日除外ガード (RANGE BETWEEN ... AND 1 PRECEDING) が見つかりません"
+        )
+
     def test_sql_normalized_features_have_time_boundary(self):
         """finish_time_normalized と last_3f_normalized が時系列ガードを持つこと"""
         content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
