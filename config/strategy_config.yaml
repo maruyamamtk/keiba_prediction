@@ -4,13 +4,13 @@ budget_per_race: 1000
 min_bet_amount: 100
 min_prob_threshold: 0.1
 top_n: 2
-max_wide_odds: 50.0
+max_wide_odds: 30.0
 optimization:
-  last_run: '2026-05-06T19:15:35'
+  last_run: '2026-05-17T10:08:17'
   metric: recovery_rate
-  start_date: '2025-01-11'
-  end_date: '2025-12-31'
-  recovery_rate: 230.31
-  hit_rate: 14.58
-  max_drawdown: 21.41
-  total_bets: 1529
+  start_date: '2025-11-15'
+  end_date: '2026-05-10'
+  recovery_rate: 175.96
+  hit_rate: 19.75
+  max_drawdown: 43.86
+  total_bets: 886
