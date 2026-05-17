@@ -405,3 +405,12 @@ class TestParseSecLineWinPopularity:
         result = JRDBParser.parse_sec_line(line)
         assert result is not None
         assert result["win_popularity"] == 18
+
+    def test_zero_popularity_returns_none(self):
+        """取消馬が win_popularity=0 を持つ場合も None に変換されること"""
+        line = _make_sec_line(finish_pos="00", abnormal_code="2", win_popularity=" 0")
+        result = JRDBParser.parse_sec_line(line)
+        assert result is not None
+        assert result["win_popularity"] is None, (
+            "win_popularity=0 は無効値（1未満）のため None でなければならない"
+        )
