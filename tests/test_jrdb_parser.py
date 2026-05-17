@@ -3,6 +3,7 @@ JRDBParser のユニットテスト
 
 Issue #214: parse_baa_line が start_time を正しく返すことを検証する。
 Issue #272: parse_cha_line が調教本追切データを正しく解析することを検証する。
+Issue #290: parse_kyf_line が base_popularity を10+人気でも正しく返すことを検証する。
 """
 
 import sys
@@ -237,3 +238,93 @@ class TestParseChaLine:
         assert result["race_id"] == "06161101"
         assert result["horse_number"] == 1
         assert result["training_date"] == "2015-12-31"
+
+
+def _make_kyf_line(odds_section: str = " 2.3 1  1.3 1  5 ") -> str:
+    """
+    テスト用の KYF 固定長行を生成する。
+
+    KYFフォーマット（抜粋）:
+      [0:8]   レースキー
+      [8:10]  馬番
+      [10:18] 血統登録番号
+      [18:36] 馬名 (全角18文字スロット)
+      [36:78] 各種指数・脚質など (42文字)
+      [78:82] 基準オッズ (4文字 "XX.X")
+      [82:84] 基準人気 (2文字 " N" or "NN")
+      [84:85] セパレータ (スペース)
+      [85:89] 基準複勝オッズ (4文字)
+      [89:91] 基準複勝人気 (2文字)
+      [91:]   残余
+    """
+    return (
+        "06263301"   # [0:8]  race_key
+        + "01"       # [8:10] horse_number
+        + "00000000" # [10:18] horse_id
+        + "A" * 18   # [18:36] horse_name (ASCIIでパディング)
+        + " " * 42   # [36:78] 指数フィールド群
+        + odds_section  # [78:95] オッズ・人気セクション
+        + " " * 350  # 残余パディング
+    )
+
+
+class TestParseKyfLineBasePopularity:
+    """parse_kyf_line の base_popularity フィールドに関するテスト (Issue #290)"""
+
+    def test_single_digit_popularity(self):
+        """1〜9番人気が正しく解析されること"""
+        # " 1" → 1番人気、odds=2.3、place_odds=1.3
+        line = _make_kyf_line(" 2.3 1  1.3 1  5 ")
+        result = JRDBParser.parse_kyf_line(line)
+        assert result is not None
+        assert result["base_popularity"] == 1
+        assert result["base_odds"] == pytest.approx(2.3)
+
+    def test_ninth_popularity(self):
+        """9番人気が正しく解析されること"""
+        line = _make_kyf_line("48.3 9  9.0 9  0 ")
+        result = JRDBParser.parse_kyf_line(line)
+        assert result is not None
+        assert result["base_popularity"] == 9
+        assert result["base_odds"] == pytest.approx(48.3)
+
+    def test_tenth_popularity(self):
+        """10番人気が正しく解析されること（旧コードでは0と誤解析）"""
+        # 実ファイルのデータ: horse 10 (10th pop, 67.2 odds)
+        line = _make_kyf_line("67.210 11.910  0 ")
+        result = JRDBParser.parse_kyf_line(line)
+        assert result is not None
+        assert result["base_popularity"] == 10, (
+            "10番人気馬は base_popularity=10 でなければならない（旧バグでは0）"
+        )
+        assert result["base_odds"] == pytest.approx(67.2)
+        assert result["base_place_popularity"] == 10
+
+    def test_fifteenth_popularity(self):
+        """15番人気が正しく解析されること（旧コードでは5と誤解析）"""
+        line = _make_kyf_line("77.915 30.415  0 ")
+        result = JRDBParser.parse_kyf_line(line)
+        assert result is not None
+        assert result["base_popularity"] == 15, (
+            "15番人気馬は base_popularity=15 でなければならない（旧バグでは5）"
+        )
+        assert result["base_place_popularity"] == 15
+
+    def test_sixteenth_popularity(self):
+        """16番人気が正しく解析されること（旧コードでは6と誤解析）"""
+        line = _make_kyf_line("84.016 31.416  0 ")
+        result = JRDBParser.parse_kyf_line(line)
+        assert result is not None
+        assert result["base_popularity"] == 16
+        assert result["base_odds"] == pytest.approx(84.0)
+        assert result["base_place_odds"] == pytest.approx(31.4)
+        assert result["base_place_popularity"] == 16
+
+    def test_place_odds_not_collide_with_popularity(self):
+        """base_place_odds が base_place_popularity と重複しないこと"""
+        # horse 08: place_odds=1.3, place_pop=1
+        line = _make_kyf_line(" 2.3 1  1.3 1  5 ")
+        result = JRDBParser.parse_kyf_line(line)
+        assert result is not None
+        assert result["base_place_odds"] == pytest.approx(1.3)
+        assert result["base_place_popularity"] == 1

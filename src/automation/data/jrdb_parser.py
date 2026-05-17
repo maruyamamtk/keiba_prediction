@@ -290,10 +290,13 @@ class JRDBParser:
             improvement = None  # 上昇度は別位置
 
             # === 基準オッズ・人気 (位置77以降) ===
-            base_odds = JRDBParser.safe_float(line[78:83])  # 基準オッズ (5文字: 78-83) → "46.61"
-            base_popularity = JRDBParser.safe_int(line[83:85])  # 人気順位 (2文字: 83-85) → "3 " → 3
-            base_place_odds = JRDBParser.safe_float(line[86:91])  # 基準複勝オッズ (5文字: 86-91) → "8.613"
-            base_place_popularity = JRDBParser.safe_int(line[89:91])  # 複勝人気 (2文字: 89-91) → "13"
+            # 実データ検証による正しいフィールドレイアウト:
+            # [78:82]=基準オッズ(4文字"XX.X"), [82:84]=基準人気(2文字), スペース[84],
+            # [85:89]=基準複勝オッズ(4文字), [89:91]=基準複勝人気(2文字)
+            base_odds = JRDBParser.safe_float(line[78:82])         # 基準オッズ (4文字: 78-82) → "84.0"
+            base_popularity = JRDBParser.safe_int(line[82:84])     # 人気順位 (2文字: 82-84) → " 3" or "10"
+            base_place_odds = JRDBParser.safe_float(line[85:89])   # 基準複勝オッズ (4文字: 85-89) → "31.4"
+            base_place_popularity = JRDBParser.safe_int(line[89:91])  # 複勝人気 (2文字: 89-91) → "16"
 
             # === 特定情報マーク (位置93以降) ===
             specific_mark_circle = JRDBParser.safe_int(line[93:94]) if len(line) > 94 else None
