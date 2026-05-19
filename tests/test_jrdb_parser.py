@@ -3,6 +3,7 @@ JRDBParser のユニットテスト
 
 Issue #214: parse_baa_line が start_time を正しく返すことを検証する。
 Issue #272: parse_cha_line が調教本追切データを正しく解析することを検証する。
+Issue #290: parse_kyf_line が base_popularity を10+人気でも正しく返すことを検証する。
 """
 
 import sys
@@ -237,3 +238,179 @@ class TestParseChaLine:
         assert result["race_id"] == "06161101"
         assert result["horse_number"] == 1
         assert result["training_date"] == "2015-12-31"
+
+
+def _make_kyf_line(odds_section: str = " 2.3 1  1.3 1  5 ") -> str:
+    """
+    テスト用の KYF 固定長行を生成する。
+
+    KYFフォーマット（抜粋）:
+      [0:8]   レースキー
+      [8:10]  馬番
+      [10:18] 血統登録番号
+      [18:36] 馬名 (全角18文字スロット)
+      [36:78] 各種指数・脚質など (42文字)
+      [78:82] 基準オッズ (4文字 "XX.X")
+      [82:84] 基準人気 (2文字 " N" or "NN")
+      [84:85] セパレータ (スペース)
+      [85:89] 基準複勝オッズ (4文字)
+      [89:91] 基準複勝人気 (2文字)
+      [91:]   残余
+    """
+    return (
+        "06263301"   # [0:8]  race_key
+        + "01"       # [8:10] horse_number
+        + "00000000" # [10:18] horse_id
+        + "A" * 18   # [18:36] horse_name (ASCIIでパディング)
+        + " " * 42   # [36:78] 指数フィールド群
+        + odds_section  # [78:95] オッズ・人気セクション
+        + " " * 350  # 残余パディング
+    )
+
+
+class TestParseKyfLineBasePopularity:
+    """parse_kyf_line の base_popularity フィールドに関するテスト (Issue #290)"""
+
+    def test_single_digit_popularity(self):
+        """1〜9番人気が正しく解析されること"""
+        # " 1" → 1番人気、odds=2.3、place_odds=1.3
+        line = _make_kyf_line(" 2.3 1  1.3 1  5 ")
+        result = JRDBParser.parse_kyf_line(line)
+        assert result is not None
+        assert result["base_popularity"] == 1
+        assert result["base_odds"] == pytest.approx(2.3)
+
+    def test_ninth_popularity(self):
+        """9番人気が正しく解析されること"""
+        line = _make_kyf_line("48.3 9  9.0 9  0 ")
+        result = JRDBParser.parse_kyf_line(line)
+        assert result is not None
+        assert result["base_popularity"] == 9
+        assert result["base_odds"] == pytest.approx(48.3)
+
+    def test_tenth_popularity(self):
+        """10番人気が正しく解析されること（旧コードでは0と誤解析）"""
+        # 実ファイルのデータ: horse 10 (10th pop, 67.2 odds)
+        line = _make_kyf_line("67.210 11.910  0 ")
+        result = JRDBParser.parse_kyf_line(line)
+        assert result is not None
+        assert result["base_popularity"] == 10, (
+            "10番人気馬は base_popularity=10 でなければならない（旧バグでは0）"
+        )
+        assert result["base_odds"] == pytest.approx(67.2)
+        assert result["base_place_popularity"] == 10
+
+    def test_fifteenth_popularity(self):
+        """15番人気が正しく解析されること（旧コードでは5と誤解析）"""
+        line = _make_kyf_line("77.915 30.415  0 ")
+        result = JRDBParser.parse_kyf_line(line)
+        assert result is not None
+        assert result["base_popularity"] == 15, (
+            "15番人気馬は base_popularity=15 でなければならない（旧バグでは5）"
+        )
+        assert result["base_place_popularity"] == 15
+
+    def test_sixteenth_popularity(self):
+        """16番人気が正しく解析されること（旧コードでは6と誤解析）"""
+        line = _make_kyf_line("84.016 31.416  0 ")
+        result = JRDBParser.parse_kyf_line(line)
+        assert result is not None
+        assert result["base_popularity"] == 16
+        assert result["base_odds"] == pytest.approx(84.0)
+        assert result["base_place_odds"] == pytest.approx(31.4)
+        assert result["base_place_popularity"] == 16
+
+    def test_place_odds_not_collide_with_popularity(self):
+        """base_place_odds が base_place_popularity と重複しないこと"""
+        # horse 08: place_odds=1.3, place_pop=1
+        line = _make_kyf_line(" 2.3 1  1.3 1  5 ")
+        result = JRDBParser.parse_kyf_line(line)
+        assert result is not None
+        assert result["base_place_odds"] == pytest.approx(1.3)
+        assert result["base_place_popularity"] == 1
+
+
+def _make_sec_line(
+    race_key: str = "06263309",
+    horse_num: str = "01",
+    finish_pos: str = "01",
+    abnormal_code: str = "0",
+    win_popularity: str = " 5",
+) -> str:
+    """
+    テスト用の SEC 固定長行を生成する。
+
+    SECフォーマット（抜粋）:
+      [0:8]    レースキー
+      [8:10]   馬番
+      [10:18]  血統登録番号
+      [18:26]  日付
+      [26:44]  馬名 (全角18文字スロット)
+      [44:93]  距離・コース等 (49文字)
+      [93:95]  着順
+      [95:96]  異常コード
+      [96:115] タイム・斤量等 (19文字)
+      [115:121] win_odds (6文字)
+      [121:123] win_popularity (2文字)
+      [123:]   残余
+    """
+    return (
+        race_key      # [0:8]
+        + horse_num   # [8:10]
+        + "00000000"  # [10:18] horse_id
+        + "20260404"  # [18:26] race_date
+        + "A" * 18    # [26:44] horse_name
+        + " " * 49    # [44:93] 距離・コース等
+        + finish_pos  # [93:95]
+        + abnormal_code  # [95:96]
+        + " " * 19    # [96:115] タイム・斤量等
+        + "      "    # [115:121] win_odds (空白)
+        + win_popularity  # [121:123]
+        + " " * 152   # 残余パディング（200文字以上確保）
+    )
+
+
+class TestParseSecLineWinPopularity:
+    """parse_sec_line の win_popularity フィールドに関するテスト"""
+
+    def test_normal_popularity_returned(self):
+        """1〜18番人気は正常に返されること"""
+        line = _make_sec_line(finish_pos="05", win_popularity=" 5")
+        result = JRDBParser.parse_sec_line(line)
+        assert result is not None
+        assert result["win_popularity"] == 5
+
+    def test_cancelled_horse_sentinel_99_returns_none(self):
+        """取消馬の JRDB センチネル値 99 は None に変換されること"""
+        line = _make_sec_line(
+            finish_pos="00", abnormal_code="2", win_popularity="99"
+        )
+        result = JRDBParser.parse_sec_line(line)
+        assert result is not None
+        assert result["finish_position"] == 0
+        assert result["win_popularity"] is None, (
+            "取消馬の win_popularity=99 は None でなければならない"
+        )
+
+    def test_value_above_18_returns_none(self):
+        """18 超の値は無効なため None を返すこと"""
+        line = _make_sec_line(win_popularity="99")
+        result = JRDBParser.parse_sec_line(line)
+        assert result is not None
+        assert result["win_popularity"] is None
+
+    def test_max_valid_popularity_18(self):
+        """18番人気（最大頭数）は正常に返されること"""
+        line = _make_sec_line(win_popularity="18")
+        result = JRDBParser.parse_sec_line(line)
+        assert result is not None
+        assert result["win_popularity"] == 18
+
+    def test_zero_popularity_returns_none(self):
+        """取消馬が win_popularity=0 を持つ場合も None に変換されること"""
+        line = _make_sec_line(finish_pos="00", abnormal_code="2", win_popularity=" 0")
+        result = JRDBParser.parse_sec_line(line)
+        assert result is not None
+        assert result["win_popularity"] is None, (
+            "win_popularity=0 は無効値（1未満）のため None でなければならない"
+        )
