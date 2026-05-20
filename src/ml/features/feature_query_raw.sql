@@ -902,11 +902,17 @@ with temp_race_horse_count as (
   where r_r.finish_position > 0 or r_r.race_id is null
 )
 
-/* 騎手 Target Encoding（累積3着以内率、スムージング係数m=10、同日除外） */
-,temp_jockey_te as (
+/* 騎手 Target Encoding（累積3着以内率、スムージング係数m=10、同日除外）
+   出走数 < 20 の騎手は全TE値をNULLとして扱う（低頻度エンティティのノイズ除去） */
+,temp_jockey_te_pre as (
   select
     race_id
     ,horse_number
+    ,coalesce(count(*) over (
+      partition by jockey_code
+      order by unix_date(race_date)
+      range between unbounded preceding and 1 preceding
+    ), 0) as jockey_count
     ,safe_divide(
       coalesce(sum(is_top3) over (
         partition by jockey_code
@@ -1018,12 +1024,34 @@ with temp_race_horse_count as (
   from temp_te_history_base
     cross join temp_global_mean_te as g
 )
-
-/* 調教師 Target Encoding（累積3着以内率、スムージング係数m=10、同日除外） */
-,temp_trainer_te as (
+/* 低頻度マスク適用: 騎手の過去出走数 < 20 の場合は全TE値をNULLにする */
+,temp_jockey_te as (
   select
     race_id
     ,horse_number
+    ,IF(jockey_count >= 20, jockey_te, NULL) as jockey_te
+    ,IF(jockey_count >= 20, jockey_course_type_te, NULL) as jockey_course_type_te
+    ,IF(jockey_count >= 20, jockey_venue_te, NULL) as jockey_venue_te
+    ,IF(jockey_count >= 20, jockey_distance_band_te, NULL) as jockey_distance_band_te
+    ,IF(jockey_count >= 20, jockey_distance_te, NULL) as jockey_distance_te
+    ,IF(jockey_count >= 20, jockey_direction_te, NULL) as jockey_direction_te
+    ,IF(jockey_count >= 20, jockey_course_type_venue_te, NULL) as jockey_course_type_venue_te
+    ,IF(jockey_count >= 20, jockey_course_type_distance_te, NULL) as jockey_course_type_distance_te
+    ,IF(jockey_count >= 20, jockey_course_type_distance_venue_te, NULL) as jockey_course_type_distance_venue_te
+  from temp_jockey_te_pre
+)
+
+/* 調教師 Target Encoding（累積3着以内率、スムージング係数m=10、同日除外）
+   出走数 < 20 の調教師は全TE値をNULLとして扱う（低頻度エンティティのノイズ除去） */
+,temp_trainer_te_pre as (
+  select
+    race_id
+    ,horse_number
+    ,coalesce(count(*) over (
+      partition by trainer_code
+      order by unix_date(race_date)
+      range between unbounded preceding and 1 preceding
+    ), 0) as trainer_count
     ,safe_divide(
       coalesce(sum(is_top3) over (
         partition by trainer_code
@@ -1135,12 +1163,34 @@ with temp_race_horse_count as (
   from temp_te_history_base
     cross join temp_global_mean_te as g
 )
-
-/* 種牡馬 Target Encoding（累積3着以内率、スムージング係数m=10、同日除外） */
-,temp_sire_te as (
+/* 低頻度マスク適用: 調教師の過去出走数 < 20 の場合は全TE値をNULLにする */
+,temp_trainer_te as (
   select
     race_id
     ,horse_number
+    ,IF(trainer_count >= 20, trainer_te, NULL) as trainer_te
+    ,IF(trainer_count >= 20, trainer_course_type_te, NULL) as trainer_course_type_te
+    ,IF(trainer_count >= 20, trainer_venue_te, NULL) as trainer_venue_te
+    ,IF(trainer_count >= 20, trainer_distance_band_te, NULL) as trainer_distance_band_te
+    ,IF(trainer_count >= 20, trainer_distance_te, NULL) as trainer_distance_te
+    ,IF(trainer_count >= 20, trainer_direction_te, NULL) as trainer_direction_te
+    ,IF(trainer_count >= 20, trainer_course_type_venue_te, NULL) as trainer_course_type_venue_te
+    ,IF(trainer_count >= 20, trainer_course_type_distance_te, NULL) as trainer_course_type_distance_te
+    ,IF(trainer_count >= 20, trainer_course_type_distance_venue_te, NULL) as trainer_course_type_distance_venue_te
+  from temp_trainer_te_pre
+)
+
+/* 種牡馬 Target Encoding（累積3着以内率、スムージング係数m=10、同日除外）
+   出走数 < 20 の種牡馬は全TE値をNULLとして扱う（低頻度エンティティのノイズ除去） */
+,temp_sire_te_pre as (
+  select
+    race_id
+    ,horse_number
+    ,coalesce(count(*) over (
+      partition by sire_name
+      order by unix_date(race_date)
+      range between unbounded preceding and 1 preceding
+    ), 0) as sire_count
     ,safe_divide(
       coalesce(sum(is_top3) over (
         partition by sire_name
@@ -1251,6 +1301,22 @@ with temp_race_horse_count as (
     ) as sire_course_type_distance_venue_te
   from temp_te_history_base
     cross join temp_global_mean_te as g
+)
+/* 低頻度マスク適用: 種牡馬の過去出走数 < 20 の場合は全TE値をNULLにする */
+,temp_sire_te as (
+  select
+    race_id
+    ,horse_number
+    ,IF(sire_count >= 20, sire_te, NULL) as sire_te
+    ,IF(sire_count >= 20, sire_course_type_te, NULL) as sire_course_type_te
+    ,IF(sire_count >= 20, sire_venue_te, NULL) as sire_venue_te
+    ,IF(sire_count >= 20, sire_distance_band_te, NULL) as sire_distance_band_te
+    ,IF(sire_count >= 20, sire_distance_te, NULL) as sire_distance_te
+    ,IF(sire_count >= 20, sire_direction_te, NULL) as sire_direction_te
+    ,IF(sire_count >= 20, sire_course_type_venue_te, NULL) as sire_course_type_venue_te
+    ,IF(sire_count >= 20, sire_course_type_distance_te, NULL) as sire_course_type_distance_te
+    ,IF(sire_count >= 20, sire_course_type_distance_venue_te, NULL) as sire_course_type_distance_venue_te
+  from temp_sire_te_pre
 )
 
 /* 馬の距離帯別・距離別 TE 計算の元データ
