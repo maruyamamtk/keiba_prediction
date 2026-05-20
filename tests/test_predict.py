@@ -3,7 +3,7 @@
 """
 
 import datetime
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pandas as pd
@@ -11,6 +11,7 @@ import pytest
 
 from src.models.lgbm_ranker import LGBMRanker, LGBMRankerConfig
 from src.models.predict import (
+    fetch_prediction_data,
     format_predictions,
     fetch_race_results,
     predict_pipeline,
@@ -507,3 +508,103 @@ class TestSavePredictionsToGCS:
         mock_client.bucket.assert_called_with("my-project-keiba-predictions")
         # blobパスが {date}/predictions.csv であること
         mock_client.bucket.return_value.blob.assert_called_with("2026-03-01/predictions.csv")
+
+
+class TestFetchPredictionData:
+    """fetch_prediction_data が feature_query_raw.sql を直接実行することを検証 (Issue #288)"""
+
+    def _make_mock_df(self, dates: list[datetime.date]) -> pd.DataFrame:
+        rows = []
+        for d in dates:
+            rows.append({
+                "race_id": f"race_{d.strftime('%Y%m%d')}_01",
+                "horse_id": "h1",
+                "horse_name": "テスト馬1",
+                "race_date": d,
+                "horse_number": 1,
+            })
+        return pd.DataFrame(rows)
+
+    @patch("src.models.predict.bigquery.Client")
+    @patch("src.models.predict.FeaturePipeline")
+    def test_uses_feature_pipeline_generate_query(self, mock_pipeline_cls, mock_bq_cls):
+        """FeaturePipeline.generate_query() が呼ばれてSQLが直接実行されること"""
+        target_dates = [datetime.date(2026, 5, 17)]
+        mock_pipeline = mock_pipeline_cls.return_value
+        mock_pipeline.generate_query.return_value = "SELECT 1"
+
+        mock_bq = mock_bq_cls.return_value
+        mock_df = self._make_mock_df(target_dates)
+        mock_bq.query.return_value.to_dataframe.return_value = mock_df
+
+        result = fetch_prediction_data(project_id="test-project", target_dates=target_dates)
+
+        mock_pipeline_cls.assert_called_once_with("test-project")
+        mock_pipeline.generate_query.assert_called_once_with("2026-05-17", "2026-05-17")
+        mock_bq.query.assert_called_once_with("SELECT 1")
+        assert len(result) == 1
+
+    @patch("src.models.predict.bigquery.Client")
+    @patch("src.models.predict.FeaturePipeline")
+    def test_does_not_query_training_data_table(self, mock_pipeline_cls, mock_bq_cls):
+        """features.training_data を直接参照するクエリが実行されないこと"""
+        target_dates = [datetime.date(2026, 5, 17)]
+        mock_pipeline = mock_pipeline_cls.return_value
+        mock_pipeline.generate_query.return_value = "SELECT * FROM raw.horse_results"
+
+        mock_bq = mock_bq_cls.return_value
+        mock_bq.query.return_value.to_dataframe.return_value = self._make_mock_df(target_dates)
+
+        fetch_prediction_data(project_id="test-project", target_dates=target_dates)
+
+        executed_sql = mock_bq.query.call_args[0][0]
+        assert "training_data" not in executed_sql
+
+    @patch("src.models.predict.bigquery.Client")
+    @patch("src.models.predict.FeaturePipeline")
+    def test_multi_date_uses_min_max_as_range(self, mock_pipeline_cls, mock_bq_cls):
+        """複数日指定時は min/max を start_date/end_date として渡すこと"""
+        target_dates = [datetime.date(2026, 5, 17), datetime.date(2026, 5, 18)]
+        mock_pipeline = mock_pipeline_cls.return_value
+        mock_pipeline.generate_query.return_value = "SELECT 1"
+
+        mock_bq = mock_bq_cls.return_value
+        mock_bq.query.return_value.to_dataframe.return_value = self._make_mock_df(target_dates)
+
+        fetch_prediction_data(project_id="test-project", target_dates=target_dates)
+
+        mock_pipeline.generate_query.assert_called_once_with("2026-05-17", "2026-05-18")
+
+    @patch("src.models.predict.bigquery.Client")
+    @patch("src.models.predict.FeaturePipeline")
+    def test_filters_by_target_dates(self, mock_pipeline_cls, mock_bq_cls):
+        """SQLの結果が target_dates に含まれない日付を除外すること"""
+        target_dates = [datetime.date(2026, 5, 17)]
+        mock_pipeline = mock_pipeline_cls.return_value
+        mock_pipeline.generate_query.return_value = "SELECT 1"
+
+        mock_bq = mock_bq_cls.return_value
+        # 2日分を返すが target_dates は1日のみ
+        extra_dates = [datetime.date(2026, 5, 17), datetime.date(2026, 5, 16)]
+        mock_bq.query.return_value.to_dataframe.return_value = self._make_mock_df(extra_dates)
+
+        result = fetch_prediction_data(project_id="test-project", target_dates=target_dates)
+
+        # target_dates にある 2026-05-17 の行のみ残ること
+        assert len(result) == 1
+        assert all(r == datetime.date(2026, 5, 17) for r in result["race_date"])
+
+    @patch("src.models.predict.bigquery.Client")
+    @patch("src.models.predict.FeaturePipeline")
+    def test_returns_empty_df_when_no_rows(self, mock_pipeline_cls, mock_bq_cls):
+        """SQLが0行を返す場合、空DataFrameを返すこと"""
+        target_dates = [datetime.date(2026, 5, 17)]
+        mock_pipeline = mock_pipeline_cls.return_value
+        mock_pipeline.generate_query.return_value = "SELECT 1"
+
+        mock_bq = mock_bq_cls.return_value
+        mock_bq.query.return_value.to_dataframe.return_value = pd.DataFrame()
+
+        result = fetch_prediction_data(project_id="test-project", target_dates=target_dates)
+
+        assert len(result) == 0

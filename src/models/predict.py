@@ -25,6 +25,7 @@ import pandas as pd
 import yaml
 from google.cloud import bigquery, storage
 
+from src.ml.features.feature_pipeline import FeaturePipeline
 from src.models.lgbm_ranker import LGBMRanker
 from src.models.train import (
     CONFIG_PATH,
@@ -43,33 +44,36 @@ VENUE_MAP = {
 
 def fetch_prediction_data(
     project_id: str,
-    dataset: str,
-    table: str,
     target_dates: list[datetime.date],
 ) -> pd.DataFrame:
     """
-    BigQueryから推論対象データを取得する
+    feature_query_raw.sql を直接実行して推論対象データを取得する
+
+    features.training_data キャッシュには依存しない。
+    当日マージされた特徴量SQL変更も即時反映される。
 
     Args:
         project_id: GCPプロジェクトID
-        dataset: データセット名
-        table: テーブル名
         target_dates: 推論対象日のリスト
 
     Returns:
         推論対象データのDataFrame
     """
-    client = bigquery.Client(project=project_id)
+    start_date = min(target_dates).isoformat()
+    end_date = max(target_dates).isoformat()
 
-    dates_str = ", ".join(f"'{d.isoformat()}'" for d in target_dates)
-    query = f"""
-    SELECT *
-    FROM `{project_id}.{dataset}.{table}`
-    WHERE race_date IN ({dates_str})
-    ORDER BY race_date, race_id, horse_number
-    """
-    logger.info(f"Fetching prediction data for dates: {target_dates}")
-    df = client.query(query).to_dataframe()
+    pipeline = FeaturePipeline(project_id)
+    sql = pipeline.generate_query(start_date, end_date)
+
+    logger.info(f"Executing feature SQL directly for dates: {target_dates}")
+    client = bigquery.Client(project=project_id)
+    df = client.query(sql).to_dataframe()
+
+    if len(df) > 0:
+        df["race_date"] = pd.to_datetime(df["race_date"]).dt.date
+        df = df[df["race_date"].isin(set(target_dates))].copy()
+        df = df.sort_values(["race_date", "race_id", "horse_number"]).reset_index(drop=True)
+
     logger.info(f"Fetched {len(df)} rows")
     return df
 
@@ -249,8 +253,6 @@ def predict_pipeline(
 
     df = fetch_prediction_data(
         project_id=project_id,
-        dataset=data_config["dataset"],
-        table=data_config["table"],
         target_dates=target_dates,
     )
 
