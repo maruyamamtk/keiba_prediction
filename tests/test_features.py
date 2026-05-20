@@ -484,6 +484,97 @@ class TestSQLTemplate:
         )
 
 
+class TestTELowFrequencyMask:
+    """TE低頻度エンティティNaNマスク（Issue #293）のテスト"""
+
+    def test_sql_has_te_pre_ctes(self):
+        """騎手・調教師・種牡馬の _pre CTE（カウント計算用）が存在すること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        assert "temp_jockey_te_pre" in content, "temp_jockey_te_pre が見つかりません"
+        assert "temp_trainer_te_pre" in content, "temp_trainer_te_pre が見つかりません"
+        assert "temp_sire_te_pre" in content, "temp_sire_te_pre が見つかりません"
+
+    def test_sql_count_columns_use_correct_window(self):
+        """jockey_count / trainer_count / sire_count が 1 preceding ウィンドウを使用すること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        # jockey_count の定義部分を確認
+        jockey_pre_start = content.find("temp_jockey_te_pre")
+        jockey_pre_end = content.find("temp_jockey_te as (")
+        jockey_pre_section = content[jockey_pre_start:jockey_pre_end]
+        assert "jockey_count" in jockey_pre_section
+        assert "range between unbounded preceding and 1 preceding" in jockey_pre_section
+
+        trainer_pre_start = content.find("temp_trainer_te_pre")
+        trainer_pre_end = content.find("temp_trainer_te as (")
+        trainer_pre_section = content[trainer_pre_start:trainer_pre_end]
+        assert "trainer_count" in trainer_pre_section
+        assert "range between unbounded preceding and 1 preceding" in trainer_pre_section
+
+        sire_pre_start = content.find("temp_sire_te_pre")
+        sire_pre_end = content.find("temp_sire_te as (")
+        sire_pre_section = content[sire_pre_start:sire_pre_end]
+        assert "sire_count" in sire_pre_section
+        assert "range between unbounded preceding and 1 preceding" in sire_pre_section
+
+    def test_sql_mask_wrapper_applies_if_condition(self):
+        """マスクラッパーCTEが IF(count >= 20, ..., NULL) を適用していること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        # 騎手マスク
+        jockey_wrapper_start = content.find("temp_jockey_te as (")
+        jockey_wrapper_end = content.find("temp_trainer_te_pre")
+        jockey_wrapper = content[jockey_wrapper_start:jockey_wrapper_end]
+        assert "IF(jockey_count >= 20, jockey_te, NULL)" in jockey_wrapper
+        assert "IF(jockey_count >= 20, jockey_course_type_te, NULL)" in jockey_wrapper
+
+        # 調教師マスク
+        trainer_wrapper_start = content.find("temp_trainer_te as (")
+        trainer_wrapper_end = content.find("temp_sire_te_pre")
+        trainer_wrapper = content[trainer_wrapper_start:trainer_wrapper_end]
+        assert "IF(trainer_count >= 20, trainer_te, NULL)" in trainer_wrapper
+
+        # 種牡馬マスク
+        sire_wrapper_start = content.find("temp_sire_te as (")
+        sire_wrapper_end = content.find("temp_horse_distance_base")
+        sire_wrapper = content[sire_wrapper_start:sire_wrapper_end]
+        assert "IF(sire_count >= 20, sire_te, NULL)" in sire_wrapper
+
+    def test_sql_mask_threshold_is_20(self):
+        """マスク閾値が 20 であること（変更時に気付けるよう）"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        assert "IF(jockey_count >= 20," in content
+        assert "IF(trainer_count >= 20," in content
+        assert "IF(sire_count >= 20," in content
+
+    def test_sql_all_9_jockey_te_columns_masked(self):
+        """9つの騎手TE基本特徴量がすべてマスク対象であること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        jockey_wrapper_start = content.find("temp_jockey_te as (")
+        jockey_wrapper_end = content.find("temp_trainer_te_pre")
+        jockey_wrapper = content[jockey_wrapper_start:jockey_wrapper_end]
+        expected_columns = [
+            "jockey_te",
+            "jockey_course_type_te",
+            "jockey_venue_te",
+            "jockey_distance_band_te",
+            "jockey_distance_te",
+            "jockey_direction_te",
+            "jockey_course_type_venue_te",
+            "jockey_course_type_distance_te",
+            "jockey_course_type_distance_venue_te",
+        ]
+        for col in expected_columns:
+            assert f"IF(jockey_count >= 20, {col}, NULL)" in jockey_wrapper, (
+                f"騎手TE '{col}' のマスク条件が見つかりません"
+            )
+
+    def test_sql_final_join_still_references_wrapper_ctes(self):
+        """最終SELECTがマスクラッパーCTE（temp_jockey_te等）を参照していること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        assert "left join temp_jockey_te as t_j_te" in content
+        assert "left join temp_trainer_te as t_tr_te" in content
+        assert "left join temp_sire_te as t_s_te" in content
+
+
 class TestFeaturePipeline:
     """FeaturePipelineのテスト"""
 
