@@ -405,10 +405,10 @@ class TestSQLTemplate:
         )
 
     def test_sql_normalized_features_have_time_boundary(self):
-        """finish_time_normalized と last_3f_normalized が時系列ガードを持つこと"""
+        """finish_time_normalized と last_3f_normalized が時系列ガードを持つこと（Issue #295修正後）"""
         content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
-        # ORDER BY race_date + RANGE が両方の正規化に適用されていることを確認
-        assert content.count("range between unbounded preceding and current row") >= 2, (
+        # ORDER BY race_date + RANGE が両方の正規化に適用されていることを確認（1 preceding で当日除外）
+        assert content.count("range between unbounded preceding and 1 preceding") >= 2, (
             "finish_time_normalized または last_3f_normalized の時系列ガードが不足しています"
         )
         # 全体集計（ORDER BY なし）が残っていないことを確認
@@ -573,6 +573,73 @@ class TestTELowFrequencyMask:
         assert "left join temp_jockey_te as t_j_te" in content
         assert "left join temp_trainer_te as t_tr_te" in content
         assert "left join temp_sire_te as t_s_te" in content
+
+
+class TestTimeNormalizationFix:
+    """finish_time_normalized / last_3f_normalized のリーク修正テスト（Issue #295）"""
+
+    def test_sql_time_normalization_uses_1_preceding(self):
+        """finish_time_normalized と last_3f_normalized が 1 preceding を使用すること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        norm_start = content.find("finish_time_normalized")
+        last3f_start = content.find("last_3f_normalized")
+        norm_section = content[norm_start - 500:last3f_start + 500]
+        assert "range between unbounded preceding and 1 preceding" in norm_section, (
+            "finish_time_normalized / last_3f_normalized が '1 preceding' を使用していません"
+        )
+
+    def test_sql_time_normalization_no_current_row(self):
+        """finish_time_normalized / last_3f_normalized で CURRENT ROW を使用していないこと"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        norm_start = content.find("finish_time_normalized")
+        last3f_end = content.find("last_3f_normalized") + len("last_3f_normalized") + 200
+        norm_section = content[norm_start - 800:last3f_end]
+        assert "current row" not in norm_section.lower(), (
+            "finish_time_normalized / last_3f_normalized に 'current row' が残っています"
+        )
+
+    def test_sql_no_current_row_anywhere(self):
+        """SQLファイル全体に CURRENT ROW が存在しないこと"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        assert "current row" not in content.lower(), (
+            "feature_query_raw.sql に 'current row' が残っています"
+        )
+
+
+class TestGainZeroFeatureRemoval:
+    """gain=0 特徴量除去テスト（Issue #291 SQL変更フェーズ / Issue #296）"""
+
+    REMOVED_FEATURES = [
+        "running_style", "improvement", "stable_index", "blinker", "pace_forecast",
+        "early_advantage", "behind_advantage", "small_number_early_advantage",
+        "bracket_number", "condition_change_flag",
+        "improvement_code_2", "improvement_code_3", "improvement_code_4", "improvement_code_5",
+        "corner_position_1", "corner_position_2", "corner_position_3",
+        "corner_position_4", "corner_position_5",
+        "disadvantage_3", "disadvantage_5",
+        "position_fault_2", "position_fault_3",
+        "late_start_3", "late_start_5",
+        "mean_corner_position", "ema_corner_position",
+        "running_style_front_count", "is_sole_leader", "is_renso",
+        "turf_condition_code", "turf_condition_inner",
+        "straight_bias_outer", "straight_bias_outermost",
+        "dirt_condition_code", "new_direction_flag", "new_surface_dist_flag",
+        "new_track_dist_flag", "new_distance_flag",
+    ]
+
+    def test_sql_except_clause_excludes_gain_zero_features(self):
+        """最終SELECT の EXCEPT 節に gain=0 特徴量が全て含まれること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        final_select_start = content.rfind("select\n  t_p_r_f")
+        final_select_section = content[final_select_start:]
+        for feature in self.REMOVED_FEATURES:
+            assert feature in final_select_section, (
+                f"gain=0 特徴量 '{feature}' が最終SELECT EXCEPT 節またはコメントに含まれていません"
+            )
+
+    def test_sql_removed_features_count(self):
+        """除去対象の gain=0 特徴量が 39 件であること"""
+        assert len(self.REMOVED_FEATURES) == 39
 
 
 class TestFeaturePipeline:

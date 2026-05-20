@@ -502,30 +502,30 @@ with temp_race_horse_count as (
     ) as ema_upside_rate
     ,(SELECT MAX(v) FROM UNNEST([upside_rate_1, upside_rate_2, upside_rate_3, upside_rate_4, upside_rate_5]) v WHERE v IS NOT NULL) as max_upside_rate
     ,(SELECT MIN(v) FROM UNNEST([upside_rate_1, upside_rate_2, upside_rate_3, upside_rate_4, upside_rate_5]) v WHERE v IS NOT NULL) as min_upside_rate
-    /* 走破タイム正規化: 1走前の同場・同距離・同馬場状態での偏差値（当該レース日付以前のデータのみ使用） */
+    /* 走破タイム正規化: 1走前の同場・同距離・同馬場状態での偏差値（当該レース日付より前のデータのみ使用） */
     ,safe_divide(
       t_p_r_f.finish_time_1 - avg(t_p_r_f.finish_time_1) over (
         partition by t_p_r_f.venue_code_prev_1, t_p_r_f.distance_prev_1, t_p_r_f.track_condition_prev_1
         order by t_p_r_f.race_date
-        range between unbounded preceding and current row
+        range between unbounded preceding and 1 preceding
       )
       ,nullif(stddev(t_p_r_f.finish_time_1) over (
         partition by t_p_r_f.venue_code_prev_1, t_p_r_f.distance_prev_1, t_p_r_f.track_condition_prev_1
         order by t_p_r_f.race_date
-        range between unbounded preceding and current row
+        range between unbounded preceding and 1 preceding
       ), 0)
     ) as finish_time_normalized
-    /* 上がり3F正規化: 1走前の同場・同距離・同馬場状態での偏差値（当該レース日付以前のデータのみ使用） */
+    /* 上がり3F正規化: 1走前の同場・同距離・同馬場状態での偏差値（当該レース日付より前のデータのみ使用） */
     ,safe_divide(
       t_p_r_f.last_3f_1 - avg(t_p_r_f.last_3f_1) over (
         partition by t_p_r_f.venue_code_prev_1, t_p_r_f.distance_prev_1, t_p_r_f.track_condition_prev_1
         order by t_p_r_f.race_date
-        range between unbounded preceding and current row
+        range between unbounded preceding and 1 preceding
       )
       ,nullif(stddev(t_p_r_f.last_3f_1) over (
         partition by t_p_r_f.venue_code_prev_1, t_p_r_f.distance_prev_1, t_p_r_f.track_condition_prev_1
         order by t_p_r_f.race_date
-        range between unbounded preceding and current row
+        range between unbounded preceding and 1 preceding
       ), 0)
     ) as last_3f_normalized
     -- ローテーション特徴量
@@ -1504,7 +1504,39 @@ with temp_race_horse_count as (
 )
 
 select
-  t_p_r_f.*
+  t_p_r_f.* except(
+    -- gain=0 特徴量（Issue #296）
+    running_style
+    ,improvement
+    ,stable_index
+    ,blinker
+    ,pace_forecast
+    ,early_advantage
+    ,behind_advantage
+    ,small_number_early_advantage
+    ,bracket_number
+    ,condition_change_flag
+    ,improvement_code_2
+    ,improvement_code_3
+    ,improvement_code_4
+    ,improvement_code_5
+    ,corner_position_1
+    ,corner_position_2
+    ,corner_position_3
+    ,corner_position_4
+    ,corner_position_5
+    ,disadvantage_3
+    ,disadvantage_5
+    ,position_fault_2
+    ,position_fault_3
+    ,late_start_3
+    ,late_start_5
+    ,mean_corner_position
+    ,ema_corner_position
+    ,running_style_front_count
+    ,is_sole_leader
+    ,is_renso
+  )
   ,t_h_m_f.* except(
     race_id
     ,race_date
@@ -1519,6 +1551,15 @@ select
     ,race_class
     ,num_horses
     ,horse_number
+    -- gain=0 特徴量（Issue #296）
+    ,turf_condition_code
+    ,turf_condition_inner
+    ,straight_bias_outer
+    ,straight_bias_outermost
+    ,dirt_condition_code
+    ,new_direction_flag
+    ,new_surface_dist_flag
+    ,new_track_dist_flag
   )
   -- 全ての差分をたして、激走フラグを作成する
   ,(
@@ -1616,7 +1657,7 @@ select
   ,t_h_d_te.distance_top3_finish_rate
   ,t_h_d_te.distance_top1_finish_rate
   ,t_h_d_te.distance_rate_diff
-  ,t_h_d_te.new_distance_flag
+  -- new_distance_flag: gain=0 のため除去（Issue #296）
   -- 調教本追切特徴量 (CHAファイル由来)
   ,t_cha.cha_training_index
   ,t_cha.training_last_3f
