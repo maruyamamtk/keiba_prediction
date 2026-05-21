@@ -1536,6 +1536,58 @@ select
     ,running_style_front_count
     ,is_sole_leader
     ,is_renso
+    -- 過去2〜5走の個別カラム（Issue #292: _2~5系を直近1走+統計量に集約）
+    -- idm_3 は idm_trend_3, finish_position_3 は finish_position_trend_3 の中間値として保持
+    ,race_name_2
+    ,race_name_3
+    ,race_name_4
+    ,race_name_5
+    ,idm_2
+    ,idm_3
+    ,idm_4
+    ,idm_5
+    ,finish_position_2
+    ,finish_position_3
+    ,finish_position_4
+    ,finish_position_5
+    ,finish_position_rate_2
+    ,finish_position_rate_3
+    ,finish_position_rate_4
+    ,finish_position_rate_5
+    ,win_odds_2
+    ,win_odds_3
+    ,win_odds_4
+    ,win_odds_5
+    ,win_popularity_2
+    ,win_popularity_3
+    ,win_popularity_4
+    ,win_popularity_5
+    ,popularity_rate_2
+    ,popularity_rate_3
+    ,popularity_rate_4
+    ,popularity_rate_5
+    ,upside_rate_2
+    ,upside_rate_3
+    ,upside_rate_4
+    ,upside_rate_5
+    ,finish_time_2
+    ,finish_time_3
+    ,finish_time_4
+    ,finish_time_5
+    ,last_3f_2
+    ,last_3f_3
+    ,last_3f_4
+    ,last_3f_5
+    ,last_3f_rank_in_race_2
+    ,last_3f_rank_in_race_3
+    ,last_3f_rank_in_race_4
+    ,last_3f_rank_in_race_5
+    ,late_start_2
+    ,late_start_4
+    ,position_fault_4
+    ,position_fault_5
+    ,disadvantage_2
+    ,disadvantage_4
   )
   ,t_h_m_f.* except(
     race_id
