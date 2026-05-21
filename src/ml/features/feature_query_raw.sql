@@ -113,6 +113,10 @@ with temp_race_horse_count as (
       on h_r.race_id = t_r_h_c.race_id
   where
     r_i.race_date BETWEEN '{start_date}' AND '{end_date}'
+    and r_i.race_class != 'A1'                                                                            -- 新馬戦を除外
+    and coalesce(r_i.course_type, '') != 'obstacle'                                                       -- 障害戦を除外
+    and coalesce(t_r_h_c.num_horses, r_i.num_horses) > 7                                                  -- 少頭数（7頭以下）を除外
+    and not (r_i.venue_code = '04' and r_i.distance = 1000 and r_i.direction = 'straight')               -- 新潟直線1000mを除外
 )
 
 /* 過去レースの情報から集計できる特徴量 */
@@ -823,6 +827,10 @@ with temp_race_horse_count as (
       on r_i.race_id = t_r_h_c.race_id
   where
     r_i.race_date BETWEEN '{start_date}' AND '{end_date}'
+    and r_i.race_class != 'A1'                                                                            -- 新馬戦を除外
+    and coalesce(r_i.course_type, '') != 'obstacle'                                                       -- 障害戦を除外
+    and coalesce(t_r_h_c.num_horses, r_i.num_horses) > 7                                                  -- 少頭数（7頭以下）を除外
+    and not (r_i.venue_code = '04' and r_i.distance = 1000 and r_i.direction = 'straight')               -- 新潟直線1000mを除外
 )
 
 ,temp_horse_master_feature2 as (

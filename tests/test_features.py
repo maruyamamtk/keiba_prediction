@@ -920,3 +920,38 @@ class TestRetryWithBackoff:
         # 2回目→3回目: 約0.10秒 (2^1 * 0.05)
         delay2 = call_times[2] - call_times[1]
         assert delay2 >= 0.08
+
+
+class TestRaceExclusionFilter:
+    """学習・推論対象レース除外フィルタのテスト（Issue #301）"""
+
+    def test_sql_has_exclusion_filters_in_base_entries(self):
+        """temp_base_race_entries に4つの除外フィルタが含まれること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        assert "race_class != 'A1'" in content, "新馬戦除外フィルタが見つかりません"
+        assert "!= 'obstacle'" in content, "障害戦除外フィルタが見つかりません"
+        assert "num_horses) > 7" in content, "少頭数除外フィルタが見つかりません"
+        assert "venue_code = '04' and r_i.distance = 1000 and r_i.direction = 'straight'" in content, "新潟直線1000m除外フィルタが見つかりません"
+
+    def test_sql_exclusion_filters_applied_to_both_ctes(self):
+        """temp_base_race_entries と temp_horse_master_feature の両方に除外フィルタが含まれること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        assert content.count("race_class != 'A1'") == 2, "新馬戦除外が2箇所にあるべき"
+        assert content.count("!= 'obstacle'") == 2, "障害戦除外が2箇所にあるべき"
+        assert content.count("num_horses) > 7") == 2, "少頭数除外が2箇所にあるべき"
+        assert content.count("venue_code = '04' and r_i.distance = 1000 and r_i.direction = 'straight'") == 2, "新潟直線除外が2箇所にあるべき"
+
+    def test_sql_obstacle_exclusion_handles_null(self):
+        """障害戦除外フィルタが course_type NULL の場合を安全に扱うこと（coalesce使用）"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        assert "coalesce(r_i.course_type, '') != 'obstacle'" in content, "障害戦除外が coalesce でNULL安全になっていません"
+
+    def test_sql_small_field_exclusion_uses_coalesce(self):
+        """少頭数除外フィルタが coalesce(t_r_h_c.num_horses, r_i.num_horses) を使うこと"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        assert "coalesce(t_r_h_c.num_horses, r_i.num_horses) > 7" in content, "少頭数除外が coalesce を使っていません"
+
+    def test_sql_niigata_exclusion_is_conjunction(self):
+        """新潟直線1000m除外が venue_code・distance・direction の AND 条件であること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        assert "not (r_i.venue_code = '04' and r_i.distance = 1000 and r_i.direction = 'straight')" in content, "新潟直線1000m除外の複合条件が見つかりません"
