@@ -422,11 +422,11 @@ class TestSQLTemplate:
         last3f_idx = content.find("last_3f_normalized")
         finish_section = content[max(0, finish_idx - 300): finish_idx + 50]
         last3f_section = content[max(0, last3f_idx - 300): last3f_idx + 50]
-        assert "order by t_p_r_f.race_date" in finish_section, (
-            "finish_time_normalized のウィンドウに ORDER BY race_date がありません"
+        assert "order by unix_date(t_p_r_f.race_date)" in finish_section, (
+            "finish_time_normalized のウィンドウに ORDER BY unix_date(race_date) がありません"
         )
-        assert "order by t_p_r_f.race_date" in last3f_section, (
-            "last_3f_normalized のウィンドウに ORDER BY race_date がありません"
+        assert "order by unix_date(t_p_r_f.race_date)" in last3f_section, (
+            "last_3f_normalized のウィンドウに ORDER BY unix_date(race_date) がありません"
         )
 
     def test_sql_has_intra_race_relative_features(self):

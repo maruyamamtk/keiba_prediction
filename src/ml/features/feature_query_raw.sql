@@ -510,12 +510,12 @@ with temp_race_horse_count as (
     ,safe_divide(
       t_p_r_f.finish_time_1 - avg(t_p_r_f.finish_time_1) over (
         partition by t_p_r_f.venue_code_prev_1, t_p_r_f.distance_prev_1, t_p_r_f.track_condition_prev_1
-        order by t_p_r_f.race_date
+        order by unix_date(t_p_r_f.race_date)
         range between unbounded preceding and 1 preceding
       )
       ,nullif(stddev(t_p_r_f.finish_time_1) over (
         partition by t_p_r_f.venue_code_prev_1, t_p_r_f.distance_prev_1, t_p_r_f.track_condition_prev_1
-        order by t_p_r_f.race_date
+        order by unix_date(t_p_r_f.race_date)
         range between unbounded preceding and 1 preceding
       ), 0)
     ) as finish_time_normalized
@@ -523,12 +523,12 @@ with temp_race_horse_count as (
     ,safe_divide(
       t_p_r_f.last_3f_1 - avg(t_p_r_f.last_3f_1) over (
         partition by t_p_r_f.venue_code_prev_1, t_p_r_f.distance_prev_1, t_p_r_f.track_condition_prev_1
-        order by t_p_r_f.race_date
+        order by unix_date(t_p_r_f.race_date)
         range between unbounded preceding and 1 preceding
       )
       ,nullif(stddev(t_p_r_f.last_3f_1) over (
         partition by t_p_r_f.venue_code_prev_1, t_p_r_f.distance_prev_1, t_p_r_f.track_condition_prev_1
-        order by t_p_r_f.race_date
+        order by unix_date(t_p_r_f.race_date)
         range between unbounded preceding and 1 preceding
       ), 0)
     ) as last_3f_normalized
