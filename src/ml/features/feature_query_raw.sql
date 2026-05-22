@@ -876,14 +876,17 @@ with temp_race_horse_count as (
   where finish_position > 0
 )
 
-/* TE計算の元となる全期間の騎手・調教師・種牡馬実績履歴（当日同日レースは除外）
+/* TE計算の元となる全期間の騎手・調教師・種牡馬・馬自身実績履歴（当日同日レースは除外）
    horse_results を起点にすることで、race_results にまだ存在しない当日予測レースも含める。
    window関数の RANGE BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING が当日行を除外するため
-   学習時の分布に影響しない。 */
-,temp_te_history_base as (
+   学習時の分布に影響しない。
+   2段階構成: temp_te_history_raw (JOIN) → temp_te_history_base (LAG計算で前走比較カラム追加) */
+,temp_te_history_raw as (
   select
     h_r.race_id
     ,h_r.horse_number
+    ,h_r.horse_id
+    ,h_r.weight_carried
     ,r_i.race_date
     ,r_i.course_type
     ,r_i.venue_code
@@ -908,6 +911,41 @@ with temp_race_horse_count as (
       on h_r.race_id = r_r.race_id
       and h_r.horse_number = r_r.horse_number
   where r_r.finish_position > 0 or r_r.race_id is null
+)
+,temp_te_history_base as (
+  select
+    race_id
+    ,horse_number
+    ,horse_id
+    ,race_date
+    ,course_type
+    ,venue_code
+    ,distance
+    ,distance_band
+    ,direction
+    ,jockey_code
+    ,trainer_code
+    ,sire_name
+    ,is_top3
+    ,case
+      when extract(month from race_date) in (3, 4, 5)  then 'spring'
+      when extract(month from race_date) in (6, 7, 8)  then 'summer'
+      when extract(month from race_date) in (9, 10, 11) then 'autumn'
+      else 'winter'
+    end as season
+    ,case
+      when lag(distance) over (partition by horse_id order by race_date) is null then null
+      when distance > lag(distance) over (partition by horse_id order by race_date) then 'extension'
+      when distance < lag(distance) over (partition by horse_id order by race_date) then 'shortening'
+      else 'same'
+    end as distance_change_type
+    ,case
+      when lag(weight_carried) over (partition by horse_id order by race_date) is null then null
+      when weight_carried > lag(weight_carried) over (partition by horse_id order by race_date) then 'increase'
+      when weight_carried < lag(weight_carried) over (partition by horse_id order by race_date) then 'decrease'
+      else 'same'
+    end as weight_carried_change_type
+  from temp_te_history_raw
 )
 
 /* 騎手 Target Encoding（累積3着以内率、スムージング係数m=10、同日除外）
@@ -1327,6 +1365,197 @@ with temp_race_horse_count as (
   from temp_sire_te_pre
 )
 
+/* 馬自身 Target Encoding（累積3着以内率、スムージング係数m=10、同日除外）
+   出走数 < 5 の馬は全TE値をNULLとして扱う（若馬・低頻度の情報ノイズ除去） */
+,temp_horse_te_pre as (
+  select
+    race_id
+    ,horse_number
+    ,coalesce(count(*) over (
+      partition by horse_id
+      order by unix_date(race_date)
+      range between unbounded preceding and 1 preceding
+    ), 0) as horse_count
+    ,safe_divide(
+      coalesce(sum(is_top3) over (
+        partition by horse_id
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10 * g.global_top3_rate,
+      coalesce(count(*) over (
+        partition by horse_id
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10
+    ) as horse_te
+    ,safe_divide(
+      coalesce(sum(is_top3) over (
+        partition by horse_id, course_type
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10 * g.global_top3_rate,
+      coalesce(count(*) over (
+        partition by horse_id, course_type
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10
+    ) as horse_course_type_te
+    ,safe_divide(
+      coalesce(sum(is_top3) over (
+        partition by horse_id, venue_code
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10 * g.global_top3_rate,
+      coalesce(count(*) over (
+        partition by horse_id, venue_code
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10
+    ) as horse_venue_te
+    ,safe_divide(
+      coalesce(sum(is_top3) over (
+        partition by horse_id, distance_band
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10 * g.global_top3_rate,
+      coalesce(count(*) over (
+        partition by horse_id, distance_band
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10
+    ) as horse_distance_band_te
+    ,safe_divide(
+      coalesce(sum(is_top3) over (
+        partition by horse_id, distance
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10 * g.global_top3_rate,
+      coalesce(count(*) over (
+        partition by horse_id, distance
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10
+    ) as horse_distance_te
+    ,safe_divide(
+      coalesce(sum(is_top3) over (
+        partition by horse_id, direction
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10 * g.global_top3_rate,
+      coalesce(count(*) over (
+        partition by horse_id, direction
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10
+    ) as horse_direction_te
+    ,safe_divide(
+      coalesce(sum(is_top3) over (
+        partition by horse_id, jockey_code
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10 * g.global_top3_rate,
+      coalesce(count(*) over (
+        partition by horse_id, jockey_code
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10
+    ) as horse_jockey_te
+    ,safe_divide(
+      coalesce(sum(is_top3) over (
+        partition by horse_id, season
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10 * g.global_top3_rate,
+      coalesce(count(*) over (
+        partition by horse_id, season
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10
+    ) as horse_season_te
+    ,safe_divide(
+      coalesce(sum(is_top3) over (
+        partition by horse_id, course_type, venue_code
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10 * g.global_top3_rate,
+      coalesce(count(*) over (
+        partition by horse_id, course_type, venue_code
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10
+    ) as horse_course_type_venue_te
+    ,safe_divide(
+      coalesce(sum(is_top3) over (
+        partition by horse_id, course_type, distance
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10 * g.global_top3_rate,
+      coalesce(count(*) over (
+        partition by horse_id, course_type, distance
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10
+    ) as horse_course_type_distance_te
+    ,safe_divide(
+      coalesce(sum(is_top3) over (
+        partition by horse_id, course_type, distance, venue_code
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10 * g.global_top3_rate,
+      coalesce(count(*) over (
+        partition by horse_id, course_type, distance, venue_code
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10
+    ) as horse_course_type_distance_venue_te
+    ,safe_divide(
+      coalesce(sum(is_top3) over (
+        partition by horse_id, distance_change_type
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10 * g.global_top3_rate,
+      coalesce(count(*) over (
+        partition by horse_id, distance_change_type
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10
+    ) as horse_distance_change_te
+    ,safe_divide(
+      coalesce(sum(is_top3) over (
+        partition by horse_id, weight_carried_change_type
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10 * g.global_top3_rate,
+      coalesce(count(*) over (
+        partition by horse_id, weight_carried_change_type
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10
+    ) as horse_weight_carried_change_te
+  from temp_te_history_base
+    cross join temp_global_mean_te as g
+)
+/* 低頻度マスク適用: 馬の過去出走数 < 5 の場合は全TE値をNULLにする（若馬・低頻度の情報ノイズ除去） */
+,temp_horse_te as (
+  select
+    race_id
+    ,horse_number
+    ,IF(horse_count >= 5, horse_te, NULL) as horse_te
+    ,IF(horse_count >= 5, horse_course_type_te, NULL) as horse_course_type_te
+    ,IF(horse_count >= 5, horse_venue_te, NULL) as horse_venue_te
+    ,IF(horse_count >= 5, horse_distance_band_te, NULL) as horse_distance_band_te
+    ,IF(horse_count >= 5, horse_distance_te, NULL) as horse_distance_te
+    ,IF(horse_count >= 5, horse_direction_te, NULL) as horse_direction_te
+    ,IF(horse_count >= 5, horse_jockey_te, NULL) as horse_jockey_te
+    ,IF(horse_count >= 5, horse_season_te, NULL) as horse_season_te
+    ,IF(horse_count >= 5, horse_course_type_venue_te, NULL) as horse_course_type_venue_te
+    ,IF(horse_count >= 5, horse_course_type_distance_te, NULL) as horse_course_type_distance_te
+    ,IF(horse_count >= 5, horse_course_type_distance_venue_te, NULL) as horse_course_type_distance_venue_te
+    ,IF(horse_count >= 5, horse_distance_change_te, NULL) as horse_distance_change_te
+    ,IF(horse_count >= 5, horse_weight_carried_change_te, NULL) as horse_weight_carried_change_te
+  from temp_horse_te_pre
+)
+
 /* 馬の距離帯別・距離別 TE 計算の元データ
    horse_results を起点にすることで、race_results にまだ存在しない当日予測レースも含める。 */
 ,temp_horse_distance_base as (
@@ -1708,6 +1937,33 @@ select
   ,t_s_te.sire_course_type_venue_te - t_s_te.sire_te as sire_course_type_venue_te_diff
   ,t_s_te.sire_course_type_distance_te - t_s_te.sire_te as sire_course_type_distance_te_diff
   ,t_s_te.sire_course_type_distance_venue_te - t_s_te.sire_te as sire_course_type_distance_venue_te_diff
+  -- 馬自身TE
+  ,t_h_te.horse_te
+  ,t_h_te.horse_course_type_te
+  ,t_h_te.horse_venue_te
+  ,t_h_te.horse_distance_band_te
+  ,t_h_te.horse_distance_te
+  ,t_h_te.horse_direction_te
+  ,t_h_te.horse_jockey_te
+  ,t_h_te.horse_season_te
+  ,t_h_te.horse_course_type_venue_te
+  ,t_h_te.horse_course_type_distance_te
+  ,t_h_te.horse_course_type_distance_venue_te
+  ,t_h_te.horse_distance_change_te
+  ,t_h_te.horse_weight_carried_change_te
+  -- 馬自身TE差分（条件別TE − 全体TE）
+  ,t_h_te.horse_course_type_te - t_h_te.horse_te as horse_course_type_te_diff
+  ,t_h_te.horse_venue_te - t_h_te.horse_te as horse_venue_te_diff
+  ,t_h_te.horse_distance_band_te - t_h_te.horse_te as horse_distance_band_te_diff
+  ,t_h_te.horse_distance_te - t_h_te.horse_te as horse_distance_te_diff
+  ,t_h_te.horse_direction_te - t_h_te.horse_te as horse_direction_te_diff
+  ,t_h_te.horse_jockey_te - t_h_te.horse_te as horse_jockey_te_diff
+  ,t_h_te.horse_season_te - t_h_te.horse_te as horse_season_te_diff
+  ,t_h_te.horse_course_type_venue_te - t_h_te.horse_te as horse_course_type_venue_te_diff
+  ,t_h_te.horse_course_type_distance_te - t_h_te.horse_te as horse_course_type_distance_te_diff
+  ,t_h_te.horse_course_type_distance_venue_te - t_h_te.horse_te as horse_course_type_distance_venue_te_diff
+  ,t_h_te.horse_distance_change_te - t_h_te.horse_te as horse_distance_change_te_diff
+  ,t_h_te.horse_weight_carried_change_te - t_h_te.horse_te as horse_weight_carried_change_te_diff
   -- 距離帯別特徴量
   ,t_h_db_te.distance_band_top3_finish_rate
   ,t_h_db_te.distance_band_top1_finish_rate
@@ -1739,6 +1995,9 @@ from
   left join temp_sire_te as t_s_te
     on t_p_r_f.race_id = t_s_te.race_id
     and t_p_r_f.horse_number = t_s_te.horse_number
+  left join temp_horse_te as t_h_te
+    on t_p_r_f.race_id = t_h_te.race_id
+    and t_p_r_f.horse_number = t_h_te.horse_number
   left join temp_horse_distance_band_te as t_h_db_te
     on t_p_r_f.race_id = t_h_db_te.race_id
     and t_p_r_f.horse_number = t_h_db_te.horse_number
