@@ -955,3 +955,90 @@ class TestRaceExclusionFilter:
         """新潟直線1000m除外が venue_code・distance・direction の AND 条件であること"""
         content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
         assert "not (r_i.venue_code = '04' and r_i.distance = 1000 and r_i.direction = 'straight')" in content, "新潟直線1000m除外の複合条件が見つかりません"
+
+
+class TestHorseTEFeature:
+    """馬自身 Target Encoding 特徴量のテスト（Issue #303）"""
+
+    def test_sql_has_temp_horse_te_ctes(self):
+        """temp_horse_te_pre と temp_horse_te CTE が存在すること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        assert "temp_horse_te_pre" in content, "temp_horse_te_pre が見つかりません"
+        assert "temp_horse_te as (" in content, "temp_horse_te が見つかりません"
+
+    def test_sql_te_history_base_has_required_columns(self):
+        """temp_te_history_base に horse_id / season / distance_change_type / weight_carried_change_type が含まれること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        # temp_te_history_raw から temp_jockey_te_pre までの範囲を確認
+        base_start = content.find("temp_te_history_raw as (")
+        jockey_start = content.find("temp_jockey_te_pre")
+        base_section = content[base_start:jockey_start]
+        assert "horse_id" in base_section, "temp_te_history_base に horse_id がありません"
+        assert "season" in base_section, "temp_te_history_base に season がありません"
+        assert "distance_change_type" in base_section, "temp_te_history_base に distance_change_type がありません"
+        assert "weight_carried_change_type" in base_section, "temp_te_history_base に weight_carried_change_type がありません"
+
+    def test_sql_distance_change_type_definition(self):
+        """distance_change_type が extension / shortening / same の3値で定義されること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        base_start = content.find("temp_te_history_base as (")
+        base_end = content.find("temp_te_history_raw")
+        # 逆順検索で実際のtemp_te_history_baseのLAG定義部分を取得
+        base_section = content[base_end:base_end + 3000]
+        assert "'extension'" in base_section, "distance_change_type に 'extension' がありません"
+        assert "'shortening'" in base_section, "distance_change_type に 'shortening' がありません"
+        assert "'same'" in base_section, "distance_change_type に 'same' がありません"
+
+    def test_sql_weight_carried_change_type_definition(self):
+        """weight_carried_change_type が increase / decrease / same の3値で定義されること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        base_section_start = content.find("temp_te_history_base as (")
+        base_section = content[base_section_start:base_section_start + 3000]
+        assert "'increase'" in base_section, "weight_carried_change_type に 'increase' がありません"
+        assert "'decrease'" in base_section, "weight_carried_change_type に 'decrease' がありません"
+
+    def test_sql_horse_te_columns_in_final_select(self):
+        """horse_te および全12条件別TE差分カラムが最終SELECTに含まれること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        final_select_start = content.rfind("select")
+        final_section = content[final_select_start:]
+        expected_columns = [
+            "horse_te",
+            "horse_course_type_te_diff",
+            "horse_venue_te_diff",
+            "horse_distance_band_te_diff",
+            "horse_distance_te_diff",
+            "horse_direction_te_diff",
+            "horse_jockey_te_diff",
+            "horse_season_te_diff",
+            "horse_course_type_venue_te_diff",
+            "horse_course_type_distance_te_diff",
+            "horse_course_type_distance_venue_te_diff",
+            "horse_distance_change_te_diff",
+            "horse_weight_carried_change_te_diff",
+        ]
+        for col in expected_columns:
+            assert col in final_section, f"最終SELECT に '{col}' が見つかりません"
+
+    def test_sql_horse_te_mask_threshold_is_5(self):
+        """馬自身TE のマスク閾値が 5 であること（騎手・調教師の20より低い）"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        wrapper_start = content.find("temp_horse_te as (")
+        wrapper_end = content.find("temp_horse_distance_base")
+        wrapper_section = content[wrapper_start:wrapper_end]
+        assert "IF(horse_count >= 5, horse_te, NULL)" in wrapper_section, "馬TEマスク閾値が 5 ではありません"
+
+    def test_sql_final_join_includes_horse_te(self):
+        """最終SELECTが temp_horse_te を LEFT JOIN していること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        assert "left join temp_horse_te as t_h_te" in content, "最終SELECTに temp_horse_te の LEFT JOIN がありません"
+
+    def test_sql_season_definition(self):
+        """季節定義が spring / summer / autumn / winter の4値であること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        base_section_start = content.find("temp_te_history_base as (")
+        base_section = content[base_section_start:base_section_start + 2000]
+        assert "'spring'" in base_section, "season に 'spring' がありません"
+        assert "'summer'" in base_section, "season に 'summer' がありません"
+        assert "'autumn'" in base_section, "season に 'autumn' がありません"
+        assert "'winter'" in base_section, "season に 'winter' がありません"
