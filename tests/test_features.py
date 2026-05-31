@@ -1126,3 +1126,89 @@ class TestCareerDistanceFeature:
         flags_section = content[flags_start:flags_end]
         assert "from temp_horse_distance_base" in flags_section, \
             "temp_career_distance_flags が temp_horse_distance_base を参照していません"
+
+
+class TestCornerPositionFeature:
+    """前走コーナー通過順位（全コーナー）・折り合い指標のテスト（Issue #306）"""
+
+    def test_sql_has_raw_corner_columns_prev1(self):
+        """前走（prev_1）の全4コーナー通過順が定義されていること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        prf_start = content.find("temp_past_race_features as (")
+        prf2_start = content.find("temp_past_race_features2 as (")
+        prf_section = content[prf_start:prf2_start]
+        for col in ["corner1_prev_1", "corner2_prev_1", "corner3_prev_1", "corner4_prev_1"]:
+            assert col in prf_section, f"temp_past_race_features に '{col}' が見つかりません"
+
+    def test_sql_has_raw_corner_columns_prev2(self):
+        """2走前（prev_2）の全4コーナー通過順が定義されていること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        prf_start = content.find("temp_past_race_features as (")
+        prf2_start = content.find("temp_past_race_features2 as (")
+        prf_section = content[prf_start:prf2_start]
+        for col in ["corner1_prev_2", "corner2_prev_2", "corner3_prev_2", "corner4_prev_2"]:
+            assert col in prf_section, f"temp_past_race_features に '{col}' が見つかりません"
+
+    def test_sql_has_raw_corner_columns_prev3(self):
+        """3走前（prev_3）の全4コーナー通過順が定義されていること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        prf_start = content.find("temp_past_race_features as (")
+        prf2_start = content.find("temp_past_race_features2 as (")
+        prf_section = content[prf_start:prf2_start]
+        for col in ["corner1_prev_3", "corner2_prev_3", "corner3_prev_3", "corner4_prev_3"]:
+            assert col in prf_section, f"temp_past_race_features に '{col}' が見つかりません"
+
+    def test_sql_has_corner_gain_features_in_prf2(self):
+        """折り合い指標（corner_gain_1to4_prev_N）が temp_past_race_features2 に定義されていること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        prf2_start = content.find("temp_past_race_features2 as (")
+        horse_master_start = content.find("temp_horse_master_feature as (")
+        prf2_section = content[prf2_start:horse_master_start]
+        for col in ["corner_gain_1to4_prev_1", "corner_gain_1to4_prev_2", "corner_gain_1to4_prev_3"]:
+            assert col in prf2_section, f"temp_past_race_features2 に '{col}' が見つかりません"
+
+    def test_sql_has_aggregate_corner_features_in_prf2(self):
+        """集計折り合い指標が temp_past_race_features2 に定義されていること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        prf2_start = content.find("temp_past_race_features2 as (")
+        horse_master_start = content.find("temp_horse_master_feature as (")
+        prf2_section = content[prf2_start:horse_master_start]
+        for col in [
+            "mean_corner_gain_1to4",
+            "ema_corner_gain_1to4",
+            "mean_corner1_position",
+            "corner1_to_finish_delta_prev_1",
+        ]:
+            assert col in prf2_section, f"temp_past_race_features2 に '{col}' が見つかりません"
+
+    def test_sql_corner4_uses_r_r_corner_position_4(self):
+        """corner4_prev_N は r_r_N.corner_position_4 を参照していること（既存データと整合）"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        prf_start = content.find("temp_past_race_features as (")
+        prf2_start = content.find("temp_past_race_features2 as (")
+        prf_section = content[prf_start:prf2_start]
+        assert "r_r_1.corner_position_4 as corner4_prev_1" in prf_section, \
+            "corner4_prev_1 が r_r_1.corner_position_4 を参照していません"
+        assert "r_r_2.corner_position_4 as corner4_prev_2" in prf_section, \
+            "corner4_prev_2 が r_r_2.corner_position_4 を参照していません"
+        assert "r_r_3.corner_position_4 as corner4_prev_3" in prf_section, \
+            "corner4_prev_3 が r_r_3.corner_position_4 を参照していません"
+
+    def test_sql_corner_gain_null_when_corner1_null(self):
+        """corner_gain_1to4_prev_N は corner1が NULL の場合 NULL になること（直線コース対応）"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        prf2_start = content.find("temp_past_race_features2 as (")
+        horse_master_start = content.find("temp_horse_master_feature as (")
+        prf2_section = content[prf2_start:horse_master_start]
+        # 分母にcorner1 is not null条件があることを確認（直線コース除外）
+        assert "corner1_prev_1 is not null and t_p_r_f.corner4_prev_1 is not null" in prf2_section, \
+            "mean_corner_gain_1to4 の分母に corner1/corner4 null チェックがありません"
+
+    def test_sql_corner1_to_finish_delta_excludes_invalid_finish(self):
+        """corner1_to_finish_delta_prev_1 は finish_position=0（取消/失格）を除外すること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        prf2_start = content.find("temp_past_race_features2 as (")
+        horse_master_start = content.find("temp_horse_master_feature as (")
+        prf2_section = content[prf2_start:horse_master_start]
+        assert "finish_position_1 > 0" in prf2_section, \
+            "corner1_to_finish_delta_prev_1 が finish_position=0 を除外していません"
