@@ -953,6 +953,7 @@ with temp_race_horse_count as (
     ,h_r.jockey_code
     ,h_r.trainer_code
     ,h_m.sire_name
+    ,h_m.dam_name
     ,case when r_r.finish_position between 1 and 3 then 1 else 0 end as is_top3
   from `{project_id}`.raw.horse_results as h_r
     inner join `{project_id}`.raw.race_info as r_i
@@ -978,6 +979,7 @@ with temp_race_horse_count as (
     ,jockey_code
     ,trainer_code
     ,sire_name
+    ,dam_name
     ,is_top3
     ,case
       when extract(month from race_date) in (3, 4, 5)  then 'spring'
@@ -1415,6 +1417,249 @@ with temp_race_horse_count as (
     ,IF(sire_count >= 20, sire_course_type_distance_te, NULL) as sire_course_type_distance_te
     ,IF(sire_count >= 20, sire_course_type_distance_venue_te, NULL) as sire_course_type_distance_venue_te
   from temp_sire_te_pre
+)
+
+/* 母馬（繁殖牝馬）競走実績特徴量（Issue #307）
+   カテゴリA: pedigree.dam_id 経由で母馬自身の実績を集計
+   dam_id IS NULL（外国産馬等）の場合は全カラム NULL で対応 */
+,temp_mare_race_base as (
+  select
+    p.horse_id
+    ,ri_d.course_type
+    ,ri_d.venue_code
+    ,case
+      when ri_d.distance < 1400 then 'sprint'
+      when ri_d.distance < 1800 then 'mile'
+      when ri_d.distance < 2200 then 'intermediate'
+      else 'long'
+    end as distance_band
+    ,ri_d.direction
+    ,ri_d.distance
+    ,case when rr_d.finish_position between 1 and 3 then 1 else 0 end as is_top3
+  from `{project_id}`.raw.pedigree as p
+  join `{project_id}`.raw.horse_results as hr_d
+    on hr_d.horse_id = p.dam_id
+  join `{project_id}`.raw.race_results as rr_d
+    on rr_d.race_id = hr_d.race_id
+    and rr_d.horse_number = hr_d.horse_number
+  join `{project_id}`.raw.race_info as ri_d
+    on ri_d.race_id = hr_d.race_id
+  where p.dam_id is not null
+    and rr_d.finish_position > 0
+    and ri_d.course_type != 'obstacle'
+)
+/* グループA-1: 全出走ベース距離統計 / グループA-2: 3着以内レース絞り距離統計 / グループA-3: 全体複勝率 */
+,temp_mare_stats as (
+  select
+    horse_id
+    ,count(*) as mare_race_count
+    ,avg(distance) as mare_avg_race_distance
+    ,max(distance) as mare_max_race_distance
+    ,min(distance) as mare_min_race_distance
+    ,countif(is_top3 = 1) as mare_placed_race_count
+    ,avg(case when is_top3 = 1 then distance end) as mare_placed_avg_distance
+    ,max(case when is_top3 = 1 then distance end) as mare_placed_max_distance
+    ,min(case when is_top3 = 1 then distance end) as mare_placed_min_distance
+    ,safe_divide(countif(is_top3 = 1), count(*)) as mare_place_rate
+    ,safe_divide(countif(is_top3 = 1 and course_type = 'turf'), nullif(countif(course_type = 'turf'), 0)) as mare_turf_place_rate
+    ,safe_divide(countif(is_top3 = 1 and course_type = 'dirt'), nullif(countif(course_type = 'dirt'), 0)) as mare_dirt_place_rate
+  from temp_mare_race_base
+  group by horse_id
+)
+/* グループA-3: 競馬場別複勝率 */
+,temp_mare_venue_stats as (
+  select
+    horse_id
+    ,venue_code
+    ,safe_divide(countif(is_top3 = 1), count(*)) as mare_venue_place_rate
+  from temp_mare_race_base
+  group by horse_id, venue_code
+)
+/* グループA-3: 距離帯別複勝率 */
+,temp_mare_distance_band_stats as (
+  select
+    horse_id
+    ,distance_band
+    ,safe_divide(countif(is_top3 = 1), count(*)) as mare_distance_band_place_rate
+  from temp_mare_race_base
+  group by horse_id, distance_band
+)
+/* グループA-3: 距離別複勝率 */
+,temp_mare_distance_stats as (
+  select
+    horse_id
+    ,distance
+    ,safe_divide(countif(is_top3 = 1), count(*)) as mare_distance_place_rate
+  from temp_mare_race_base
+  group by horse_id, distance
+)
+/* グループA-3: 回り方向別複勝率 */
+,temp_mare_direction_stats as (
+  select
+    horse_id
+    ,direction
+    ,safe_divide(countif(is_top3 = 1), count(*)) as mare_direction_place_rate
+  from temp_mare_race_base
+  group by horse_id, direction
+)
+/* グループA-3: コース種別×競馬場別複勝率 */
+,temp_mare_cv_stats as (
+  select
+    horse_id
+    ,course_type
+    ,venue_code
+    ,safe_divide(countif(is_top3 = 1), count(*)) as mare_course_type_venue_place_rate
+  from temp_mare_race_base
+  group by horse_id, course_type, venue_code
+)
+/* グループA-3: コース種別×距離帯別複勝率 */
+,temp_mare_cd_stats as (
+  select
+    horse_id
+    ,course_type
+    ,distance_band
+    ,safe_divide(countif(is_top3 = 1), count(*)) as mare_course_type_distance_band_place_rate
+  from temp_mare_race_base
+  group by horse_id, course_type, distance_band
+)
+
+/* カテゴリB: 母馬産駒 Target Encoding（dam_name軸、スムージング係数m=10、同日除外）
+   産駒数 < 10 の母馬は全TE値をNULLとして扱う（#293 種牡馬TE準拠） */
+,temp_mare_te_pre as (
+  select
+    race_id
+    ,horse_number
+    ,coalesce(count(*) over (
+      partition by dam_name
+      order by unix_date(race_date)
+      range between unbounded preceding and 1 preceding
+    ), 0) as mare_count
+    ,safe_divide(
+      coalesce(sum(is_top3) over (
+        partition by dam_name
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10 * g.global_top3_rate,
+      coalesce(count(*) over (
+        partition by dam_name
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10
+    ) as mare_te
+    ,safe_divide(
+      coalesce(sum(is_top3) over (
+        partition by dam_name, course_type
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10 * g.global_top3_rate,
+      coalesce(count(*) over (
+        partition by dam_name, course_type
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10
+    ) as mare_course_type_te
+    ,safe_divide(
+      coalesce(sum(is_top3) over (
+        partition by dam_name, venue_code
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10 * g.global_top3_rate,
+      coalesce(count(*) over (
+        partition by dam_name, venue_code
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10
+    ) as mare_venue_te
+    ,safe_divide(
+      coalesce(sum(is_top3) over (
+        partition by dam_name, distance_band
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10 * g.global_top3_rate,
+      coalesce(count(*) over (
+        partition by dam_name, distance_band
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10
+    ) as mare_distance_band_te
+    ,safe_divide(
+      coalesce(sum(is_top3) over (
+        partition by dam_name, distance
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10 * g.global_top3_rate,
+      coalesce(count(*) over (
+        partition by dam_name, distance
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10
+    ) as mare_distance_te
+    ,safe_divide(
+      coalesce(sum(is_top3) over (
+        partition by dam_name, direction
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10 * g.global_top3_rate,
+      coalesce(count(*) over (
+        partition by dam_name, direction
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10
+    ) as mare_direction_te
+    ,safe_divide(
+      coalesce(sum(is_top3) over (
+        partition by dam_name, course_type, venue_code
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10 * g.global_top3_rate,
+      coalesce(count(*) over (
+        partition by dam_name, course_type, venue_code
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10
+    ) as mare_course_type_venue_te
+    ,safe_divide(
+      coalesce(sum(is_top3) over (
+        partition by dam_name, course_type, distance
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10 * g.global_top3_rate,
+      coalesce(count(*) over (
+        partition by dam_name, course_type, distance
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10
+    ) as mare_course_type_distance_te
+    ,safe_divide(
+      coalesce(sum(is_top3) over (
+        partition by dam_name, course_type, distance, venue_code
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10 * g.global_top3_rate,
+      coalesce(count(*) over (
+        partition by dam_name, course_type, distance, venue_code
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10
+    ) as mare_course_type_distance_venue_te
+  from temp_te_history_base
+    cross join temp_global_mean_te as g
+)
+/* 低頻度マスク適用: 母馬の産駒数 < 10 の場合は全TE値をNULLにする */
+,temp_mare_te as (
+  select
+    race_id
+    ,horse_number
+    ,IF(mare_count >= 10, mare_te, NULL) as mare_te
+    ,IF(mare_count >= 10, mare_course_type_te, NULL) as mare_course_type_te
+    ,IF(mare_count >= 10, mare_venue_te, NULL) as mare_venue_te
+    ,IF(mare_count >= 10, mare_distance_band_te, NULL) as mare_distance_band_te
+    ,IF(mare_count >= 10, mare_distance_te, NULL) as mare_distance_te
+    ,IF(mare_count >= 10, mare_direction_te, NULL) as mare_direction_te
+    ,IF(mare_count >= 10, mare_course_type_venue_te, NULL) as mare_course_type_venue_te
+    ,IF(mare_count >= 10, mare_course_type_distance_te, NULL) as mare_course_type_distance_te
+    ,IF(mare_count >= 10, mare_course_type_distance_venue_te, NULL) as mare_course_type_distance_venue_te
+  from temp_mare_te_pre
 )
 
 /* 馬自身 Target Encoding（累積3着以内率、スムージング係数m=10、同日除外）
@@ -2087,6 +2332,60 @@ select
   ,t_cha.training_intensity
   ,t_cha.training_course_type
   ,t_cha.training_count
+  -- 母馬競走実績特徴量（カテゴリA グループA-1: 全出走ベース距離統計）
+  ,t_m_s.mare_race_count
+  ,t_m_s.mare_avg_race_distance
+  ,t_m_s.mare_max_race_distance
+  ,t_m_s.mare_min_race_distance
+  ,t_m_s.mare_max_race_distance - t_m_s.mare_min_race_distance as mare_distance_range
+  ,t_p_r_f.distance - t_m_s.mare_avg_race_distance as mare_distance_diff
+  ,t_p_r_f.distance - t_m_s.mare_max_race_distance as mare_max_distance_diff
+  ,t_p_r_f.distance - t_m_s.mare_min_race_distance as mare_min_distance_diff
+  -- 母馬競走実績特徴量（カテゴリA グループA-2: 3着以内レース絞り距離統計）
+  ,t_m_s.mare_placed_race_count
+  ,t_m_s.mare_placed_avg_distance
+  ,t_m_s.mare_placed_max_distance
+  ,t_m_s.mare_placed_min_distance
+  ,t_m_s.mare_placed_max_distance - t_m_s.mare_placed_min_distance as mare_placed_distance_range
+  ,t_p_r_f.distance - t_m_s.mare_placed_max_distance as mare_placed_max_distance_diff
+  ,t_p_r_f.distance - t_m_s.mare_placed_min_distance as mare_placed_min_distance_diff
+  -- 母馬競走実績特徴量（カテゴリA グループA-3: コース別複勝率）
+  ,t_m_s.mare_place_rate
+  ,t_m_s.mare_turf_place_rate
+  ,t_m_s.mare_dirt_place_rate
+  ,t_m_v.mare_venue_place_rate
+  ,t_m_db.mare_distance_band_place_rate
+  ,t_m_d.mare_distance_place_rate
+  ,t_m_dir.mare_direction_place_rate
+  ,t_m_cv.mare_course_type_venue_place_rate
+  ,t_m_cd.mare_course_type_distance_band_place_rate
+  -- 母馬競走実績特徴量（カテゴリA グループA-4: diff特徴量）
+  ,t_m_s.mare_turf_place_rate - t_m_s.mare_place_rate as mare_turf_place_diff
+  ,t_m_v.mare_venue_place_rate - t_m_s.mare_place_rate as mare_venue_place_rate_diff
+  ,t_m_db.mare_distance_band_place_rate - t_m_s.mare_place_rate as mare_distance_band_place_rate_diff
+  ,t_m_d.mare_distance_place_rate - t_m_s.mare_place_rate as mare_distance_place_rate_diff
+  ,t_m_dir.mare_direction_place_rate - t_m_s.mare_place_rate as mare_direction_place_rate_diff
+  ,t_m_cv.mare_course_type_venue_place_rate - t_m_s.mare_place_rate as mare_course_type_venue_place_rate_diff
+  ,t_m_cd.mare_course_type_distance_band_place_rate - t_m_s.mare_place_rate as mare_course_type_distance_band_place_rate_diff
+  -- 母馬産駒TE（カテゴリB）
+  ,t_m_te.mare_te
+  ,t_m_te.mare_course_type_te
+  ,t_m_te.mare_venue_te
+  ,t_m_te.mare_distance_band_te
+  ,t_m_te.mare_distance_te
+  ,t_m_te.mare_direction_te
+  ,t_m_te.mare_course_type_venue_te
+  ,t_m_te.mare_course_type_distance_te
+  ,t_m_te.mare_course_type_distance_venue_te
+  -- 母馬産駒TE差分（条件別TE − 全体TE）
+  ,t_m_te.mare_course_type_te - t_m_te.mare_te as mare_course_type_te_diff
+  ,t_m_te.mare_venue_te - t_m_te.mare_te as mare_venue_te_diff
+  ,t_m_te.mare_distance_band_te - t_m_te.mare_te as mare_distance_band_te_diff
+  ,t_m_te.mare_distance_te - t_m_te.mare_te as mare_distance_te_diff
+  ,t_m_te.mare_direction_te - t_m_te.mare_te as mare_direction_te_diff
+  ,t_m_te.mare_course_type_venue_te - t_m_te.mare_te as mare_course_type_venue_te_diff
+  ,t_m_te.mare_course_type_distance_te - t_m_te.mare_te as mare_course_type_distance_te_diff
+  ,t_m_te.mare_course_type_distance_venue_te - t_m_te.mare_te as mare_course_type_distance_venue_te_diff
 from
   temp_past_race_features2 as t_p_r_f
   left join temp_horse_master_feature2 as t_h_m_f
@@ -2116,3 +2415,28 @@ from
   left join temp_career_distance as t_c_d
     on t_p_r_f.race_id = t_c_d.race_id
     and t_p_r_f.horse_number = t_c_d.horse_number
+  left join temp_mare_stats as t_m_s
+    on t_p_r_f.horse_id = t_m_s.horse_id
+  left join temp_mare_venue_stats as t_m_v
+    on t_p_r_f.horse_id = t_m_v.horse_id
+    and t_p_r_f.venue_code = t_m_v.venue_code
+  left join temp_mare_distance_band_stats as t_m_db
+    on t_p_r_f.horse_id = t_m_db.horse_id
+    and t_p_r_f.distance_band = t_m_db.distance_band
+  left join temp_mare_distance_stats as t_m_d
+    on t_p_r_f.horse_id = t_m_d.horse_id
+    and t_p_r_f.distance = t_m_d.distance
+  left join temp_mare_direction_stats as t_m_dir
+    on t_p_r_f.horse_id = t_m_dir.horse_id
+    and t_p_r_f.direction = t_m_dir.direction
+  left join temp_mare_cv_stats as t_m_cv
+    on t_p_r_f.horse_id = t_m_cv.horse_id
+    and t_p_r_f.course_type = t_m_cv.course_type
+    and t_p_r_f.venue_code = t_m_cv.venue_code
+  left join temp_mare_cd_stats as t_m_cd
+    on t_p_r_f.horse_id = t_m_cd.horse_id
+    and t_p_r_f.course_type = t_m_cd.course_type
+    and t_p_r_f.distance_band = t_m_cd.distance_band
+  left join temp_mare_te as t_m_te
+    on t_p_r_f.race_id = t_m_te.race_id
+    and t_p_r_f.horse_number = t_m_te.horse_number

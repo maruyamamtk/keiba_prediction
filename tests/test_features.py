@@ -934,10 +934,10 @@ class TestRaceExclusionFilter:
         assert "venue_code = '04' and r_i.distance = 1000 and r_i.direction = 'straight'" in content, "新潟直線1000m除外フィルタが見つかりません"
 
     def test_sql_exclusion_filters_applied_to_both_ctes(self):
-        """temp_base_race_entries と temp_horse_master_feature の両方に除外フィルタが含まれること"""
+        """temp_base_race_entries / temp_horse_master_feature / temp_mare_race_base に除外フィルタが含まれること"""
         content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
         assert content.count("race_class != 'A1'") == 2, "新馬戦除外が2箇所にあるべき"
-        assert content.count("!= 'obstacle'") == 2, "障害戦除外が2箇所にあるべき"
+        assert content.count("!= 'obstacle'") == 3, "障害戦除外が3箇所にあるべき（base/horse_master/mare_race_base）"
         assert content.count("num_horses) > 7") == 2, "少頭数除外が2箇所にあるべき"
         assert content.count("venue_code = '04' and r_i.distance = 1000 and r_i.direction = 'straight'") == 2, "新潟直線除外が2箇所にあるべき"
 
@@ -1212,3 +1212,83 @@ class TestCornerPositionFeature:
         prf2_section = content[prf2_start:horse_master_start]
         assert "finish_position_1 > 0" in prf2_section, \
             "corner1_to_finish_delta_prev_1 が finish_position=0 を除外していません"
+
+
+class TestMareFeature:
+    """母馬（繁殖牝馬）競走実績・産駒TE特徴量のテスト（Issue #307）"""
+
+    def test_sql_has_mare_ctEs(self):
+        """母馬実績・TEに必要な CTE が存在すること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        assert "temp_mare_race_base as (" in content, "temp_mare_race_base が見つかりません"
+        assert "temp_mare_stats as (" in content, "temp_mare_stats が見つかりません"
+        assert "temp_mare_te_pre as (" in content, "temp_mare_te_pre が見つかりません"
+        assert "temp_mare_te as (" in content, "temp_mare_te が見つかりません"
+
+    def test_sql_mare_race_base_filters_obstacle(self):
+        """temp_mare_race_base が障害戦を除外すること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        mare_base_start = content.find("temp_mare_race_base as (")
+        mare_stats_start = content.find("temp_mare_stats as (")
+        section = content[mare_base_start:mare_stats_start]
+        assert "!= 'obstacle'" in section, "temp_mare_race_base に障害戦除外フィルタがありません"
+        assert "finish_position > 0" in section, "temp_mare_race_base に finish_position > 0 フィルタがありません"
+        assert "dam_id is not null" in section, "temp_mare_race_base に dam_id not null フィルタがありません"
+
+    def test_sql_mare_race_base_joins_on_horse_number(self):
+        """temp_mare_race_base が race_results を horse_number でも JOIN すること（クロスJOIN防止）"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        mare_base_start = content.find("temp_mare_race_base as (")
+        mare_stats_start = content.find("temp_mare_stats as (")
+        section = content[mare_base_start:mare_stats_start]
+        assert "rr_d.horse_number = hr_d.horse_number" in section, \
+            "race_results の JOIN に horse_number 条件がありません（クロスJOIN発生のリスク）"
+
+    def test_sql_mare_te_pre_excludes_same_day(self):
+        """temp_mare_te_pre が同日レースを TE 集計から除外すること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        mare_te_pre_start = content.find("temp_mare_te_pre as (")
+        mare_te_start = content.find("temp_mare_te as (")
+        section = content[mare_te_pre_start:mare_te_start]
+        assert "range between unbounded preceding and 1 preceding" in section, \
+            "temp_mare_te_pre に同日除外（RANGE BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING）がありません"
+        assert "partition by dam_name" in section, \
+            "temp_mare_te_pre の partition by に dam_name がありません"
+
+    def test_sql_mare_te_low_frequency_mask(self):
+        """temp_mare_te が産駒数 < 10 の母馬を NULL マスクすること（#293 準拠）"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        mare_te_start = content.find("temp_mare_te as (")
+        horse_te_pre_start = content.find("temp_horse_te_pre as (")
+        section = content[mare_te_start:horse_te_pre_start]
+        assert "mare_count >= 10" in section, \
+            "temp_mare_te に産駒数 < 10 の NULL マスク（>= 10）がありません"
+
+    def test_sql_mare_placed_max_distance_diff_sign(self):
+        """mare_placed_max_distance_diff は「当レース距離 − 母馬好走最長距離」であること（正値 = 超過）"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        final_select_start = content.rfind("from\n  temp_past_race_features2")
+        section = content[final_select_start - 3000:final_select_start]
+        assert "t_p_r_f.distance - t_m_s.mare_placed_max_distance as mare_placed_max_distance_diff" in section, \
+            "mare_placed_max_distance_diff の符号方向が正しくありません"
+
+    def test_sql_mare_a4_diff_formula(self):
+        """グループA-4 diff特徴量が「条件別rate - mare_place_rate」であること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        assert "t_m_v.mare_venue_place_rate - t_m_s.mare_place_rate as mare_venue_place_rate_diff" in content, \
+            "mare_venue_place_rate_diff の計算式が正しくありません"
+        assert "t_m_db.mare_distance_band_place_rate - t_m_s.mare_place_rate as mare_distance_band_place_rate_diff" in content, \
+            "mare_distance_band_place_rate_diff の計算式が正しくありません"
+
+    def test_sql_dam_name_added_to_te_history(self):
+        """dam_name が temp_te_history_raw と temp_te_history_base に追加されていること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        te_raw_start = content.find("temp_te_history_raw as (")
+        te_base_start = content.find("temp_te_history_base as (")
+        te_raw_section = content[te_raw_start:te_base_start]
+        assert "h_m.dam_name" in te_raw_section, \
+            "temp_te_history_raw に dam_name の SELECT がありません"
+        te_base_end = content.find("from temp_te_history_raw", te_base_start)
+        te_base_section = content[te_base_start:te_base_end]
+        assert ",dam_name" in te_base_section, \
+            "temp_te_history_base に dam_name が含まれていません"
