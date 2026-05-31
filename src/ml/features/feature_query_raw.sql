@@ -1124,7 +1124,8 @@ with temp_race_horse_count as (
   from temp_te_history_base
     cross join temp_global_mean_te as g
 )
-/* 低頻度マスク適用: 騎手の過去出走数 < 20 の場合は全TE値をNULLにする */
+/* 低頻度マスク適用: 1軸は >= 20、2軸複合 >= 5、3軸複合 >= 3
+   組み合わせが細かいほど同条件への出走回数は少なくなるため軸数で閾値を段階的に緩和 */
 ,temp_jockey_te as (
   select
     race_id
@@ -1135,9 +1136,9 @@ with temp_race_horse_count as (
     ,IF(jockey_count >= 20, jockey_distance_band_te, NULL) as jockey_distance_band_te
     ,IF(jockey_count >= 20, jockey_distance_te, NULL) as jockey_distance_te
     ,IF(jockey_count >= 20, jockey_direction_te, NULL) as jockey_direction_te
-    ,IF(jockey_count >= 20, jockey_course_type_venue_te, NULL) as jockey_course_type_venue_te
-    ,IF(jockey_count >= 20, jockey_course_type_distance_te, NULL) as jockey_course_type_distance_te
-    ,IF(jockey_count >= 20, jockey_course_type_distance_venue_te, NULL) as jockey_course_type_distance_venue_te
+    ,IF(jockey_count >= 5, jockey_course_type_venue_te, NULL) as jockey_course_type_venue_te
+    ,IF(jockey_count >= 5, jockey_course_type_distance_te, NULL) as jockey_course_type_distance_te
+    ,IF(jockey_count >= 3, jockey_course_type_distance_venue_te, NULL) as jockey_course_type_distance_venue_te
   from temp_jockey_te_pre
 )
 
@@ -1263,7 +1264,7 @@ with temp_race_horse_count as (
   from temp_te_history_base
     cross join temp_global_mean_te as g
 )
-/* 低頻度マスク適用: 調教師の過去出走数 < 20 の場合は全TE値をNULLにする */
+/* 低頻度マスク適用: 1軸は >= 20、2軸複合 >= 5、3軸複合 >= 3 */
 ,temp_trainer_te as (
   select
     race_id
@@ -1274,9 +1275,9 @@ with temp_race_horse_count as (
     ,IF(trainer_count >= 20, trainer_distance_band_te, NULL) as trainer_distance_band_te
     ,IF(trainer_count >= 20, trainer_distance_te, NULL) as trainer_distance_te
     ,IF(trainer_count >= 20, trainer_direction_te, NULL) as trainer_direction_te
-    ,IF(trainer_count >= 20, trainer_course_type_venue_te, NULL) as trainer_course_type_venue_te
-    ,IF(trainer_count >= 20, trainer_course_type_distance_te, NULL) as trainer_course_type_distance_te
-    ,IF(trainer_count >= 20, trainer_course_type_distance_venue_te, NULL) as trainer_course_type_distance_venue_te
+    ,IF(trainer_count >= 5, trainer_course_type_venue_te, NULL) as trainer_course_type_venue_te
+    ,IF(trainer_count >= 5, trainer_course_type_distance_te, NULL) as trainer_course_type_distance_te
+    ,IF(trainer_count >= 3, trainer_course_type_distance_venue_te, NULL) as trainer_course_type_distance_venue_te
   from temp_trainer_te_pre
 )
 
@@ -1402,7 +1403,7 @@ with temp_race_horse_count as (
   from temp_te_history_base
     cross join temp_global_mean_te as g
 )
-/* 低頻度マスク適用: 種牡馬の過去出走数 < 20 の場合は全TE値をNULLにする */
+/* 低頻度マスク適用: 1軸は >= 20、2軸複合 >= 5、3軸複合 >= 3 */
 ,temp_sire_te as (
   select
     race_id
@@ -1413,9 +1414,9 @@ with temp_race_horse_count as (
     ,IF(sire_count >= 20, sire_distance_band_te, NULL) as sire_distance_band_te
     ,IF(sire_count >= 20, sire_distance_te, NULL) as sire_distance_te
     ,IF(sire_count >= 20, sire_direction_te, NULL) as sire_direction_te
-    ,IF(sire_count >= 20, sire_course_type_venue_te, NULL) as sire_course_type_venue_te
-    ,IF(sire_count >= 20, sire_course_type_distance_te, NULL) as sire_course_type_distance_te
-    ,IF(sire_count >= 20, sire_course_type_distance_venue_te, NULL) as sire_course_type_distance_venue_te
+    ,IF(sire_count >= 5, sire_course_type_venue_te, NULL) as sire_course_type_venue_te
+    ,IF(sire_count >= 5, sire_course_type_distance_te, NULL) as sire_course_type_distance_te
+    ,IF(sire_count >= 3, sire_course_type_distance_venue_te, NULL) as sire_course_type_distance_venue_te
   from temp_sire_te_pre
 )
 
@@ -1845,9 +1846,9 @@ with temp_race_horse_count as (
     ,IF(horse_count >= 5, horse_direction_te, NULL) as horse_direction_te
     ,IF(horse_count >= 5, horse_jockey_te, NULL) as horse_jockey_te
     ,IF(horse_count >= 5, horse_season_te, NULL) as horse_season_te
-    ,IF(horse_count >= 5, horse_course_type_venue_te, NULL) as horse_course_type_venue_te
-    ,IF(horse_count >= 5, horse_course_type_distance_te, NULL) as horse_course_type_distance_te
-    ,IF(horse_count >= 5, horse_course_type_distance_venue_te, NULL) as horse_course_type_distance_venue_te
+    ,IF(horse_count >= 2, horse_course_type_venue_te, NULL) as horse_course_type_venue_te
+    ,IF(horse_count >= 2, horse_course_type_distance_te, NULL) as horse_course_type_distance_te
+    ,IF(horse_count >= 2, horse_course_type_distance_venue_te, NULL) as horse_course_type_distance_venue_te
     ,IF(horse_count >= 5, horse_distance_change_te, NULL) as horse_distance_change_te
     ,IF(horse_count >= 5, horse_weight_carried_change_te, NULL) as horse_weight_carried_change_te
   from temp_horse_te_pre
