@@ -1256,13 +1256,13 @@ class TestMareFeature:
             "temp_mare_te_pre の partition by に dam_name がありません"
 
     def test_sql_mare_te_low_frequency_mask(self):
-        """temp_mare_te が産駒数 < 10 の母馬を NULL マスクすること（#293 準拠）"""
+        """temp_mare_te が産駒数 < 3 の母馬を NULL マスクすること（緩和: 10→3）"""
         content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
         mare_te_start = content.find("temp_mare_te as (")
         horse_te_pre_start = content.find("temp_horse_te_pre as (")
         section = content[mare_te_start:horse_te_pre_start]
-        assert "mare_count >= 10" in section, \
-            "temp_mare_te に産駒数 < 10 の NULL マスク（>= 10）がありません"
+        assert "mare_count >= 3" in section, \
+            "temp_mare_te に産駒数 < 3 の NULL マスク（>= 3）がありません"
 
     def test_sql_mare_placed_max_distance_diff_sign(self):
         """mare_placed_max_distance_diff は「当レース距離 − 母馬好走最長距離」であること（正値 = 超過）"""
