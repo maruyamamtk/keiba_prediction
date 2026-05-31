@@ -149,6 +149,10 @@ with temp_race_horse_count as (
     ,r_r_1.finish_time as finish_time_1
     ,r_r_1.last_3f_time as last_3f_1
     ,r_r_1.corner_position_4 as corner_position_1
+    ,r_r_1.corner_position_1 as corner1_prev_1
+    ,r_r_1.corner_position_2 as corner2_prev_1
+    ,r_r_1.corner_position_3 as corner3_prev_1
+    ,r_r_1.corner_position_4 as corner4_prev_1
     ,r_l3f_1.last_3f_rank_in_race as last_3f_rank_in_race_1
     ,SUBSTR(r_r_1.race_id, 1, 2) as venue_code_prev_1
     ,r_r_1.distance as distance_prev_1
@@ -177,6 +181,10 @@ with temp_race_horse_count as (
     ,r_r_2.finish_time as finish_time_2
     ,r_r_2.last_3f_time as last_3f_2
     ,r_r_2.corner_position_4 as corner_position_2
+    ,r_r_2.corner_position_1 as corner1_prev_2
+    ,r_r_2.corner_position_2 as corner2_prev_2
+    ,r_r_2.corner_position_3 as corner3_prev_2
+    ,r_r_2.corner_position_4 as corner4_prev_2
     ,r_l3f_2.last_3f_rank_in_race as last_3f_rank_in_race_2
     -- 3走前のレース結果
     ,r_r_3.race_name as race_name_3
@@ -194,6 +202,10 @@ with temp_race_horse_count as (
     ,r_r_3.finish_time as finish_time_3
     ,r_r_3.last_3f_time as last_3f_3
     ,r_r_3.corner_position_4 as corner_position_3
+    ,r_r_3.corner_position_1 as corner1_prev_3
+    ,r_r_3.corner_position_2 as corner2_prev_3
+    ,r_r_3.corner_position_3 as corner3_prev_3
+    ,r_r_3.corner_position_4 as corner4_prev_3
     ,r_l3f_3.last_3f_rank_in_race as last_3f_rank_in_race_3
     -- 4走前のレース結果
     ,r_r_4.race_name as race_name_4
@@ -586,6 +598,46 @@ with temp_race_horse_count as (
     ) as race_idm_cv
     -- レース内相対指標（馬番の内外位置）
     ,safe_divide(t_p_r_f.horse_number, t_p_r_f.num_horses) as horse_number_ratio
+    -- コーナー通過順変化（折り合い指標, Issue #306）
+    -- 正値 = 前につけて失速、負値 = 後方から押し上げ。直線コース等でcorner1がNULLの場合はNULL
+    ,t_p_r_f.corner4_prev_1 - t_p_r_f.corner1_prev_1 as corner_gain_1to4_prev_1
+    ,t_p_r_f.corner4_prev_2 - t_p_r_f.corner1_prev_2 as corner_gain_1to4_prev_2
+    ,t_p_r_f.corner4_prev_3 - t_p_r_f.corner1_prev_3 as corner_gain_1to4_prev_3
+    ,safe_divide(
+      (coalesce(t_p_r_f.corner4_prev_1 - t_p_r_f.corner1_prev_1, 0)
+       + coalesce(t_p_r_f.corner4_prev_2 - t_p_r_f.corner1_prev_2, 0)
+       + coalesce(t_p_r_f.corner4_prev_3 - t_p_r_f.corner1_prev_3, 0))
+      ,nullif(
+        (case when t_p_r_f.corner1_prev_1 is not null and t_p_r_f.corner4_prev_1 is not null then 1 else 0 end +
+        case when t_p_r_f.corner1_prev_2 is not null and t_p_r_f.corner4_prev_2 is not null then 1 else 0 end +
+        case when t_p_r_f.corner1_prev_3 is not null and t_p_r_f.corner4_prev_3 is not null then 1 else 0 end)
+        , 0)
+    ) as mean_corner_gain_1to4
+    ,safe_divide(
+      (coalesce((t_p_r_f.corner4_prev_1 - t_p_r_f.corner1_prev_1) * 1.5, 0)
+       + coalesce((t_p_r_f.corner4_prev_2 - t_p_r_f.corner1_prev_2) * 1.0, 0)
+       + coalesce((t_p_r_f.corner4_prev_3 - t_p_r_f.corner1_prev_3) * 0.5, 0))
+      ,nullif(
+        (case when t_p_r_f.corner1_prev_1 is not null and t_p_r_f.corner4_prev_1 is not null then 1.5 else 0 end +
+        case when t_p_r_f.corner1_prev_2 is not null and t_p_r_f.corner4_prev_2 is not null then 1.0 else 0 end +
+        case when t_p_r_f.corner1_prev_3 is not null and t_p_r_f.corner4_prev_3 is not null then 0.5 else 0 end)
+        , 0)
+    ) as ema_corner_gain_1to4
+    ,safe_divide(
+      (coalesce(t_p_r_f.corner1_prev_1, 0) + coalesce(t_p_r_f.corner1_prev_2, 0) + coalesce(t_p_r_f.corner1_prev_3, 0))
+      ,nullif(
+        (case when t_p_r_f.corner1_prev_1 is not null then 1 else 0 end +
+        case when t_p_r_f.corner1_prev_2 is not null then 1 else 0 end +
+        case when t_p_r_f.corner1_prev_3 is not null then 1 else 0 end)
+        , 0)
+    ) as mean_corner1_position
+    ,IF(
+      t_p_r_f.corner1_prev_1 is not null
+        and t_p_r_f.finish_position_1 is not null
+        and t_p_r_f.finish_position_1 > 0,
+      t_p_r_f.corner1_prev_1 - t_p_r_f.finish_position_1,
+      null
+    ) as corner1_to_finish_delta_prev_1
   from
     temp_past_race_features as t_p_r_f
 )
