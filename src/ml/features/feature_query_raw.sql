@@ -954,6 +954,7 @@ with temp_race_horse_count as (
     ,h_r.trainer_code
     ,h_m.sire_name
     ,h_m.dam_name
+    ,date_diff(r_i.race_date, h_m.birth_date, year) as horse_age
     ,case when r_r.finish_position between 1 and 3 then 1 else 0 end as is_top3
   from `{project_id}`.raw.horse_results as h_r
     inner join `{project_id}`.raw.race_info as r_i
@@ -980,7 +981,14 @@ with temp_race_horse_count as (
     ,trainer_code
     ,sire_name
     ,dam_name
+    ,horse_age
     ,is_top3
+    ,case
+      when horse_age = 2 then '2yo'
+      when horse_age = 3 then '3yo'
+      when horse_age = 4 then '4yo'
+      else '5plus'
+    end as age_band
     ,case
       when extract(month from race_date) in (3, 4, 5)  then 'spring'
       when extract(month from race_date) in (6, 7, 8)  then 'summer'
@@ -1400,10 +1408,80 @@ with temp_race_horse_count as (
         range between unbounded preceding and 1 preceding
       ), 0) + 10
     ) as sire_course_type_distance_venue_te
+    -- 年齢帯別出走数カウント（低頻度マスク用）
+    ,coalesce(count(case when age_band = '2yo' then 1 end) over (
+      partition by sire_name
+      order by unix_date(race_date)
+      range between unbounded preceding and 1 preceding
+    ), 0) as sire_age2_count
+    ,coalesce(count(case when age_band = '3yo' then 1 end) over (
+      partition by sire_name
+      order by unix_date(race_date)
+      range between unbounded preceding and 1 preceding
+    ), 0) as sire_age3_count
+    ,coalesce(count(case when age_band = '4yo' then 1 end) over (
+      partition by sire_name
+      order by unix_date(race_date)
+      range between unbounded preceding and 1 preceding
+    ), 0) as sire_age4_count
+    ,coalesce(count(case when age_band = '5plus' then 1 end) over (
+      partition by sire_name
+      order by unix_date(race_date)
+      range between unbounded preceding and 1 preceding
+    ), 0) as sire_age5plus_count
+    -- 年齢帯別TE（CASE WHEN 条件付き SUM/COUNT）
+    ,safe_divide(
+      coalesce(sum(case when age_band = '2yo' then is_top3 else null end) over (
+        partition by sire_name
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10 * g.global_top3_rate,
+      coalesce(count(case when age_band = '2yo' then 1 end) over (
+        partition by sire_name
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10
+    ) as sire_age2_te
+    ,safe_divide(
+      coalesce(sum(case when age_band = '3yo' then is_top3 else null end) over (
+        partition by sire_name
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10 * g.global_top3_rate,
+      coalesce(count(case when age_band = '3yo' then 1 end) over (
+        partition by sire_name
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10
+    ) as sire_age3_te
+    ,safe_divide(
+      coalesce(sum(case when age_band = '4yo' then is_top3 else null end) over (
+        partition by sire_name
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10 * g.global_top3_rate,
+      coalesce(count(case when age_band = '4yo' then 1 end) over (
+        partition by sire_name
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10
+    ) as sire_age4_te
+    ,safe_divide(
+      coalesce(sum(case when age_band = '5plus' then is_top3 else null end) over (
+        partition by sire_name
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10 * g.global_top3_rate,
+      coalesce(count(case when age_band = '5plus' then 1 end) over (
+        partition by sire_name
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10
+    ) as sire_age5plus_te
   from temp_te_history_base
     cross join temp_global_mean_te as g
 )
-/* 低頻度マスク適用: 1軸は >= 20、2軸複合 >= 5、3軸複合 >= 3 */
+/* 低頻度マスク適用: 1軸は >= 20、2軸複合 >= 5、3軸複合 >= 3、年齢帯は >= 5 */
 ,temp_sire_te as (
   select
     race_id
@@ -1417,6 +1495,11 @@ with temp_race_horse_count as (
     ,IF(sire_count >= 5, sire_course_type_venue_te, NULL) as sire_course_type_venue_te
     ,IF(sire_count >= 5, sire_course_type_distance_te, NULL) as sire_course_type_distance_te
     ,IF(sire_count >= 3, sire_course_type_distance_venue_te, NULL) as sire_course_type_distance_venue_te
+    -- 年齢帯別TE（各年齢帯の産駒数 >= 5 でマスク）
+    ,IF(sire_age2_count >= 5, sire_age2_te, NULL) as sire_age2_te
+    ,IF(sire_age3_count >= 5, sire_age3_te, NULL) as sire_age3_te
+    ,IF(sire_age4_count >= 5, sire_age4_te, NULL) as sire_age4_te
+    ,IF(sire_age5plus_count >= 5, sire_age5plus_te, NULL) as sire_age5plus_te
   from temp_sire_te_pre
 )
 
@@ -1437,6 +1520,7 @@ with temp_race_horse_count as (
     ,ri_d.direction
     ,ri_d.distance
     ,case when rr_d.finish_position between 1 and 3 then 1 else 0 end as is_top3
+    ,date_diff(ri_d.race_date, hm_d.birth_date, year) as horse_age_at_race
   from `{project_id}`.raw.pedigree as p
   join `{project_id}`.raw.horse_results as hr_d
     on hr_d.horse_id = p.dam_id
@@ -1445,6 +1529,8 @@ with temp_race_horse_count as (
     and rr_d.horse_number = hr_d.horse_number
   join `{project_id}`.raw.race_info as ri_d
     on ri_d.race_id = hr_d.race_id
+  join `{project_id}`.raw.horse_master as hm_d
+    on hm_d.horse_id = p.dam_id
   where p.dam_id is not null
     and rr_d.finish_position > 0
     and ri_d.course_type != 'obstacle'
@@ -1464,6 +1550,15 @@ with temp_race_horse_count as (
     ,safe_divide(countif(is_top3 = 1), count(*)) as mare_place_rate
     ,safe_divide(countif(is_top3 = 1 and course_type = 'turf'), nullif(countif(course_type = 'turf'), 0)) as mare_turf_place_rate
     ,safe_divide(countif(is_top3 = 1 and course_type = 'dirt'), nullif(countif(course_type = 'dirt'), 0)) as mare_dirt_place_rate
+    -- 母馬自身の早熟・晩成性（カテゴリC）
+    ,safe_divide(
+      countif(is_top3 = 1 and horse_age_at_race between 2 and 3),
+      nullif(countif(horse_age_at_race between 2 and 3), 0)
+    ) as mare_early_career_place_rate
+    ,safe_divide(
+      countif(is_top3 = 1 and horse_age_at_race >= 4),
+      nullif(countif(horse_age_at_race >= 4), 0)
+    ) as mare_late_career_place_rate
   from temp_mare_race_base
   group by horse_id
 )
@@ -1643,10 +1738,80 @@ with temp_race_horse_count as (
         range between unbounded preceding and 1 preceding
       ), 0) + 10
     ) as mare_course_type_distance_venue_te
+    -- 年齢帯別出走数カウント（低頻度マスク用）
+    ,coalesce(count(case when age_band = '2yo' then 1 end) over (
+      partition by dam_name
+      order by unix_date(race_date)
+      range between unbounded preceding and 1 preceding
+    ), 0) as mare_age2_count
+    ,coalesce(count(case when age_band = '3yo' then 1 end) over (
+      partition by dam_name
+      order by unix_date(race_date)
+      range between unbounded preceding and 1 preceding
+    ), 0) as mare_age3_count
+    ,coalesce(count(case when age_band = '4yo' then 1 end) over (
+      partition by dam_name
+      order by unix_date(race_date)
+      range between unbounded preceding and 1 preceding
+    ), 0) as mare_age4_count
+    ,coalesce(count(case when age_band = '5plus' then 1 end) over (
+      partition by dam_name
+      order by unix_date(race_date)
+      range between unbounded preceding and 1 preceding
+    ), 0) as mare_age5plus_count
+    -- 年齢帯別TE（CASE WHEN 条件付き SUM/COUNT）
+    ,safe_divide(
+      coalesce(sum(case when age_band = '2yo' then is_top3 else null end) over (
+        partition by dam_name
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10 * g.global_top3_rate,
+      coalesce(count(case when age_band = '2yo' then 1 end) over (
+        partition by dam_name
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10
+    ) as mare_age2_te
+    ,safe_divide(
+      coalesce(sum(case when age_band = '3yo' then is_top3 else null end) over (
+        partition by dam_name
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10 * g.global_top3_rate,
+      coalesce(count(case when age_band = '3yo' then 1 end) over (
+        partition by dam_name
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10
+    ) as mare_age3_te
+    ,safe_divide(
+      coalesce(sum(case when age_band = '4yo' then is_top3 else null end) over (
+        partition by dam_name
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10 * g.global_top3_rate,
+      coalesce(count(case when age_band = '4yo' then 1 end) over (
+        partition by dam_name
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10
+    ) as mare_age4_te
+    ,safe_divide(
+      coalesce(sum(case when age_band = '5plus' then is_top3 else null end) over (
+        partition by dam_name
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10 * g.global_top3_rate,
+      coalesce(count(case when age_band = '5plus' then 1 end) over (
+        partition by dam_name
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ), 0) + 10
+    ) as mare_age5plus_te
   from temp_te_history_base
     cross join temp_global_mean_te as g
 )
-/* 低頻度マスク適用: 母馬の産駒数 < 10 の場合は全TE値をNULLにする */
+/* 低頻度マスク適用: 母馬の産駒数 < 3 は全TE値NULL、年齢帯別は >= 5 */
 ,temp_mare_te as (
   select
     race_id
@@ -1660,6 +1825,11 @@ with temp_race_horse_count as (
     ,IF(mare_count >= 3, mare_course_type_venue_te, NULL) as mare_course_type_venue_te
     ,IF(mare_count >= 3, mare_course_type_distance_te, NULL) as mare_course_type_distance_te
     ,IF(mare_count >= 3, mare_course_type_distance_venue_te, NULL) as mare_course_type_distance_venue_te
+    -- 年齢帯別TE（各年齢帯の産駒数 >= 5 でマスク）
+    ,IF(mare_age2_count >= 5, mare_age2_te, NULL) as mare_age2_te
+    ,IF(mare_age3_count >= 5, mare_age3_te, NULL) as mare_age3_te
+    ,IF(mare_age4_count >= 5, mare_age4_te, NULL) as mare_age4_te
+    ,IF(mare_age5plus_count >= 5, mare_age5plus_te, NULL) as mare_age5plus_te
   from temp_mare_te_pre
 )
 
@@ -2275,6 +2445,26 @@ select
   ,t_s_te.sire_course_type_venue_te - t_s_te.sire_te as sire_course_type_venue_te_diff
   ,t_s_te.sire_course_type_distance_te - t_s_te.sire_te as sire_course_type_distance_te_diff
   ,t_s_te.sire_course_type_distance_venue_te - t_s_te.sire_te as sire_course_type_distance_venue_te_diff
+  -- 種牡馬年齢帯別TE（早熟・晩成性特徴量）
+  ,t_s_te.sire_age2_te
+  ,t_s_te.sire_age3_te
+  ,t_s_te.sire_age4_te
+  ,t_s_te.sire_age5plus_te
+  ,case
+    when t_p_r_f.horse_age = 2 then t_s_te.sire_age2_te
+    when t_p_r_f.horse_age = 3 then t_s_te.sire_age3_te
+    when t_p_r_f.horse_age = 4 then t_s_te.sire_age4_te
+    else t_s_te.sire_age5plus_te
+  end as sire_current_age_te
+  ,(coalesce(t_s_te.sire_age2_te, t_s_te.sire_te) + coalesce(t_s_te.sire_age3_te, t_s_te.sire_te)) / 2
+   - (coalesce(t_s_te.sire_age4_te, t_s_te.sire_te) + coalesce(t_s_te.sire_age5plus_te, t_s_te.sire_te)) / 2
+   as sire_precocity_diff
+  ,case
+    when t_p_r_f.horse_age = 2 then t_s_te.sire_age2_te - t_s_te.sire_te
+    when t_p_r_f.horse_age = 3 then t_s_te.sire_age3_te - t_s_te.sire_te
+    when t_p_r_f.horse_age = 4 then t_s_te.sire_age4_te - t_s_te.sire_te
+    else t_s_te.sire_age5plus_te - t_s_te.sire_te
+  end as sire_age_vs_career_diff
   -- 馬自身TE
   ,t_h_te.horse_te
   ,t_h_te.horse_course_type_te
@@ -2387,6 +2577,30 @@ select
   ,t_m_te.mare_course_type_venue_te - t_m_te.mare_te as mare_course_type_venue_te_diff
   ,t_m_te.mare_course_type_distance_te - t_m_te.mare_te as mare_course_type_distance_te_diff
   ,t_m_te.mare_course_type_distance_venue_te - t_m_te.mare_te as mare_course_type_distance_venue_te_diff
+  -- 母馬産駒年齢帯別TE（早熟・晩成性特徴量）
+  ,t_m_te.mare_age2_te
+  ,t_m_te.mare_age3_te
+  ,t_m_te.mare_age4_te
+  ,t_m_te.mare_age5plus_te
+  ,case
+    when t_p_r_f.horse_age = 2 then t_m_te.mare_age2_te
+    when t_p_r_f.horse_age = 3 then t_m_te.mare_age3_te
+    when t_p_r_f.horse_age = 4 then t_m_te.mare_age4_te
+    else t_m_te.mare_age5plus_te
+  end as mare_current_age_te
+  ,(coalesce(t_m_te.mare_age2_te, t_m_te.mare_te) + coalesce(t_m_te.mare_age3_te, t_m_te.mare_te)) / 2
+   - (coalesce(t_m_te.mare_age4_te, t_m_te.mare_te) + coalesce(t_m_te.mare_age5plus_te, t_m_te.mare_te)) / 2
+   as mare_precocity_diff
+  ,case
+    when t_p_r_f.horse_age = 2 then t_m_te.mare_age2_te - t_m_te.mare_te
+    when t_p_r_f.horse_age = 3 then t_m_te.mare_age3_te - t_m_te.mare_te
+    when t_p_r_f.horse_age = 4 then t_m_te.mare_age4_te - t_m_te.mare_te
+    else t_m_te.mare_age5plus_te - t_m_te.mare_te
+  end as mare_age_vs_career_diff
+  -- 母馬自身の早熟・晩成性（カテゴリC）
+  ,t_m_s.mare_early_career_place_rate
+  ,t_m_s.mare_late_career_place_rate
+  ,t_m_s.mare_early_career_place_rate - t_m_s.mare_late_career_place_rate as mare_precocity_index
 from
   temp_past_race_features2 as t_p_r_f
   left join temp_horse_master_feature2 as t_h_m_f

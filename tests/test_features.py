@@ -1299,9 +1299,7 @@ class TestMareFeature:
     def test_sql_mare_placed_max_distance_diff_sign(self):
         """mare_placed_max_distance_diff は「当レース距離 − 母馬好走最長距離」であること（正値 = 超過）"""
         content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
-        final_select_start = content.rfind("from\n  temp_past_race_features2")
-        section = content[final_select_start - 3000:final_select_start]
-        assert "t_p_r_f.distance - t_m_s.mare_placed_max_distance as mare_placed_max_distance_diff" in section, \
+        assert "t_p_r_f.distance - t_m_s.mare_placed_max_distance as mare_placed_max_distance_diff" in content, \
             "mare_placed_max_distance_diff の符号方向が正しくありません"
 
     def test_sql_mare_a4_diff_formula(self):
@@ -1324,3 +1322,146 @@ class TestMareFeature:
         te_base_section = content[te_base_start:te_base_end]
         assert ",dam_name" in te_base_section, \
             "temp_te_history_base に dam_name が含まれていません"
+
+
+class TestAgeBasedTEFeature:
+    """種牡馬・母馬の年齢帯別TE（早熟・晩成性特徴量）のテスト（Issue #308）"""
+
+    def test_sql_horse_age_in_te_history_raw(self):
+        """temp_te_history_raw に horse_age が追加されていること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        te_raw_start = content.find("temp_te_history_raw as (")
+        te_base_start = content.find("temp_te_history_base as (")
+        section = content[te_raw_start:te_base_start]
+        assert "date_diff(r_i.race_date, h_m.birth_date, year) as horse_age" in section, \
+            "temp_te_history_raw に horse_age の計算がありません"
+
+    def test_sql_age_band_in_te_history_base(self):
+        """temp_te_history_base に age_band（2yo/3yo/4yo/5plus）の CASE WHEN が存在すること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        te_base_start = content.find("temp_te_history_base as (")
+        jockey_pre_start = content.find("temp_jockey_te_pre as (")
+        section = content[te_base_start:jockey_pre_start]
+        assert "age_band" in section, "temp_te_history_base に age_band カラムがありません"
+        assert "'2yo'" in section, "age_band に '2yo' ケースがありません"
+        assert "'3yo'" in section, "age_band に '3yo' ケースがありません"
+        assert "'4yo'" in section, "age_band に '4yo' ケースがありません"
+        assert "'5plus'" in section, "age_band に '5plus' ケースがありません"
+
+    def test_sql_sire_age_band_te_in_pre_cte(self):
+        """temp_sire_te_pre に年齢帯別TE 4本と出走数カウント 4本が存在すること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        sire_pre_start = content.find("temp_sire_te_pre as (")
+        sire_te_start = content.find("temp_sire_te as (")
+        section = content[sire_pre_start:sire_te_start]
+        for col in ["sire_age2_te", "sire_age3_te", "sire_age4_te", "sire_age5plus_te"]:
+            assert col in section, f"temp_sire_te_pre に {col} がありません"
+        for col in ["sire_age2_count", "sire_age3_count", "sire_age4_count", "sire_age5plus_count"]:
+            assert col in section, f"temp_sire_te_pre に {col} がありません"
+
+    def test_sql_sire_age_band_te_low_frequency_mask(self):
+        """temp_sire_te で年齢帯別産駒数 < 5 の場合は対応する TE が NULL になること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        sire_te_start = content.find("temp_sire_te as (")
+        mare_race_base_start = content.find("temp_mare_race_base as (")
+        section = content[sire_te_start:mare_race_base_start]
+        assert "IF(sire_age2_count >= 5, sire_age2_te, NULL)" in section, \
+            "sire_age2_te の低頻度マスク（>= 5）がありません"
+        assert "IF(sire_age3_count >= 5, sire_age3_te, NULL)" in section, \
+            "sire_age3_te の低頻度マスク（>= 5）がありません"
+        assert "IF(sire_age4_count >= 5, sire_age4_te, NULL)" in section, \
+            "sire_age4_te の低頻度マスク（>= 5）がありません"
+        assert "IF(sire_age5plus_count >= 5, sire_age5plus_te, NULL)" in section, \
+            "sire_age5plus_te の低頻度マスク（>= 5）がありません"
+
+    def test_sql_sire_current_age_te_selects_correct_band(self):
+        """sire_current_age_te が horse_age に応じて正しい年齢帯 TE を選択すること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        assert "when t_p_r_f.horse_age = 2 then t_s_te.sire_age2_te" in content, \
+            "sire_current_age_te の 2歳ケースがありません"
+        assert "when t_p_r_f.horse_age = 3 then t_s_te.sire_age3_te" in content, \
+            "sire_current_age_te の 3歳ケースがありません"
+        assert "when t_p_r_f.horse_age = 4 then t_s_te.sire_age4_te" in content, \
+            "sire_current_age_te の 4歳ケースがありません"
+        assert "end as sire_current_age_te" in content, \
+            "最終 SELECT に sire_current_age_te がありません"
+
+    def test_sql_sire_precocity_diff_formula(self):
+        """sire_precocity_diff が（若齢TE平均 − 老齢TE平均）の形式であること（正値=早熟型）"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        assert "sire_precocity_diff" in content, "sire_precocity_diff がありません"
+        assert "sire_age2_te" in content and "sire_age3_te" in content, \
+            "sire_precocity_diff に若齢TE（age2/age3）が含まれていません"
+        assert "sire_age4_te" in content and "sire_age5plus_te" in content, \
+            "sire_precocity_diff に老齢TE（age4/age5plus）が含まれていません"
+
+    def test_sql_mare_age_band_te_in_pre_cte(self):
+        """temp_mare_te_pre に年齢帯別TE 4本と出走数カウント 4本が存在すること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        mare_te_pre_start = content.find("temp_mare_te_pre as (")
+        mare_te_start = content.find("temp_mare_te as (")
+        section = content[mare_te_pre_start:mare_te_start]
+        for col in ["mare_age2_te", "mare_age3_te", "mare_age4_te", "mare_age5plus_te"]:
+            assert col in section, f"temp_mare_te_pre に {col} がありません"
+        for col in ["mare_age2_count", "mare_age3_count", "mare_age4_count", "mare_age5plus_count"]:
+            assert col in section, f"temp_mare_te_pre に {col} がありません"
+
+    def test_sql_mare_age_band_te_low_frequency_mask(self):
+        """temp_mare_te で年齢帯別産駒数 < 5 の場合は対応する TE が NULL になること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        mare_te_start = content.find("temp_mare_te as (")
+        horse_te_pre_start = content.find("temp_horse_te_pre as (")
+        section = content[mare_te_start:horse_te_pre_start]
+        assert "IF(mare_age2_count >= 5, mare_age2_te, NULL)" in section, \
+            "mare_age2_te の低頻度マスク（>= 5）がありません"
+        assert "IF(mare_age3_count >= 5, mare_age3_te, NULL)" in section, \
+            "mare_age3_te の低頻度マスク（>= 5）がありません"
+        assert "IF(mare_age4_count >= 5, mare_age4_te, NULL)" in section, \
+            "mare_age4_te の低頻度マスク（>= 5）がありません"
+        assert "IF(mare_age5plus_count >= 5, mare_age5plus_te, NULL)" in section, \
+            "mare_age5plus_te の低頻度マスク（>= 5）がありません"
+
+    def test_sql_mare_current_age_te_selects_correct_band(self):
+        """mare_current_age_te が horse_age に応じて正しい年齢帯 TE を選択すること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        final_start = content.rfind("from\n  temp_past_race_features2")
+        section = content[final_start - 5000:final_start]
+        assert "when t_p_r_f.horse_age = 2 then t_m_te.mare_age2_te" in section, \
+            "mare_current_age_te の 2歳ケースがありません"
+        assert "when t_p_r_f.horse_age = 3 then t_m_te.mare_age3_te" in section, \
+            "mare_current_age_te の 3歳ケースがありません"
+        assert "mare_current_age_te" in section, \
+            "最終 SELECT に mare_current_age_te がありません"
+
+    def test_sql_mare_early_late_career_place_rate_in_stats(self):
+        """temp_mare_stats に mare_early_career_place_rate / mare_late_career_place_rate が存在すること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        mare_stats_start = content.find("temp_mare_stats as (")
+        mare_venue_start = content.find("temp_mare_venue_stats as (")
+        section = content[mare_stats_start:mare_venue_start]
+        assert "mare_early_career_place_rate" in section, \
+            "temp_mare_stats に mare_early_career_place_rate がありません"
+        assert "mare_late_career_place_rate" in section, \
+            "temp_mare_stats に mare_late_career_place_rate がありません"
+        assert "horse_age_at_race between 2 and 3" in section, \
+            "mare_early_career_place_rate に 2〜3歳条件がありません"
+        assert "horse_age_at_race >= 4" in section, \
+            "mare_late_career_place_rate に 4歳以上条件がありません"
+
+    def test_sql_mare_precocity_index_in_final_select(self):
+        """最終 SELECT に mare_precocity_index（early - late）が存在すること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        assert "mare_precocity_index" in content, "最終 SELECT に mare_precocity_index がありません"
+        assert "mare_early_career_place_rate - t_m_s.mare_late_career_place_rate as mare_precocity_index" in content, \
+            "mare_precocity_index の計算式が正しくありません"
+
+    def test_sql_mare_race_base_joins_horse_master_for_birth_date(self):
+        """temp_mare_race_base が horse_master を dam_id でJOINして birth_date を取得すること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        mare_base_start = content.find("temp_mare_race_base as (")
+        mare_stats_start = content.find("temp_mare_stats as (")
+        section = content[mare_base_start:mare_stats_start]
+        assert "hm_d.horse_id = p.dam_id" in section, \
+            "temp_mare_race_base に horse_master の dam_id JOIN がありません"
+        assert "horse_age_at_race" in section, \
+            "temp_mare_race_base に horse_age_at_race がありません"
