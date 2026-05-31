@@ -1042,3 +1042,87 @@ class TestHorseTEFeature:
         assert "'summer'" in base_section, "season に 'summer' がありません"
         assert "'autumn'" in base_section, "season に 'autumn' がありません"
         assert "'winter'" in base_section, "season に 'winter' がありません"
+
+
+class TestCareerDistanceFeature:
+    """キャリア最長・最短距離フラグ特徴量のテスト（Issue #305）"""
+
+    def test_sql_has_career_distance_ctes(self):
+        """temp_career_distance_flags と temp_career_distance CTE が存在すること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        assert "temp_career_distance_flags as (" in content, "temp_career_distance_flags が見つかりません"
+        assert "temp_career_distance as (" in content, "temp_career_distance が見つかりません"
+
+    def test_sql_career_distance_uses_range_1_preceding(self):
+        """temp_career_distance が RANGE BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING を使用していること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        cte_start = content.find("temp_career_distance as (")
+        cte_end = content.find("temp_training as (")
+        cte_section = content[cte_start:cte_end]
+        assert "range between unbounded preceding and 1 preceding" in cte_section, \
+            "temp_career_distance に当日除外の RANGE BETWEEN 句がありません"
+
+    def test_sql_career_distance_group1_columns_in_final_select(self):
+        """グループ1（全出走）の6特徴量が最終SELECTに含まれること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        final_select_start = content.rfind("select")
+        final_section = content[final_select_start:]
+        group1_columns = [
+            "is_career_max_distance",
+            "career_max_distance_diff",
+            "is_career_min_distance",
+            "career_min_distance_diff",
+            "career_distance_range",
+            "career_distance_count",
+        ]
+        for col in group1_columns:
+            assert col in final_section, f"最終SELECT に '{col}' が見つかりません"
+
+    def test_sql_career_distance_group2_columns_in_final_select(self):
+        """グループ2（3着以内）の6特徴量が最終SELECTに含まれること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        final_select_start = content.rfind("select")
+        final_section = content[final_select_start:]
+        group2_columns = [
+            "is_beyond_placed_max_distance",
+            "placed_max_distance_diff",
+            "is_below_placed_min_distance",
+            "placed_min_distance_diff",
+            "placed_distance_range",
+            "placed_distance_count",
+        ]
+        for col in group2_columns:
+            assert col in final_section, f"最終SELECT に '{col}' が見つかりません"
+
+    def test_sql_final_join_includes_career_distance(self):
+        """最終SELECTが temp_career_distance を LEFT JOIN していること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        assert "left join temp_career_distance as t_c_d" in content, \
+            "最終SELECTに temp_career_distance の LEFT JOIN がありません"
+
+    def test_sql_placed_null_handling(self):
+        """好走実績ゼロの馬は NULL になること（CASE WHEN is_top3=1 THEN distance END で自然に NULL）"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        cte_start = content.find("temp_career_distance as (")
+        cte_end = content.find("temp_training as (")
+        cte_section = content[cte_start:cte_end]
+        assert "case when is_top3 = 1 then distance end" in cte_section, \
+            "好走実績ゼロの馬を NULL にする CASE WHEN が見つかりません"
+
+    def test_sql_career_distance_no_current_race_data(self):
+        """temp_career_distance_flags が is_first_at_distance フラグを含むこと"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        flags_start = content.find("temp_career_distance_flags as (")
+        flags_end = content.find("temp_career_distance as (")
+        flags_section = content[flags_start:flags_end]
+        assert "is_first_at_distance" in flags_section, "is_first_at_distance フラグがありません"
+        assert "is_first_placed_at_distance" in flags_section, "is_first_placed_at_distance フラグがありません"
+
+    def test_sql_career_distance_based_on_horse_distance_base(self):
+        """temp_career_distance_flags が temp_horse_distance_base を参照していること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        flags_start = content.find("temp_career_distance_flags as (")
+        flags_end = content.find("temp_career_distance as (")
+        flags_section = content[flags_start:flags_end]
+        assert "from temp_horse_distance_base" in flags_section, \
+            "temp_career_distance_flags が temp_horse_distance_base を参照していません"

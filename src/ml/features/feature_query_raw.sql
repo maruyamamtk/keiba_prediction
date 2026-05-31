@@ -1718,6 +1718,46 @@ with temp_race_horse_count as (
     cross join temp_global_mean_te as g
 )
 
+/* キャリア最長・最短距離フラグ特徴量（Issue #305）
+   COUNT DISTINCT をウィンドウ関数化するため、まず (horse_id, distance) の初出フラグを付与 */
+,temp_career_distance_flags as (
+  select
+    *
+    ,case
+      when row_number() over (
+        partition by horse_id, distance
+        order by unix_date(race_date), race_id
+      ) = 1 then 1 else 0
+    end as is_first_at_distance
+    ,case
+      when is_top3 = 1 and row_number() over (
+        partition by horse_id, distance, is_top3
+        order by unix_date(race_date), race_id
+      ) = 1 then 1 else 0
+    end as is_first_placed_at_distance
+  from temp_horse_distance_base
+)
+
+/* キャリア距離集計（当レース除外: RANGE BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING） */
+,temp_career_distance as (
+  select
+    race_id
+    ,horse_number
+    ,horse_id
+    ,max(distance) over w as career_max_distance_so_far
+    ,min(distance) over w as career_min_distance_so_far
+    ,sum(is_first_at_distance) over w as career_distance_count
+    ,max(case when is_top3 = 1 then distance end) over w as placed_max_distance_so_far
+    ,min(case when is_top3 = 1 then distance end) over w as placed_min_distance_so_far
+    ,sum(is_first_placed_at_distance) over w as placed_distance_count
+  from temp_career_distance_flags
+  window w as (
+    partition by horse_id
+    order by unix_date(race_date)
+    range between unbounded preceding and 1 preceding
+  )
+)
+
 /* 調教本追切データ (raw.cha_data から) */
 ,temp_training as (
   select
@@ -1974,6 +2014,20 @@ select
   ,t_h_d_te.distance_top1_finish_rate
   ,t_h_d_te.distance_rate_diff
   -- new_distance_flag: gain=0 のため除去（Issue #296）
+  -- キャリア最長・最短距離フラグ（グループ1: 全出走, Issue #305）
+  ,t_p_r_f.distance > t_c_d.career_max_distance_so_far as is_career_max_distance
+  ,t_p_r_f.distance - t_c_d.career_max_distance_so_far as career_max_distance_diff
+  ,t_p_r_f.distance < t_c_d.career_min_distance_so_far as is_career_min_distance
+  ,t_p_r_f.distance - t_c_d.career_min_distance_so_far as career_min_distance_diff
+  ,t_c_d.career_max_distance_so_far - t_c_d.career_min_distance_so_far as career_distance_range
+  ,t_c_d.career_distance_count
+  -- キャリア最長・最短距離フラグ（グループ2: 3着以内レースのみ, Issue #305）
+  ,t_p_r_f.distance > t_c_d.placed_max_distance_so_far as is_beyond_placed_max_distance
+  ,t_p_r_f.distance - t_c_d.placed_max_distance_so_far as placed_max_distance_diff
+  ,t_p_r_f.distance < t_c_d.placed_min_distance_so_far as is_below_placed_min_distance
+  ,t_p_r_f.distance - t_c_d.placed_min_distance_so_far as placed_min_distance_diff
+  ,t_c_d.placed_max_distance_so_far - t_c_d.placed_min_distance_so_far as placed_distance_range
+  ,t_c_d.placed_distance_count
   -- 調教本追切特徴量 (CHAファイル由来)
   ,t_cha.cha_training_index
   ,t_cha.training_last_3f
@@ -2007,3 +2061,6 @@ from
   left join temp_training as t_cha
     on t_p_r_f.race_id = t_cha.race_id
     and t_p_r_f.horse_number = t_cha.horse_number
+  left join temp_career_distance as t_c_d
+    on t_p_r_f.race_id = t_c_d.race_id
+    and t_p_r_f.horse_number = t_c_d.horse_number
