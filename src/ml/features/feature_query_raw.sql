@@ -1650,15 +1650,15 @@ with temp_race_horse_count as (
   select
     race_id
     ,horse_number
-    ,IF(mare_count >= 10, mare_te, NULL) as mare_te
-    ,IF(mare_count >= 10, mare_course_type_te, NULL) as mare_course_type_te
-    ,IF(mare_count >= 10, mare_venue_te, NULL) as mare_venue_te
-    ,IF(mare_count >= 10, mare_distance_band_te, NULL) as mare_distance_band_te
-    ,IF(mare_count >= 10, mare_distance_te, NULL) as mare_distance_te
-    ,IF(mare_count >= 10, mare_direction_te, NULL) as mare_direction_te
-    ,IF(mare_count >= 10, mare_course_type_venue_te, NULL) as mare_course_type_venue_te
-    ,IF(mare_count >= 10, mare_course_type_distance_te, NULL) as mare_course_type_distance_te
-    ,IF(mare_count >= 10, mare_course_type_distance_venue_te, NULL) as mare_course_type_distance_venue_te
+    ,IF(mare_count >= 3, mare_te, NULL) as mare_te
+    ,IF(mare_count >= 3, mare_course_type_te, NULL) as mare_course_type_te
+    ,IF(mare_count >= 3, mare_venue_te, NULL) as mare_venue_te
+    ,IF(mare_count >= 3, mare_distance_band_te, NULL) as mare_distance_band_te
+    ,IF(mare_count >= 3, mare_distance_te, NULL) as mare_distance_te
+    ,IF(mare_count >= 3, mare_direction_te, NULL) as mare_direction_te
+    ,IF(mare_count >= 3, mare_course_type_venue_te, NULL) as mare_course_type_venue_te
+    ,IF(mare_count >= 3, mare_course_type_distance_te, NULL) as mare_course_type_distance_te
+    ,IF(mare_count >= 3, mare_course_type_distance_venue_te, NULL) as mare_course_type_distance_venue_te
   from temp_mare_te_pre
 )
 
