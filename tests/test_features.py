@@ -1465,3 +1465,93 @@ class TestAgeBasedTEFeature:
             "temp_mare_race_base に horse_master の dam_id JOIN がありません"
         assert "horse_age_at_race" in section, \
             "temp_mare_race_base に horse_age_at_race がありません"
+
+
+class TestCourseBiasFeature:
+    """前走の馬場バイアス×コース取りによるパフォーマンス補正特徴量のテスト（Issue #309）"""
+
+    def test_sql_disadvantage_1_in_prf_cte(self):
+        """disadvantage_1（前走の総不利値）が temp_past_race_features に定義されていること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        prf_start = content.find("temp_past_race_features as (")
+        prf2_start = content.find("temp_past_race_features2 as (")
+        section = content[prf_start:prf2_start]
+        assert "r_r_1.disadvantage" in section and "disadvantage_1" in section, \
+            "temp_past_race_features に disadvantage_1 の定義がありません"
+
+    def test_sql_has_disadvantage_breakdown_prev1(self):
+        """前走の不利値内訳（front/mid/back_disadvantage_1）が temp_past_race_features に定義されていること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        prf_start = content.find("temp_past_race_features as (")
+        prf2_start = content.find("temp_past_race_features2 as (")
+        section = content[prf_start:prf2_start]
+        for col in ["front_disadvantage_1", "mid_disadvantage_1", "back_disadvantage_1"]:
+            assert col in section, f"temp_past_race_features に '{col}' が見つかりません"
+
+    def test_sql_has_course_position_prev1(self):
+        """course_position_prev1（前走コース取り）が temp_past_race_features に定義されていること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        prf_start = content.find("temp_past_race_features as (")
+        prf2_start = content.find("temp_past_race_features2 as (")
+        section = content[prf_start:prf2_start]
+        assert "course_position_prev1" in section, \
+            "temp_past_race_features に course_position_prev1 がありません"
+        assert "r_r_1.course_position" in section, \
+            "course_position_prev1 が r_r_1.course_position を参照していません"
+
+    def test_sql_has_track_bias_prev1(self):
+        """track_bias_prev1（前走馬場差）が temp_past_race_features に定義されていること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        prf_start = content.find("temp_past_race_features as (")
+        prf2_start = content.find("temp_past_race_features2 as (")
+        section = content[prf_start:prf2_start]
+        assert "track_bias_prev1" in section, \
+            "temp_past_race_features に track_bias_prev1 がありません"
+        assert "r_r_1.track_bias" in section, \
+            "track_bias_prev1 が r_r_1.track_bias を参照していません"
+
+    def test_sql_has_prev1_venue_info_join(self):
+        """前走の venue_info JOIN（v_i_prev1）が temp_past_race_features に存在すること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        prf_start = content.find("temp_past_race_features as (")
+        prf2_start = content.find("temp_past_race_features2 as (")
+        section = content[prf_start:prf2_start]
+        assert "v_i_prev1" in section, \
+            "temp_past_race_features に v_i_prev1 JOIN がありません"
+        assert "r_r_1.race_date = v_i_prev1.race_date" in section, \
+            "v_i_prev1 の JOIN条件に r_r_1.race_date がありません"
+
+    def test_sql_prev1_course_bias_score_case_logic(self):
+        """prev1_course_bias_score の CASE WHEN が course_position 1〜5 の全ケースを網羅していること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        final_start = content.rfind("from\n  temp_past_race_features2")
+        section = content[final_start - 3000:final_start]
+        assert "prev1_course_bias_score" in section, \
+            "最終 SELECT に prev1_course_bias_score がありません"
+        assert "course_position_prev1" in section, \
+            "prev1_course_bias_score の CASE WHEN に course_position_prev1 がありません"
+        assert "prev1_straight_bias_innermost" in section, \
+            "course_position=1（最内）のケースがありません"
+        assert "prev1_straight_bias_outermost" in section, \
+            "course_position=5（大外）のケースがありません"
+
+    def test_sql_prev1_course_bias_score_center_is_average(self):
+        """course_position_prev1=3（中）のとき内外の平均値（inner + outer / 2）になること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        assert "(t_p_r_f.prev1_straight_bias_inner + t_p_r_f.prev1_straight_bias_outer) / 2" in content, \
+            "course_position=3（中）の計算式が内外平均値になっていません"
+
+    def test_sql_prev1_venue_info_null_when_overseas(self):
+        """前走 venue_info が存在しない（海外遠征帰りなど）場合は prev1_straight_bias_* が NULL になること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        prf_start = content.find("temp_past_race_features as (")
+        prf2_start = content.find("temp_past_race_features2 as (")
+        section = content[prf_start:prf2_start]
+        assert "left join" in section and "v_i_prev1" in section, \
+            "v_i_prev1 が LEFT JOIN でないため NULL 処理されません"
+
+    def test_sql_prev1_course_bias_disadvantage_flag_in_final_select(self):
+        """prev1_course_bias_disadvantage_flag が最終 SELECT に存在すること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        assert "prev1_course_bias_disadvantage_flag" in content, \
+            "最終 SELECT に prev1_course_bias_disadvantage_flag がありません"
