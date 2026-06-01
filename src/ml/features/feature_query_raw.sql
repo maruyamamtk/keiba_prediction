@@ -145,7 +145,12 @@ with temp_race_horse_count as (
     ,r_r_1.improvement_code as improvement_code_1
     ,r_r_1.late_start as late_start_1
     ,r_r_1.position_fault as position_fault_1
-    ,r_r_1.disadvantage as disadvantage_1
+    ,r_r_1.disadvantage          as disadvantage_1
+    ,r_r_1.front_disadvantage    as front_disadvantage_1
+    ,r_r_1.mid_disadvantage      as mid_disadvantage_1
+    ,r_r_1.back_disadvantage     as back_disadvantage_1
+    ,r_r_1.course_position       as course_position_prev1
+    ,r_r_1.track_bias            as track_bias_prev1
     ,r_r_1.finish_time as finish_time_1
     ,r_r_1.last_3f_time as last_3f_1
     ,r_r_1.corner_position_4 as corner_position_1
@@ -155,6 +160,10 @@ with temp_race_horse_count as (
     ,r_r_1.corner_position_4 as corner4_prev_1
     ,r_l3f_1.last_3f_rank_in_race as last_3f_rank_in_race_1
     ,SUBSTR(r_r_1.race_id, 1, 2) as venue_code_prev_1
+    ,v_i_prev1.straight_bias_innermost as prev1_straight_bias_innermost
+    ,v_i_prev1.straight_bias_inner     as prev1_straight_bias_inner
+    ,v_i_prev1.straight_bias_outer     as prev1_straight_bias_outer
+    ,v_i_prev1.straight_bias_outermost as prev1_straight_bias_outermost
     ,r_r_1.distance as distance_prev_1
     ,r_r_1.track_condition as track_condition_prev_1
     ,t_b_r_e.distance - r_r_1.distance as distance_change
@@ -432,6 +441,16 @@ with temp_race_horse_count as (
     left join temp_race_last3f_ranks as r_l3f_5
       on r_r_5.race_id = r_l3f_5.race_id
       and r_r_5.horse_id = r_l3f_5.horse_id
+    left join (
+      select *
+      from `{project_id}`.raw.venue_info
+      qualify row_number() over (
+        partition by venue_code, race_date
+        order by coalesce(data_category, 0) desc
+      ) = 1
+    ) as v_i_prev1
+      on r_r_1.race_date = v_i_prev1.race_date
+      and SUBSTR(r_r_1.race_id, 1, 2) = v_i_prev1.venue_code
 )
 
 ,temp_past_race_features2 as (
@@ -2601,6 +2620,23 @@ select
   ,t_m_s.mare_early_career_place_rate
   ,t_m_s.mare_late_career_place_rate
   ,t_m_s.mare_early_career_place_rate - t_m_s.mare_late_career_place_rate as mare_precocity_index
+  -- 前走の馬場バイアス×コース取りの複合スコア（Issue #309）
+  ,CASE t_p_r_f.course_position_prev1
+    WHEN 1 THEN t_p_r_f.prev1_straight_bias_innermost
+    WHEN 2 THEN t_p_r_f.prev1_straight_bias_inner
+    WHEN 3 THEN (t_p_r_f.prev1_straight_bias_inner + t_p_r_f.prev1_straight_bias_outer) / 2
+    WHEN 4 THEN t_p_r_f.prev1_straight_bias_outer
+    WHEN 5 THEN t_p_r_f.prev1_straight_bias_outermost
+    ELSE NULL
+  END as prev1_course_bias_score
+  ,CASE t_p_r_f.course_position_prev1
+    WHEN 1 THEN t_p_r_f.prev1_straight_bias_innermost < 0
+    WHEN 2 THEN t_p_r_f.prev1_straight_bias_inner < 0
+    WHEN 3 THEN (t_p_r_f.prev1_straight_bias_inner + t_p_r_f.prev1_straight_bias_outer) / 2 < 0
+    WHEN 4 THEN t_p_r_f.prev1_straight_bias_outer < 0
+    WHEN 5 THEN t_p_r_f.prev1_straight_bias_outermost < 0
+    ELSE NULL
+  END as prev1_course_bias_disadvantage_flag
 from
   temp_past_race_features2 as t_p_r_f
   left join temp_horse_master_feature2 as t_h_m_f
