@@ -186,7 +186,12 @@ with temp_race_horse_count as (
     ,r_r_2.improvement_code as improvement_code_2
     ,r_r_2.late_start as late_start_2
     ,r_r_2.position_fault as position_fault_2
-    ,r_r_2.disadvantage as disadvantage_2
+    ,r_r_2.disadvantage          as disadvantage_2
+    ,r_r_2.front_disadvantage    as front_disadvantage_2
+    ,r_r_2.mid_disadvantage      as mid_disadvantage_2
+    ,r_r_2.back_disadvantage     as back_disadvantage_2
+    ,r_r_2.course_position       as course_position_prev2
+    ,r_r_2.track_bias            as track_bias_prev2
     ,r_r_2.finish_time as finish_time_2
     ,r_r_2.last_3f_time as last_3f_2
     ,r_r_2.corner_position_4 as corner_position_2
@@ -195,6 +200,10 @@ with temp_race_horse_count as (
     ,r_r_2.corner_position_3 as corner3_prev_2
     ,r_r_2.corner_position_4 as corner4_prev_2
     ,r_l3f_2.last_3f_rank_in_race as last_3f_rank_in_race_2
+    ,v_i_prev2.straight_bias_innermost as prev2_straight_bias_innermost
+    ,v_i_prev2.straight_bias_inner     as prev2_straight_bias_inner
+    ,v_i_prev2.straight_bias_outer     as prev2_straight_bias_outer
+    ,v_i_prev2.straight_bias_outermost as prev2_straight_bias_outermost
     -- 3走前のレース結果
     ,r_r_3.race_name as race_name_3
     ,r_r_3.finish_position as finish_position_3
@@ -207,7 +216,12 @@ with temp_race_horse_count as (
     ,r_r_3.improvement_code as improvement_code_3
     ,r_r_3.late_start as late_start_3
     ,r_r_3.position_fault as position_fault_3
-    ,r_r_3.disadvantage as disadvantage_3
+    ,r_r_3.disadvantage          as disadvantage_3
+    ,r_r_3.front_disadvantage    as front_disadvantage_3
+    ,r_r_3.mid_disadvantage      as mid_disadvantage_3
+    ,r_r_3.back_disadvantage     as back_disadvantage_3
+    ,r_r_3.course_position       as course_position_prev3
+    ,r_r_3.track_bias            as track_bias_prev3
     ,r_r_3.finish_time as finish_time_3
     ,r_r_3.last_3f_time as last_3f_3
     ,r_r_3.corner_position_4 as corner_position_3
@@ -216,6 +230,10 @@ with temp_race_horse_count as (
     ,r_r_3.corner_position_3 as corner3_prev_3
     ,r_r_3.corner_position_4 as corner4_prev_3
     ,r_l3f_3.last_3f_rank_in_race as last_3f_rank_in_race_3
+    ,v_i_prev3.straight_bias_innermost as prev3_straight_bias_innermost
+    ,v_i_prev3.straight_bias_inner     as prev3_straight_bias_inner
+    ,v_i_prev3.straight_bias_outer     as prev3_straight_bias_outer
+    ,v_i_prev3.straight_bias_outermost as prev3_straight_bias_outermost
     -- 4走前のレース結果
     ,r_r_4.race_name as race_name_4
     ,r_r_4.finish_position as finish_position_4
@@ -228,11 +246,20 @@ with temp_race_horse_count as (
     ,r_r_4.improvement_code as improvement_code_4
     ,r_r_4.late_start as late_start_4
     ,r_r_4.position_fault as position_fault_4
-    ,r_r_4.disadvantage as disadvantage_4
+    ,r_r_4.disadvantage          as disadvantage_4
+    ,r_r_4.front_disadvantage    as front_disadvantage_4
+    ,r_r_4.mid_disadvantage      as mid_disadvantage_4
+    ,r_r_4.back_disadvantage     as back_disadvantage_4
+    ,r_r_4.course_position       as course_position_prev4
+    ,r_r_4.track_bias            as track_bias_prev4
     ,r_r_4.finish_time as finish_time_4
     ,r_r_4.last_3f_time as last_3f_4
     ,r_r_4.corner_position_4 as corner_position_4
     ,r_l3f_4.last_3f_rank_in_race as last_3f_rank_in_race_4
+    ,v_i_prev4.straight_bias_innermost as prev4_straight_bias_innermost
+    ,v_i_prev4.straight_bias_inner     as prev4_straight_bias_inner
+    ,v_i_prev4.straight_bias_outer     as prev4_straight_bias_outer
+    ,v_i_prev4.straight_bias_outermost as prev4_straight_bias_outermost
     -- 5走前のレース結果
     ,r_r_5.race_name as race_name_5
     ,r_r_5.finish_position as finish_position_5
@@ -245,11 +272,20 @@ with temp_race_horse_count as (
     ,r_r_5.improvement_code as improvement_code_5
     ,r_r_5.late_start as late_start_5
     ,r_r_5.position_fault as position_fault_5
-    ,r_r_5.disadvantage as disadvantage_5
+    ,r_r_5.disadvantage          as disadvantage_5
+    ,r_r_5.front_disadvantage    as front_disadvantage_5
+    ,r_r_5.mid_disadvantage      as mid_disadvantage_5
+    ,r_r_5.back_disadvantage     as back_disadvantage_5
+    ,r_r_5.course_position       as course_position_prev5
+    ,r_r_5.track_bias            as track_bias_prev5
     ,r_r_5.finish_time as finish_time_5
     ,r_r_5.last_3f_time as last_3f_5
     ,r_r_5.corner_position_4 as corner_position_5
     ,r_l3f_5.last_3f_rank_in_race as last_3f_rank_in_race_5
+    ,v_i_prev5.straight_bias_innermost as prev5_straight_bias_innermost
+    ,v_i_prev5.straight_bias_inner     as prev5_straight_bias_inner
+    ,v_i_prev5.straight_bias_outer     as prev5_straight_bias_outer
+    ,v_i_prev5.straight_bias_outermost as prev5_straight_bias_outermost
     -- 直近5走の平均情報
     ,safe_divide(
       (coalesce(r_r_1.idm, 0) + coalesce(r_r_2.idm, 0) + coalesce(r_r_3.idm, 0) + coalesce(r_r_4.idm, 0) + coalesce(r_r_5.idm, 0))
@@ -451,6 +487,46 @@ with temp_race_horse_count as (
     ) as v_i_prev1
       on r_r_1.race_date = v_i_prev1.race_date
       and SUBSTR(r_r_1.race_id, 1, 2) = v_i_prev1.venue_code
+    left join (
+      select *
+      from `{project_id}`.raw.venue_info
+      qualify row_number() over (
+        partition by venue_code, race_date
+        order by coalesce(data_category, 0) desc
+      ) = 1
+    ) as v_i_prev2
+      on r_r_2.race_date = v_i_prev2.race_date
+      and SUBSTR(r_r_2.race_id, 1, 2) = v_i_prev2.venue_code
+    left join (
+      select *
+      from `{project_id}`.raw.venue_info
+      qualify row_number() over (
+        partition by venue_code, race_date
+        order by coalesce(data_category, 0) desc
+      ) = 1
+    ) as v_i_prev3
+      on r_r_3.race_date = v_i_prev3.race_date
+      and SUBSTR(r_r_3.race_id, 1, 2) = v_i_prev3.venue_code
+    left join (
+      select *
+      from `{project_id}`.raw.venue_info
+      qualify row_number() over (
+        partition by venue_code, race_date
+        order by coalesce(data_category, 0) desc
+      ) = 1
+    ) as v_i_prev4
+      on r_r_4.race_date = v_i_prev4.race_date
+      and SUBSTR(r_r_4.race_id, 1, 2) = v_i_prev4.venue_code
+    left join (
+      select *
+      from `{project_id}`.raw.venue_info
+      qualify row_number() over (
+        partition by venue_code, race_date
+        order by coalesce(data_category, 0) desc
+      ) = 1
+    ) as v_i_prev5
+      on r_r_5.race_date = v_i_prev5.race_date
+      and SUBSTR(r_r_5.race_id, 1, 2) = v_i_prev5.venue_code
 )
 
 ,temp_past_race_features2 as (
@@ -2620,7 +2696,7 @@ select
   ,t_m_s.mare_early_career_place_rate
   ,t_m_s.mare_late_career_place_rate
   ,t_m_s.mare_early_career_place_rate - t_m_s.mare_late_career_place_rate as mare_precocity_index
-  -- 前走の馬場バイアス×コース取りの複合スコア（Issue #309）
+  -- 前走〜5走前の馬場バイアス×コース取りの複合スコア（Issue #309 拡張）
   ,CASE t_p_r_f.course_position_prev1
     WHEN 1 THEN t_p_r_f.prev1_straight_bias_innermost
     WHEN 2 THEN t_p_r_f.prev1_straight_bias_inner
@@ -2637,6 +2713,70 @@ select
     WHEN 5 THEN t_p_r_f.prev1_straight_bias_outermost < 0
     ELSE NULL
   END as prev1_course_bias_disadvantage_flag
+  ,CASE t_p_r_f.course_position_prev2
+    WHEN 1 THEN t_p_r_f.prev2_straight_bias_innermost
+    WHEN 2 THEN t_p_r_f.prev2_straight_bias_inner
+    WHEN 3 THEN (t_p_r_f.prev2_straight_bias_inner + t_p_r_f.prev2_straight_bias_outer) / 2
+    WHEN 4 THEN t_p_r_f.prev2_straight_bias_outer
+    WHEN 5 THEN t_p_r_f.prev2_straight_bias_outermost
+    ELSE NULL
+  END as prev2_course_bias_score
+  ,CASE t_p_r_f.course_position_prev2
+    WHEN 1 THEN t_p_r_f.prev2_straight_bias_innermost < 0
+    WHEN 2 THEN t_p_r_f.prev2_straight_bias_inner < 0
+    WHEN 3 THEN (t_p_r_f.prev2_straight_bias_inner + t_p_r_f.prev2_straight_bias_outer) / 2 < 0
+    WHEN 4 THEN t_p_r_f.prev2_straight_bias_outer < 0
+    WHEN 5 THEN t_p_r_f.prev2_straight_bias_outermost < 0
+    ELSE NULL
+  END as prev2_course_bias_disadvantage_flag
+  ,CASE t_p_r_f.course_position_prev3
+    WHEN 1 THEN t_p_r_f.prev3_straight_bias_innermost
+    WHEN 2 THEN t_p_r_f.prev3_straight_bias_inner
+    WHEN 3 THEN (t_p_r_f.prev3_straight_bias_inner + t_p_r_f.prev3_straight_bias_outer) / 2
+    WHEN 4 THEN t_p_r_f.prev3_straight_bias_outer
+    WHEN 5 THEN t_p_r_f.prev3_straight_bias_outermost
+    ELSE NULL
+  END as prev3_course_bias_score
+  ,CASE t_p_r_f.course_position_prev3
+    WHEN 1 THEN t_p_r_f.prev3_straight_bias_innermost < 0
+    WHEN 2 THEN t_p_r_f.prev3_straight_bias_inner < 0
+    WHEN 3 THEN (t_p_r_f.prev3_straight_bias_inner + t_p_r_f.prev3_straight_bias_outer) / 2 < 0
+    WHEN 4 THEN t_p_r_f.prev3_straight_bias_outer < 0
+    WHEN 5 THEN t_p_r_f.prev3_straight_bias_outermost < 0
+    ELSE NULL
+  END as prev3_course_bias_disadvantage_flag
+  ,CASE t_p_r_f.course_position_prev4
+    WHEN 1 THEN t_p_r_f.prev4_straight_bias_innermost
+    WHEN 2 THEN t_p_r_f.prev4_straight_bias_inner
+    WHEN 3 THEN (t_p_r_f.prev4_straight_bias_inner + t_p_r_f.prev4_straight_bias_outer) / 2
+    WHEN 4 THEN t_p_r_f.prev4_straight_bias_outer
+    WHEN 5 THEN t_p_r_f.prev4_straight_bias_outermost
+    ELSE NULL
+  END as prev4_course_bias_score
+  ,CASE t_p_r_f.course_position_prev4
+    WHEN 1 THEN t_p_r_f.prev4_straight_bias_innermost < 0
+    WHEN 2 THEN t_p_r_f.prev4_straight_bias_inner < 0
+    WHEN 3 THEN (t_p_r_f.prev4_straight_bias_inner + t_p_r_f.prev4_straight_bias_outer) / 2 < 0
+    WHEN 4 THEN t_p_r_f.prev4_straight_bias_outer < 0
+    WHEN 5 THEN t_p_r_f.prev4_straight_bias_outermost < 0
+    ELSE NULL
+  END as prev4_course_bias_disadvantage_flag
+  ,CASE t_p_r_f.course_position_prev5
+    WHEN 1 THEN t_p_r_f.prev5_straight_bias_innermost
+    WHEN 2 THEN t_p_r_f.prev5_straight_bias_inner
+    WHEN 3 THEN (t_p_r_f.prev5_straight_bias_inner + t_p_r_f.prev5_straight_bias_outer) / 2
+    WHEN 4 THEN t_p_r_f.prev5_straight_bias_outer
+    WHEN 5 THEN t_p_r_f.prev5_straight_bias_outermost
+    ELSE NULL
+  END as prev5_course_bias_score
+  ,CASE t_p_r_f.course_position_prev5
+    WHEN 1 THEN t_p_r_f.prev5_straight_bias_innermost < 0
+    WHEN 2 THEN t_p_r_f.prev5_straight_bias_inner < 0
+    WHEN 3 THEN (t_p_r_f.prev5_straight_bias_inner + t_p_r_f.prev5_straight_bias_outer) / 2 < 0
+    WHEN 4 THEN t_p_r_f.prev5_straight_bias_outer < 0
+    WHEN 5 THEN t_p_r_f.prev5_straight_bias_outermost < 0
+    ELSE NULL
+  END as prev5_course_bias_disadvantage_flag
 from
   temp_past_race_features2 as t_p_r_f
   left join temp_horse_master_feature2 as t_h_m_f

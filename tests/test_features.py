@@ -1525,7 +1525,7 @@ class TestCourseBiasFeature:
         """prev1_course_bias_score の CASE WHEN が course_position 1〜5 の全ケースを網羅していること"""
         content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
         final_start = content.rfind("from\n  temp_past_race_features2")
-        section = content[final_start - 3000:final_start]
+        section = content[final_start - 8000:final_start]
         assert "prev1_course_bias_score" in section, \
             "最終 SELECT に prev1_course_bias_score がありません"
         assert "course_position_prev1" in section, \
@@ -1555,3 +1555,69 @@ class TestCourseBiasFeature:
         content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
         assert "prev1_course_bias_disadvantage_flag" in content, \
             "最終 SELECT に prev1_course_bias_disadvantage_flag がありません"
+
+    def test_sql_has_disadvantage_breakdown_all_prev(self):
+        """2〜5走前の不利値内訳（front/mid/back_disadvantage_N）が temp_past_race_features に存在すること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        prf_start = content.find("temp_past_race_features as (")
+        prf2_start = content.find("temp_past_race_features2 as (")
+        section = content[prf_start:prf2_start]
+        for n in range(2, 6):
+            for prefix in ["front_disadvantage", "mid_disadvantage", "back_disadvantage"]:
+                col = f"{prefix}_{n}"
+                assert col in section, f"temp_past_race_features に '{col}' が見つかりません"
+
+    def test_sql_has_course_position_all_prev(self):
+        """2〜5走前の course_position_prevN が temp_past_race_features に存在すること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        prf_start = content.find("temp_past_race_features as (")
+        prf2_start = content.find("temp_past_race_features2 as (")
+        section = content[prf_start:prf2_start]
+        for n in range(2, 6):
+            assert f"course_position_prev{n}" in section, \
+                f"temp_past_race_features に course_position_prev{n} がありません"
+
+    def test_sql_has_track_bias_all_prev(self):
+        """2〜5走前の track_bias_prevN が temp_past_race_features に存在すること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        prf_start = content.find("temp_past_race_features as (")
+        prf2_start = content.find("temp_past_race_features2 as (")
+        section = content[prf_start:prf2_start]
+        for n in range(2, 6):
+            assert f"track_bias_prev{n}" in section, \
+                f"temp_past_race_features に track_bias_prev{n} がありません"
+
+    def test_sql_has_venue_info_join_all_prev(self):
+        """2〜5走前の venue_info LEFT JOIN（v_i_prevN）が temp_past_race_features に存在すること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        prf_start = content.find("temp_past_race_features as (")
+        prf2_start = content.find("temp_past_race_features2 as (")
+        section = content[prf_start:prf2_start]
+        for n in range(2, 6):
+            assert f"v_i_prev{n}" in section, \
+                f"temp_past_race_features に v_i_prev{n} JOIN がありません"
+
+    def test_sql_has_straight_bias_all_prev(self):
+        """2〜5走前の prevN_straight_bias_* が temp_past_race_features に存在すること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        prf_start = content.find("temp_past_race_features as (")
+        prf2_start = content.find("temp_past_race_features2 as (")
+        section = content[prf_start:prf2_start]
+        for n in range(2, 6):
+            for suffix in ["innermost", "inner", "outer", "outermost"]:
+                col = f"prev{n}_straight_bias_{suffix}"
+                assert col in section, f"temp_past_race_features に '{col}' がありません"
+
+    def test_sql_has_course_bias_score_all_prev(self):
+        """2〜5走前の prevN_course_bias_score が最終 SELECT に存在すること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        for n in range(2, 6):
+            assert f"prev{n}_course_bias_score" in content, \
+                f"最終 SELECT に prev{n}_course_bias_score がありません"
+
+    def test_sql_has_course_bias_disadvantage_flag_all_prev(self):
+        """2〜5走前の prevN_course_bias_disadvantage_flag が最終 SELECT に存在すること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        for n in range(2, 6):
+            assert f"prev{n}_course_bias_disadvantage_flag" in content, \
+                f"最終 SELECT に prev{n}_course_bias_disadvantage_flag がありません"
