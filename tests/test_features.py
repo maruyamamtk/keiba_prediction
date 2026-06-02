@@ -1425,7 +1425,7 @@ class TestAgeBasedTEFeature:
         """mare_current_age_te が horse_age に応じて正しい年齢帯 TE を選択すること"""
         content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
         final_start = content.rfind("from\n  temp_past_race_features2")
-        section = content[final_start - 5000:final_start]
+        section = content[final_start - 8000:final_start]
         assert "when t_p_r_f.horse_age = 2 then t_m_te.mare_age2_te" in section, \
             "mare_current_age_te の 2歳ケースがありません"
         assert "when t_p_r_f.horse_age = 3 then t_m_te.mare_age3_te" in section, \
@@ -1621,3 +1621,94 @@ class TestCourseBiasFeature:
         for n in range(2, 6):
             assert f"prev{n}_course_bias_disadvantage_flag" in content, \
                 f"最終 SELECT に prev{n}_course_bias_disadvantage_flag がありません"
+
+
+class TestGateBiasFeature:
+    """枠番×馬場バイアス交差特徴量のテスト（Issue #310）"""
+
+    def test_sql_gate_bias_score_in_final_select(self):
+        """gate_bias_score が最終 SELECT に存在すること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        assert "gate_bias_score" in content, \
+            "最終 SELECT に gate_bias_score がありません"
+
+    def test_sql_gate_bias_advantage_flag_in_final_select(self):
+        """gate_bias_advantage_flag が最終 SELECT に存在すること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        assert "gate_bias_advantage_flag" in content, \
+            "最終 SELECT に gate_bias_advantage_flag がありません"
+
+    def test_sql_gate_bias_score_zone_thresholds(self):
+        """gate_bias_score の CASE WHEN がゾーン境界（0.25 / 0.50 / 0.75）で切り替わること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        assert "horse_number_ratio <= 0.25" in content, \
+            "gate_bias_score に 0.25（内側ゾーン）の閾値がありません"
+        assert "horse_number_ratio <= 0.50" in content, \
+            "gate_bias_score に 0.50（内中ゾーン）の閾値がありません"
+        assert "horse_number_ratio <= 0.75" in content, \
+            "gate_bias_score に 0.75（外中ゾーン）の閾値がありません"
+
+    def test_sql_gate_bias_score_uses_all_four_zones(self):
+        """gate_bias_score が innermost / inner / outer / outermost の4ゾーンを参照すること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        for col in ["straight_bias_innermost", "straight_bias_inner",
+                    "straight_bias_outer", "straight_bias_outermost"]:
+            assert f"t_h_m_f.{col}" in content, \
+                f"gate_bias_score が t_h_m_f.{col} を参照していません"
+
+    def test_sql_straight_bias_range_in_final_select(self):
+        """straight_bias_range が最終 SELECT に存在すること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        assert "straight_bias_range" in content, \
+            "最終 SELECT に straight_bias_range がありません"
+        assert "straight_bias_innermost - t_h_m_f.straight_bias_outermost" in content, \
+            "straight_bias_range の計算式（innermost - outermost）が正しくありません"
+
+    def test_sql_is_strong_bias_race_in_final_select(self):
+        """is_strong_bias_race が最終 SELECT に存在すること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        assert "is_strong_bias_race" in content, \
+            "最終 SELECT に is_strong_bias_race がありません"
+        assert ">= 3" in content, \
+            "is_strong_bias_race の閾値（ABS >= 3）がありません"
+
+    def test_sql_mean_course_position_in_prf2_cte(self):
+        """mean_course_position が temp_past_race_features2 に定義されていること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        prf2_start = content.find("temp_past_race_features2 as (")
+        hm_start = content.find("temp_horse_master_feature as (")
+        section = content[prf2_start:hm_start]
+        assert "mean_course_position" in section, \
+            "temp_past_race_features2 に mean_course_position がありません"
+        assert "course_position_prev1" in section, \
+            "mean_course_position が course_position_prev1 を参照していません"
+
+    def test_sql_ema_course_position_in_prf2_cte(self):
+        """ema_course_position が temp_past_race_features2 に定義され、重み付け集計になっていること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        prf2_start = content.find("temp_past_race_features2 as (")
+        hm_start = content.find("temp_horse_master_feature as (")
+        section = content[prf2_start:hm_start]
+        assert "ema_course_position" in section, \
+            "temp_past_race_features2 に ema_course_position がありません"
+        assert "1.5" in section and "0.5" in section, \
+            "ema_course_position に前走ウェイト（1.5）または3走前ウェイト（0.5）がありません"
+
+    def test_sql_course_position_bias_risk_in_final_select(self):
+        """course_position_bias_risk が最終 SELECT に存在すること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        assert "course_position_bias_risk" in content, \
+            "最終 SELECT に course_position_bias_risk がありません"
+        assert "ema_course_position * t_h_m_f.straight_bias_inner" in content, \
+            "course_position_bias_risk の計算式（ema_course_position × straight_bias_inner）が正しくありません"
+
+    def test_sql_course_position_uses_only_past_races(self):
+        """当レースの course_position は使用せず、過去走（r_r_1 等）のみ参照していること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        prf_start = content.find("temp_past_race_features as (")
+        prf2_start = content.find("temp_past_race_features2 as (")
+        section = content[prf_start:prf2_start]
+        assert "r_r_1.course_position" in section, \
+            "前走の course_position（r_r_1.course_position）が見つかりません"
+        assert "h_r.course_position" not in section, \
+            "当レース（h_r.course_position）がリークしています"
