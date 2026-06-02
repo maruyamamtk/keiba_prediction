@@ -733,6 +733,27 @@ with temp_race_horse_count as (
       t_p_r_f.corner1_prev_1 - t_p_r_f.finish_position_1,
       null
     ) as corner1_to_finish_delta_prev_1
+    -- コース取り傾向集計（Issue #310）
+    ,safe_divide(
+      coalesce(t_p_r_f.course_position_prev1, 0) +
+      coalesce(t_p_r_f.course_position_prev2, 0) +
+      coalesce(t_p_r_f.course_position_prev3, 0),
+      nullif(
+        (case when t_p_r_f.course_position_prev1 is not null then 1 else 0 end +
+        case when t_p_r_f.course_position_prev2 is not null then 1 else 0 end +
+        case when t_p_r_f.course_position_prev3 is not null then 1 else 0 end),
+        0)
+    ) as mean_course_position
+    ,safe_divide(
+      coalesce(t_p_r_f.course_position_prev1 * 1.5, 0) +
+      coalesce(t_p_r_f.course_position_prev2 * 1.0, 0) +
+      coalesce(t_p_r_f.course_position_prev3 * 0.5, 0),
+      nullif(
+        (case when t_p_r_f.course_position_prev1 is not null then 1.5 else 0 end +
+        case when t_p_r_f.course_position_prev2 is not null then 1.0 else 0 end +
+        case when t_p_r_f.course_position_prev3 is not null then 0.5 else 0 end),
+        0)
+    ) as ema_course_position
   from
     temp_past_race_features as t_p_r_f
 )
@@ -2777,6 +2798,25 @@ select
     WHEN 5 THEN t_p_r_f.prev5_straight_bias_outermost < 0
     ELSE NULL
   END as prev5_course_bias_disadvantage_flag
+  -- 枠番×馬場バイアス交差特徴量（Issue #310）
+  -- グループ1: 枠順バイアス有利不利スコア
+  ,CASE
+    WHEN t_p_r_f.horse_number_ratio <= 0.25 THEN t_h_m_f.straight_bias_innermost
+    WHEN t_p_r_f.horse_number_ratio <= 0.50 THEN t_h_m_f.straight_bias_inner
+    WHEN t_p_r_f.horse_number_ratio <= 0.75 THEN t_h_m_f.straight_bias_outer
+    ELSE                                          t_h_m_f.straight_bias_outermost
+  END as gate_bias_score
+  ,CASE
+    WHEN t_p_r_f.horse_number_ratio <= 0.25 THEN t_h_m_f.straight_bias_innermost > 0
+    WHEN t_p_r_f.horse_number_ratio <= 0.50 THEN t_h_m_f.straight_bias_inner > 0
+    WHEN t_p_r_f.horse_number_ratio <= 0.75 THEN t_h_m_f.straight_bias_outer > 0
+    ELSE                                          t_h_m_f.straight_bias_outermost > 0
+  END as gate_bias_advantage_flag
+  -- グループ2: 馬場バイアスの強度指標
+  ,t_h_m_f.straight_bias_innermost - t_h_m_f.straight_bias_outermost as straight_bias_range
+  ,ABS(t_h_m_f.straight_bias_innermost - t_h_m_f.straight_bias_outermost) >= 3 as is_strong_bias_race
+  -- グループ3: コース取り傾向 × 当日バイアスの複合リスクスコア
+  ,t_p_r_f.ema_course_position * t_h_m_f.straight_bias_inner as course_position_bias_risk
 from
   temp_past_race_features2 as t_p_r_f
   left join temp_horse_master_feature2 as t_h_m_f
