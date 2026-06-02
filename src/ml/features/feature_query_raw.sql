@@ -2817,6 +2817,643 @@ select
   ,ABS(t_h_m_f.straight_bias_innermost - t_h_m_f.straight_bias_outermost) >= 3 as is_strong_bias_race
   -- グループ3: コース取り傾向 × 当日バイアスの複合リスクスコア
   ,t_p_r_f.ema_course_position * t_h_m_f.straight_bias_inner as course_position_bias_risk
+  -- 馬場バイアス×コース取りによるIDM補正特徴量（Issue #311）
+  -- グループ1: 前走〜5走前のゾーン中立IDM（ゾーン固有バイアスを除去した実力値）
+  ,t_p_r_f.idm_1
+    - CASE t_p_r_f.course_position_prev1
+        WHEN 1 THEN t_p_r_f.prev1_straight_bias_innermost
+        WHEN 2 THEN t_p_r_f.prev1_straight_bias_inner
+        WHEN 3 THEN (t_p_r_f.prev1_straight_bias_inner + t_p_r_f.prev1_straight_bias_outer) / 2
+        WHEN 4 THEN t_p_r_f.prev1_straight_bias_outer
+        WHEN 5 THEN t_p_r_f.prev1_straight_bias_outermost
+        ELSE NULL
+      END
+    + t_p_r_f.track_bias_prev1
+    AS idm_zone_neutral_1
+  ,t_p_r_f.idm_2
+    - CASE t_p_r_f.course_position_prev2
+        WHEN 1 THEN t_p_r_f.prev2_straight_bias_innermost
+        WHEN 2 THEN t_p_r_f.prev2_straight_bias_inner
+        WHEN 3 THEN (t_p_r_f.prev2_straight_bias_inner + t_p_r_f.prev2_straight_bias_outer) / 2
+        WHEN 4 THEN t_p_r_f.prev2_straight_bias_outer
+        WHEN 5 THEN t_p_r_f.prev2_straight_bias_outermost
+        ELSE NULL
+      END
+    + t_p_r_f.track_bias_prev2
+    AS idm_zone_neutral_2
+  ,t_p_r_f.idm_3
+    - CASE t_p_r_f.course_position_prev3
+        WHEN 1 THEN t_p_r_f.prev3_straight_bias_innermost
+        WHEN 2 THEN t_p_r_f.prev3_straight_bias_inner
+        WHEN 3 THEN (t_p_r_f.prev3_straight_bias_inner + t_p_r_f.prev3_straight_bias_outer) / 2
+        WHEN 4 THEN t_p_r_f.prev3_straight_bias_outer
+        WHEN 5 THEN t_p_r_f.prev3_straight_bias_outermost
+        ELSE NULL
+      END
+    + t_p_r_f.track_bias_prev3
+    AS idm_zone_neutral_3
+  ,t_p_r_f.idm_4
+    - CASE t_p_r_f.course_position_prev4
+        WHEN 1 THEN t_p_r_f.prev4_straight_bias_innermost
+        WHEN 2 THEN t_p_r_f.prev4_straight_bias_inner
+        WHEN 3 THEN (t_p_r_f.prev4_straight_bias_inner + t_p_r_f.prev4_straight_bias_outer) / 2
+        WHEN 4 THEN t_p_r_f.prev4_straight_bias_outer
+        WHEN 5 THEN t_p_r_f.prev4_straight_bias_outermost
+        ELSE NULL
+      END
+    + t_p_r_f.track_bias_prev4
+    AS idm_zone_neutral_4
+  ,t_p_r_f.idm_5
+    - CASE t_p_r_f.course_position_prev5
+        WHEN 1 THEN t_p_r_f.prev5_straight_bias_innermost
+        WHEN 2 THEN t_p_r_f.prev5_straight_bias_inner
+        WHEN 3 THEN (t_p_r_f.prev5_straight_bias_inner + t_p_r_f.prev5_straight_bias_outer) / 2
+        WHEN 4 THEN t_p_r_f.prev5_straight_bias_outer
+        WHEN 5 THEN t_p_r_f.prev5_straight_bias_outermost
+        ELSE NULL
+      END
+    + t_p_r_f.track_bias_prev5
+    AS idm_zone_neutral_5
+  -- グループ1: 前走〜5走前のポテンシャルIDM（最有利ゾーンで走った場合の推定能力）
+  ,t_p_r_f.idm_1
+    + GREATEST(
+        COALESCE(t_p_r_f.prev1_straight_bias_innermost, t_p_r_f.track_bias_prev1),
+        COALESCE(t_p_r_f.prev1_straight_bias_inner,     t_p_r_f.track_bias_prev1),
+        COALESCE(t_p_r_f.prev1_straight_bias_outer,     t_p_r_f.track_bias_prev1),
+        COALESCE(t_p_r_f.prev1_straight_bias_outermost, t_p_r_f.track_bias_prev1)
+      )
+    - CASE t_p_r_f.course_position_prev1
+        WHEN 1 THEN t_p_r_f.prev1_straight_bias_innermost
+        WHEN 2 THEN t_p_r_f.prev1_straight_bias_inner
+        WHEN 3 THEN (t_p_r_f.prev1_straight_bias_inner + t_p_r_f.prev1_straight_bias_outer) / 2
+        WHEN 4 THEN t_p_r_f.prev1_straight_bias_outer
+        WHEN 5 THEN t_p_r_f.prev1_straight_bias_outermost
+        ELSE NULL
+      END
+    AS idm_zone_potential_1
+  ,t_p_r_f.idm_2
+    + GREATEST(
+        COALESCE(t_p_r_f.prev2_straight_bias_innermost, t_p_r_f.track_bias_prev2),
+        COALESCE(t_p_r_f.prev2_straight_bias_inner,     t_p_r_f.track_bias_prev2),
+        COALESCE(t_p_r_f.prev2_straight_bias_outer,     t_p_r_f.track_bias_prev2),
+        COALESCE(t_p_r_f.prev2_straight_bias_outermost, t_p_r_f.track_bias_prev2)
+      )
+    - CASE t_p_r_f.course_position_prev2
+        WHEN 1 THEN t_p_r_f.prev2_straight_bias_innermost
+        WHEN 2 THEN t_p_r_f.prev2_straight_bias_inner
+        WHEN 3 THEN (t_p_r_f.prev2_straight_bias_inner + t_p_r_f.prev2_straight_bias_outer) / 2
+        WHEN 4 THEN t_p_r_f.prev2_straight_bias_outer
+        WHEN 5 THEN t_p_r_f.prev2_straight_bias_outermost
+        ELSE NULL
+      END
+    AS idm_zone_potential_2
+  ,t_p_r_f.idm_3
+    + GREATEST(
+        COALESCE(t_p_r_f.prev3_straight_bias_innermost, t_p_r_f.track_bias_prev3),
+        COALESCE(t_p_r_f.prev3_straight_bias_inner,     t_p_r_f.track_bias_prev3),
+        COALESCE(t_p_r_f.prev3_straight_bias_outer,     t_p_r_f.track_bias_prev3),
+        COALESCE(t_p_r_f.prev3_straight_bias_outermost, t_p_r_f.track_bias_prev3)
+      )
+    - CASE t_p_r_f.course_position_prev3
+        WHEN 1 THEN t_p_r_f.prev3_straight_bias_innermost
+        WHEN 2 THEN t_p_r_f.prev3_straight_bias_inner
+        WHEN 3 THEN (t_p_r_f.prev3_straight_bias_inner + t_p_r_f.prev3_straight_bias_outer) / 2
+        WHEN 4 THEN t_p_r_f.prev3_straight_bias_outer
+        WHEN 5 THEN t_p_r_f.prev3_straight_bias_outermost
+        ELSE NULL
+      END
+    AS idm_zone_potential_3
+  ,t_p_r_f.idm_4
+    + GREATEST(
+        COALESCE(t_p_r_f.prev4_straight_bias_innermost, t_p_r_f.track_bias_prev4),
+        COALESCE(t_p_r_f.prev4_straight_bias_inner,     t_p_r_f.track_bias_prev4),
+        COALESCE(t_p_r_f.prev4_straight_bias_outer,     t_p_r_f.track_bias_prev4),
+        COALESCE(t_p_r_f.prev4_straight_bias_outermost, t_p_r_f.track_bias_prev4)
+      )
+    - CASE t_p_r_f.course_position_prev4
+        WHEN 1 THEN t_p_r_f.prev4_straight_bias_innermost
+        WHEN 2 THEN t_p_r_f.prev4_straight_bias_inner
+        WHEN 3 THEN (t_p_r_f.prev4_straight_bias_inner + t_p_r_f.prev4_straight_bias_outer) / 2
+        WHEN 4 THEN t_p_r_f.prev4_straight_bias_outer
+        WHEN 5 THEN t_p_r_f.prev4_straight_bias_outermost
+        ELSE NULL
+      END
+    AS idm_zone_potential_4
+  ,t_p_r_f.idm_5
+    + GREATEST(
+        COALESCE(t_p_r_f.prev5_straight_bias_innermost, t_p_r_f.track_bias_prev5),
+        COALESCE(t_p_r_f.prev5_straight_bias_inner,     t_p_r_f.track_bias_prev5),
+        COALESCE(t_p_r_f.prev5_straight_bias_outer,     t_p_r_f.track_bias_prev5),
+        COALESCE(t_p_r_f.prev5_straight_bias_outermost, t_p_r_f.track_bias_prev5)
+      )
+    - CASE t_p_r_f.course_position_prev5
+        WHEN 1 THEN t_p_r_f.prev5_straight_bias_innermost
+        WHEN 2 THEN t_p_r_f.prev5_straight_bias_inner
+        WHEN 3 THEN (t_p_r_f.prev5_straight_bias_inner + t_p_r_f.prev5_straight_bias_outer) / 2
+        WHEN 4 THEN t_p_r_f.prev5_straight_bias_outer
+        WHEN 5 THEN t_p_r_f.prev5_straight_bias_outermost
+        ELSE NULL
+      END
+    AS idm_zone_potential_5
+  -- グループ2: 補正IDMの集計特徴量（BigQueryは同一SELECT内のエイリアス参照不可のためインライン展開）
+  ,SAFE_DIVIDE(
+    COALESCE(
+      t_p_r_f.idm_1
+      - CASE t_p_r_f.course_position_prev1
+          WHEN 1 THEN t_p_r_f.prev1_straight_bias_innermost
+          WHEN 2 THEN t_p_r_f.prev1_straight_bias_inner
+          WHEN 3 THEN (t_p_r_f.prev1_straight_bias_inner + t_p_r_f.prev1_straight_bias_outer) / 2
+          WHEN 4 THEN t_p_r_f.prev1_straight_bias_outer
+          WHEN 5 THEN t_p_r_f.prev1_straight_bias_outermost
+          ELSE NULL
+        END
+      + t_p_r_f.track_bias_prev1,
+      0
+    ) +
+    COALESCE(
+      t_p_r_f.idm_2
+      - CASE t_p_r_f.course_position_prev2
+          WHEN 1 THEN t_p_r_f.prev2_straight_bias_innermost
+          WHEN 2 THEN t_p_r_f.prev2_straight_bias_inner
+          WHEN 3 THEN (t_p_r_f.prev2_straight_bias_inner + t_p_r_f.prev2_straight_bias_outer) / 2
+          WHEN 4 THEN t_p_r_f.prev2_straight_bias_outer
+          WHEN 5 THEN t_p_r_f.prev2_straight_bias_outermost
+          ELSE NULL
+        END
+      + t_p_r_f.track_bias_prev2,
+      0
+    ) +
+    COALESCE(
+      t_p_r_f.idm_3
+      - CASE t_p_r_f.course_position_prev3
+          WHEN 1 THEN t_p_r_f.prev3_straight_bias_innermost
+          WHEN 2 THEN t_p_r_f.prev3_straight_bias_inner
+          WHEN 3 THEN (t_p_r_f.prev3_straight_bias_inner + t_p_r_f.prev3_straight_bias_outer) / 2
+          WHEN 4 THEN t_p_r_f.prev3_straight_bias_outer
+          WHEN 5 THEN t_p_r_f.prev3_straight_bias_outermost
+          ELSE NULL
+        END
+      + t_p_r_f.track_bias_prev3,
+      0
+    ) +
+    COALESCE(
+      t_p_r_f.idm_4
+      - CASE t_p_r_f.course_position_prev4
+          WHEN 1 THEN t_p_r_f.prev4_straight_bias_innermost
+          WHEN 2 THEN t_p_r_f.prev4_straight_bias_inner
+          WHEN 3 THEN (t_p_r_f.prev4_straight_bias_inner + t_p_r_f.prev4_straight_bias_outer) / 2
+          WHEN 4 THEN t_p_r_f.prev4_straight_bias_outer
+          WHEN 5 THEN t_p_r_f.prev4_straight_bias_outermost
+          ELSE NULL
+        END
+      + t_p_r_f.track_bias_prev4,
+      0
+    ) +
+    COALESCE(
+      t_p_r_f.idm_5
+      - CASE t_p_r_f.course_position_prev5
+          WHEN 1 THEN t_p_r_f.prev5_straight_bias_innermost
+          WHEN 2 THEN t_p_r_f.prev5_straight_bias_inner
+          WHEN 3 THEN (t_p_r_f.prev5_straight_bias_inner + t_p_r_f.prev5_straight_bias_outer) / 2
+          WHEN 4 THEN t_p_r_f.prev5_straight_bias_outer
+          WHEN 5 THEN t_p_r_f.prev5_straight_bias_outermost
+          ELSE NULL
+        END
+      + t_p_r_f.track_bias_prev5,
+      0
+    ),
+    NULLIF(
+      CASE WHEN t_p_r_f.idm_1 IS NOT NULL AND t_p_r_f.course_position_prev1 IS NOT NULL THEN 1 ELSE 0 END +
+      CASE WHEN t_p_r_f.idm_2 IS NOT NULL AND t_p_r_f.course_position_prev2 IS NOT NULL THEN 1 ELSE 0 END +
+      CASE WHEN t_p_r_f.idm_3 IS NOT NULL AND t_p_r_f.course_position_prev3 IS NOT NULL THEN 1 ELSE 0 END +
+      CASE WHEN t_p_r_f.idm_4 IS NOT NULL AND t_p_r_f.course_position_prev4 IS NOT NULL THEN 1 ELSE 0 END +
+      CASE WHEN t_p_r_f.idm_5 IS NOT NULL AND t_p_r_f.course_position_prev5 IS NOT NULL THEN 1 ELSE 0 END,
+      0
+    )
+  ) AS mean_idm_zone_neutral
+  ,SAFE_DIVIDE(
+    COALESCE(
+      (t_p_r_f.idm_1
+       - CASE t_p_r_f.course_position_prev1
+           WHEN 1 THEN t_p_r_f.prev1_straight_bias_innermost
+           WHEN 2 THEN t_p_r_f.prev1_straight_bias_inner
+           WHEN 3 THEN (t_p_r_f.prev1_straight_bias_inner + t_p_r_f.prev1_straight_bias_outer) / 2
+           WHEN 4 THEN t_p_r_f.prev1_straight_bias_outer
+           WHEN 5 THEN t_p_r_f.prev1_straight_bias_outermost
+           ELSE NULL
+         END
+       + t_p_r_f.track_bias_prev1) * 1.5,
+      0
+    ) +
+    COALESCE(
+      (t_p_r_f.idm_2
+       - CASE t_p_r_f.course_position_prev2
+           WHEN 1 THEN t_p_r_f.prev2_straight_bias_innermost
+           WHEN 2 THEN t_p_r_f.prev2_straight_bias_inner
+           WHEN 3 THEN (t_p_r_f.prev2_straight_bias_inner + t_p_r_f.prev2_straight_bias_outer) / 2
+           WHEN 4 THEN t_p_r_f.prev2_straight_bias_outer
+           WHEN 5 THEN t_p_r_f.prev2_straight_bias_outermost
+           ELSE NULL
+         END
+       + t_p_r_f.track_bias_prev2) * 1.25,
+      0
+    ) +
+    COALESCE(
+      (t_p_r_f.idm_3
+       - CASE t_p_r_f.course_position_prev3
+           WHEN 1 THEN t_p_r_f.prev3_straight_bias_innermost
+           WHEN 2 THEN t_p_r_f.prev3_straight_bias_inner
+           WHEN 3 THEN (t_p_r_f.prev3_straight_bias_inner + t_p_r_f.prev3_straight_bias_outer) / 2
+           WHEN 4 THEN t_p_r_f.prev3_straight_bias_outer
+           WHEN 5 THEN t_p_r_f.prev3_straight_bias_outermost
+           ELSE NULL
+         END
+       + t_p_r_f.track_bias_prev3) * 1.0,
+      0
+    ) +
+    COALESCE(
+      (t_p_r_f.idm_4
+       - CASE t_p_r_f.course_position_prev4
+           WHEN 1 THEN t_p_r_f.prev4_straight_bias_innermost
+           WHEN 2 THEN t_p_r_f.prev4_straight_bias_inner
+           WHEN 3 THEN (t_p_r_f.prev4_straight_bias_inner + t_p_r_f.prev4_straight_bias_outer) / 2
+           WHEN 4 THEN t_p_r_f.prev4_straight_bias_outer
+           WHEN 5 THEN t_p_r_f.prev4_straight_bias_outermost
+           ELSE NULL
+         END
+       + t_p_r_f.track_bias_prev4) * 0.75,
+      0
+    ) +
+    COALESCE(
+      (t_p_r_f.idm_5
+       - CASE t_p_r_f.course_position_prev5
+           WHEN 1 THEN t_p_r_f.prev5_straight_bias_innermost
+           WHEN 2 THEN t_p_r_f.prev5_straight_bias_inner
+           WHEN 3 THEN (t_p_r_f.prev5_straight_bias_inner + t_p_r_f.prev5_straight_bias_outer) / 2
+           WHEN 4 THEN t_p_r_f.prev5_straight_bias_outer
+           WHEN 5 THEN t_p_r_f.prev5_straight_bias_outermost
+           ELSE NULL
+         END
+       + t_p_r_f.track_bias_prev5) * 0.5,
+      0
+    ),
+    NULLIF(
+      CASE WHEN t_p_r_f.idm_1 IS NOT NULL AND t_p_r_f.course_position_prev1 IS NOT NULL THEN 1.5 ELSE 0 END +
+      CASE WHEN t_p_r_f.idm_2 IS NOT NULL AND t_p_r_f.course_position_prev2 IS NOT NULL THEN 1.25 ELSE 0 END +
+      CASE WHEN t_p_r_f.idm_3 IS NOT NULL AND t_p_r_f.course_position_prev3 IS NOT NULL THEN 1.0 ELSE 0 END +
+      CASE WHEN t_p_r_f.idm_4 IS NOT NULL AND t_p_r_f.course_position_prev4 IS NOT NULL THEN 0.75 ELSE 0 END +
+      CASE WHEN t_p_r_f.idm_5 IS NOT NULL AND t_p_r_f.course_position_prev5 IS NOT NULL THEN 0.5 ELSE 0 END,
+      0
+    )
+  ) AS ema_idm_zone_neutral
+  ,SAFE_DIVIDE(
+    COALESCE(
+      t_p_r_f.idm_1
+      + GREATEST(
+          COALESCE(t_p_r_f.prev1_straight_bias_innermost, t_p_r_f.track_bias_prev1),
+          COALESCE(t_p_r_f.prev1_straight_bias_inner,     t_p_r_f.track_bias_prev1),
+          COALESCE(t_p_r_f.prev1_straight_bias_outer,     t_p_r_f.track_bias_prev1),
+          COALESCE(t_p_r_f.prev1_straight_bias_outermost, t_p_r_f.track_bias_prev1)
+        )
+      - CASE t_p_r_f.course_position_prev1
+          WHEN 1 THEN t_p_r_f.prev1_straight_bias_innermost
+          WHEN 2 THEN t_p_r_f.prev1_straight_bias_inner
+          WHEN 3 THEN (t_p_r_f.prev1_straight_bias_inner + t_p_r_f.prev1_straight_bias_outer) / 2
+          WHEN 4 THEN t_p_r_f.prev1_straight_bias_outer
+          WHEN 5 THEN t_p_r_f.prev1_straight_bias_outermost
+          ELSE NULL
+        END,
+      0
+    ) +
+    COALESCE(
+      t_p_r_f.idm_2
+      + GREATEST(
+          COALESCE(t_p_r_f.prev2_straight_bias_innermost, t_p_r_f.track_bias_prev2),
+          COALESCE(t_p_r_f.prev2_straight_bias_inner,     t_p_r_f.track_bias_prev2),
+          COALESCE(t_p_r_f.prev2_straight_bias_outer,     t_p_r_f.track_bias_prev2),
+          COALESCE(t_p_r_f.prev2_straight_bias_outermost, t_p_r_f.track_bias_prev2)
+        )
+      - CASE t_p_r_f.course_position_prev2
+          WHEN 1 THEN t_p_r_f.prev2_straight_bias_innermost
+          WHEN 2 THEN t_p_r_f.prev2_straight_bias_inner
+          WHEN 3 THEN (t_p_r_f.prev2_straight_bias_inner + t_p_r_f.prev2_straight_bias_outer) / 2
+          WHEN 4 THEN t_p_r_f.prev2_straight_bias_outer
+          WHEN 5 THEN t_p_r_f.prev2_straight_bias_outermost
+          ELSE NULL
+        END,
+      0
+    ) +
+    COALESCE(
+      t_p_r_f.idm_3
+      + GREATEST(
+          COALESCE(t_p_r_f.prev3_straight_bias_innermost, t_p_r_f.track_bias_prev3),
+          COALESCE(t_p_r_f.prev3_straight_bias_inner,     t_p_r_f.track_bias_prev3),
+          COALESCE(t_p_r_f.prev3_straight_bias_outer,     t_p_r_f.track_bias_prev3),
+          COALESCE(t_p_r_f.prev3_straight_bias_outermost, t_p_r_f.track_bias_prev3)
+        )
+      - CASE t_p_r_f.course_position_prev3
+          WHEN 1 THEN t_p_r_f.prev3_straight_bias_innermost
+          WHEN 2 THEN t_p_r_f.prev3_straight_bias_inner
+          WHEN 3 THEN (t_p_r_f.prev3_straight_bias_inner + t_p_r_f.prev3_straight_bias_outer) / 2
+          WHEN 4 THEN t_p_r_f.prev3_straight_bias_outer
+          WHEN 5 THEN t_p_r_f.prev3_straight_bias_outermost
+          ELSE NULL
+        END,
+      0
+    ) +
+    COALESCE(
+      t_p_r_f.idm_4
+      + GREATEST(
+          COALESCE(t_p_r_f.prev4_straight_bias_innermost, t_p_r_f.track_bias_prev4),
+          COALESCE(t_p_r_f.prev4_straight_bias_inner,     t_p_r_f.track_bias_prev4),
+          COALESCE(t_p_r_f.prev4_straight_bias_outer,     t_p_r_f.track_bias_prev4),
+          COALESCE(t_p_r_f.prev4_straight_bias_outermost, t_p_r_f.track_bias_prev4)
+        )
+      - CASE t_p_r_f.course_position_prev4
+          WHEN 1 THEN t_p_r_f.prev4_straight_bias_innermost
+          WHEN 2 THEN t_p_r_f.prev4_straight_bias_inner
+          WHEN 3 THEN (t_p_r_f.prev4_straight_bias_inner + t_p_r_f.prev4_straight_bias_outer) / 2
+          WHEN 4 THEN t_p_r_f.prev4_straight_bias_outer
+          WHEN 5 THEN t_p_r_f.prev4_straight_bias_outermost
+          ELSE NULL
+        END,
+      0
+    ) +
+    COALESCE(
+      t_p_r_f.idm_5
+      + GREATEST(
+          COALESCE(t_p_r_f.prev5_straight_bias_innermost, t_p_r_f.track_bias_prev5),
+          COALESCE(t_p_r_f.prev5_straight_bias_inner,     t_p_r_f.track_bias_prev5),
+          COALESCE(t_p_r_f.prev5_straight_bias_outer,     t_p_r_f.track_bias_prev5),
+          COALESCE(t_p_r_f.prev5_straight_bias_outermost, t_p_r_f.track_bias_prev5)
+        )
+      - CASE t_p_r_f.course_position_prev5
+          WHEN 1 THEN t_p_r_f.prev5_straight_bias_innermost
+          WHEN 2 THEN t_p_r_f.prev5_straight_bias_inner
+          WHEN 3 THEN (t_p_r_f.prev5_straight_bias_inner + t_p_r_f.prev5_straight_bias_outer) / 2
+          WHEN 4 THEN t_p_r_f.prev5_straight_bias_outer
+          WHEN 5 THEN t_p_r_f.prev5_straight_bias_outermost
+          ELSE NULL
+        END,
+      0
+    ),
+    NULLIF(
+      CASE WHEN t_p_r_f.idm_1 IS NOT NULL AND t_p_r_f.course_position_prev1 IS NOT NULL THEN 1 ELSE 0 END +
+      CASE WHEN t_p_r_f.idm_2 IS NOT NULL AND t_p_r_f.course_position_prev2 IS NOT NULL THEN 1 ELSE 0 END +
+      CASE WHEN t_p_r_f.idm_3 IS NOT NULL AND t_p_r_f.course_position_prev3 IS NOT NULL THEN 1 ELSE 0 END +
+      CASE WHEN t_p_r_f.idm_4 IS NOT NULL AND t_p_r_f.course_position_prev4 IS NOT NULL THEN 1 ELSE 0 END +
+      CASE WHEN t_p_r_f.idm_5 IS NOT NULL AND t_p_r_f.course_position_prev5 IS NOT NULL THEN 1 ELSE 0 END,
+      0
+    )
+  ) AS mean_idm_zone_potential
+  ,SAFE_DIVIDE(
+    COALESCE(
+      (t_p_r_f.idm_1
+       + GREATEST(
+           COALESCE(t_p_r_f.prev1_straight_bias_innermost, t_p_r_f.track_bias_prev1),
+           COALESCE(t_p_r_f.prev1_straight_bias_inner,     t_p_r_f.track_bias_prev1),
+           COALESCE(t_p_r_f.prev1_straight_bias_outer,     t_p_r_f.track_bias_prev1),
+           COALESCE(t_p_r_f.prev1_straight_bias_outermost, t_p_r_f.track_bias_prev1)
+         )
+       - CASE t_p_r_f.course_position_prev1
+           WHEN 1 THEN t_p_r_f.prev1_straight_bias_innermost
+           WHEN 2 THEN t_p_r_f.prev1_straight_bias_inner
+           WHEN 3 THEN (t_p_r_f.prev1_straight_bias_inner + t_p_r_f.prev1_straight_bias_outer) / 2
+           WHEN 4 THEN t_p_r_f.prev1_straight_bias_outer
+           WHEN 5 THEN t_p_r_f.prev1_straight_bias_outermost
+           ELSE NULL
+         END) * 1.5,
+      0
+    ) +
+    COALESCE(
+      (t_p_r_f.idm_2
+       + GREATEST(
+           COALESCE(t_p_r_f.prev2_straight_bias_innermost, t_p_r_f.track_bias_prev2),
+           COALESCE(t_p_r_f.prev2_straight_bias_inner,     t_p_r_f.track_bias_prev2),
+           COALESCE(t_p_r_f.prev2_straight_bias_outer,     t_p_r_f.track_bias_prev2),
+           COALESCE(t_p_r_f.prev2_straight_bias_outermost, t_p_r_f.track_bias_prev2)
+         )
+       - CASE t_p_r_f.course_position_prev2
+           WHEN 1 THEN t_p_r_f.prev2_straight_bias_innermost
+           WHEN 2 THEN t_p_r_f.prev2_straight_bias_inner
+           WHEN 3 THEN (t_p_r_f.prev2_straight_bias_inner + t_p_r_f.prev2_straight_bias_outer) / 2
+           WHEN 4 THEN t_p_r_f.prev2_straight_bias_outer
+           WHEN 5 THEN t_p_r_f.prev2_straight_bias_outermost
+           ELSE NULL
+         END) * 1.25,
+      0
+    ) +
+    COALESCE(
+      (t_p_r_f.idm_3
+       + GREATEST(
+           COALESCE(t_p_r_f.prev3_straight_bias_innermost, t_p_r_f.track_bias_prev3),
+           COALESCE(t_p_r_f.prev3_straight_bias_inner,     t_p_r_f.track_bias_prev3),
+           COALESCE(t_p_r_f.prev3_straight_bias_outer,     t_p_r_f.track_bias_prev3),
+           COALESCE(t_p_r_f.prev3_straight_bias_outermost, t_p_r_f.track_bias_prev3)
+         )
+       - CASE t_p_r_f.course_position_prev3
+           WHEN 1 THEN t_p_r_f.prev3_straight_bias_innermost
+           WHEN 2 THEN t_p_r_f.prev3_straight_bias_inner
+           WHEN 3 THEN (t_p_r_f.prev3_straight_bias_inner + t_p_r_f.prev3_straight_bias_outer) / 2
+           WHEN 4 THEN t_p_r_f.prev3_straight_bias_outer
+           WHEN 5 THEN t_p_r_f.prev3_straight_bias_outermost
+           ELSE NULL
+         END) * 1.0,
+      0
+    ) +
+    COALESCE(
+      (t_p_r_f.idm_4
+       + GREATEST(
+           COALESCE(t_p_r_f.prev4_straight_bias_innermost, t_p_r_f.track_bias_prev4),
+           COALESCE(t_p_r_f.prev4_straight_bias_inner,     t_p_r_f.track_bias_prev4),
+           COALESCE(t_p_r_f.prev4_straight_bias_outer,     t_p_r_f.track_bias_prev4),
+           COALESCE(t_p_r_f.prev4_straight_bias_outermost, t_p_r_f.track_bias_prev4)
+         )
+       - CASE t_p_r_f.course_position_prev4
+           WHEN 1 THEN t_p_r_f.prev4_straight_bias_innermost
+           WHEN 2 THEN t_p_r_f.prev4_straight_bias_inner
+           WHEN 3 THEN (t_p_r_f.prev4_straight_bias_inner + t_p_r_f.prev4_straight_bias_outer) / 2
+           WHEN 4 THEN t_p_r_f.prev4_straight_bias_outer
+           WHEN 5 THEN t_p_r_f.prev4_straight_bias_outermost
+           ELSE NULL
+         END) * 0.75,
+      0
+    ) +
+    COALESCE(
+      (t_p_r_f.idm_5
+       + GREATEST(
+           COALESCE(t_p_r_f.prev5_straight_bias_innermost, t_p_r_f.track_bias_prev5),
+           COALESCE(t_p_r_f.prev5_straight_bias_inner,     t_p_r_f.track_bias_prev5),
+           COALESCE(t_p_r_f.prev5_straight_bias_outer,     t_p_r_f.track_bias_prev5),
+           COALESCE(t_p_r_f.prev5_straight_bias_outermost, t_p_r_f.track_bias_prev5)
+         )
+       - CASE t_p_r_f.course_position_prev5
+           WHEN 1 THEN t_p_r_f.prev5_straight_bias_innermost
+           WHEN 2 THEN t_p_r_f.prev5_straight_bias_inner
+           WHEN 3 THEN (t_p_r_f.prev5_straight_bias_inner + t_p_r_f.prev5_straight_bias_outer) / 2
+           WHEN 4 THEN t_p_r_f.prev5_straight_bias_outer
+           WHEN 5 THEN t_p_r_f.prev5_straight_bias_outermost
+           ELSE NULL
+         END) * 0.5,
+      0
+    ),
+    NULLIF(
+      CASE WHEN t_p_r_f.idm_1 IS NOT NULL AND t_p_r_f.course_position_prev1 IS NOT NULL THEN 1.5 ELSE 0 END +
+      CASE WHEN t_p_r_f.idm_2 IS NOT NULL AND t_p_r_f.course_position_prev2 IS NOT NULL THEN 1.25 ELSE 0 END +
+      CASE WHEN t_p_r_f.idm_3 IS NOT NULL AND t_p_r_f.course_position_prev3 IS NOT NULL THEN 1.0 ELSE 0 END +
+      CASE WHEN t_p_r_f.idm_4 IS NOT NULL AND t_p_r_f.course_position_prev4 IS NOT NULL THEN 0.75 ELSE 0 END +
+      CASE WHEN t_p_r_f.idm_5 IS NOT NULL AND t_p_r_f.course_position_prev5 IS NOT NULL THEN 0.5 ELSE 0 END,
+      0
+    )
+  ) AS ema_idm_zone_potential
+  -- グループ3: 補正量（= ゾーン中立IDM - IDM = track_bias - course_bias）
+  ,t_p_r_f.track_bias_prev1
+    - CASE t_p_r_f.course_position_prev1
+        WHEN 1 THEN t_p_r_f.prev1_straight_bias_innermost
+        WHEN 2 THEN t_p_r_f.prev1_straight_bias_inner
+        WHEN 3 THEN (t_p_r_f.prev1_straight_bias_inner + t_p_r_f.prev1_straight_bias_outer) / 2
+        WHEN 4 THEN t_p_r_f.prev1_straight_bias_outer
+        WHEN 5 THEN t_p_r_f.prev1_straight_bias_outermost
+        ELSE NULL
+      END
+    AS idm_zone_correction_1
+  ,t_p_r_f.track_bias_prev2
+    - CASE t_p_r_f.course_position_prev2
+        WHEN 1 THEN t_p_r_f.prev2_straight_bias_innermost
+        WHEN 2 THEN t_p_r_f.prev2_straight_bias_inner
+        WHEN 3 THEN (t_p_r_f.prev2_straight_bias_inner + t_p_r_f.prev2_straight_bias_outer) / 2
+        WHEN 4 THEN t_p_r_f.prev2_straight_bias_outer
+        WHEN 5 THEN t_p_r_f.prev2_straight_bias_outermost
+        ELSE NULL
+      END
+    AS idm_zone_correction_2
+  ,t_p_r_f.track_bias_prev3
+    - CASE t_p_r_f.course_position_prev3
+        WHEN 1 THEN t_p_r_f.prev3_straight_bias_innermost
+        WHEN 2 THEN t_p_r_f.prev3_straight_bias_inner
+        WHEN 3 THEN (t_p_r_f.prev3_straight_bias_inner + t_p_r_f.prev3_straight_bias_outer) / 2
+        WHEN 4 THEN t_p_r_f.prev3_straight_bias_outer
+        WHEN 5 THEN t_p_r_f.prev3_straight_bias_outermost
+        ELSE NULL
+      END
+    AS idm_zone_correction_3
+  ,t_p_r_f.track_bias_prev4
+    - CASE t_p_r_f.course_position_prev4
+        WHEN 1 THEN t_p_r_f.prev4_straight_bias_innermost
+        WHEN 2 THEN t_p_r_f.prev4_straight_bias_inner
+        WHEN 3 THEN (t_p_r_f.prev4_straight_bias_inner + t_p_r_f.prev4_straight_bias_outer) / 2
+        WHEN 4 THEN t_p_r_f.prev4_straight_bias_outer
+        WHEN 5 THEN t_p_r_f.prev4_straight_bias_outermost
+        ELSE NULL
+      END
+    AS idm_zone_correction_4
+  ,t_p_r_f.track_bias_prev5
+    - CASE t_p_r_f.course_position_prev5
+        WHEN 1 THEN t_p_r_f.prev5_straight_bias_innermost
+        WHEN 2 THEN t_p_r_f.prev5_straight_bias_inner
+        WHEN 3 THEN (t_p_r_f.prev5_straight_bias_inner + t_p_r_f.prev5_straight_bias_outer) / 2
+        WHEN 4 THEN t_p_r_f.prev5_straight_bias_outer
+        WHEN 5 THEN t_p_r_f.prev5_straight_bias_outermost
+        ELSE NULL
+      END
+    AS idm_zone_correction_5
+  -- グループ4: 補正後IDMの現在の出走条件との乖離・トレンド
+  ,SAFE_DIVIDE(
+    COALESCE(
+      (t_p_r_f.idm_1
+       - CASE t_p_r_f.course_position_prev1
+           WHEN 1 THEN t_p_r_f.prev1_straight_bias_innermost
+           WHEN 2 THEN t_p_r_f.prev1_straight_bias_inner
+           WHEN 3 THEN (t_p_r_f.prev1_straight_bias_inner + t_p_r_f.prev1_straight_bias_outer) / 2
+           WHEN 4 THEN t_p_r_f.prev1_straight_bias_outer
+           WHEN 5 THEN t_p_r_f.prev1_straight_bias_outermost
+           ELSE NULL
+         END
+       + t_p_r_f.track_bias_prev1) * 1.5,
+      0
+    ) +
+    COALESCE(
+      (t_p_r_f.idm_2
+       - CASE t_p_r_f.course_position_prev2
+           WHEN 1 THEN t_p_r_f.prev2_straight_bias_innermost
+           WHEN 2 THEN t_p_r_f.prev2_straight_bias_inner
+           WHEN 3 THEN (t_p_r_f.prev2_straight_bias_inner + t_p_r_f.prev2_straight_bias_outer) / 2
+           WHEN 4 THEN t_p_r_f.prev2_straight_bias_outer
+           WHEN 5 THEN t_p_r_f.prev2_straight_bias_outermost
+           ELSE NULL
+         END
+       + t_p_r_f.track_bias_prev2) * 1.25,
+      0
+    ) +
+    COALESCE(
+      (t_p_r_f.idm_3
+       - CASE t_p_r_f.course_position_prev3
+           WHEN 1 THEN t_p_r_f.prev3_straight_bias_innermost
+           WHEN 2 THEN t_p_r_f.prev3_straight_bias_inner
+           WHEN 3 THEN (t_p_r_f.prev3_straight_bias_inner + t_p_r_f.prev3_straight_bias_outer) / 2
+           WHEN 4 THEN t_p_r_f.prev3_straight_bias_outer
+           WHEN 5 THEN t_p_r_f.prev3_straight_bias_outermost
+           ELSE NULL
+         END
+       + t_p_r_f.track_bias_prev3) * 1.0,
+      0
+    ) +
+    COALESCE(
+      (t_p_r_f.idm_4
+       - CASE t_p_r_f.course_position_prev4
+           WHEN 1 THEN t_p_r_f.prev4_straight_bias_innermost
+           WHEN 2 THEN t_p_r_f.prev4_straight_bias_inner
+           WHEN 3 THEN (t_p_r_f.prev4_straight_bias_inner + t_p_r_f.prev4_straight_bias_outer) / 2
+           WHEN 4 THEN t_p_r_f.prev4_straight_bias_outer
+           WHEN 5 THEN t_p_r_f.prev4_straight_bias_outermost
+           ELSE NULL
+         END
+       + t_p_r_f.track_bias_prev4) * 0.75,
+      0
+    ) +
+    COALESCE(
+      (t_p_r_f.idm_5
+       - CASE t_p_r_f.course_position_prev5
+           WHEN 1 THEN t_p_r_f.prev5_straight_bias_innermost
+           WHEN 2 THEN t_p_r_f.prev5_straight_bias_inner
+           WHEN 3 THEN (t_p_r_f.prev5_straight_bias_inner + t_p_r_f.prev5_straight_bias_outer) / 2
+           WHEN 4 THEN t_p_r_f.prev5_straight_bias_outer
+           WHEN 5 THEN t_p_r_f.prev5_straight_bias_outermost
+           ELSE NULL
+         END
+       + t_p_r_f.track_bias_prev5) * 0.5,
+      0
+    ),
+    NULLIF(
+      CASE WHEN t_p_r_f.idm_1 IS NOT NULL AND t_p_r_f.course_position_prev1 IS NOT NULL THEN 1.5 ELSE 0 END +
+      CASE WHEN t_p_r_f.idm_2 IS NOT NULL AND t_p_r_f.course_position_prev2 IS NOT NULL THEN 1.25 ELSE 0 END +
+      CASE WHEN t_p_r_f.idm_3 IS NOT NULL AND t_p_r_f.course_position_prev3 IS NOT NULL THEN 1.0 ELSE 0 END +
+      CASE WHEN t_p_r_f.idm_4 IS NOT NULL AND t_p_r_f.course_position_prev4 IS NOT NULL THEN 0.75 ELSE 0 END +
+      CASE WHEN t_p_r_f.idm_5 IS NOT NULL AND t_p_r_f.course_position_prev5 IS NOT NULL THEN 0.5 ELSE 0 END,
+      0
+    )
+  ) - t_p_r_f.ema_idm AS ema_idm_zone_neutral_diff
+  ,(t_p_r_f.idm_1
+    - CASE t_p_r_f.course_position_prev1
+        WHEN 1 THEN t_p_r_f.prev1_straight_bias_innermost
+        WHEN 2 THEN t_p_r_f.prev1_straight_bias_inner
+        WHEN 3 THEN (t_p_r_f.prev1_straight_bias_inner + t_p_r_f.prev1_straight_bias_outer) / 2
+        WHEN 4 THEN t_p_r_f.prev1_straight_bias_outer
+        WHEN 5 THEN t_p_r_f.prev1_straight_bias_outermost
+        ELSE NULL
+      END
+    + t_p_r_f.track_bias_prev1)
+  - (t_p_r_f.idm_3
+     - CASE t_p_r_f.course_position_prev3
+         WHEN 1 THEN t_p_r_f.prev3_straight_bias_innermost
+         WHEN 2 THEN t_p_r_f.prev3_straight_bias_inner
+         WHEN 3 THEN (t_p_r_f.prev3_straight_bias_inner + t_p_r_f.prev3_straight_bias_outer) / 2
+         WHEN 4 THEN t_p_r_f.prev3_straight_bias_outer
+         WHEN 5 THEN t_p_r_f.prev3_straight_bias_outermost
+         ELSE NULL
+       END
+     + t_p_r_f.track_bias_prev3)
+  AS idm_zone_neutral_trend
 from
   temp_past_race_features2 as t_p_r_f
   left join temp_horse_master_feature2 as t_h_m_f

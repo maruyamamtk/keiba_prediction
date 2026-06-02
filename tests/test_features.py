@@ -1425,7 +1425,7 @@ class TestAgeBasedTEFeature:
         """mare_current_age_te が horse_age に応じて正しい年齢帯 TE を選択すること"""
         content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
         final_start = content.rfind("from\n  temp_past_race_features2")
-        section = content[final_start - 8000:final_start]
+        section = content[final_start - 55000:final_start]
         assert "when t_p_r_f.horse_age = 2 then t_m_te.mare_age2_te" in section, \
             "mare_current_age_te の 2歳ケースがありません"
         assert "when t_p_r_f.horse_age = 3 then t_m_te.mare_age3_te" in section, \
@@ -1525,7 +1525,7 @@ class TestCourseBiasFeature:
         """prev1_course_bias_score の CASE WHEN が course_position 1〜5 の全ケースを網羅していること"""
         content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
         final_start = content.rfind("from\n  temp_past_race_features2")
-        section = content[final_start - 8000:final_start]
+        section = content[final_start - 55000:final_start]
         assert "prev1_course_bias_score" in section, \
             "最終 SELECT に prev1_course_bias_score がありません"
         assert "course_position_prev1" in section, \
@@ -1712,3 +1712,141 @@ class TestGateBiasFeature:
             "前走の course_position（r_r_1.course_position）が見つかりません"
         assert "h_r.course_position" not in section, \
             "当レース（h_r.course_position）がリークしています"
+
+
+class TestIDMZoneCorrectionFeature:
+    """馬場バイアス×コース取りによるIDM補正特徴量のテスト（Issue #311）"""
+
+    def test_sql_idm_zone_neutral_all_prev(self):
+        """idm_zone_neutral_1〜5 が最終 SELECT に存在すること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        for n in range(1, 6):
+            assert f"idm_zone_neutral_{n}" in content, \
+                f"最終 SELECT に idm_zone_neutral_{n} がありません"
+
+    def test_sql_idm_zone_potential_all_prev(self):
+        """idm_zone_potential_1〜5 が最終 SELECT に存在すること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        for n in range(1, 6):
+            assert f"idm_zone_potential_{n}" in content, \
+                f"最終 SELECT に idm_zone_potential_{n} がありません"
+
+    def test_sql_idm_zone_neutral_formula(self):
+        """idm_zone_neutral_N が idm_N と track_bias_prevN を参照していること（補正式の構成要素）"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        for n in range(1, 6):
+            assert f"t_p_r_f.idm_{n}" in content, \
+                f"idm_zone_neutral_{n} で t_p_r_f.idm_{n} が参照されていません"
+            assert f"t_p_r_f.track_bias_prev{n}" in content, \
+                f"idm_zone_neutral_{n} で t_p_r_f.track_bias_prev{n} が参照されていません"
+            assert f"t_p_r_f.course_position_prev{n}" in content, \
+                f"idm_zone_neutral_{n} で t_p_r_f.course_position_prev{n} が参照されていません"
+
+    def test_sql_idm_zone_neutral_uses_case_for_course_bias(self):
+        """idm_zone_neutral_N の CASE WHEN で course_position_prevN → straight_bias_* の対応が正しいこと"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        for n in range(1, 6):
+            assert f"t_p_r_f.prev{n}_straight_bias_innermost" in content, \
+                f"idm_zone_neutral_{n} で prev{n}_straight_bias_innermost が参照されていません"
+            assert f"t_p_r_f.prev{n}_straight_bias_outermost" in content, \
+                f"idm_zone_neutral_{n} で prev{n}_straight_bias_outermost が参照されていません"
+
+    def test_sql_idm_zone_neutral_null_when_no_course_position(self):
+        """course_position_prevN が NULL の場合、ELSE NULL で NULL を返すこと"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        neutral_section_start = content.find("idm_zone_neutral_1")
+        neutral_section_end = content.find("idm_zone_neutral_trend")
+        neutral_section = content[neutral_section_start:neutral_section_end]
+        assert "ELSE NULL" in neutral_section, \
+            "idm_zone_neutral セクションの CASE WHEN に ELSE NULL がありません（NULL伝播が保証されません）"
+
+    def test_sql_idm_zone_potential_uses_greatest_coalesce(self):
+        """idm_zone_potential_N が GREATEST(COALESCE(...)) で最有利ゾーンを選択していること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        assert "GREATEST(" in content, \
+            "idm_zone_potential に GREATEST 関数がありません"
+        assert "COALESCE(t_p_r_f.prev1_straight_bias_innermost, t_p_r_f.track_bias_prev1)" in content, \
+            "idm_zone_potential_1 で innermost の COALESCE フォールバックがありません"
+
+    def test_sql_idm_zone_potential_structure_ge_neutral(self):
+        """idm_zone_potential_1 の計算に GREATEST が含まれていること（potential >= neutral の構造的保証）"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        potential_idx = content.find("AS idm_zone_potential_1")
+        assert potential_idx > 0, "idm_zone_potential_1 が見つかりません"
+        pot_section = content[max(0, potential_idx - 1000):potential_idx + 50]
+        assert "GREATEST(" in pot_section, \
+            "idm_zone_potential_1 の計算に GREATEST がありません"
+
+    def test_sql_idm_zone_correction_all_prev(self):
+        """idm_zone_correction_1〜5 が最終 SELECT に存在すること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        for n in range(1, 6):
+            assert f"idm_zone_correction_{n}" in content, \
+                f"最終 SELECT に idm_zone_correction_{n} がありません"
+
+    def test_sql_idm_zone_correction_formula(self):
+        """idm_zone_correction_N が track_bias_prevN - course_bias の形式になっていること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        correction_idx = content.find("AS idm_zone_correction_1")
+        assert correction_idx > 0, "idm_zone_correction_1 が見つかりません"
+        correction_section = content[max(0, correction_idx - 600):correction_idx + 50]
+        assert "t_p_r_f.track_bias_prev1" in correction_section, \
+            "idm_zone_correction_1 で track_bias_prev1 が参照されていません"
+        assert "t_p_r_f.course_position_prev1" in correction_section, \
+            "idm_zone_correction_1 で course_position_prev1 が参照されていません"
+
+    def test_sql_ema_idm_zone_neutral_weights(self):
+        """ema_idm_zone_neutral の重みが 1.5/1.25/1.0/0.75/0.5 であること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        ema_idx = content.find("AS ema_idm_zone_neutral\n")
+        assert ema_idx > 0, "ema_idm_zone_neutral が見つかりません"
+        ema_section = content[max(0, ema_idx - 3000):ema_idx + 50]
+        assert "* 1.5" in ema_section, "ema_idm_zone_neutral に前走ウェイト 1.5 がありません"
+        assert "* 1.25" in ema_section, "ema_idm_zone_neutral に2走前ウェイト 1.25 がありません"
+        assert "* 1.0" in ema_section, "ema_idm_zone_neutral に3走前ウェイト 1.0 がありません"
+        assert "* 0.75" in ema_section, "ema_idm_zone_neutral に4走前ウェイト 0.75 がありません"
+        assert "* 0.5" in ema_section, "ema_idm_zone_neutral に5走前ウェイト 0.5 がありません"
+        assert "THEN 1.5" in ema_section, "ema_idm_zone_neutral の分母に 1.5 がありません"
+        assert "THEN 1.25" in ema_section, "ema_idm_zone_neutral の分母に 1.25 がありません"
+        assert "THEN 0.5" in ema_section, "ema_idm_zone_neutral の分母に 0.5 がありません"
+
+    def test_sql_aggregate_features_in_final_select(self):
+        """mean/ema の集計特徴量が4本とも最終 SELECT に存在すること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        for feature in ["mean_idm_zone_neutral", "ema_idm_zone_neutral",
+                        "mean_idm_zone_potential", "ema_idm_zone_potential"]:
+            assert feature in content, \
+                f"最終 SELECT に {feature} がありません"
+
+    def test_sql_ema_idm_zone_neutral_diff_in_final_select(self):
+        """ema_idm_zone_neutral_diff が最終 SELECT に存在し、ema_idm との差分であること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        assert "ema_idm_zone_neutral_diff" in content, \
+            "最終 SELECT に ema_idm_zone_neutral_diff がありません"
+        diff_idx = content.find("AS ema_idm_zone_neutral_diff")
+        assert diff_idx > 0, "ema_idm_zone_neutral_diff の AS 句が見つかりません"
+        diff_section = content[max(0, diff_idx - 200):diff_idx + 50]
+        assert "t_p_r_f.ema_idm" in diff_section, \
+            "ema_idm_zone_neutral_diff が t_p_r_f.ema_idm との差分になっていません"
+
+    def test_sql_idm_zone_neutral_trend_in_final_select(self):
+        """idm_zone_neutral_trend が最終 SELECT に存在し、1走前 - 3走前の差分であること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        assert "idm_zone_neutral_trend" in content, \
+            "最終 SELECT に idm_zone_neutral_trend がありません"
+        trend_idx = content.find("AS idm_zone_neutral_trend")
+        assert trend_idx > 0, "idm_zone_neutral_trend の AS 句が見つかりません"
+        trend_section = content[max(0, trend_idx - 1200):trend_idx + 50]
+        assert "t_p_r_f.idm_1" in trend_section, \
+            "idm_zone_neutral_trend が idm_1 を参照していません"
+        assert "t_p_r_f.idm_3" in trend_section, \
+            "idm_zone_neutral_trend が idm_3 を参照していません"
+
+    def test_sql_no_current_race_idm_leak(self):
+        """当レースの IDM（h_r.idm）が idm_zone_neutral セクションに含まれていないこと"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        neutral_section_start = content.find("idm_zone_neutral_1")
+        neutral_section_end = content.find("idm_zone_neutral_trend") + len("idm_zone_neutral_trend")
+        neutral_section = content[neutral_section_start:neutral_section_end]
+        assert "h_r.idm" not in neutral_section, \
+            "idm_zone_neutral セクションに当レース（h_r.idm）が含まれています（リーク）"
