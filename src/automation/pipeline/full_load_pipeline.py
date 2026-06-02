@@ -397,6 +397,100 @@ class FullLoadPipeline:
 
         return filtered
 
+    def _step_rebuild_pedigree(self) -> FullLoadStepResult:
+        """
+        Step 3.5: raw.pedigree 再構築
+
+        horse_master への UKC ロード後に実行し、dam_id を名前マッチングで解決する。
+        失敗してもパイプライン全体は継続（母馬特徴量が NULL になるのみ）。
+        """
+        step_name = "rebuild_pedigree"
+        start_time = time.time()
+
+        try:
+            import os as _os
+            from google.cloud import bigquery as _bigquery
+
+            project_id = (
+                getattr(self.bq_loader, "project_id", None)
+                or _os.environ.get("GCP_PROJECT_ID")
+            )
+            if not project_id:
+                logger.warning("project_id が取得できないため raw.pedigree 再構築をスキップ")
+                return FullLoadStepResult(
+                    step_name=step_name,
+                    status="partial",
+                    duration_seconds=time.time() - start_time,
+                    details={"skipped": True},
+                )
+
+            client = _bigquery.Client(project=project_id)
+            query = f"""
+            CREATE OR REPLACE TABLE `{project_id}`.raw.pedigree AS
+            WITH dam_lookup AS (
+              SELECT
+                horse_name,
+                horse_id,
+                ROW_NUMBER() OVER (
+                  PARTITION BY horse_name
+                  ORDER BY sex_code = 2 DESC, horse_id
+                ) AS rn
+              FROM `{project_id}`.raw.horse_master
+              WHERE horse_name IS NOT NULL
+            )
+            SELECT
+              h.horse_id,
+              h.horse_name,
+              NULL        AS sire_id,
+              h.sire_name,
+              d.horse_id  AS dam_id,
+              h.dam_name,
+              NULL        AS dam_sire_id,
+              h.broodmare_sire_name AS dam_sire_name,
+              CAST(h.sire_line_code AS STRING) AS sire_line,
+              EXTRACT(YEAR FROM h.birth_date) AS birth_year,
+              h.sex,
+              CAST(h.coat_color_code AS STRING) AS coat_color,
+              h.breeder_name AS breeder,
+              h.owner_name   AS owner,
+              CURRENT_TIMESTAMP() AS created_at,
+              CURRENT_TIMESTAMP() AS updated_at
+            FROM `{project_id}`.raw.horse_master AS h
+            LEFT JOIN dam_lookup AS d
+              ON h.dam_name = d.horse_name AND d.rn = 1
+            """
+            job = client.query(query)
+            job.result()
+
+            stats_rows = list(
+                client.query(
+                    f"SELECT COUNT(*) as total, COUNTIF(dam_id IS NOT NULL) as resolved "
+                    f"FROM `{project_id}`.raw.pedigree"
+                ).result()
+            )
+            total = stats_rows[0].total
+            resolved = stats_rows[0].resolved
+            logger.info(
+                f"raw.pedigree 再構築完了: total={total}, dam_id解決={resolved} "
+                f"({resolved/total*100:.1f}%)"
+            )
+            return FullLoadStepResult(
+                step_name=step_name,
+                status="success",
+                duration_seconds=time.time() - start_time,
+                details={"total": total, "dam_id_resolved": resolved},
+            )
+
+        except Exception as e:
+            logger.warning(f"raw.pedigree 再構築エラー（パイプライン継続）: {e}")
+            # 母馬特徴量がNULLになるのみ。全体statusに影響させない
+            return FullLoadStepResult(
+                step_name=step_name,
+                status="success",
+                duration_seconds=time.time() - start_time,
+                details={"warning": str(e)},
+            )
+
     def _step_generate_features(
         self,
         start_date: date | None,
@@ -537,6 +631,11 @@ class FullLoadPipeline:
 
             result.files_loaded = bq_result.details.get("files", 0)
             result.records_loaded = bq_result.details.get("records", 0)
+
+            # Step 3.5: raw.pedigree 再構築（UKCロード後に dam_id を最新化）
+            pedigree_result = self._step_rebuild_pedigree()
+            result.steps.append(pedigree_result)
+            # 失敗しても継続（母馬特徴量がNULLになるのみでパイプライン全体は動作する）
 
             # Step 4: 特徴量生成
             feature_result = self._step_generate_features(

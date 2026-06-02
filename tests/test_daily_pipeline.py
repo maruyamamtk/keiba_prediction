@@ -483,7 +483,7 @@ class TestDailyPipelineRun:
         assert result.files_loaded == 1
         assert result.records_loaded == 100
         assert result.features_inserted == 50
-        assert len(result.steps) == 4
+        assert len(result.steps) == 5
         downloader.cleanup.assert_called_once()
         feature_pipeline.run.assert_called_once_with(
             start_date="2024-01-15", end_date="2024-01-16"
@@ -591,7 +591,7 @@ class TestDailyPipelineStepGenerateFeatures:
         assert "特徴量生成失敗" in result.error_message
         assert result.files_loaded == 1
         assert result.records_loaded == 100
-        assert len(result.steps) == 4
+        assert len(result.steps) == 5
 
 
 class TestPipelineResultToDict:

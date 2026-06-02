@@ -332,7 +332,7 @@ class TestFullLoadRun:
         assert result.files_loaded == 1
         assert result.records_loaded == 100
         assert result.features_inserted == 500
-        assert len(result.steps) == 4
+        assert len(result.steps) == 5
         assert result.job_id  # 生成されている
         downloader.cleanup.assert_called_once()
         feature_pipeline.run.assert_called_once_with(
@@ -483,7 +483,7 @@ class TestFullLoadStepGenerateFeatures:
         assert "特徴量生成失敗" in result.error_message
         assert result.files_loaded == 1
         assert result.records_loaded == 100
-        assert len(result.steps) == 4
+        assert len(result.steps) == 5
 
 
 class TestFullLoadResultToDict:
