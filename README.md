@@ -331,6 +331,27 @@ python scripts/generate_features.py \
 
 ---
 
+### `scripts/build_pedigree_table.py` — 血統テーブル（raw.pedigree）再構築
+
+`raw.horse_master` を自己JOINして `raw.pedigree` テーブルを再構築します。
+
+**実行タイミング**: UKCファイルの大量ロード後、または `retrain-and-deploy` の前処理として実行。
+
+```bash
+python scripts/build_pedigree_table.py --project-id keiba-prediction-1768734113
+```
+
+#### 設計上の制約
+
+| 項目 | 説明 |
+|---|---|
+| `dam_id` の解決方法 | `dam_name = horse_master.horse_name` の名前マッチング |
+| `dam_id` の解決率 | 約11%（母馬がJRDB収録レースを走った場合のみ解決） |
+| `sire_id` / `dam_sire_id` | 常にNULL（名前マッチングが牡馬では不安定なため） |
+| 未解決の場合 | `dam_id = NULL`。Feature SQLはLEFT JOINなので母馬特徴量がNULLになるのみ |
+
+---
+
 ### `scripts/diagnose_bq_load.py` — BQロード状態診断
 
 BigQueryテーブルの存在確認・レコード数、GCSファイル数、`raw.load_history` のロード成否を一括診断します。
