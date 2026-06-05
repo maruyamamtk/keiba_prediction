@@ -507,6 +507,24 @@ class TestParseSecLineAbbreviationOffset:
         assert result is not None
         assert result["finish_position"] == 15
 
+    def test_halfwidth_katakana_in_abbreviation_correct(self):
+        """半角カタカナを含む略称でも着順が正しく取得できること。
+
+        半角カタカナ(U+FF61-U+FF9F)はCP932で1バイトだがUTF-8では3バイト(ord>0x80)。
+        旧実装 `ord(c) < 0x80` では2バイトとして誤計上し o が過小になっていた。
+        `.encode('cp932')` で正確に1バイトと計算されること。
+        """
+        # 全角2文字(4バイト) + 半角カタカナ4文字(4バイト) = 8バイト = 6 UTF-8文字
+        abbr = "函館" + "ｱｲｳｴ"
+        assert sum(len(c.encode('cp932')) for c in abbr) == 8
+        assert len(abbr) == 6  # UTF-8文字数は6
+        line = _make_sec_line_with_offset(abbr=abbr, finish_pos="05")
+        result = JRDBParser.parse_sec_line(line)
+        assert result is not None
+        assert result["finish_position"] == 5, (
+            "半角カタカナを含む略称でも finish_position が正しく取得されること"
+        )
+
     def test_mixed_ascii_and_fullwidth_abbreviation(self):
         """全角3文字 + ASCII1文字（例: 'Ｓ'でなく'S'）の略称でも正しく動作すること"""
         abbr = "函館スS"  # 全角3文字(6バイト) + ASCII 1文字(1バイト) = 7バイト
@@ -515,7 +533,4 @@ class TestParseSecLineAbbreviationOffset:
         # テストとしては「パーサーがクラッシュしないこと」を確認
         line = _make_sec_line_with_offset(abbr=abbr, finish_pos="03")
         result = JRDBParser.parse_sec_line(line)
-        # クラッシュしないこと（着順値は不定だが例外が出ないこと）
-        # 7バイトの場合、さらに1バイト読もうとして finish_pos の1文字目を消費するため
-        # finish_position は "0" = 0 になる（仕様上の限界）
         assert result is not None

@@ -621,14 +621,15 @@ class JRDBParser:
             num_horses = JRDBParser.safe_int(line[87:89])
 
             # === 略称フィールド(CP932: 8バイト固定)のUTF-8オフセット補正 ===
-            # 略称はCP932で全角4文字(8バイト)相当。全角=2バイト、ASCII半角=1バイト。
-            # UTF-8変換後に半角スペースが混在すると期待の4文字より多くなり、
-            # 以降の全フィールドが1文字以上ずれる（Issue #323）。
-            # CP932バイト数を動的に計算して正しい開始位置 o を求める。
+            # 略称はCP932で全角4文字(8バイト)相当。
+            # UTF-8変換後に半角文字(ASCII半角・半角カタカナ等)が混在すると
+            # 期待の4文字より多くなり、以降の全フィールドが1文字以上ずれる（Issue #323）。
+            # `.encode('cp932')` でCP932バイト数を正確に計算して補正値 o を求める。
+            # (データは元々CP932からデコードされているのでエラーなし)
             _abbr_pos = 89
             _abbr_consumed = 0
             while _abbr_pos < len(line) and _abbr_consumed < 8:
-                _abbr_consumed += 1 if ord(line[_abbr_pos]) < 0x80 else 2
+                _abbr_consumed += len(line[_abbr_pos].encode('cp932'))
                 _abbr_pos += 1
             o = _abbr_pos - 93  # 全角4文字基準(o=0)。半角混在時はo>0
 
