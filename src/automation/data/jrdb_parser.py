@@ -387,13 +387,19 @@ class JRDBParser:
             dirt_aptitude = line[294:295].strip() if len(line) > 295 else ''
 
             # === 騎手コード・調教師コード ===
-            jockey_code = line[295:300].strip() if len(line) > 300 else ''
-            trainer_code = line[300:305].strip() if len(line) > 305 else ''
+            # KYI仕様書第11版: 騎手コード CP932 byte 336-340 → UTF-8 pos 303:308
+            #                  調教師コード CP932 byte 341-345 → UTF-8 pos 308:313
+            # 旧コード(295:300, 300:305)はCP932オフセット計算誤りによる誤位置（Issue #324）
+            jockey_code = line[303:308].strip() if len(line) > 308 else ''
+            trainer_code = line[308:313].strip() if len(line) > 313 else ''
 
             # === 賞金 ===
-            prize_money = JRDBParser.safe_int(line[305:310]) if len(line) > 310 else None
-            earned_prize = JRDBParser.safe_int(line[310:315]) if len(line) > 315 else None
-            condition_class = JRDBParser.safe_int(line[315:316]) if len(line) > 316 else None
+            # KYI仕様書: 獲得賞金 CP932 347-352 → UTF-8 314:320 (prize_money)
+            #            収得賞金 CP932 353-357 → UTF-8 320:325 (earned_prize)
+            #            条件クラス CP932 358 → UTF-8 325
+            prize_money = JRDBParser.safe_int(line[314:320]) if len(line) > 320 else None
+            earned_prize = JRDBParser.safe_int(line[320:325]) if len(line) > 325 else None
+            condition_class = JRDBParser.safe_int(line[325:326]) if len(line) > 326 else None
 
             # === 展開予測指数 (位置326以降) ===
             # 分析結果: "-19.9-10.6-19.6 -8.0" at position 326
