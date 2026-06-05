@@ -534,3 +534,171 @@ class TestParseSecLineAbbreviationOffset:
         line = _make_sec_line_with_offset(abbr=abbr, finish_pos="03")
         result = JRDBParser.parse_sec_line(line)
         assert result is not None
+
+
+# ===================================================================
+# Issue #324: KYFパーサーの jockey_code / trainer_code 修正テスト
+# ===================================================================
+
+def _get_kyf_lines_by_jockey(jockey_name: str) -> list[str]:
+    """指定騎手名の KYF 行を複数ファイルから収集する。"""
+    import os
+    kyf_dir = ROOT_DIR / "downloaded_files" / "Kyf"
+    lines = []
+    for fname in sorted(os.listdir(kyf_dir)):
+        if not fname.endswith(".csv"):
+            continue
+        fpath = kyf_dir / fname
+        with open(fpath) as f:
+            for line in f:
+                line = line.rstrip("\n")
+                if len(line) > 159 and line[153:159].strip().replace("　", "") == jockey_name:
+                    lines.append(line)
+        if len(lines) >= 5:
+            break
+    return lines
+
+
+def _get_kyf_lines_by_trainer(trainer_name: str) -> list[str]:
+    """指定調教師名の KYF 行を複数ファイルから収集する。"""
+    import os
+    kyf_dir = ROOT_DIR / "downloaded_files" / "Kyf"
+    lines = []
+    for fname in sorted(os.listdir(kyf_dir), reverse=True):
+        if not fname.endswith(".csv"):
+            continue
+        fpath = kyf_dir / fname
+        with open(fpath) as f:
+            for line in f:
+                line = line.rstrip("\n")
+                if len(line) > 169 and line[163:169].strip().replace("　", "") == trainer_name:
+                    lines.append(line)
+        if len(lines) >= 3:
+            break
+    return lines
+
+
+class TestParseKyfLineJockeyTrainerCode:
+    """KYFパーサーの jockey_code / trainer_code 修正テスト（Issue #324）。
+
+    修正前: line[295:300] / line[300:305] （誤位置）
+    修正後: line[303:308] / line[308:313] （正しいCP932位置）
+    """
+
+    TARGET_JOCKEYS = [
+        "武豊", "川田将雅", "Ｃ．ルメール", "松山弘平",
+        "横山武史", "坂井瑠星", "岩田望来",
+    ]
+    TARGET_TRAINERS = [
+        "矢作芳人", "友道康夫", "中内田充正", "木村哲也",
+        "堀宣行", "斉藤崇史",
+    ]
+
+    def test_jockey_code_unique_per_jockey(self):
+        """同一騎手名のレコードで jockey_code が全て同一値になること。"""
+        for jockey_name in self.TARGET_JOCKEYS:
+            lines = _get_kyf_lines_by_jockey(jockey_name)
+            if not lines:
+                pytest.skip(f"{jockey_name}: no test data found")
+
+            codes = set()
+            for line in lines:
+                result = JRDBParser.parse_kyf_line(line)
+                if result and result.get("jockey_name") == jockey_name:
+                    codes.add(result["jockey_code"])
+
+            assert len(codes) == 1, (
+                f"{jockey_name}: jockey_code が一意でない → {codes}"
+            )
+
+    def test_trainer_code_unique_per_trainer(self):
+        """同一調教師名のレコードで trainer_code が全て同一値になること。"""
+        for trainer_name in self.TARGET_TRAINERS:
+            lines = _get_kyf_lines_by_trainer(trainer_name)
+            if not lines:
+                pytest.skip(f"{trainer_name}: no test data found")
+
+            codes = set()
+            for line in lines:
+                result = JRDBParser.parse_kyf_line(line)
+                if result and result.get("trainer_name") == trainer_name:
+                    codes.add(result["trainer_code"])
+
+            assert len(codes) == 1, (
+                f"{trainer_name}: trainer_code が一意でない → {codes}"
+            )
+
+    def test_jockey_code_is_5_digit_numeric(self):
+        """jockey_code が 5桁数字であること。"""
+        import os
+        kyf_dir = ROOT_DIR / "downloaded_files" / "Kyf"
+        checked = 0
+        for fname in sorted(os.listdir(kyf_dir), reverse=True):
+            if not fname.endswith(".csv"):
+                continue
+            fpath = kyf_dir / fname
+            with open(fpath) as f:
+                for line in f:
+                    line = line.rstrip("\n")
+                    result = JRDBParser.parse_kyf_line(line)
+                    if result and result.get("jockey_code"):
+                        code = result["jockey_code"]
+                        assert code.isdigit() and len(code) == 5, (
+                            f"jockey_code={code!r} が 5桁数字でない"
+                        )
+                        checked += 1
+            if checked >= 100:
+                break
+        assert checked > 0, "テスト対象行が見つからない"
+
+    def test_trainer_code_is_5_digit_numeric(self):
+        """trainer_code が 5桁数字であること。"""
+        import os
+        kyf_dir = ROOT_DIR / "downloaded_files" / "Kyf"
+        checked = 0
+        for fname in sorted(os.listdir(kyf_dir), reverse=True):
+            if not fname.endswith(".csv"):
+                continue
+            fpath = kyf_dir / fname
+            with open(fpath) as f:
+                for line in f:
+                    line = line.rstrip("\n")
+                    result = JRDBParser.parse_kyf_line(line)
+                    if result and result.get("trainer_code"):
+                        code = result["trainer_code"]
+                        assert code.isdigit() and len(code) == 5, (
+                            f"trainer_code={code!r} が 5桁数字でない"
+                        )
+                        checked += 1
+            if checked >= 100:
+                break
+        assert checked > 0, "テスト対象行が見つからない"
+
+    def test_jockey_trainer_name_unchanged_after_fix(self):
+        """修正後も jockey_name / trainer_name が変わらないこと。"""
+        jockeys_by_code = {}  # code → set of jockey_names
+        trainers_by_code = {}
+
+        lines = _get_kyf_lines_by_jockey("武豊")
+        if not lines:
+            pytest.skip("no test data found")
+
+        for line in lines:
+            result = JRDBParser.parse_kyf_line(line)
+            if not result:
+                continue
+            j_code = result.get("jockey_code")
+            j_name = result.get("jockey_name")
+            t_code = result.get("trainer_code")
+            t_name = result.get("trainer_name")
+
+            if j_code and j_name:
+                jockeys_by_code.setdefault(j_code, set()).add(j_name)
+            if t_code and t_name:
+                trainers_by_code.setdefault(t_code, set()).add(t_name)
+
+        # 同一コードに複数の名前が混在しないこと
+        for code, names in jockeys_by_code.items():
+            assert len(names) == 1, f"jockey_code={code} に複数の騎手名: {names}"
+        for code, names in trainers_by_code.items():
+            assert len(names) == 1, f"trainer_code={code} に複数の調教師名: {names}"
