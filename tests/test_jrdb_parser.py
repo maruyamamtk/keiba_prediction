@@ -336,6 +336,7 @@ def _make_sec_line(
     finish_pos: str = "01",
     abnormal_code: str = "0",
     win_popularity: str = " 5",
+    abbr: str = "　　　　",
 ) -> str:
     """
     テスト用の SEC 固定長行を生成する。
@@ -346,7 +347,9 @@ def _make_sec_line(
       [10:18]  血統登録番号
       [18:26]  日付
       [26:44]  馬名 (全角18文字スロット)
-      [44:93]  距離・コース等 (49文字)
+      [44:87]  距離・コース等 (43文字)
+      [87:89]  頭数 (2文字)
+      [89:93]  略称 (全角4文字 = CP932 8バイト基準)
       [93:95]  着順
       [95:96]  異常コード
       [96:115] タイム・斤量等 (19文字)
@@ -360,7 +363,9 @@ def _make_sec_line(
         + "00000000"  # [10:18] horse_id
         + "20260404"  # [18:26] race_date
         + "A" * 18    # [26:44] horse_name
-        + " " * 49    # [44:93] 距離・コース等
+        + " " * 43    # [44:87] 距離・コース等
+        + "15"        # [87:89] num_horses
+        + abbr        # [89:93] 略称 (全角4文字がデフォルト = CP932 8バイト)
         + finish_pos  # [93:95]
         + abnormal_code  # [95:96]
         + " " * 19    # [96:115] タイム・斤量等
@@ -414,3 +419,103 @@ class TestParseSecLineWinPopularity:
         assert result["win_popularity"] is None, (
             "win_popularity=0 は無効値（1未満）のため None でなければならない"
         )
+
+
+def _make_sec_line_with_offset(
+    abbr: str,
+    finish_pos: str,
+    abnormal_code: str = "0",
+    win_popularity: str = " 5",
+    race_key: str = "99999901",
+    horse_num: str = "01",
+    race_date: str = "20260531",
+) -> str:
+    """略称フィールドが可変長の場合の SEC 固定長行生成ヘルパー。
+
+    abbr に半角文字が含まれる場合、finish_pos は abbr の直後に配置される。
+    これは実際の SEC ファイルのバイト構造（CP932 8バイト固定）を反映している。
+    """
+    prefix = (
+        race_key           # [0:8]
+        + horse_num        # [8:10]
+        + "00000000"       # [10:18] horse_id
+        + race_date        # [18:26] race_date
+        + "A" * 18         # [26:44] horse_name
+        + " " * 43         # [44:87] 距離等
+        + "15"             # [87:89] num_horses
+        + abbr             # [89:89+len(abbr)] 略称 (CP932 8バイト相当)
+        + finish_pos       # finish_position
+        + abnormal_code    # abnormal_code
+        + " " * 19         # タイム等
+        + "      "         # win_odds
+        + win_popularity   # win_popularity
+    )
+    return prefix + " " * max(200 - len(prefix), 100)
+
+
+class TestParseSecLineAbbreviationOffset:
+    """略称フィールドの半角スペース混入によるオフセットずれバグの修正テスト。
+
+    Issue #323: 薫風ステークス等で全角3文字+半角スペース2個の略称が使われ、
+    finish_position のオフセットが1文字ずれて着順が 0/1 バイナリになる問題。
+    """
+
+    def test_fullwidth_abbreviation_finish_position_correct(self):
+        """全角4文字の略称では着順が正しく取得できること（正常ケース）"""
+        abbr = "東京優駿"  # 全角4文字 = CP932 8バイト = UTF-8 4文字
+        line = _make_sec_line_with_offset(abbr=abbr, finish_pos="01")
+        result = JRDBParser.parse_sec_line(line)
+        assert result is not None
+        assert result["finish_position"] == 1
+
+    def test_halfwidth_space_in_abbreviation_finish_position_correct(self):
+        """略称フィールドに半角スペースが混入しても着順が正しく取得できること（バグ再現ケース）。
+
+        薫風Ｓ(全角3文字=6バイト) + 半角スペース2個(2バイト) = 8バイト = 5 UTF-8文字。
+        修正前: line[93:95]が半角スペース+着順十の位 → safe_int(' 0')=0 になる。
+        修正後: CP932バイト幅を動的計算して正しいオフセットで着順を取得。
+        """
+        abbr = "薫風Ｓ" + "  "  # 全角3文字 + 半角スペース2個 = 8 CP932バイト = 5 UTF-8文字
+        line = _make_sec_line_with_offset(
+            abbr=abbr,
+            finish_pos="01",
+            race_key="05262c09",
+            race_date="20260531",
+        )
+        result = JRDBParser.parse_sec_line(line)
+        assert result is not None
+        assert result["finish_position"] == 1, (
+            "略称フィールドの半角スペースによるオフセットずれで "
+            "finish_position が誤記録されてはならない（Issue #323）"
+        )
+
+    def test_halfwidth_space_abbreviation_rank_10_or_higher_correct(self):
+        """半角スペース混入略称で10着以上の馬の着順も正しく取得できること"""
+        abbr = "薫風Ｓ" + "  "
+        line = _make_sec_line_with_offset(abbr=abbr, finish_pos="12")
+        result = JRDBParser.parse_sec_line(line)
+        assert result is not None
+        assert result["finish_position"] == 12, (
+            "10着以上の馬も finish_position が正しく返されること"
+        )
+
+    def test_fullwidth_abbreviation_rank_15_correct(self):
+        """全角略称で15着の着順が正しく取得できること"""
+        abbr = "　　　　"  # 全角スペース4文字
+        line = _make_sec_line_with_offset(abbr=abbr, finish_pos="15")
+        result = JRDBParser.parse_sec_line(line)
+        assert result is not None
+        assert result["finish_position"] == 15
+
+    def test_mixed_ascii_and_fullwidth_abbreviation(self):
+        """全角3文字 + ASCII1文字（例: 'Ｓ'でなく'S'）の略称でも正しく動作すること"""
+        abbr = "函館スS"  # 全角3文字(6バイト) + ASCII 1文字(1バイト) = 7バイト
+        # CP932 7バイトは8バイトに満たないが実在しうるエッジケース
+        # この場合は略称終端が確定せず abbr の後続文字を読む
+        # テストとしては「パーサーがクラッシュしないこと」を確認
+        line = _make_sec_line_with_offset(abbr=abbr, finish_pos="03")
+        result = JRDBParser.parse_sec_line(line)
+        # クラッシュしないこと（着順値は不定だが例外が出ないこと）
+        # 7バイトの場合、さらに1バイト読もうとして finish_pos の1文字目を消費するため
+        # finish_position は "0" = 0 になる（仕様上の限界）
+        assert result is not None
