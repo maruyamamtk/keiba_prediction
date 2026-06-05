@@ -394,11 +394,11 @@ class JRDBParser:
             trainer_code = line[308:313].strip() if len(line) > 313 else ''
 
             # === 賞金 ===
-            # KYI仕様書: 獲得賞金 CP932 347-352 → UTF-8 314:320
-            #            収得賞金 CP932 353-357 → UTF-8 320:325
+            # KYI仕様書: 獲得賞金 CP932 347-352 → UTF-8 314:320 (prize_money)
+            #            収得賞金 CP932 353-357 → UTF-8 320:325 (earned_prize)
             #            条件クラス CP932 358 → UTF-8 325
-            earned_prize = JRDBParser.safe_int(line[314:320]) if len(line) > 320 else None
-            prize_money = JRDBParser.safe_int(line[320:325]) if len(line) > 325 else None
+            prize_money = JRDBParser.safe_int(line[314:320]) if len(line) > 320 else None
+            earned_prize = JRDBParser.safe_int(line[320:325]) if len(line) > 325 else None
             condition_class = JRDBParser.safe_int(line[325:326]) if len(line) > 326 else None
 
             # === 展開予測指数 (位置326以降) ===
