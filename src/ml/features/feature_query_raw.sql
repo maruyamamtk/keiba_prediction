@@ -3632,6 +3632,7 @@ from
 )
 
 -- NULL補完: 同一レース内の中央値で補完し、全員NULLの場合はフォールバック値を使用（Issue #330）
+,temp_null_filled as (
 select * replace (
   -- TE系（低頻度マスクによりNULLになる列）: 同一レース内中央値 → フォールバック0.22（グローバル複勝率）
   coalesce(jockey_te, percentile_cont(jockey_te, 0.5) over (partition by race_id), 0.22) as jockey_te,
@@ -3866,3 +3867,125 @@ select * replace (
   coalesce(idm_zone_neutral_trend, percentile_cont(idm_zone_neutral_trend, 0.5) over (partition by race_id), 0) as idm_zone_neutral_trend
 )
 from temp_final_raw
+)
+
+-- 同一レース内RANK特徴量を追加（Issue #333）
+select *
+  -- 騎手TE系 RANK（17列）
+  ,RANK() OVER (PARTITION BY race_id ORDER BY jockey_te DESC NULLS LAST) AS jockey_te_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY jockey_course_type_te DESC NULLS LAST) AS jockey_course_type_te_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY jockey_venue_te DESC NULLS LAST) AS jockey_venue_te_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY jockey_distance_band_te DESC NULLS LAST) AS jockey_distance_band_te_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY jockey_distance_te DESC NULLS LAST) AS jockey_distance_te_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY jockey_direction_te DESC NULLS LAST) AS jockey_direction_te_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY jockey_course_type_venue_te DESC NULLS LAST) AS jockey_course_type_venue_te_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY jockey_course_type_distance_te DESC NULLS LAST) AS jockey_course_type_distance_te_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY jockey_course_type_distance_venue_te DESC NULLS LAST) AS jockey_course_type_distance_venue_te_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY jockey_course_type_te_diff DESC NULLS LAST) AS jockey_course_type_te_diff_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY jockey_venue_te_diff DESC NULLS LAST) AS jockey_venue_te_diff_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY jockey_distance_band_te_diff DESC NULLS LAST) AS jockey_distance_band_te_diff_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY jockey_distance_te_diff DESC NULLS LAST) AS jockey_distance_te_diff_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY jockey_direction_te_diff DESC NULLS LAST) AS jockey_direction_te_diff_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY jockey_course_type_venue_te_diff DESC NULLS LAST) AS jockey_course_type_venue_te_diff_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY jockey_course_type_distance_te_diff DESC NULLS LAST) AS jockey_course_type_distance_te_diff_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY jockey_course_type_distance_venue_te_diff DESC NULLS LAST) AS jockey_course_type_distance_venue_te_diff_rank
+  -- 調教師TE系 RANK（17列）
+  ,RANK() OVER (PARTITION BY race_id ORDER BY trainer_te DESC NULLS LAST) AS trainer_te_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY trainer_course_type_te DESC NULLS LAST) AS trainer_course_type_te_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY trainer_venue_te DESC NULLS LAST) AS trainer_venue_te_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY trainer_distance_band_te DESC NULLS LAST) AS trainer_distance_band_te_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY trainer_distance_te DESC NULLS LAST) AS trainer_distance_te_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY trainer_direction_te DESC NULLS LAST) AS trainer_direction_te_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY trainer_course_type_venue_te DESC NULLS LAST) AS trainer_course_type_venue_te_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY trainer_course_type_distance_te DESC NULLS LAST) AS trainer_course_type_distance_te_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY trainer_course_type_distance_venue_te DESC NULLS LAST) AS trainer_course_type_distance_venue_te_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY trainer_course_type_te_diff DESC NULLS LAST) AS trainer_course_type_te_diff_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY trainer_venue_te_diff DESC NULLS LAST) AS trainer_venue_te_diff_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY trainer_distance_band_te_diff DESC NULLS LAST) AS trainer_distance_band_te_diff_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY trainer_distance_te_diff DESC NULLS LAST) AS trainer_distance_te_diff_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY trainer_direction_te_diff DESC NULLS LAST) AS trainer_direction_te_diff_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY trainer_course_type_venue_te_diff DESC NULLS LAST) AS trainer_course_type_venue_te_diff_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY trainer_course_type_distance_te_diff DESC NULLS LAST) AS trainer_course_type_distance_te_diff_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY trainer_course_type_distance_venue_te_diff DESC NULLS LAST) AS trainer_course_type_distance_venue_te_diff_rank
+  -- 種牡馬TE系 RANK（22列）
+  ,RANK() OVER (PARTITION BY race_id ORDER BY sire_te DESC NULLS LAST) AS sire_te_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY sire_course_type_te DESC NULLS LAST) AS sire_course_type_te_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY sire_venue_te DESC NULLS LAST) AS sire_venue_te_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY sire_distance_band_te DESC NULLS LAST) AS sire_distance_band_te_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY sire_distance_te DESC NULLS LAST) AS sire_distance_te_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY sire_direction_te DESC NULLS LAST) AS sire_direction_te_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY sire_course_type_venue_te DESC NULLS LAST) AS sire_course_type_venue_te_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY sire_course_type_distance_te DESC NULLS LAST) AS sire_course_type_distance_te_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY sire_course_type_distance_venue_te DESC NULLS LAST) AS sire_course_type_distance_venue_te_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY sire_course_type_te_diff DESC NULLS LAST) AS sire_course_type_te_diff_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY sire_venue_te_diff DESC NULLS LAST) AS sire_venue_te_diff_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY sire_distance_band_te_diff DESC NULLS LAST) AS sire_distance_band_te_diff_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY sire_distance_te_diff DESC NULLS LAST) AS sire_distance_te_diff_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY sire_direction_te_diff DESC NULLS LAST) AS sire_direction_te_diff_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY sire_course_type_venue_te_diff DESC NULLS LAST) AS sire_course_type_venue_te_diff_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY sire_course_type_distance_te_diff DESC NULLS LAST) AS sire_course_type_distance_te_diff_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY sire_course_type_distance_venue_te_diff DESC NULLS LAST) AS sire_course_type_distance_venue_te_diff_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY sire_age2_te DESC NULLS LAST) AS sire_age2_te_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY sire_age3_te DESC NULLS LAST) AS sire_age3_te_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY sire_age4_te DESC NULLS LAST) AS sire_age4_te_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY sire_age5plus_te DESC NULLS LAST) AS sire_age5plus_te_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY sire_current_age_te DESC NULLS LAST) AS sire_current_age_te_rank
+  -- 母馬TE系 RANK（22列）
+  ,RANK() OVER (PARTITION BY race_id ORDER BY mare_te DESC NULLS LAST) AS mare_te_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY mare_course_type_te DESC NULLS LAST) AS mare_course_type_te_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY mare_venue_te DESC NULLS LAST) AS mare_venue_te_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY mare_distance_band_te DESC NULLS LAST) AS mare_distance_band_te_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY mare_distance_te DESC NULLS LAST) AS mare_distance_te_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY mare_direction_te DESC NULLS LAST) AS mare_direction_te_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY mare_course_type_venue_te DESC NULLS LAST) AS mare_course_type_venue_te_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY mare_course_type_distance_te DESC NULLS LAST) AS mare_course_type_distance_te_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY mare_course_type_distance_venue_te DESC NULLS LAST) AS mare_course_type_distance_venue_te_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY mare_course_type_te_diff DESC NULLS LAST) AS mare_course_type_te_diff_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY mare_venue_te_diff DESC NULLS LAST) AS mare_venue_te_diff_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY mare_distance_band_te_diff DESC NULLS LAST) AS mare_distance_band_te_diff_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY mare_distance_te_diff DESC NULLS LAST) AS mare_distance_te_diff_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY mare_direction_te_diff DESC NULLS LAST) AS mare_direction_te_diff_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY mare_course_type_venue_te_diff DESC NULLS LAST) AS mare_course_type_venue_te_diff_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY mare_course_type_distance_te_diff DESC NULLS LAST) AS mare_course_type_distance_te_diff_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY mare_course_type_distance_venue_te_diff DESC NULLS LAST) AS mare_course_type_distance_venue_te_diff_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY mare_age2_te DESC NULLS LAST) AS mare_age2_te_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY mare_age3_te DESC NULLS LAST) AS mare_age3_te_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY mare_age4_te DESC NULLS LAST) AS mare_age4_te_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY mare_age5plus_te DESC NULLS LAST) AS mare_age5plus_te_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY mare_current_age_te DESC NULLS LAST) AS mare_current_age_te_rank
+  -- 馬自身TE系 RANK（25列）
+  ,RANK() OVER (PARTITION BY race_id ORDER BY horse_te DESC NULLS LAST) AS horse_te_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY horse_course_type_te DESC NULLS LAST) AS horse_course_type_te_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY horse_venue_te DESC NULLS LAST) AS horse_venue_te_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY horse_distance_band_te DESC NULLS LAST) AS horse_distance_band_te_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY horse_distance_te DESC NULLS LAST) AS horse_distance_te_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY horse_direction_te DESC NULLS LAST) AS horse_direction_te_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY horse_jockey_te DESC NULLS LAST) AS horse_jockey_te_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY horse_season_te DESC NULLS LAST) AS horse_season_te_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY horse_course_type_venue_te DESC NULLS LAST) AS horse_course_type_venue_te_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY horse_course_type_distance_te DESC NULLS LAST) AS horse_course_type_distance_te_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY horse_course_type_distance_venue_te DESC NULLS LAST) AS horse_course_type_distance_venue_te_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY horse_distance_change_te DESC NULLS LAST) AS horse_distance_change_te_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY horse_weight_carried_change_te DESC NULLS LAST) AS horse_weight_carried_change_te_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY horse_course_type_te_diff DESC NULLS LAST) AS horse_course_type_te_diff_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY horse_venue_te_diff DESC NULLS LAST) AS horse_venue_te_diff_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY horse_distance_band_te_diff DESC NULLS LAST) AS horse_distance_band_te_diff_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY horse_distance_te_diff DESC NULLS LAST) AS horse_distance_te_diff_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY horse_direction_te_diff DESC NULLS LAST) AS horse_direction_te_diff_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY horse_jockey_te_diff DESC NULLS LAST) AS horse_jockey_te_diff_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY horse_season_te_diff DESC NULLS LAST) AS horse_season_te_diff_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY horse_course_type_venue_te_diff DESC NULLS LAST) AS horse_course_type_venue_te_diff_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY horse_course_type_distance_te_diff DESC NULLS LAST) AS horse_course_type_distance_te_diff_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY horse_course_type_distance_venue_te_diff DESC NULLS LAST) AS horse_course_type_distance_venue_te_diff_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY horse_distance_change_te_diff DESC NULLS LAST) AS horse_distance_change_te_diff_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY horse_weight_carried_change_te_diff DESC NULLS LAST) AS horse_weight_carried_change_te_diff_rank
+  -- 出走比率系 RANK（sire 4列 + mare 4列 = 8列）
+  ,RANK() OVER (PARTITION BY race_id ORDER BY sire_course_type_run_ratio DESC NULLS LAST) AS sire_course_type_run_ratio_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY sire_venue_run_ratio DESC NULLS LAST) AS sire_venue_run_ratio_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY sire_distance_band_run_ratio DESC NULLS LAST) AS sire_distance_band_run_ratio_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY sire_distance_run_ratio DESC NULLS LAST) AS sire_distance_run_ratio_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY mare_course_type_run_ratio DESC NULLS LAST) AS mare_course_type_run_ratio_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY mare_venue_run_ratio DESC NULLS LAST) AS mare_venue_run_ratio_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY mare_distance_band_run_ratio DESC NULLS LAST) AS mare_distance_band_run_ratio_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY mare_distance_run_ratio DESC NULLS LAST) AS mare_distance_run_ratio_rank
+from temp_null_filled
