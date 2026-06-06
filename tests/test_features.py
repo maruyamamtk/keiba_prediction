@@ -2193,3 +2193,167 @@ class TestRunRatioFeature:
         # run_ratio セクションに 1 preceding が含まれること
         assert "sire_course_type_run_ratio" in section
         assert "range between unbounded preceding and 1 preceding" in section
+
+
+class TestTERankFeature:
+    """TE系・出走比率の同一レース内RANK特徴量（Issue #333）のテスト"""
+
+    def test_sql_has_temp_null_filled_cte(self):
+        """temp_null_filled CTEが存在すること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        assert "temp_null_filled as (" in content, \
+            "temp_null_filled CTE が見つかりません"
+
+    def test_sql_rank_uses_partition_by_race_id(self):
+        """RANK()がrace_idでパーティションされていること（出走頭数内に収まる保証）"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        assert "RANK() OVER (PARTITION BY race_id ORDER BY jockey_te DESC NULLS LAST) AS jockey_te_rank" in content, \
+            "jockey_te_rank の RANK() 定義が見つかりません"
+
+    def test_sql_rank_uses_nulls_last(self):
+        """全RANK定義がNULLS LASTを使用していること（NULL馬が最低ランク保証）"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        rank_cols = [
+            "jockey_te_rank",
+            "trainer_te_rank",
+            "sire_te_rank",
+            "mare_te_rank",
+            "horse_te_rank",
+            "sire_course_type_run_ratio_rank",
+            "mare_course_type_run_ratio_rank",
+        ]
+        for col in rank_cols:
+            pattern = f"NULLS LAST) AS {col}"
+            assert pattern in content, \
+                f"'{col}' の定義に NULLS LAST が見つかりません"
+
+    def test_sql_rank_uses_desc_order(self):
+        """RANK()がDESC順であること（値が大きい馬がrank=1になる保証）"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        assert "ORDER BY jockey_te DESC NULLS LAST) AS jockey_te_rank" in content, \
+            "jockey_te_rank が DESC 順序で定義されていません"
+
+    def test_sql_all_111_rank_columns_present(self):
+        """111列分のRANK列が最終SELECTに含まれること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        rank_columns = [
+            # 騎手TE系 17列
+            "jockey_te_rank", "jockey_course_type_te_rank", "jockey_venue_te_rank",
+            "jockey_distance_band_te_rank", "jockey_distance_te_rank", "jockey_direction_te_rank",
+            "jockey_course_type_venue_te_rank", "jockey_course_type_distance_te_rank",
+            "jockey_course_type_distance_venue_te_rank",
+            "jockey_course_type_te_diff_rank", "jockey_venue_te_diff_rank",
+            "jockey_distance_band_te_diff_rank", "jockey_distance_te_diff_rank",
+            "jockey_direction_te_diff_rank", "jockey_course_type_venue_te_diff_rank",
+            "jockey_course_type_distance_te_diff_rank", "jockey_course_type_distance_venue_te_diff_rank",
+            # 調教師TE系 17列
+            "trainer_te_rank", "trainer_course_type_te_rank", "trainer_venue_te_rank",
+            "trainer_distance_band_te_rank", "trainer_distance_te_rank", "trainer_direction_te_rank",
+            "trainer_course_type_venue_te_rank", "trainer_course_type_distance_te_rank",
+            "trainer_course_type_distance_venue_te_rank",
+            "trainer_course_type_te_diff_rank", "trainer_venue_te_diff_rank",
+            "trainer_distance_band_te_diff_rank", "trainer_distance_te_diff_rank",
+            "trainer_direction_te_diff_rank", "trainer_course_type_venue_te_diff_rank",
+            "trainer_course_type_distance_te_diff_rank", "trainer_course_type_distance_venue_te_diff_rank",
+            # 種牡馬TE系 22列
+            "sire_te_rank", "sire_course_type_te_rank", "sire_venue_te_rank",
+            "sire_distance_band_te_rank", "sire_distance_te_rank", "sire_direction_te_rank",
+            "sire_course_type_venue_te_rank", "sire_course_type_distance_te_rank",
+            "sire_course_type_distance_venue_te_rank",
+            "sire_course_type_te_diff_rank", "sire_venue_te_diff_rank",
+            "sire_distance_band_te_diff_rank", "sire_distance_te_diff_rank",
+            "sire_direction_te_diff_rank", "sire_course_type_venue_te_diff_rank",
+            "sire_course_type_distance_te_diff_rank", "sire_course_type_distance_venue_te_diff_rank",
+            "sire_age2_te_rank", "sire_age3_te_rank", "sire_age4_te_rank",
+            "sire_age5plus_te_rank", "sire_current_age_te_rank",
+            # 母馬TE系 22列
+            "mare_te_rank", "mare_course_type_te_rank", "mare_venue_te_rank",
+            "mare_distance_band_te_rank", "mare_distance_te_rank", "mare_direction_te_rank",
+            "mare_course_type_venue_te_rank", "mare_course_type_distance_te_rank",
+            "mare_course_type_distance_venue_te_rank",
+            "mare_course_type_te_diff_rank", "mare_venue_te_diff_rank",
+            "mare_distance_band_te_diff_rank", "mare_distance_te_diff_rank",
+            "mare_direction_te_diff_rank", "mare_course_type_venue_te_diff_rank",
+            "mare_course_type_distance_te_diff_rank", "mare_course_type_distance_venue_te_diff_rank",
+            "mare_age2_te_rank", "mare_age3_te_rank", "mare_age4_te_rank",
+            "mare_age5plus_te_rank", "mare_current_age_te_rank",
+            # 馬自身TE系 25列
+            "horse_te_rank", "horse_course_type_te_rank", "horse_venue_te_rank",
+            "horse_distance_band_te_rank", "horse_distance_te_rank", "horse_direction_te_rank",
+            "horse_jockey_te_rank", "horse_season_te_rank",
+            "horse_course_type_venue_te_rank", "horse_course_type_distance_te_rank",
+            "horse_course_type_distance_venue_te_rank",
+            "horse_distance_change_te_rank", "horse_weight_carried_change_te_rank",
+            "horse_course_type_te_diff_rank", "horse_venue_te_diff_rank",
+            "horse_distance_band_te_diff_rank", "horse_distance_te_diff_rank",
+            "horse_direction_te_diff_rank", "horse_jockey_te_diff_rank",
+            "horse_season_te_diff_rank", "horse_course_type_venue_te_diff_rank",
+            "horse_course_type_distance_te_diff_rank", "horse_course_type_distance_venue_te_diff_rank",
+            "horse_distance_change_te_diff_rank", "horse_weight_carried_change_te_diff_rank",
+            # 出走比率系 8列
+            "sire_course_type_run_ratio_rank", "sire_venue_run_ratio_rank",
+            "sire_distance_band_run_ratio_rank", "sire_distance_run_ratio_rank",
+            "mare_course_type_run_ratio_rank", "mare_venue_run_ratio_rank",
+            "mare_distance_band_run_ratio_rank", "mare_distance_run_ratio_rank",
+        ]
+        assert len(rank_columns) == 111, f"RANK列数が111ではありません（実際: {len(rank_columns)}）"
+        for col in rank_columns:
+            assert f"AS {col}" in content, \
+                f"最終SELECT に RANK列 '{col}' が見つかりません"
+
+    def test_rank_logic_min_is_one(self):
+        """RANK()の最小値が1であることをPandasで検証"""
+        import pandas as pd
+        df = pd.DataFrame({
+            "race_id": ["R1", "R1", "R1"],
+            "jockey_te": [0.30, 0.25, 0.20],
+        })
+        df["jockey_te_rank"] = df.groupby("race_id")["jockey_te"].rank(
+            method="min", ascending=False, na_option="bottom"
+        ).astype(int)
+        assert df["jockey_te_rank"].min() == 1, \
+            "jockey_te_rank の最小値が1ではありません"
+
+    def test_rank_logic_max_equals_horse_count(self):
+        """RANK()の最大値がレース出走頭数以下であることをPandasで検証"""
+        import pandas as pd
+        df = pd.DataFrame({
+            "race_id": ["R1", "R1", "R1"],
+            "jockey_te": [0.30, 0.25, 0.20],
+        })
+        df["jockey_te_rank"] = df.groupby("race_id")["jockey_te"].rank(
+            method="min", ascending=False, na_option="bottom"
+        ).astype(int)
+        n_horses = df["race_id"].value_counts()["R1"]
+        assert df["jockey_te_rank"].max() <= n_horses, \
+            f"jockey_te_rank の最大値 {df['jockey_te_rank'].max()} が出走頭数 {n_horses} を超えています"
+
+    def test_rank_logic_null_gets_higher_rank_number(self):
+        """NULLを持つ馬のランクが非NULLの馬より高い数値（低順位）になることをPandasで検証"""
+        import pandas as pd
+        import numpy as np
+        df = pd.DataFrame({
+            "race_id": ["R1", "R1", "R1"],
+            "jockey_te": [0.30, 0.25, np.nan],
+        })
+        df["jockey_te_rank"] = df.groupby("race_id")["jockey_te"].rank(
+            method="min", ascending=False, na_option="bottom"
+        ).astype(int)
+        null_rank = df.loc[df["jockey_te"].isna(), "jockey_te_rank"].iloc[0]
+        non_null_max_rank = df.loc[df["jockey_te"].notna(), "jockey_te_rank"].max()
+        assert null_rank > non_null_max_rank, \
+            f"NULL馬のランク（{null_rank}）が非NULL馬の最大ランク（{non_null_max_rank}）より高くありません"
+
+    def test_rank_logic_max_te_gets_rank_one(self):
+        """jockey_te が最大の馬の jockey_te_rank が1であることをPandasで検証"""
+        import pandas as pd
+        df = pd.DataFrame({
+            "race_id": ["R1", "R1", "R1"],
+            "jockey_te": [0.20, 0.30, 0.25],
+        })
+        df["jockey_te_rank"] = df.groupby("race_id")["jockey_te"].rank(
+            method="min", ascending=False, na_option="bottom"
+        ).astype(int)
+        max_te_idx = df["jockey_te"].idxmax()
+        assert df.loc[max_te_idx, "jockey_te_rank"] == 1, \
+            f"jockey_te が最大の馬の rank が {df.loc[max_te_idx, 'jockey_te_rank']} です（期待値: 1）"
