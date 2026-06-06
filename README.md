@@ -241,12 +241,17 @@ python3 scripts/create_investment_decisions_table.py --project-id <PROJECT_ID>
 
 BigQueryの予測結果・バックテスト・モデル情報をブラウザで確認できます。
 
+> **重要**: `GCP_PROJECT_ID` 環境変数が未設定の場合、サイドバーに「プロジェクト: （未設定）」と表示され、全画面でデータが取得できません。必ず起動前に設定してください。
+
 ```bash
 # 依存パッケージをインストール（初回のみ）
 pip3 install streamlit==1.32.0 plotly==5.19.0
 
-# ダッシュボードを起動
-GCP_PROJECT_ID=your-project-id streamlit run src/dashboard/app.py
+# ダッシュボードを起動（環境変数をコマンドラインで指定）
+GCP_PROJECT_ID=keiba-prediction-1768734113 .venv/bin/streamlit run src/dashboard/app.py
+
+# または .env ファイルを読み込んで起動
+source .env && .venv/bin/streamlit run src/dashboard/app.py
 ```
 
 起動後、ブラウザで **http://localhost:8501** が自動的に開きます。
@@ -256,6 +261,7 @@ GCP_PROJECT_ID=your-project-id streamlit run src/dashboard/app.py
 | ホーム | 指定日の推奨馬券TOP10・期待回収率・推奨投資額 |
 | レース一覧 | 当日全レースの予測TOP3を一覧表示 |
 | レース詳細 | 全馬の予測確率・オッズ・Plotlyグラフ・組み合わせオッズ |
+| シャープ説明 | 特定馬の予測スコアをSHAP値で特徴量ごとに分解・可視化 |
 | バックテスト | 累積損益推移グラフ・月次集計テーブル |
 | モデル情報 | GCS最新モデルの特徴量重要度TOP30 |
 
@@ -647,8 +653,11 @@ keiba_prediction/
 **起動方法**:
 
 ```bash
-# ローカル起動
-GCP_PROJECT_ID=your-project streamlit run src/dashboard/app.py
+# ローカル起動（GCP_PROJECT_ID は必須。未設定時はデータ取得不可）
+GCP_PROJECT_ID=keiba-prediction-1768734113 .venv/bin/streamlit run src/dashboard/app.py
+
+# .env から読み込む場合
+source .env && .venv/bin/streamlit run src/dashboard/app.py
 
 # Cloud Run デプロイ（dashboard-service）
 docker build --platform linux/amd64 -f Dockerfile.dashboard -t dashboard-service .
