@@ -1526,6 +1526,55 @@ with temp_race_horse_count as (
         range between unbounded preceding and 1 preceding
       ), 0) + 10
     ) as sire_course_type_distance_venue_te
+    -- 出走比率（条件別出走数 / 全出走数、Issue #332）
+    ,safe_divide(
+      count(*) over (
+        partition by sire_name, course_type
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ),
+      count(*) over (
+        partition by sire_name
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      )
+    ) as sire_course_type_run_ratio
+    ,safe_divide(
+      count(*) over (
+        partition by sire_name, venue_code
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ),
+      count(*) over (
+        partition by sire_name
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      )
+    ) as sire_venue_run_ratio
+    ,safe_divide(
+      count(*) over (
+        partition by sire_name, distance_band
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ),
+      count(*) over (
+        partition by sire_name
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      )
+    ) as sire_distance_band_run_ratio
+    ,safe_divide(
+      count(*) over (
+        partition by sire_name, distance
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ),
+      count(*) over (
+        partition by sire_name
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      )
+    ) as sire_distance_run_ratio
     -- 年齢帯別出走数カウント（低頻度マスク用）
     ,coalesce(count(case when age_band = '2yo' then 1 end) over (
       partition by sire_name
@@ -1618,6 +1667,11 @@ with temp_race_horse_count as (
     ,IF(sire_age3_count >= 5, sire_age3_te, NULL) as sire_age3_te
     ,IF(sire_age4_count >= 5, sire_age4_te, NULL) as sire_age4_te
     ,IF(sire_age5plus_count >= 5, sire_age5plus_te, NULL) as sire_age5plus_te
+    -- 出走比率（低頻度マスク適用: sire_count >= 20 と同一条件）
+    ,IF(sire_count >= 20, sire_course_type_run_ratio, NULL) as sire_course_type_run_ratio
+    ,IF(sire_count >= 20, sire_venue_run_ratio, NULL) as sire_venue_run_ratio
+    ,IF(sire_count >= 20, sire_distance_band_run_ratio, NULL) as sire_distance_band_run_ratio
+    ,IF(sire_count >= 20, sire_distance_run_ratio, NULL) as sire_distance_run_ratio
   from temp_sire_te_pre
 )
 
@@ -1856,6 +1910,55 @@ with temp_race_horse_count as (
         range between unbounded preceding and 1 preceding
       ), 0) + 10
     ) as mare_course_type_distance_venue_te
+    -- 出走比率（条件別出走数 / 全出走数、Issue #332）
+    ,safe_divide(
+      count(*) over (
+        partition by dam_name, course_type
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ),
+      count(*) over (
+        partition by dam_name
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      )
+    ) as mare_course_type_run_ratio
+    ,safe_divide(
+      count(*) over (
+        partition by dam_name, venue_code
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ),
+      count(*) over (
+        partition by dam_name
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      )
+    ) as mare_venue_run_ratio
+    ,safe_divide(
+      count(*) over (
+        partition by dam_name, distance_band
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ),
+      count(*) over (
+        partition by dam_name
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      )
+    ) as mare_distance_band_run_ratio
+    ,safe_divide(
+      count(*) over (
+        partition by dam_name, distance
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ),
+      count(*) over (
+        partition by dam_name
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      )
+    ) as mare_distance_run_ratio
     -- 年齢帯別出走数カウント（低頻度マスク用）
     ,coalesce(count(case when age_band = '2yo' then 1 end) over (
       partition by dam_name
@@ -1948,6 +2051,11 @@ with temp_race_horse_count as (
     ,IF(mare_age3_count >= 5, mare_age3_te, NULL) as mare_age3_te
     ,IF(mare_age4_count >= 5, mare_age4_te, NULL) as mare_age4_te
     ,IF(mare_age5plus_count >= 5, mare_age5plus_te, NULL) as mare_age5plus_te
+    -- 出走比率（低頻度マスク適用: mare_count >= 3 と同一条件）
+    ,IF(mare_count >= 3, mare_course_type_run_ratio, NULL) as mare_course_type_run_ratio
+    ,IF(mare_count >= 3, mare_venue_run_ratio, NULL) as mare_venue_run_ratio
+    ,IF(mare_count >= 3, mare_distance_band_run_ratio, NULL) as mare_distance_band_run_ratio
+    ,IF(mare_count >= 3, mare_distance_run_ratio, NULL) as mare_distance_run_ratio
   from temp_mare_te_pre
 )
 
@@ -2584,6 +2692,11 @@ select
     when t_p_r_f.horse_age = 4 then t_s_te.sire_age4_te - t_s_te.sire_te
     else t_s_te.sire_age5plus_te - t_s_te.sire_te
   end as sire_age_vs_career_diff
+  -- 種牡馬産駒出走比率（Issue #332）
+  ,t_s_te.sire_course_type_run_ratio
+  ,t_s_te.sire_venue_run_ratio
+  ,t_s_te.sire_distance_band_run_ratio
+  ,t_s_te.sire_distance_run_ratio
   -- 馬自身TE
   ,t_h_te.horse_te
   ,t_h_te.horse_course_type_te
@@ -2716,6 +2829,11 @@ select
     when t_p_r_f.horse_age = 4 then t_m_te.mare_age4_te - t_m_te.mare_te
     else t_m_te.mare_age5plus_te - t_m_te.mare_te
   end as mare_age_vs_career_diff
+  -- 母馬産駒出走比率（Issue #332）
+  ,t_m_te.mare_course_type_run_ratio
+  ,t_m_te.mare_venue_run_ratio
+  ,t_m_te.mare_distance_band_run_ratio
+  ,t_m_te.mare_distance_run_ratio
   -- 母馬自身の早熟・晩成性（カテゴリC）
   ,t_m_s.mare_early_career_place_rate
   ,t_m_s.mare_late_career_place_rate
@@ -3574,6 +3692,10 @@ select * replace (
   coalesce(sire_current_age_te, percentile_cont(sire_current_age_te, 0.5) over (partition by race_id), 0.22) as sire_current_age_te,
   coalesce(sire_precocity_diff, percentile_cont(sire_precocity_diff, 0.5) over (partition by race_id), 0.0) as sire_precocity_diff,
   coalesce(sire_age_vs_career_diff, percentile_cont(sire_age_vs_career_diff, 0.5) over (partition by race_id), 0.0) as sire_age_vs_career_diff,
+  coalesce(sire_course_type_run_ratio, percentile_cont(sire_course_type_run_ratio, 0.5) over (partition by race_id), 0.5) as sire_course_type_run_ratio,
+  coalesce(sire_venue_run_ratio, percentile_cont(sire_venue_run_ratio, 0.5) over (partition by race_id), 0.0) as sire_venue_run_ratio,
+  coalesce(sire_distance_band_run_ratio, percentile_cont(sire_distance_band_run_ratio, 0.5) over (partition by race_id), 0.25) as sire_distance_band_run_ratio,
+  coalesce(sire_distance_run_ratio, percentile_cont(sire_distance_run_ratio, 0.5) over (partition by race_id), 0.0) as sire_distance_run_ratio,
   coalesce(horse_te, percentile_cont(horse_te, 0.5) over (partition by race_id), 0.22) as horse_te,
   coalesce(horse_course_type_te, percentile_cont(horse_course_type_te, 0.5) over (partition by race_id), 0.22) as horse_course_type_te,
   coalesce(horse_venue_te, percentile_cont(horse_venue_te, 0.5) over (partition by race_id), 0.22) as horse_venue_te,
@@ -3623,6 +3745,10 @@ select * replace (
   coalesce(mare_current_age_te, percentile_cont(mare_current_age_te, 0.5) over (partition by race_id), 0.22) as mare_current_age_te,
   coalesce(mare_precocity_diff, percentile_cont(mare_precocity_diff, 0.5) over (partition by race_id), 0.0) as mare_precocity_diff,
   coalesce(mare_age_vs_career_diff, percentile_cont(mare_age_vs_career_diff, 0.5) over (partition by race_id), 0.0) as mare_age_vs_career_diff,
+  coalesce(mare_course_type_run_ratio, percentile_cont(mare_course_type_run_ratio, 0.5) over (partition by race_id), 0.5) as mare_course_type_run_ratio,
+  coalesce(mare_venue_run_ratio, percentile_cont(mare_venue_run_ratio, 0.5) over (partition by race_id), 0.0) as mare_venue_run_ratio,
+  coalesce(mare_distance_band_run_ratio, percentile_cont(mare_distance_band_run_ratio, 0.5) over (partition by race_id), 0.25) as mare_distance_band_run_ratio,
+  coalesce(mare_distance_run_ratio, percentile_cont(mare_distance_run_ratio, 0.5) over (partition by race_id), 0.0) as mare_distance_run_ratio,
   -- 過去走特徴量（デビュー馬・初出走条件の馬でNULLになる列）: 同一レース内中央値 → フォールバック0
   coalesce(idm_1, percentile_cont(idm_1, 0.5) over (partition by race_id), 0) as idm_1,
   coalesce(finish_position_1, percentile_cont(finish_position_1, 0.5) over (partition by race_id), 0) as finish_position_1,

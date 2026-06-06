@@ -2070,3 +2070,126 @@ class TestNullImputation:
         content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
         assert "from temp_final_raw" in content, \
             "最終SELECT の FROM が temp_final_raw を参照していません"
+
+
+class TestRunRatioFeature:
+    """条件別出走比率特徴量（Issue #332）のテスト
+
+    種牡馬・母馬TE集計に、条件別出走数 / 全出走数 の比率特徴量を追加する。
+    """
+
+    def test_sql_sire_run_ratio_in_te_pre(self):
+        """temp_sire_te_pre に sire_*_run_ratio 列が存在すること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        sire_pre_start = content.find("temp_sire_te_pre as (")
+        sire_pre_end = content.find("temp_sire_te as (")
+        section = content[sire_pre_start:sire_pre_end]
+        for col in [
+            "sire_course_type_run_ratio",
+            "sire_venue_run_ratio",
+            "sire_distance_band_run_ratio",
+            "sire_distance_run_ratio",
+        ]:
+            assert col in section, f"temp_sire_te_pre に '{col}' が見つかりません"
+
+    def test_sql_mare_run_ratio_in_te_pre(self):
+        """temp_mare_te_pre に mare_*_run_ratio 列が存在すること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        mare_pre_start = content.find("temp_mare_te_pre as (")
+        mare_pre_end = content.find("temp_mare_te as (")
+        section = content[mare_pre_start:mare_pre_end]
+        for col in [
+            "mare_course_type_run_ratio",
+            "mare_venue_run_ratio",
+            "mare_distance_band_run_ratio",
+            "mare_distance_run_ratio",
+        ]:
+            assert col in section, f"temp_mare_te_pre に '{col}' が見つかりません"
+
+    def test_sql_sire_run_ratio_uses_safe_divide(self):
+        """sire_course_type_run_ratio が safe_divide を使用していること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        sire_pre_start = content.find("temp_sire_te_pre as (")
+        sire_pre_end = content.find("temp_sire_te as (")
+        section = content[sire_pre_start:sire_pre_end]
+        assert "sire_course_type_run_ratio" in section
+        # safe_divide と run_ratio が同じ CTE に存在すること
+        assert "safe_divide(" in section
+        assert "partition by sire_name, course_type" in section
+
+    def test_sql_sire_run_ratio_masked_in_te(self):
+        """temp_sire_te が sire_count >= 20 でマスクを適用していること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        sire_te_start = content.find("temp_sire_te as (")
+        sire_te_end = content.find("temp_horse_distance_base")
+        section = content[sire_te_start:sire_te_end]
+        for col in [
+            "sire_course_type_run_ratio",
+            "sire_venue_run_ratio",
+            "sire_distance_band_run_ratio",
+            "sire_distance_run_ratio",
+        ]:
+            assert f"IF(sire_count >= 20, {col}, NULL)" in section, (
+                f"temp_sire_te に '{col}' の低頻度マスク（>= 20）が見つかりません"
+            )
+
+    def test_sql_mare_run_ratio_masked_in_te(self):
+        """temp_mare_te が mare_count >= 3 でマスクを適用していること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        mare_te_start = content.find("temp_mare_te as (")
+        mare_te_end = content.find("temp_horse_te_pre as (")
+        section = content[mare_te_start:mare_te_end]
+        for col in [
+            "mare_course_type_run_ratio",
+            "mare_venue_run_ratio",
+            "mare_distance_band_run_ratio",
+            "mare_distance_run_ratio",
+        ]:
+            assert f"IF(mare_count >= 3, {col}, NULL)" in section, (
+                f"temp_mare_te に '{col}' の低頻度マスク（>= 3）が見つかりません"
+            )
+
+    def test_sql_run_ratio_in_final_select(self):
+        """最終SELECTに sire_*_run_ratio / mare_*_run_ratio が含まれていること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        for col in [
+            "sire_course_type_run_ratio",
+            "sire_venue_run_ratio",
+            "sire_distance_band_run_ratio",
+            "sire_distance_run_ratio",
+            "mare_course_type_run_ratio",
+            "mare_venue_run_ratio",
+            "mare_distance_band_run_ratio",
+            "mare_distance_run_ratio",
+        ]:
+            assert f"t_s_te.{col}" in content or f"t_m_te.{col}" in content, (
+                f"最終SELECT に '{col}' の参照が見つかりません"
+            )
+
+    def test_sql_run_ratio_null_imputation(self):
+        """run_ratio 列が NULL補完ブロックに含まれていること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        for col in [
+            "sire_course_type_run_ratio",
+            "sire_venue_run_ratio",
+            "sire_distance_band_run_ratio",
+            "sire_distance_run_ratio",
+            "mare_course_type_run_ratio",
+            "mare_venue_run_ratio",
+            "mare_distance_band_run_ratio",
+            "mare_distance_run_ratio",
+        ]:
+            pattern = f"percentile_cont({col}, 0.5) over (partition by race_id)"
+            assert pattern in content, (
+                f"'{col}' の PERCENTILE_CONT NULL補完が見つかりません"
+            )
+
+    def test_sql_sire_run_ratio_uses_preceding_window(self):
+        """sire run_ratio が 1 preceding ウィンドウを使用していること（データリーク防止）"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        sire_pre_start = content.find("temp_sire_te_pre as (")
+        sire_pre_end = content.find("temp_sire_te as (")
+        section = content[sire_pre_start:sire_pre_end]
+        # run_ratio セクションに 1 preceding が含まれること
+        assert "sire_course_type_run_ratio" in section
+        assert "range between unbounded preceding and 1 preceding" in section
