@@ -208,6 +208,20 @@ class TestSQLTemplate:
             "temp_te_history_base で finish_position > 0 フィルタが見つかりません"
         )
 
+    def test_sql_te_history_raw_excludes_obstacle_races(self):
+        """temp_te_history_raw が障害レースを除外していること（Issue #331）"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        # コメント行をスキップして実際のCTE定義を検索
+        raw_start = content.find(",temp_te_history_raw as (")
+        raw_end = content.find(",temp_te_history_base as (", raw_start + 1)
+        te_raw_section = content[raw_start:raw_end]
+        assert "!= 'obstacle'" in te_raw_section, (
+            "temp_te_history_raw に障害レース除外条件 (!= 'obstacle') がありません"
+        )
+        assert "course_type" in te_raw_section, (
+            "temp_te_history_raw に course_type フィルタが見つかりません"
+        )
+
     def test_sql_te_history_base_joins_required_tables(self):
         """TE履歴ベースが必要なテーブルをJOINしていること（Issue #270）"""
         content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
@@ -1053,7 +1067,7 @@ class TestRaceExclusionFilter:
         """temp_base_race_entries / temp_horse_master_feature / temp_mare_race_base に除外フィルタが含まれること"""
         content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
         assert content.count("race_class != 'A1'") == 2, "新馬戦除外が2箇所にあるべき"
-        assert content.count("!= 'obstacle'") == 3, "障害戦除外が3箇所にあるべき（base/horse_master/mare_race_base）"
+        assert content.count("!= 'obstacle'") == 4, "障害戦除外が4箇所にあるべき（base/horse_master/mare_race_base/te_history_raw）"
         assert content.count("num_horses) > 7") == 2, "少頭数除外が2箇所にあるべき"
         assert content.count("venue_code = '04' and r_i.distance = 1000 and r_i.direction = 'straight'") == 2, "新潟直線除外が2箇所にあるべき"
 

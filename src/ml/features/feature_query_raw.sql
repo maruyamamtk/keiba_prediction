@@ -1080,7 +1080,9 @@ with temp_race_horse_count as (
     left join `{project_id}`.raw.race_results as r_r
       on h_r.race_id = r_r.race_id
       and h_r.horse_number = r_r.horse_number
-  where r_r.finish_position > 0 or r_r.race_id is null
+  where
+    (r_r.finish_position > 0 or r_r.race_id is null)
+    and coalesce(r_i.course_type, '') != 'obstacle'
 )
 ,temp_te_history_base as (
   select
