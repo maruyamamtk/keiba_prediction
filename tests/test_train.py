@@ -15,6 +15,7 @@ import yaml
 from src.models.train import (
     compute_week_boundaries,
     evaluate_predictions,
+    fetch_training_data_from_sql,
     load_config,
     prepare_features,
     split_train_valid_predict,
@@ -404,6 +405,70 @@ class TestTrainPipeline:
             assert result["predict_rows"] > 0
             assert result["num_features"] > 0
             assert Path(result["model_path"]).exists()
+
+    @patch("src.models.train.fetch_training_data_from_sql")
+    def test_train_pipeline_use_feature_sql(self, mock_fetch_sql, mock_config, mock_training_df):
+        """use_feature_sql=True の場合、fetch_training_data_from_sql が呼ばれること（Issue #328）"""
+        mock_fetch_sql.return_value = mock_training_df
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = train_pipeline(
+                project_id="test-project",
+                execution_date=datetime.date(2026, 2, 13),
+                config=mock_config,
+                output_dir=tmpdir,
+                skip_gcs_upload=True,
+                use_feature_sql=True,
+                start_date="2025-01-01",
+                end_date="2026-02-13",
+            )
+
+        mock_fetch_sql.assert_called_once_with(
+            project_id="test-project",
+            start_date="2025-01-01",
+            end_date="2026-02-13",
+        )
+        assert "metrics" in result
+
+    @patch("src.models.train.fetch_training_data_from_sql")
+    def test_train_pipeline_use_feature_sql_default_dates(
+        self, mock_fetch_sql, mock_config, mock_training_df
+    ):
+        """use_feature_sql=True かつ start_date/end_date 省略時にデフォルト日付が使われること"""
+        mock_fetch_sql.return_value = mock_training_df
+
+        execution_date = datetime.date(2026, 2, 13)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            train_pipeline(
+                project_id="test-project",
+                execution_date=execution_date,
+                config=mock_config,
+                output_dir=tmpdir,
+                skip_gcs_upload=True,
+                use_feature_sql=True,
+            )
+
+        mock_fetch_sql.assert_called_once_with(
+            project_id="test-project",
+            start_date="2016-01-01",
+            end_date=execution_date.isoformat(),
+        )
+
+    @patch("src.models.train.fetch_training_data")
+    def test_train_pipeline_default_uses_bq_table(self, mock_fetch, mock_config, mock_training_df):
+        """use_feature_sql=False（デフォルト）の場合は fetch_training_data が呼ばれること"""
+        mock_fetch.return_value = mock_training_df
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            train_pipeline(
+                project_id="test-project",
+                execution_date=datetime.date(2026, 2, 13),
+                config=mock_config,
+                output_dir=tmpdir,
+                skip_gcs_upload=True,
+            )
+
+        mock_fetch.assert_called_once()
 
     @patch("src.models.train.fetch_training_data")
     def test_train_pipeline_with_tuning(self, mock_fetch, mock_config, mock_training_df):
