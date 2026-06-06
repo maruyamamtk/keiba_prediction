@@ -10,9 +10,11 @@
 .venv/bin/python scripts/generate_features.py \
     --project-id keiba-prediction-1768734113 \
     --start-date 2016-01-01 \
-    --end-date $(date +%Y-%m-%d)
+    --end-date $(date +%Y-%m-%d) \
+    --truncate
 ```
 
+- `--truncate` は必須です。TRUNCATE TABLE → WRITE_TRUNCATE の冪等操作で重複を防ぎます。
 - SQL（`feature_query_raw.sql`）の変更を training_data に反映するため、全期間を再生成します
 - 完了ログから「Inserted X rows」を確認し、前回の行数（約50万行）と大きく乖離していないことを確認してください
 - 完了まで10〜30分かかる場合があります

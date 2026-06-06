@@ -178,6 +178,14 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="ドライラン（BigQueryへの保存をスキップ）",
     )
+    parser.add_argument(
+        "--truncate",
+        action="store_true",
+        help=(
+            "実行前にテーブルをTRUNCATEしてからWRITE_TRUNCATEで書き込む（重複防止）。"
+            "全期間を対象とするフルロード（retrain-and-deploy等）で必ず指定すること。"
+        ),
+    )
 
     return parser.parse_args()
 
@@ -255,6 +263,7 @@ def main() -> int:
             result = pipeline.run(
                 start_date=args.start_date,
                 end_date=args.end_date,
+                truncate_before_run=args.truncate,
             )
 
         # サマリー出力

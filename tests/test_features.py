@@ -854,6 +854,90 @@ class TestFeaturePipeline:
         assert "DELETE FROM" in delete_query
         assert "BETWEEN '2025-01-01' AND '2025-01-31'" in delete_query
 
+    def test_run_truncate_before_run_uses_write_truncate(self, mock_bq_client):
+        """truncate_before_run=True の場合、TRUNCATE TABLE → WRITE_TRUNCATE で実行されること"""
+        mock_instance = MagicMock()
+        mock_bq_client.return_value = mock_instance
+
+        # get_table でテーブル存在を確認（行数返却）
+        mock_table = MagicMock()
+        mock_table.num_rows = 497357
+        mock_instance.get_table.return_value = mock_table
+
+        # TRUNCATE TABLE 用のモック
+        mock_truncate_job = MagicMock()
+        mock_truncate_job.num_dml_affected_rows = 497357
+        mock_truncate_job.result.return_value = None
+
+        # INSERT（WRITE_TRUNCATE）用のモック
+        mock_insert_result = MagicMock()
+        mock_insert_result.total_rows = 497357
+        mock_insert_job = MagicMock()
+        mock_insert_job.result.return_value = mock_insert_result
+
+        mock_instance.query.side_effect = [mock_truncate_job, mock_insert_job]
+
+        pipeline = FeaturePipeline("test-project")
+        result = pipeline.run("2016-01-01", "2026-06-06", truncate_before_run=True)
+
+        assert result["deleted_rows"] == 497357
+        assert result["inserted_rows"] == 497357
+
+        # queryが2回呼ばれる（TRUNCATE + INSERT）
+        assert mock_instance.query.call_count == 2
+
+        # 1回目はTRUNCATEクエリ
+        truncate_call = mock_instance.query.call_args_list[0]
+        assert "TRUNCATE TABLE" in truncate_call[0][0]
+
+        # 2回目はWRITE_TRUNCATEで書き込み
+        insert_call = mock_instance.query.call_args_list[1]
+        job_config = insert_call[1]["job_config"]
+        from google.cloud import bigquery as bq
+        assert job_config.write_disposition == bq.WriteDisposition.WRITE_TRUNCATE
+
+    def test_run_truncate_before_run_table_not_exists(self, mock_bq_client):
+        """truncate_before_run=True でテーブルが存在しない場合、TRUNCATEをスキップすること"""
+        mock_instance = MagicMock()
+        mock_bq_client.return_value = mock_instance
+
+        # get_table が NotFound を返す
+        mock_instance.get_table.side_effect = google_exceptions.NotFound("not found")
+
+        mock_insert_result = MagicMock()
+        mock_insert_result.total_rows = 100
+        mock_insert_job = MagicMock()
+        mock_insert_job.result.return_value = mock_insert_result
+        mock_instance.query.return_value = mock_insert_job
+
+        pipeline = FeaturePipeline("test-project")
+        result = pipeline.run("2016-01-01", "2026-06-06", truncate_before_run=True)
+
+        assert result["deleted_rows"] == 0
+        assert result["inserted_rows"] == 100
+        # queryは1回のみ（TRUNCATEはスキップ、INSERTのみ）
+        assert mock_instance.query.call_count == 1
+
+    def test_run_default_uses_write_append(self, mock_bq_client):
+        """truncate_before_run=False（デフォルト）の場合、WRITE_APPEND で実行されること"""
+        mock_instance = MagicMock()
+        mock_bq_client.return_value = mock_instance
+        mock_instance.get_table.side_effect = google_exceptions.NotFound("not found")
+
+        mock_insert_result = MagicMock()
+        mock_insert_result.total_rows = 50
+        mock_insert_job = MagicMock()
+        mock_insert_job.result.return_value = mock_insert_result
+        mock_instance.query.return_value = mock_insert_job
+
+        pipeline = FeaturePipeline("test-project")
+        pipeline.run("2025-01-01", "2025-01-31")
+
+        insert_call = mock_instance.query.call_args_list[0]
+        job_config = insert_call[1]["job_config"]
+        from google.cloud import bigquery as bq
+        assert job_config.write_disposition == bq.WriteDisposition.WRITE_APPEND
+
 
 class TestRetryWithBackoff:
     """retry_with_backoffのテスト"""

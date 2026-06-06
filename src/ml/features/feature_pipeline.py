@@ -156,18 +156,24 @@ class FeaturePipeline:
             end_date=end_date,
         )
 
-    def run(self, start_date: str, end_date: str) -> dict:
+    def run(self, start_date: str, end_date: str, truncate_before_run: bool = False) -> dict:
         """
         指定期間の特徴量を生成してBigQueryに保存
 
-        処理フロー:
+        処理フロー（truncate_before_run=True の場合）:
+        1. TRUNCATE TABLE でテーブルを全件削除（信頼性の高い冪等操作）
+        2. SQLテンプレートで特徴量を生成し、WRITE_TRUNCATE でテーブルを置換
+
+        処理フロー（truncate_before_run=False の場合、差分更新）:
         1. テーブルが存在すれば対象日付範囲の既存データをDELETE
-        2. SQLテンプレートで特徴量を生成し、結果をテーブルに書き込み
-           （テーブルが存在しない場合は自動作成される）
+        2. SQLテンプレートで特徴量を生成し、WRITE_APPEND でテーブルに追記
 
         Args:
             start_date: 開始日 (YYYY-MM-DD)
             end_date: 終了日 (YYYY-MM-DD)
+            truncate_before_run: Trueの場合、テーブルを全件削除してから全件挿入する。
+                全期間を対象とするフルロード（retrain-and-deploy等）で使用する。
+                差分更新（特定期間のみ再生成）の場合はFalseのままにする。
 
         Returns:
             処理結果の統計
@@ -180,16 +186,29 @@ class FeaturePipeline:
             f"{self.config.output_dataset}.{self.config.output_table}"
         )
 
-        # Step 1: テーブルが存在する場合、既存データを削除
-        deleted_rows = self._delete_existing_data_if_table_exists(
-            table_ref, start_date, end_date
-        )
-        logger.info(f"Deleted {deleted_rows} existing rows for date range")
+        if truncate_before_run:
+            # フルロードモード: TRUNCATE TABLE → WRITE_TRUNCATE（冪等・重複なし）
+            deleted_rows = self._truncate_table_if_exists(table_ref)
+            logger.info(f"Truncated table: {deleted_rows} existing rows removed")
 
-        # Step 2: 特徴量生成SQLを実行して結果をテーブルに書き込み
-        feature_query = self._build_query(start_date, end_date)
-        logger.info("Executing feature generation SQL...")
-        inserted_rows = self._execute_query_to_table(feature_query, table_ref)
+            feature_query = self._build_query(start_date, end_date)
+            logger.info("Executing feature generation SQL (WRITE_TRUNCATE)...")
+            inserted_rows = self._execute_query_to_table(
+                feature_query, table_ref, write_truncate=True
+            )
+        else:
+            # 差分更新モード: DELETE → WRITE_APPEND
+            deleted_rows = self._delete_existing_data_if_table_exists(
+                table_ref, start_date, end_date
+            )
+            logger.info(f"Deleted {deleted_rows} existing rows for date range")
+
+            feature_query = self._build_query(start_date, end_date)
+            logger.info("Executing feature generation SQL (WRITE_APPEND)...")
+            inserted_rows = self._execute_query_to_table(
+                feature_query, table_ref, write_truncate=False
+            )
+
         logger.info(f"Inserted {inserted_rows} rows")
 
         elapsed = time.time() - pipeline_start
@@ -203,6 +222,19 @@ class FeaturePipeline:
 
         logger.info(f"Feature pipeline completed: {result}")
         return result
+
+    def _truncate_table_if_exists(self, table_ref: str) -> int:
+        """テーブルが存在する場合、TRUNCATE TABLE で全件削除して行数を返す"""
+        try:
+            table = self.client.get_table(table_ref)
+            row_count = table.num_rows or 0
+        except google_exceptions.NotFound:
+            logger.info("Table does not exist yet, skipping truncate")
+            return 0
+
+        truncate_query = f"TRUNCATE TABLE `{table_ref}`"
+        self._execute_dml_with_retry(truncate_query)
+        return row_count
 
     def _delete_existing_data_if_table_exists(
         self, table_ref: str, start_date: str, end_date: str
@@ -220,12 +252,27 @@ class FeaturePipeline:
         """
         return self._execute_dml_with_retry(delete_query)
 
-    def _execute_query_to_table(self, query: str, table_ref: str) -> int:
-        """クエリ結果をテーブルに書き込む（テーブル自動作成対応）"""
+    def _execute_query_to_table(
+        self, query: str, table_ref: str, write_truncate: bool = False
+    ) -> int:
+        """クエリ結果をテーブルに書き込む（テーブル自動作成対応）
+
+        Args:
+            query: 実行するSELECTクエリ
+            table_ref: 書き込み先テーブル参照
+            write_truncate: Trueの場合WRITE_TRUNCATE（テーブル全体を置換）、
+                FalseはWRITE_APPEND（既存データに追記）
+        """
+        write_disposition = (
+            bigquery.WriteDisposition.WRITE_TRUNCATE
+            if write_truncate
+            else bigquery.WriteDisposition.WRITE_APPEND
+        )
+
         def execute():
             job_config = bigquery.QueryJobConfig(
                 destination=table_ref,
-                write_disposition=bigquery.WriteDisposition.WRITE_APPEND,
+                write_disposition=write_disposition,
                 schema_update_options=[
                     bigquery.SchemaUpdateOption.ALLOW_FIELD_ADDITION,
                 ],
@@ -235,6 +282,8 @@ class FeaturePipeline:
             )
             job = self.client.query(query, job_config=job_config)
             result = job.result()
+            # WRITE_TRUNCATE の場合、result.total_rows は挿入行数と一致する
+            # WRITE_APPEND の場合、result.total_rows はテーブル合計行数になるため注意
             return result.total_rows
 
         return retry_with_backoff(
