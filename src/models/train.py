@@ -25,6 +25,7 @@ import yaml
 from google.cloud import bigquery, storage
 from sklearn.metrics import roc_auc_score
 
+from src.ml.features.feature_pipeline import FeaturePipeline
 from src.models.lgbm_ranker import LGBMRanker, LGBMRankerConfig
 from src.models.tuning import run_tuning, save_best_params
 
@@ -107,6 +108,50 @@ def fetch_training_data(
     df = client.query(query).to_dataframe()
     df = df.sort_values(["race_date", "race_id", "horse_number"]).reset_index(drop=True)
     logger.info(f"Fetched {len(df)} rows, {len(df.columns)} columns")
+    return df
+
+
+def fetch_training_data_from_sql(
+    project_id: str,
+    start_date: str,
+    end_date: str,
+) -> pd.DataFrame:
+    """
+    feature_query_raw.sql を直接実行して学習データを取得する（predict.py と同じ方式）
+
+    features.training_data テーブルへの依存を排除し、SQL変更を即時反映したい場合に使用する。
+    SQLと学習データの特徴量セット乖離（Issue #328）を防ぐ。
+
+    Args:
+        project_id: GCPプロジェクトID
+        start_date: 取得開始日 (YYYY-MM-DD)
+        end_date: 取得終了日 (YYYY-MM-DD)
+
+    Returns:
+        finish_position ラベル付きのDataFrame
+    """
+    pipeline = FeaturePipeline(project_id)
+    feature_sql = pipeline.generate_query(start_date, end_date)
+
+    client = bigquery.Client(project=project_id)
+    logger.info(
+        f"Fetching training data via feature_query_raw.sql ({start_date} ~ {end_date})..."
+    )
+    df = client.query(feature_sql).to_dataframe()
+    df = df.sort_values(["race_date", "race_id", "horse_number"]).reset_index(drop=True)
+    logger.info(f"Fetched {len(df)} rows, {len(df.columns)} columns from SQL")
+
+    # finish_position を raw.race_results から JOIN（features.training_data 方式と統一）
+    finish_query = f"""
+    SELECT race_id, horse_number, finish_position
+    FROM `{project_id}.raw.race_results`
+    WHERE race_date BETWEEN '{start_date}' AND '{end_date}'
+    """
+    finish_df = client.query(finish_query).to_dataframe()
+    df = df.merge(finish_df, on=["race_id", "horse_number"], how="left")
+    logger.info(
+        f"finish_position JOIN: {df['finish_position'].notna().sum()}/{len(df)} rows with label"
+    )
     return df
 
 
@@ -363,6 +408,9 @@ def train_pipeline(
     tune: bool = False,
     n_trials: int | None = None,
     tune_timeout: int | None = None,
+    use_feature_sql: bool = False,
+    start_date: str | None = None,
+    end_date: str | None = None,
 ) -> dict:
     """
     学習パイプラインを実行する
@@ -376,6 +424,10 @@ def train_pipeline(
         tune: ハイパーパラメータ調整を実行するか
         n_trials: Optuna の trial 数（Noneの場合は config から取得）
         tune_timeout: チューニングのタイムアウト秒数（Noneの場合は config から取得）
+        use_feature_sql: feature_query_raw.sql を直接実行して学習データを取得する（Issue #328対応）
+                         True にすると features.training_data テーブルへの依存を排除できる
+        start_date: use_feature_sql=True 時の取得開始日 (YYYY-MM-DD)
+        end_date: use_feature_sql=True 時の取得終了日 (YYYY-MM-DD, デフォルト: 実行日)
 
     Returns:
         学習結果の辞書
@@ -385,11 +437,20 @@ def train_pipeline(
     gcs_config = config["gcs"]
 
     # 1. データ取得
-    df = fetch_training_data(
-        project_id=project_id,
-        dataset=data_config["dataset"],
-        table=data_config["table"],
-    )
+    if use_feature_sql:
+        sql_end = end_date or execution_date.isoformat()
+        sql_start = start_date or "2019-01-01"
+        df = fetch_training_data_from_sql(
+            project_id=project_id,
+            start_date=sql_start,
+            end_date=sql_end,
+        )
+    else:
+        df = fetch_training_data(
+            project_id=project_id,
+            dataset=data_config["dataset"],
+            table=data_config["table"],
+        )
 
     # 2. データ分割
     train_df, valid_df, predict_df = split_train_valid_predict(
@@ -592,6 +653,24 @@ def main():
         help="チューニングのタイムアウト秒数（デフォルト: config から取得）",
     )
     parser.add_argument("--verbose", "-v", action="store_true", help="詳細ログ")
+    parser.add_argument(
+        "--use-feature-sql",
+        action="store_true",
+        help=(
+            "features.training_data テーブルの代わりに feature_query_raw.sql を直接実行して"
+            "学習データを取得する（Issue #328: SQLと学習データの特徴量セット乖離を防ぐ）"
+        ),
+    )
+    parser.add_argument(
+        "--start-date",
+        default=None,
+        help="--use-feature-sql 時の取得開始日 (YYYY-MM-DD, デフォルト: 2019-01-01)",
+    )
+    parser.add_argument(
+        "--end-date",
+        default=None,
+        help="--use-feature-sql 時の取得終了日 (YYYY-MM-DD, デフォルト: 実行日)",
+    )
 
     args = parser.parse_args()
 
@@ -617,6 +696,9 @@ def main():
         tune=args.tune,
         n_trials=args.n_trials,
         tune_timeout=args.tune_timeout,
+        use_feature_sql=args.use_feature_sql,
+        start_date=args.start_date,
+        end_date=args.end_date,
     )
 
     print("\n" + "=" * 60)
