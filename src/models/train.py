@@ -439,7 +439,7 @@ def train_pipeline(
     # 1. データ取得
     if use_feature_sql:
         sql_end = end_date or execution_date.isoformat()
-        sql_start = start_date or "2019-01-01"
+        sql_start = start_date or "2016-01-01"
         df = fetch_training_data_from_sql(
             project_id=project_id,
             start_date=sql_start,
@@ -664,7 +664,7 @@ def main():
     parser.add_argument(
         "--start-date",
         default=None,
-        help="--use-feature-sql 時の取得開始日 (YYYY-MM-DD, デフォルト: 2019-01-01)",
+        help="--use-feature-sql 時の取得開始日 (YYYY-MM-DD, デフォルト: 2016-01-01)",
     )
     parser.add_argument(
         "--end-date",

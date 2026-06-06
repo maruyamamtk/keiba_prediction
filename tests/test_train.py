@@ -450,7 +450,7 @@ class TestTrainPipeline:
 
         mock_fetch_sql.assert_called_once_with(
             project_id="test-project",
-            start_date="2019-01-01",
+            start_date="2016-01-01",
             end_date=execution_date.isoformat(),
         )
 
