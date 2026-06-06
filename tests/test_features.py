@@ -1116,7 +1116,7 @@ class TestHorseTEFeature:
     def test_sql_horse_te_columns_in_final_select(self):
         """horse_te および全12条件別TE差分カラムが最終SELECTに含まれること"""
         content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
-        final_select_start = content.rfind("select")
+        final_select_start = content.find("temp_final_raw as (")
         final_section = content[final_select_start:]
         expected_columns = [
             "horse_te",
@@ -1181,7 +1181,7 @@ class TestCareerDistanceFeature:
     def test_sql_career_distance_group1_columns_in_final_select(self):
         """グループ1（全出走）の6特徴量が最終SELECTに含まれること"""
         content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
-        final_select_start = content.rfind("select")
+        final_select_start = content.find("temp_final_raw as (")
         final_section = content[final_select_start:]
         group1_columns = [
             "is_career_max_distance",
@@ -1197,7 +1197,7 @@ class TestCareerDistanceFeature:
     def test_sql_career_distance_group2_columns_in_final_select(self):
         """グループ2（3着以内）の6特徴量が最終SELECTに含まれること"""
         content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
-        final_select_start = content.rfind("select")
+        final_select_start = content.find("temp_final_raw as (")
         final_section = content[final_select_start:]
         group2_columns = [
             "is_beyond_placed_max_distance",
@@ -1934,3 +1934,125 @@ class TestIDMZoneCorrectionFeature:
         neutral_section = content[neutral_section_start:neutral_section_end]
         assert "h_r.idm" not in neutral_section, \
             "idm_zone_neutral セクションに当レース（h_r.idm）が含まれています（リーク）"
+
+
+class TestNullImputation:
+    """NULL値補完（Issue #330）のテスト"""
+
+    def test_sql_has_temp_final_raw_cte(self):
+        """temp_final_raw CTEが存在すること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        assert "temp_final_raw as (" in content, \
+            "temp_final_raw CTE が見つかりません"
+
+    def test_sql_has_percentile_cont_imputation(self):
+        """最終SELECTがPERCENTILE_CONTによるNULL補完を含むこと"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        assert "select * replace (" in content, \
+            "select * replace ( が見つかりません"
+        assert "percentile_cont" in content, \
+            "percentile_cont が見つかりません"
+
+    def test_sql_te_columns_imputed_with_percentile_cont(self):
+        """TE系カラムがPERCENTILE_CONTで補完されていること（Issue #330）"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        te_columns = [
+            "jockey_te",
+            "trainer_te",
+            "sire_te",
+            "horse_te",
+            "mare_te",
+        ]
+        for col in te_columns:
+            pattern = f"percentile_cont({col}, 0.5) over (partition by race_id)"
+            assert pattern in content, \
+                f"TE列 '{col}' の PERCENTILE_CONT 補完が見つかりません"
+
+    def test_sql_past_race_features_imputed(self):
+        """過去走特徴量がPERCENTILE_CONTで補完されていること（Issue #330）"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        past_race_columns = [
+            "finish_time_1",
+            "idm_1",
+            "mean_idm",
+            "finish_time_normalized",
+            "last_3f_normalized",
+        ]
+        for col in past_race_columns:
+            pattern = f"percentile_cont({col}, 0.5) over (partition by race_id)"
+            assert pattern in content, \
+                f"過去走特徴量 '{col}' の PERCENTILE_CONT 補完が見つかりません"
+
+    def test_sql_cha_features_imputed(self):
+        """調教特徴量がPERCENTILE_CONTで補完されていること（Issue #330）"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        cha_columns = [
+            "cha_training_index",
+            "training_last_3f",
+            "training_furlongs",
+        ]
+        for col in cha_columns:
+            pattern = f"percentile_cont({col}, 0.5) over (partition by race_id)"
+            assert pattern in content, \
+                f"調教特徴量 '{col}' の PERCENTILE_CONT 補完が見つかりません"
+
+    def test_sql_mare_features_imputed(self):
+        """母馬実績特徴量がPERCENTILE_CONTで補完されていること（Issue #330）"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        mare_columns = [
+            "mare_place_rate",
+            "mare_te",
+            "mare_early_career_place_rate",
+        ]
+        for col in mare_columns:
+            pattern = f"percentile_cont({col}, 0.5) over (partition by race_id)"
+            assert pattern in content, \
+                f"母馬特徴量 '{col}' の PERCENTILE_CONT 補完が見つかりません"
+
+    def test_sql_bias_features_imputed(self):
+        """バイアス補正特徴量がPERCENTILE_CONTで補完されていること（Issue #330）"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        bias_columns = [
+            "prev1_course_bias_score",
+            "gate_bias_score",
+            "idm_zone_neutral_1",
+            "idm_zone_neutral_trend",
+        ]
+        for col in bias_columns:
+            pattern = f"percentile_cont({col}, 0.5) over (partition by race_id)"
+            assert pattern in content, \
+                f"バイアス補正特徴量 '{col}' の PERCENTILE_CONT 補完が見つかりません"
+
+    def test_sql_te_fallback_is_global_mean(self):
+        """TE系のフォールバック値がグローバル複勝率（0.22）であること（Issue #330）"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        te_fallback_pattern = "percentile_cont(jockey_te, 0.5) over (partition by race_id), 0.22"
+        assert te_fallback_pattern in content, \
+            "jockey_te のフォールバック値が 0.22 ではありません"
+
+    def test_sql_non_te_fallback_is_zero(self):
+        """TE以外のフォールバック値が0であること（Issue #330）"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        non_te_fallback_pattern = "percentile_cont(finish_time_1, 0.5) over (partition by race_id), 0)"
+        assert non_te_fallback_pattern in content, \
+            "finish_time_1 のフォールバック値が 0 ではありません"
+
+    def test_sql_imputation_uses_race_id_partition(self):
+        """PERCENTILE_CONTが同一レース内（race_id）でパーティションされていること（Issue #330）"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        partition_pattern = "percentile_cont(jockey_te, 0.5) over (partition by race_id)"
+        assert partition_pattern in content, \
+            "PERCENTILE_CONT が race_id でパーティションされていません"
+
+    def test_sql_imputation_uses_coalesce_chain(self):
+        """補完がCOALESCE(元値, 中央値, フォールバック)の3段階であること（Issue #330）"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        coalesce_pattern = "coalesce(jockey_te, percentile_cont(jockey_te, 0.5) over (partition by race_id), 0.22) as jockey_te"
+        assert coalesce_pattern in content, \
+            "COALESCE の3段階補完パターン（元値→中央値→フォールバック）が見つかりません"
+
+    def test_sql_from_temp_final_raw(self):
+        """最終SELECTがtemp_final_rawから取得していること（Issue #330）"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        assert "from temp_final_raw" in content, \
+            "最終SELECT の FROM が temp_final_raw を参照していません"
