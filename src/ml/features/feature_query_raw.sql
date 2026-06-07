@@ -2066,6 +2066,8 @@ with temp_race_horse_count as (
   select
     race_id
     ,horse_number
+    ,horse_id
+    ,race_date
     ,coalesce(count(*) over (
       partition by horse_id
       order by unix_date(race_date)
@@ -2235,6 +2237,8 @@ with temp_race_horse_count as (
   select
     race_id
     ,horse_number
+    ,horse_id
+    ,race_date
     ,IF(horse_count >= 5, horse_te, NULL) as horse_te
     ,IF(horse_count >= 5, horse_course_type_te, NULL) as horse_course_type_te
     ,IF(horse_count >= 5, horse_venue_te, NULL) as horse_venue_te
@@ -2249,6 +2253,74 @@ with temp_race_horse_count as (
     ,IF(horse_count >= 5, horse_distance_change_te, NULL) as horse_distance_change_te
     ,IF(horse_count >= 5, horse_weight_carried_change_te, NULL) as horse_weight_carried_change_te
   from temp_horse_te_pre
+)
+
+/* 馬TE_diff 集計用Stage1: 各レースのdiff値とレース内RANKを計算（時系列集計の入力）
+   horse_te が NULL（出走5回未満）の場合、全diff・rankはNULL NULLS LASTにより末尾ランク化 */
+,temp_horse_te_diff_pre as (
+  select
+    race_id
+    ,horse_number
+    ,horse_id
+    ,race_date
+    ,horse_course_type_te - horse_te as h_course_type_diff
+    ,horse_venue_te - horse_te as h_venue_diff
+    ,horse_distance_band_te - horse_te as h_distance_band_diff
+    ,horse_distance_te - horse_te as h_distance_diff
+    ,horse_direction_te - horse_te as h_direction_diff
+    ,horse_jockey_te - horse_te as h_jockey_diff
+    ,horse_season_te - horse_te as h_season_diff
+    ,horse_course_type_venue_te - horse_te as h_cv_diff
+    ,horse_course_type_distance_te - horse_te as h_cd_diff
+    ,horse_course_type_distance_venue_te - horse_te as h_cdv_diff
+    ,horse_distance_change_te - horse_te as h_dc_diff
+    ,horse_weight_carried_change_te - horse_te as h_wcc_diff
+    ,RANK() OVER (PARTITION BY race_id ORDER BY (horse_course_type_te - horse_te) DESC NULLS LAST) as h_course_type_diff_rank
+    ,RANK() OVER (PARTITION BY race_id ORDER BY (horse_venue_te - horse_te) DESC NULLS LAST) as h_venue_diff_rank
+    ,RANK() OVER (PARTITION BY race_id ORDER BY (horse_distance_band_te - horse_te) DESC NULLS LAST) as h_distance_band_diff_rank
+    ,RANK() OVER (PARTITION BY race_id ORDER BY (horse_distance_te - horse_te) DESC NULLS LAST) as h_distance_diff_rank
+    ,RANK() OVER (PARTITION BY race_id ORDER BY (horse_direction_te - horse_te) DESC NULLS LAST) as h_direction_diff_rank
+    ,RANK() OVER (PARTITION BY race_id ORDER BY (horse_jockey_te - horse_te) DESC NULLS LAST) as h_jockey_diff_rank
+    ,RANK() OVER (PARTITION BY race_id ORDER BY (horse_season_te - horse_te) DESC NULLS LAST) as h_season_diff_rank
+    ,RANK() OVER (PARTITION BY race_id ORDER BY (horse_course_type_venue_te - horse_te) DESC NULLS LAST) as h_cv_diff_rank
+    ,RANK() OVER (PARTITION BY race_id ORDER BY (horse_course_type_distance_te - horse_te) DESC NULLS LAST) as h_cd_diff_rank
+    ,RANK() OVER (PARTITION BY race_id ORDER BY (horse_course_type_distance_venue_te - horse_te) DESC NULLS LAST) as h_cdv_diff_rank
+    ,RANK() OVER (PARTITION BY race_id ORDER BY (horse_distance_change_te - horse_te) DESC NULLS LAST) as h_dc_diff_rank
+    ,RANK() OVER (PARTITION BY race_id ORDER BY (horse_weight_carried_change_te - horse_te) DESC NULLS LAST) as h_wcc_diff_rank
+  from temp_horse_te
+)
+/* 馬TE_diff 集計Stage2: horse_idごとに時系列でdiff平均・ランク平均を計算（当日行除外）
+   diff がNULLの行（出走5回未満）はAVG計算で自動除外。
+   ランク平均: diff がNULLの場合はIF()でNULLとして集計から除外（末尾ランク混入を防止） */
+,temp_horse_te_diff_summary as (
+  select
+    race_id
+    ,horse_number
+    ,avg(h_course_type_diff) over (partition by horse_id order by unix_date(race_date) rows between unbounded preceding and 1 preceding) as horse_course_type_te_diff_avg
+    ,avg(h_venue_diff) over (partition by horse_id order by unix_date(race_date) rows between unbounded preceding and 1 preceding) as horse_venue_te_diff_avg
+    ,avg(h_distance_band_diff) over (partition by horse_id order by unix_date(race_date) rows between unbounded preceding and 1 preceding) as horse_distance_band_te_diff_avg
+    ,avg(h_distance_diff) over (partition by horse_id order by unix_date(race_date) rows between unbounded preceding and 1 preceding) as horse_distance_te_diff_avg
+    ,avg(h_direction_diff) over (partition by horse_id order by unix_date(race_date) rows between unbounded preceding and 1 preceding) as horse_direction_te_diff_avg
+    ,avg(h_jockey_diff) over (partition by horse_id order by unix_date(race_date) rows between unbounded preceding and 1 preceding) as horse_jockey_te_diff_avg
+    ,avg(h_season_diff) over (partition by horse_id order by unix_date(race_date) rows between unbounded preceding and 1 preceding) as horse_season_te_diff_avg
+    ,avg(h_cv_diff) over (partition by horse_id order by unix_date(race_date) rows between unbounded preceding and 1 preceding) as horse_cv_te_diff_avg
+    ,avg(h_cd_diff) over (partition by horse_id order by unix_date(race_date) rows between unbounded preceding and 1 preceding) as horse_cd_te_diff_avg
+    ,avg(h_cdv_diff) over (partition by horse_id order by unix_date(race_date) rows between unbounded preceding and 1 preceding) as horse_cdv_te_diff_avg
+    ,avg(h_dc_diff) over (partition by horse_id order by unix_date(race_date) rows between unbounded preceding and 1 preceding) as horse_dc_te_diff_avg
+    ,avg(h_wcc_diff) over (partition by horse_id order by unix_date(race_date) rows between unbounded preceding and 1 preceding) as horse_wcc_te_diff_avg
+    ,avg(IF(h_course_type_diff IS NOT NULL, h_course_type_diff_rank, NULL)) over (partition by horse_id order by unix_date(race_date) rows between unbounded preceding and 1 preceding) as horse_course_type_te_diff_rank_avg
+    ,avg(IF(h_venue_diff IS NOT NULL, h_venue_diff_rank, NULL)) over (partition by horse_id order by unix_date(race_date) rows between unbounded preceding and 1 preceding) as horse_venue_te_diff_rank_avg
+    ,avg(IF(h_distance_band_diff IS NOT NULL, h_distance_band_diff_rank, NULL)) over (partition by horse_id order by unix_date(race_date) rows between unbounded preceding and 1 preceding) as horse_distance_band_te_diff_rank_avg
+    ,avg(IF(h_distance_diff IS NOT NULL, h_distance_diff_rank, NULL)) over (partition by horse_id order by unix_date(race_date) rows between unbounded preceding and 1 preceding) as horse_distance_te_diff_rank_avg
+    ,avg(IF(h_direction_diff IS NOT NULL, h_direction_diff_rank, NULL)) over (partition by horse_id order by unix_date(race_date) rows between unbounded preceding and 1 preceding) as horse_direction_te_diff_rank_avg
+    ,avg(IF(h_jockey_diff IS NOT NULL, h_jockey_diff_rank, NULL)) over (partition by horse_id order by unix_date(race_date) rows between unbounded preceding and 1 preceding) as horse_jockey_te_diff_rank_avg
+    ,avg(IF(h_season_diff IS NOT NULL, h_season_diff_rank, NULL)) over (partition by horse_id order by unix_date(race_date) rows between unbounded preceding and 1 preceding) as horse_season_te_diff_rank_avg
+    ,avg(IF(h_cv_diff IS NOT NULL, h_cv_diff_rank, NULL)) over (partition by horse_id order by unix_date(race_date) rows between unbounded preceding and 1 preceding) as horse_cv_te_diff_rank_avg
+    ,avg(IF(h_cd_diff IS NOT NULL, h_cd_diff_rank, NULL)) over (partition by horse_id order by unix_date(race_date) rows between unbounded preceding and 1 preceding) as horse_cd_te_diff_rank_avg
+    ,avg(IF(h_cdv_diff IS NOT NULL, h_cdv_diff_rank, NULL)) over (partition by horse_id order by unix_date(race_date) rows between unbounded preceding and 1 preceding) as horse_cdv_te_diff_rank_avg
+    ,avg(IF(h_dc_diff IS NOT NULL, h_dc_diff_rank, NULL)) over (partition by horse_id order by unix_date(race_date) rows between unbounded preceding and 1 preceding) as horse_dc_te_diff_rank_avg
+    ,avg(IF(h_wcc_diff IS NOT NULL, h_wcc_diff_rank, NULL)) over (partition by horse_id order by unix_date(race_date) rows between unbounded preceding and 1 preceding) as horse_wcc_te_diff_rank_avg
+  from temp_horse_te_diff_pre
 )
 
 /* 馬の距離帯別・距離別 TE 計算の元データ
@@ -2725,6 +2797,31 @@ select
   ,t_h_te.horse_course_type_distance_venue_te - t_h_te.horse_te as horse_course_type_distance_venue_te_diff
   ,t_h_te.horse_distance_change_te - t_h_te.horse_te as horse_distance_change_te_diff
   ,t_h_te.horse_weight_carried_change_te - t_h_te.horse_te as horse_weight_carried_change_te_diff
+  -- 馬TE_diff 時系列集計（Issue #341）: 馬ごとの過去レースでのdiff値平均・ランク平均
+  ,t_h_te_diff_s.horse_course_type_te_diff_avg
+  ,t_h_te_diff_s.horse_venue_te_diff_avg
+  ,t_h_te_diff_s.horse_distance_band_te_diff_avg
+  ,t_h_te_diff_s.horse_distance_te_diff_avg
+  ,t_h_te_diff_s.horse_direction_te_diff_avg
+  ,t_h_te_diff_s.horse_jockey_te_diff_avg
+  ,t_h_te_diff_s.horse_season_te_diff_avg
+  ,t_h_te_diff_s.horse_cv_te_diff_avg
+  ,t_h_te_diff_s.horse_cd_te_diff_avg
+  ,t_h_te_diff_s.horse_cdv_te_diff_avg
+  ,t_h_te_diff_s.horse_dc_te_diff_avg
+  ,t_h_te_diff_s.horse_wcc_te_diff_avg
+  ,t_h_te_diff_s.horse_course_type_te_diff_rank_avg
+  ,t_h_te_diff_s.horse_venue_te_diff_rank_avg
+  ,t_h_te_diff_s.horse_distance_band_te_diff_rank_avg
+  ,t_h_te_diff_s.horse_distance_te_diff_rank_avg
+  ,t_h_te_diff_s.horse_direction_te_diff_rank_avg
+  ,t_h_te_diff_s.horse_jockey_te_diff_rank_avg
+  ,t_h_te_diff_s.horse_season_te_diff_rank_avg
+  ,t_h_te_diff_s.horse_cv_te_diff_rank_avg
+  ,t_h_te_diff_s.horse_cd_te_diff_rank_avg
+  ,t_h_te_diff_s.horse_cdv_te_diff_rank_avg
+  ,t_h_te_diff_s.horse_dc_te_diff_rank_avg
+  ,t_h_te_diff_s.horse_wcc_te_diff_rank_avg
   -- 距離帯別特徴量
   ,t_h_db_te.distance_band_top3_finish_rate
   ,t_h_db_te.distance_band_top1_finish_rate
@@ -3630,6 +3727,9 @@ from
   left join temp_mare_te as t_m_te
     on t_p_r_f.race_id = t_m_te.race_id
     and t_p_r_f.horse_number = t_m_te.horse_number
+  left join temp_horse_te_diff_summary as t_h_te_diff_s
+    on t_p_r_f.race_id = t_h_te_diff_s.race_id
+    and t_p_r_f.horse_number = t_h_te_diff_s.horse_number
 )
 
 -- NULL補完: 同一レース内の中央値で補完し、全員NULLの場合はフォールバック値を使用（Issue #330）
@@ -3723,6 +3823,30 @@ from
     ,percentile_cont(horse_course_type_distance_venue_te_diff, 0.5) over (partition by race_id) as _horse_course_type_distance_venue_te_diff_med
     ,percentile_cont(horse_distance_change_te_diff, 0.5) over (partition by race_id) as _horse_distance_change_te_diff_med
     ,percentile_cont(horse_weight_carried_change_te_diff, 0.5) over (partition by race_id) as _horse_weight_carried_change_te_diff_med
+    ,percentile_cont(horse_course_type_te_diff_avg, 0.5) over (partition by race_id) as _horse_course_type_te_diff_avg_med
+    ,percentile_cont(horse_venue_te_diff_avg, 0.5) over (partition by race_id) as _horse_venue_te_diff_avg_med
+    ,percentile_cont(horse_distance_band_te_diff_avg, 0.5) over (partition by race_id) as _horse_distance_band_te_diff_avg_med
+    ,percentile_cont(horse_distance_te_diff_avg, 0.5) over (partition by race_id) as _horse_distance_te_diff_avg_med
+    ,percentile_cont(horse_direction_te_diff_avg, 0.5) over (partition by race_id) as _horse_direction_te_diff_avg_med
+    ,percentile_cont(horse_jockey_te_diff_avg, 0.5) over (partition by race_id) as _horse_jockey_te_diff_avg_med
+    ,percentile_cont(horse_season_te_diff_avg, 0.5) over (partition by race_id) as _horse_season_te_diff_avg_med
+    ,percentile_cont(horse_cv_te_diff_avg, 0.5) over (partition by race_id) as _horse_cv_te_diff_avg_med
+    ,percentile_cont(horse_cd_te_diff_avg, 0.5) over (partition by race_id) as _horse_cd_te_diff_avg_med
+    ,percentile_cont(horse_cdv_te_diff_avg, 0.5) over (partition by race_id) as _horse_cdv_te_diff_avg_med
+    ,percentile_cont(horse_dc_te_diff_avg, 0.5) over (partition by race_id) as _horse_dc_te_diff_avg_med
+    ,percentile_cont(horse_wcc_te_diff_avg, 0.5) over (partition by race_id) as _horse_wcc_te_diff_avg_med
+    ,percentile_cont(horse_course_type_te_diff_rank_avg, 0.5) over (partition by race_id) as _horse_course_type_te_diff_rank_avg_med
+    ,percentile_cont(horse_venue_te_diff_rank_avg, 0.5) over (partition by race_id) as _horse_venue_te_diff_rank_avg_med
+    ,percentile_cont(horse_distance_band_te_diff_rank_avg, 0.5) over (partition by race_id) as _horse_distance_band_te_diff_rank_avg_med
+    ,percentile_cont(horse_distance_te_diff_rank_avg, 0.5) over (partition by race_id) as _horse_distance_te_diff_rank_avg_med
+    ,percentile_cont(horse_direction_te_diff_rank_avg, 0.5) over (partition by race_id) as _horse_direction_te_diff_rank_avg_med
+    ,percentile_cont(horse_jockey_te_diff_rank_avg, 0.5) over (partition by race_id) as _horse_jockey_te_diff_rank_avg_med
+    ,percentile_cont(horse_season_te_diff_rank_avg, 0.5) over (partition by race_id) as _horse_season_te_diff_rank_avg_med
+    ,percentile_cont(horse_cv_te_diff_rank_avg, 0.5) over (partition by race_id) as _horse_cv_te_diff_rank_avg_med
+    ,percentile_cont(horse_cd_te_diff_rank_avg, 0.5) over (partition by race_id) as _horse_cd_te_diff_rank_avg_med
+    ,percentile_cont(horse_cdv_te_diff_rank_avg, 0.5) over (partition by race_id) as _horse_cdv_te_diff_rank_avg_med
+    ,percentile_cont(horse_dc_te_diff_rank_avg, 0.5) over (partition by race_id) as _horse_dc_te_diff_rank_avg_med
+    ,percentile_cont(horse_wcc_te_diff_rank_avg, 0.5) over (partition by race_id) as _horse_wcc_te_diff_rank_avg_med
     ,percentile_cont(mare_te, 0.5) over (partition by race_id) as _mare_te_med
     ,percentile_cont(mare_course_type_te, 0.5) over (partition by race_id) as _mare_course_type_te_med
     ,percentile_cont(mare_venue_te, 0.5) over (partition by race_id) as _mare_venue_te_med
@@ -3951,6 +4075,30 @@ from
     _horse_course_type_distance_venue_te_diff_med,
     _horse_distance_change_te_diff_med,
     _horse_weight_carried_change_te_diff_med,
+    _horse_course_type_te_diff_avg_med,
+    _horse_venue_te_diff_avg_med,
+    _horse_distance_band_te_diff_avg_med,
+    _horse_distance_te_diff_avg_med,
+    _horse_direction_te_diff_avg_med,
+    _horse_jockey_te_diff_avg_med,
+    _horse_season_te_diff_avg_med,
+    _horse_cv_te_diff_avg_med,
+    _horse_cd_te_diff_avg_med,
+    _horse_cdv_te_diff_avg_med,
+    _horse_dc_te_diff_avg_med,
+    _horse_wcc_te_diff_avg_med,
+    _horse_course_type_te_diff_rank_avg_med,
+    _horse_venue_te_diff_rank_avg_med,
+    _horse_distance_band_te_diff_rank_avg_med,
+    _horse_distance_te_diff_rank_avg_med,
+    _horse_direction_te_diff_rank_avg_med,
+    _horse_jockey_te_diff_rank_avg_med,
+    _horse_season_te_diff_rank_avg_med,
+    _horse_cv_te_diff_rank_avg_med,
+    _horse_cd_te_diff_rank_avg_med,
+    _horse_cdv_te_diff_rank_avg_med,
+    _horse_dc_te_diff_rank_avg_med,
+    _horse_wcc_te_diff_rank_avg_med,
     _mare_te_med,
     _mare_course_type_te_med,
     _mare_venue_te_med,
@@ -4178,6 +4326,30 @@ from
   coalesce(horse_course_type_distance_venue_te_diff, _horse_course_type_distance_venue_te_diff_med, 0.0) as horse_course_type_distance_venue_te_diff,
   coalesce(horse_distance_change_te_diff, _horse_distance_change_te_diff_med, 0.0) as horse_distance_change_te_diff,
   coalesce(horse_weight_carried_change_te_diff, _horse_weight_carried_change_te_diff_med, 0.0) as horse_weight_carried_change_te_diff,
+  coalesce(horse_course_type_te_diff_avg, _horse_course_type_te_diff_avg_med, 0.0) as horse_course_type_te_diff_avg,
+  coalesce(horse_venue_te_diff_avg, _horse_venue_te_diff_avg_med, 0.0) as horse_venue_te_diff_avg,
+  coalesce(horse_distance_band_te_diff_avg, _horse_distance_band_te_diff_avg_med, 0.0) as horse_distance_band_te_diff_avg,
+  coalesce(horse_distance_te_diff_avg, _horse_distance_te_diff_avg_med, 0.0) as horse_distance_te_diff_avg,
+  coalesce(horse_direction_te_diff_avg, _horse_direction_te_diff_avg_med, 0.0) as horse_direction_te_diff_avg,
+  coalesce(horse_jockey_te_diff_avg, _horse_jockey_te_diff_avg_med, 0.0) as horse_jockey_te_diff_avg,
+  coalesce(horse_season_te_diff_avg, _horse_season_te_diff_avg_med, 0.0) as horse_season_te_diff_avg,
+  coalesce(horse_cv_te_diff_avg, _horse_cv_te_diff_avg_med, 0.0) as horse_cv_te_diff_avg,
+  coalesce(horse_cd_te_diff_avg, _horse_cd_te_diff_avg_med, 0.0) as horse_cd_te_diff_avg,
+  coalesce(horse_cdv_te_diff_avg, _horse_cdv_te_diff_avg_med, 0.0) as horse_cdv_te_diff_avg,
+  coalesce(horse_dc_te_diff_avg, _horse_dc_te_diff_avg_med, 0.0) as horse_dc_te_diff_avg,
+  coalesce(horse_wcc_te_diff_avg, _horse_wcc_te_diff_avg_med, 0.0) as horse_wcc_te_diff_avg,
+  coalesce(horse_course_type_te_diff_rank_avg, _horse_course_type_te_diff_rank_avg_med, 0.0) as horse_course_type_te_diff_rank_avg,
+  coalesce(horse_venue_te_diff_rank_avg, _horse_venue_te_diff_rank_avg_med, 0.0) as horse_venue_te_diff_rank_avg,
+  coalesce(horse_distance_band_te_diff_rank_avg, _horse_distance_band_te_diff_rank_avg_med, 0.0) as horse_distance_band_te_diff_rank_avg,
+  coalesce(horse_distance_te_diff_rank_avg, _horse_distance_te_diff_rank_avg_med, 0.0) as horse_distance_te_diff_rank_avg,
+  coalesce(horse_direction_te_diff_rank_avg, _horse_direction_te_diff_rank_avg_med, 0.0) as horse_direction_te_diff_rank_avg,
+  coalesce(horse_jockey_te_diff_rank_avg, _horse_jockey_te_diff_rank_avg_med, 0.0) as horse_jockey_te_diff_rank_avg,
+  coalesce(horse_season_te_diff_rank_avg, _horse_season_te_diff_rank_avg_med, 0.0) as horse_season_te_diff_rank_avg,
+  coalesce(horse_cv_te_diff_rank_avg, _horse_cv_te_diff_rank_avg_med, 0.0) as horse_cv_te_diff_rank_avg,
+  coalesce(horse_cd_te_diff_rank_avg, _horse_cd_te_diff_rank_avg_med, 0.0) as horse_cd_te_diff_rank_avg,
+  coalesce(horse_cdv_te_diff_rank_avg, _horse_cdv_te_diff_rank_avg_med, 0.0) as horse_cdv_te_diff_rank_avg,
+  coalesce(horse_dc_te_diff_rank_avg, _horse_dc_te_diff_rank_avg_med, 0.0) as horse_dc_te_diff_rank_avg,
+  coalesce(horse_wcc_te_diff_rank_avg, _horse_wcc_te_diff_rank_avg_med, 0.0) as horse_wcc_te_diff_rank_avg,
   coalesce(mare_te, _mare_te_med, 0.22) as mare_te,
   coalesce(mare_course_type_te, _mare_course_type_te_med, 0.22) as mare_course_type_te,
   coalesce(mare_venue_te, _mare_venue_te_med, 0.22) as mare_venue_te,
