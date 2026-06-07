@@ -509,26 +509,26 @@ class TestTELowFrequencyMask:
         assert "temp_sire_te_pre" in content, "temp_sire_te_pre が見つかりません"
 
     def test_sql_count_columns_use_correct_window(self):
-        """jockey_count / trainer_count / sire_count が 1 preceding ウィンドウを使用すること"""
+        """jockey_count / trainer_count / sire_count が 1826日ウィンドウを使用すること"""
         content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
         # jockey_count の定義部分を確認
         jockey_pre_start = content.find("temp_jockey_te_pre")
         jockey_pre_end = content.find("temp_jockey_te as (")
         jockey_pre_section = content[jockey_pre_start:jockey_pre_end]
         assert "jockey_count" in jockey_pre_section
-        assert "range between unbounded preceding and 1 preceding" in jockey_pre_section
+        assert "range between 1826 preceding and 1 preceding" in jockey_pre_section
 
         trainer_pre_start = content.find("temp_trainer_te_pre")
         trainer_pre_end = content.find("temp_trainer_te as (")
         trainer_pre_section = content[trainer_pre_start:trainer_pre_end]
         assert "trainer_count" in trainer_pre_section
-        assert "range between unbounded preceding and 1 preceding" in trainer_pre_section
+        assert "range between 1826 preceding and 1 preceding" in trainer_pre_section
 
         sire_pre_start = content.find("temp_sire_te_pre")
         sire_pre_end = content.find("temp_sire_te as (")
         sire_pre_section = content[sire_pre_start:sire_pre_end]
         assert "sire_count" in sire_pre_section
-        assert "range between unbounded preceding and 1 preceding" in sire_pre_section
+        assert "range between 1826 preceding and 1 preceding" in sire_pre_section
 
     def test_sql_mask_wrapper_applies_if_condition(self):
         """マスクラッパーCTEが単軸 >= 20 の IF 条件を適用していること"""
@@ -1960,10 +1960,12 @@ class TestNullImputation:
             "temp_final_raw CTE が見つかりません"
 
     def test_sql_has_percentile_cont_imputation(self):
-        """最終SELECTがPERCENTILE_CONTによるNULL補完を含むこと"""
+        """NULL補完CTEがPERCENTILE_CONTとSELECT * EXCEPTによる2段階構造であること"""
         content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
-        assert "select * replace (" in content, \
-            "select * replace ( が見つかりません"
+        assert "temp_null_fill_med as (" in content, \
+            "temp_null_fill_med CTE が見つかりません"
+        assert "select * except(" in content, \
+            "select * except( が見つかりません"
         assert "percentile_cont" in content, \
             "percentile_cont が見つかりません"
 
@@ -2040,14 +2042,14 @@ class TestNullImputation:
     def test_sql_te_fallback_is_global_mean(self):
         """TE系のフォールバック値がグローバル複勝率（0.22）であること（Issue #330）"""
         content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
-        te_fallback_pattern = "percentile_cont(jockey_te, 0.5) over (partition by race_id), 0.22"
+        te_fallback_pattern = "coalesce(jockey_te, _jockey_te_med, 0.22) as jockey_te"
         assert te_fallback_pattern in content, \
             "jockey_te のフォールバック値が 0.22 ではありません"
 
     def test_sql_non_te_fallback_is_zero(self):
         """TE以外のフォールバック値が0であること（Issue #330）"""
         content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
-        non_te_fallback_pattern = "percentile_cont(finish_time_1, 0.5) over (partition by race_id), 0)"
+        non_te_fallback_pattern = "coalesce(finish_time_1, _finish_time_1_med, 0) as finish_time_1"
         assert non_te_fallback_pattern in content, \
             "finish_time_1 のフォールバック値が 0 ではありません"
 
@@ -2059,11 +2061,11 @@ class TestNullImputation:
             "PERCENTILE_CONT が race_id でパーティションされていません"
 
     def test_sql_imputation_uses_coalesce_chain(self):
-        """補完がCOALESCE(元値, 中央値, フォールバック)の3段階であること（Issue #330）"""
+        """補完がCOALESCE(元値, 事前計算中央値, フォールバック)の3段階であること（Issue #330）"""
         content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
-        coalesce_pattern = "coalesce(jockey_te, percentile_cont(jockey_te, 0.5) over (partition by race_id), 0.22) as jockey_te"
+        coalesce_pattern = "coalesce(jockey_te, _jockey_te_med, 0.22) as jockey_te"
         assert coalesce_pattern in content, \
-            "COALESCE の3段階補完パターン（元値→中央値→フォールバック）が見つかりません"
+            "COALESCE の3段階補完パターン（元値→事前計算中央値→フォールバック）が見つかりません"
 
     def test_sql_from_temp_final_raw(self):
         """最終SELECTがtemp_final_rawから取得していること（Issue #330）"""
@@ -2185,14 +2187,14 @@ class TestRunRatioFeature:
             )
 
     def test_sql_sire_run_ratio_uses_preceding_window(self):
-        """sire run_ratio が 1 preceding ウィンドウを使用していること（データリーク防止）"""
+        """sire run_ratio が 1826日ウィンドウを使用していること（データリーク防止）"""
         content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
         sire_pre_start = content.find("temp_sire_te_pre as (")
         sire_pre_end = content.find("temp_sire_te as (")
         section = content[sire_pre_start:sire_pre_end]
-        # run_ratio セクションに 1 preceding が含まれること
+        # run_ratio セクションに 1826 preceding が含まれること
         assert "sire_course_type_run_ratio" in section
-        assert "range between unbounded preceding and 1 preceding" in section
+        assert "range between 1826 preceding and 1 preceding" in section
 
 
 class TestTERankFeature:

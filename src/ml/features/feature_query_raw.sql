@@ -1042,6 +1042,7 @@ with temp_race_horse_count as (
     avg(case when finish_position between 1 and 3 then 1.0 else 0.0 end) as global_top3_rate
   from `{project_id}`.raw.race_results
   where finish_position > 0
+    and date_diff(current_date(), race_date, day) <= 1826
 )
 
 /* TE計算の元となる全期間の騎手・調教師・種牡馬・馬自身実績履歴（当日同日レースは除外）
@@ -1137,114 +1138,114 @@ with temp_race_horse_count as (
     ,coalesce(count(*) over (
       partition by jockey_code
       order by unix_date(race_date)
-      range between unbounded preceding and 1 preceding
+      range between 1826 preceding and 1 preceding
     ), 0) as jockey_count
     ,safe_divide(
       coalesce(sum(is_top3) over (
         partition by jockey_code
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10 * g.global_top3_rate,
       coalesce(count(*) over (
         partition by jockey_code
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10
     ) as jockey_te
     ,safe_divide(
       coalesce(sum(is_top3) over (
         partition by jockey_code, course_type
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10 * g.global_top3_rate,
       coalesce(count(*) over (
         partition by jockey_code, course_type
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10
     ) as jockey_course_type_te
     ,safe_divide(
       coalesce(sum(is_top3) over (
         partition by jockey_code, venue_code
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10 * g.global_top3_rate,
       coalesce(count(*) over (
         partition by jockey_code, venue_code
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10
     ) as jockey_venue_te
     ,safe_divide(
       coalesce(sum(is_top3) over (
         partition by jockey_code, distance_band
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10 * g.global_top3_rate,
       coalesce(count(*) over (
         partition by jockey_code, distance_band
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10
     ) as jockey_distance_band_te
     ,safe_divide(
       coalesce(sum(is_top3) over (
         partition by jockey_code, distance
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10 * g.global_top3_rate,
       coalesce(count(*) over (
         partition by jockey_code, distance
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10
     ) as jockey_distance_te
     ,safe_divide(
       coalesce(sum(is_top3) over (
         partition by jockey_code, direction
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10 * g.global_top3_rate,
       coalesce(count(*) over (
         partition by jockey_code, direction
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10
     ) as jockey_direction_te
     ,safe_divide(
       coalesce(sum(is_top3) over (
         partition by jockey_code, course_type, venue_code
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10 * g.global_top3_rate,
       coalesce(count(*) over (
         partition by jockey_code, course_type, venue_code
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10
     ) as jockey_course_type_venue_te
     ,safe_divide(
       coalesce(sum(is_top3) over (
         partition by jockey_code, course_type, distance
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10 * g.global_top3_rate,
       coalesce(count(*) over (
         partition by jockey_code, course_type, distance
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10
     ) as jockey_course_type_distance_te
     ,safe_divide(
       coalesce(sum(is_top3) over (
         partition by jockey_code, course_type, distance, venue_code
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10 * g.global_top3_rate,
       coalesce(count(*) over (
         partition by jockey_code, course_type, distance, venue_code
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10
     ) as jockey_course_type_distance_venue_te
   from temp_te_history_base
@@ -1277,114 +1278,114 @@ with temp_race_horse_count as (
     ,coalesce(count(*) over (
       partition by trainer_code
       order by unix_date(race_date)
-      range between unbounded preceding and 1 preceding
+      range between 1826 preceding and 1 preceding
     ), 0) as trainer_count
     ,safe_divide(
       coalesce(sum(is_top3) over (
         partition by trainer_code
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10 * g.global_top3_rate,
       coalesce(count(*) over (
         partition by trainer_code
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10
     ) as trainer_te
     ,safe_divide(
       coalesce(sum(is_top3) over (
         partition by trainer_code, course_type
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10 * g.global_top3_rate,
       coalesce(count(*) over (
         partition by trainer_code, course_type
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10
     ) as trainer_course_type_te
     ,safe_divide(
       coalesce(sum(is_top3) over (
         partition by trainer_code, venue_code
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10 * g.global_top3_rate,
       coalesce(count(*) over (
         partition by trainer_code, venue_code
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10
     ) as trainer_venue_te
     ,safe_divide(
       coalesce(sum(is_top3) over (
         partition by trainer_code, distance_band
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10 * g.global_top3_rate,
       coalesce(count(*) over (
         partition by trainer_code, distance_band
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10
     ) as trainer_distance_band_te
     ,safe_divide(
       coalesce(sum(is_top3) over (
         partition by trainer_code, distance
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10 * g.global_top3_rate,
       coalesce(count(*) over (
         partition by trainer_code, distance
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10
     ) as trainer_distance_te
     ,safe_divide(
       coalesce(sum(is_top3) over (
         partition by trainer_code, direction
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10 * g.global_top3_rate,
       coalesce(count(*) over (
         partition by trainer_code, direction
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10
     ) as trainer_direction_te
     ,safe_divide(
       coalesce(sum(is_top3) over (
         partition by trainer_code, course_type, venue_code
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10 * g.global_top3_rate,
       coalesce(count(*) over (
         partition by trainer_code, course_type, venue_code
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10
     ) as trainer_course_type_venue_te
     ,safe_divide(
       coalesce(sum(is_top3) over (
         partition by trainer_code, course_type, distance
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10 * g.global_top3_rate,
       coalesce(count(*) over (
         partition by trainer_code, course_type, distance
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10
     ) as trainer_course_type_distance_te
     ,safe_divide(
       coalesce(sum(is_top3) over (
         partition by trainer_code, course_type, distance, venue_code
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10 * g.global_top3_rate,
       coalesce(count(*) over (
         partition by trainer_code, course_type, distance, venue_code
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10
     ) as trainer_course_type_distance_venue_te
   from temp_te_history_base
@@ -1416,114 +1417,114 @@ with temp_race_horse_count as (
     ,coalesce(count(*) over (
       partition by sire_name
       order by unix_date(race_date)
-      range between unbounded preceding and 1 preceding
+      range between 1826 preceding and 1 preceding
     ), 0) as sire_count
     ,safe_divide(
       coalesce(sum(is_top3) over (
         partition by sire_name
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10 * g.global_top3_rate,
       coalesce(count(*) over (
         partition by sire_name
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10
     ) as sire_te
     ,safe_divide(
       coalesce(sum(is_top3) over (
         partition by sire_name, course_type
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10 * g.global_top3_rate,
       coalesce(count(*) over (
         partition by sire_name, course_type
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10
     ) as sire_course_type_te
     ,safe_divide(
       coalesce(sum(is_top3) over (
         partition by sire_name, venue_code
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10 * g.global_top3_rate,
       coalesce(count(*) over (
         partition by sire_name, venue_code
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10
     ) as sire_venue_te
     ,safe_divide(
       coalesce(sum(is_top3) over (
         partition by sire_name, distance_band
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10 * g.global_top3_rate,
       coalesce(count(*) over (
         partition by sire_name, distance_band
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10
     ) as sire_distance_band_te
     ,safe_divide(
       coalesce(sum(is_top3) over (
         partition by sire_name, distance
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10 * g.global_top3_rate,
       coalesce(count(*) over (
         partition by sire_name, distance
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10
     ) as sire_distance_te
     ,safe_divide(
       coalesce(sum(is_top3) over (
         partition by sire_name, direction
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10 * g.global_top3_rate,
       coalesce(count(*) over (
         partition by sire_name, direction
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10
     ) as sire_direction_te
     ,safe_divide(
       coalesce(sum(is_top3) over (
         partition by sire_name, course_type, venue_code
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10 * g.global_top3_rate,
       coalesce(count(*) over (
         partition by sire_name, course_type, venue_code
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10
     ) as sire_course_type_venue_te
     ,safe_divide(
       coalesce(sum(is_top3) over (
         partition by sire_name, course_type, distance
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10 * g.global_top3_rate,
       coalesce(count(*) over (
         partition by sire_name, course_type, distance
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10
     ) as sire_course_type_distance_te
     ,safe_divide(
       coalesce(sum(is_top3) over (
         partition by sire_name, course_type, distance, venue_code
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10 * g.global_top3_rate,
       coalesce(count(*) over (
         partition by sire_name, course_type, distance, venue_code
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10
     ) as sire_course_type_distance_venue_te
     -- 出走比率（条件別出走数 / 全出走数、Issue #332）
@@ -1531,118 +1532,118 @@ with temp_race_horse_count as (
       count(*) over (
         partition by sire_name, course_type
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ),
       count(*) over (
         partition by sire_name
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       )
     ) as sire_course_type_run_ratio
     ,safe_divide(
       count(*) over (
         partition by sire_name, venue_code
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ),
       count(*) over (
         partition by sire_name
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       )
     ) as sire_venue_run_ratio
     ,safe_divide(
       count(*) over (
         partition by sire_name, distance_band
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ),
       count(*) over (
         partition by sire_name
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       )
     ) as sire_distance_band_run_ratio
     ,safe_divide(
       count(*) over (
         partition by sire_name, distance
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ),
       count(*) over (
         partition by sire_name
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       )
     ) as sire_distance_run_ratio
     -- 年齢帯別出走数カウント（低頻度マスク用）
     ,coalesce(count(case when age_band = '2yo' then 1 end) over (
       partition by sire_name
       order by unix_date(race_date)
-      range between unbounded preceding and 1 preceding
+      range between 1826 preceding and 1 preceding
     ), 0) as sire_age2_count
     ,coalesce(count(case when age_band = '3yo' then 1 end) over (
       partition by sire_name
       order by unix_date(race_date)
-      range between unbounded preceding and 1 preceding
+      range between 1826 preceding and 1 preceding
     ), 0) as sire_age3_count
     ,coalesce(count(case when age_band = '4yo' then 1 end) over (
       partition by sire_name
       order by unix_date(race_date)
-      range between unbounded preceding and 1 preceding
+      range between 1826 preceding and 1 preceding
     ), 0) as sire_age4_count
     ,coalesce(count(case when age_band = '5plus' then 1 end) over (
       partition by sire_name
       order by unix_date(race_date)
-      range between unbounded preceding and 1 preceding
+      range between 1826 preceding and 1 preceding
     ), 0) as sire_age5plus_count
     -- 年齢帯別TE（CASE WHEN 条件付き SUM/COUNT）
     ,safe_divide(
       coalesce(sum(case when age_band = '2yo' then is_top3 else null end) over (
         partition by sire_name
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10 * g.global_top3_rate,
       coalesce(count(case when age_band = '2yo' then 1 end) over (
         partition by sire_name
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10
     ) as sire_age2_te
     ,safe_divide(
       coalesce(sum(case when age_band = '3yo' then is_top3 else null end) over (
         partition by sire_name
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10 * g.global_top3_rate,
       coalesce(count(case when age_band = '3yo' then 1 end) over (
         partition by sire_name
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10
     ) as sire_age3_te
     ,safe_divide(
       coalesce(sum(case when age_band = '4yo' then is_top3 else null end) over (
         partition by sire_name
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10 * g.global_top3_rate,
       coalesce(count(case when age_band = '4yo' then 1 end) over (
         partition by sire_name
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10
     ) as sire_age4_te
     ,safe_divide(
       coalesce(sum(case when age_band = '5plus' then is_top3 else null end) over (
         partition by sire_name
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10 * g.global_top3_rate,
       coalesce(count(case when age_band = '5plus' then 1 end) over (
         partition by sire_name
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10
     ) as sire_age5plus_te
   from temp_te_history_base
@@ -2068,162 +2069,162 @@ with temp_race_horse_count as (
     ,coalesce(count(*) over (
       partition by horse_id
       order by unix_date(race_date)
-      range between unbounded preceding and 1 preceding
+      range between 1826 preceding and 1 preceding
     ), 0) as horse_count
     ,safe_divide(
       coalesce(sum(is_top3) over (
         partition by horse_id
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10 * g.global_top3_rate,
       coalesce(count(*) over (
         partition by horse_id
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10
     ) as horse_te
     ,safe_divide(
       coalesce(sum(is_top3) over (
         partition by horse_id, course_type
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10 * g.global_top3_rate,
       coalesce(count(*) over (
         partition by horse_id, course_type
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10
     ) as horse_course_type_te
     ,safe_divide(
       coalesce(sum(is_top3) over (
         partition by horse_id, venue_code
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10 * g.global_top3_rate,
       coalesce(count(*) over (
         partition by horse_id, venue_code
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10
     ) as horse_venue_te
     ,safe_divide(
       coalesce(sum(is_top3) over (
         partition by horse_id, distance_band
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10 * g.global_top3_rate,
       coalesce(count(*) over (
         partition by horse_id, distance_band
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10
     ) as horse_distance_band_te
     ,safe_divide(
       coalesce(sum(is_top3) over (
         partition by horse_id, distance
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10 * g.global_top3_rate,
       coalesce(count(*) over (
         partition by horse_id, distance
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10
     ) as horse_distance_te
     ,safe_divide(
       coalesce(sum(is_top3) over (
         partition by horse_id, direction
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10 * g.global_top3_rate,
       coalesce(count(*) over (
         partition by horse_id, direction
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10
     ) as horse_direction_te
     ,safe_divide(
       coalesce(sum(is_top3) over (
         partition by horse_id, jockey_code
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10 * g.global_top3_rate,
       coalesce(count(*) over (
         partition by horse_id, jockey_code
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10
     ) as horse_jockey_te
     ,safe_divide(
       coalesce(sum(is_top3) over (
         partition by horse_id, season
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10 * g.global_top3_rate,
       coalesce(count(*) over (
         partition by horse_id, season
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10
     ) as horse_season_te
     ,safe_divide(
       coalesce(sum(is_top3) over (
         partition by horse_id, course_type, venue_code
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10 * g.global_top3_rate,
       coalesce(count(*) over (
         partition by horse_id, course_type, venue_code
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10
     ) as horse_course_type_venue_te
     ,safe_divide(
       coalesce(sum(is_top3) over (
         partition by horse_id, course_type, distance
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10 * g.global_top3_rate,
       coalesce(count(*) over (
         partition by horse_id, course_type, distance
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10
     ) as horse_course_type_distance_te
     ,safe_divide(
       coalesce(sum(is_top3) over (
         partition by horse_id, course_type, distance, venue_code
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10 * g.global_top3_rate,
       coalesce(count(*) over (
         partition by horse_id, course_type, distance, venue_code
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10
     ) as horse_course_type_distance_venue_te
     ,safe_divide(
       coalesce(sum(is_top3) over (
         partition by horse_id, distance_change_type
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10 * g.global_top3_rate,
       coalesce(count(*) over (
         partition by horse_id, distance_change_type
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10
     ) as horse_distance_change_te
     ,safe_divide(
       coalesce(sum(is_top3) over (
         partition by horse_id, weight_carried_change_type
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10 * g.global_top3_rate,
       coalesce(count(*) over (
         partition by horse_id, weight_carried_change_type
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10
     ) as horse_weight_carried_change_te
   from temp_te_history_base
@@ -2286,12 +2287,12 @@ with temp_race_horse_count as (
       coalesce(sum(is_top3) over (
         partition by horse_id, distance_band
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10 * g.global_top3_rate,
       coalesce(count(*) over (
         partition by horse_id, distance_band
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10
     ) as distance_band_top3_finish_rate
     -- 距離帯別1着率
@@ -2299,12 +2300,12 @@ with temp_race_horse_count as (
       coalesce(sum(is_top1) over (
         partition by horse_id, distance_band
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10 * g.global_top3_rate,
       coalesce(count(*) over (
         partition by horse_id, distance_band
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10
     ) as distance_band_top1_finish_rate
     -- 距離帯成績 − 全体成績の差分
@@ -2312,23 +2313,23 @@ with temp_race_horse_count as (
       coalesce(sum(is_top3) over (
         partition by horse_id, distance_band
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10 * g.global_top3_rate,
       coalesce(count(*) over (
         partition by horse_id, distance_band
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10
     ) - safe_divide(
       coalesce(sum(is_top3) over (
         partition by horse_id
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10 * g.global_top3_rate,
       coalesce(count(*) over (
         partition by horse_id
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10
     ) as distance_band_rate_diff
     -- その距離帯での初出走フラグ
@@ -2336,7 +2337,7 @@ with temp_race_horse_count as (
       when coalesce(count(*) over (
         partition by horse_id, distance_band
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) = 0 then 1
       else 0
     end as new_distance_band_flag
@@ -2354,12 +2355,12 @@ with temp_race_horse_count as (
       coalesce(sum(is_top3) over (
         partition by horse_id, distance
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10 * g.global_top3_rate,
       coalesce(count(*) over (
         partition by horse_id, distance
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10
     ) as distance_top3_finish_rate
     -- 距離別1着率
@@ -2367,12 +2368,12 @@ with temp_race_horse_count as (
       coalesce(sum(is_top1) over (
         partition by horse_id, distance
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10 * g.global_top3_rate,
       coalesce(count(*) over (
         partition by horse_id, distance
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10
     ) as distance_top1_finish_rate
     -- 距離別成績 − 全体成績の差分
@@ -2380,23 +2381,23 @@ with temp_race_horse_count as (
       coalesce(sum(is_top3) over (
         partition by horse_id, distance
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10 * g.global_top3_rate,
       coalesce(count(*) over (
         partition by horse_id, distance
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10
     ) - safe_divide(
       coalesce(sum(is_top3) over (
         partition by horse_id
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10 * g.global_top3_rate,
       coalesce(count(*) over (
         partition by horse_id
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) + 10
     ) as distance_rate_diff
     -- その距離での初出走フラグ
@@ -2404,7 +2405,7 @@ with temp_race_horse_count as (
       when coalesce(count(*) over (
         partition by horse_id, distance
         order by unix_date(race_date)
-        range between unbounded preceding and 1 preceding
+        range between 1826 preceding and 1 preceding
       ), 0) = 0 then 1
       else 0
     end as new_distance_flag
@@ -3632,241 +3633,696 @@ from
 )
 
 -- NULL補完: 同一レース内の中央値で補完し、全員NULLの場合はフォールバック値を使用（Issue #330）
-,temp_null_filled as (
-select * replace (
-  -- TE系（低頻度マスクによりNULLになる列）: 同一レース内中央値 → フォールバック0.22（グローバル複勝率）
-  coalesce(jockey_te, percentile_cont(jockey_te, 0.5) over (partition by race_id), 0.22) as jockey_te,
-  coalesce(jockey_course_type_te, percentile_cont(jockey_course_type_te, 0.5) over (partition by race_id), 0.22) as jockey_course_type_te,
-  coalesce(jockey_venue_te, percentile_cont(jockey_venue_te, 0.5) over (partition by race_id), 0.22) as jockey_venue_te,
-  coalesce(jockey_distance_band_te, percentile_cont(jockey_distance_band_te, 0.5) over (partition by race_id), 0.22) as jockey_distance_band_te,
-  coalesce(jockey_distance_te, percentile_cont(jockey_distance_te, 0.5) over (partition by race_id), 0.22) as jockey_distance_te,
-  coalesce(jockey_direction_te, percentile_cont(jockey_direction_te, 0.5) over (partition by race_id), 0.22) as jockey_direction_te,
-  coalesce(jockey_course_type_venue_te, percentile_cont(jockey_course_type_venue_te, 0.5) over (partition by race_id), 0.22) as jockey_course_type_venue_te,
-  coalesce(jockey_course_type_distance_te, percentile_cont(jockey_course_type_distance_te, 0.5) over (partition by race_id), 0.22) as jockey_course_type_distance_te,
-  coalesce(jockey_course_type_distance_venue_te, percentile_cont(jockey_course_type_distance_venue_te, 0.5) over (partition by race_id), 0.22) as jockey_course_type_distance_venue_te,
-  coalesce(jockey_course_type_te_diff, percentile_cont(jockey_course_type_te_diff, 0.5) over (partition by race_id), 0.0) as jockey_course_type_te_diff,
-  coalesce(jockey_venue_te_diff, percentile_cont(jockey_venue_te_diff, 0.5) over (partition by race_id), 0.0) as jockey_venue_te_diff,
-  coalesce(jockey_distance_band_te_diff, percentile_cont(jockey_distance_band_te_diff, 0.5) over (partition by race_id), 0.0) as jockey_distance_band_te_diff,
-  coalesce(jockey_distance_te_diff, percentile_cont(jockey_distance_te_diff, 0.5) over (partition by race_id), 0.0) as jockey_distance_te_diff,
-  coalesce(jockey_direction_te_diff, percentile_cont(jockey_direction_te_diff, 0.5) over (partition by race_id), 0.0) as jockey_direction_te_diff,
-  coalesce(jockey_course_type_venue_te_diff, percentile_cont(jockey_course_type_venue_te_diff, 0.5) over (partition by race_id), 0.0) as jockey_course_type_venue_te_diff,
-  coalesce(jockey_course_type_distance_te_diff, percentile_cont(jockey_course_type_distance_te_diff, 0.5) over (partition by race_id), 0.0) as jockey_course_type_distance_te_diff,
-  coalesce(jockey_course_type_distance_venue_te_diff, percentile_cont(jockey_course_type_distance_venue_te_diff, 0.5) over (partition by race_id), 0.0) as jockey_course_type_distance_venue_te_diff,
-  coalesce(trainer_te, percentile_cont(trainer_te, 0.5) over (partition by race_id), 0.22) as trainer_te,
-  coalesce(trainer_course_type_te, percentile_cont(trainer_course_type_te, 0.5) over (partition by race_id), 0.22) as trainer_course_type_te,
-  coalesce(trainer_venue_te, percentile_cont(trainer_venue_te, 0.5) over (partition by race_id), 0.22) as trainer_venue_te,
-  coalesce(trainer_distance_band_te, percentile_cont(trainer_distance_band_te, 0.5) over (partition by race_id), 0.22) as trainer_distance_band_te,
-  coalesce(trainer_distance_te, percentile_cont(trainer_distance_te, 0.5) over (partition by race_id), 0.22) as trainer_distance_te,
-  coalesce(trainer_direction_te, percentile_cont(trainer_direction_te, 0.5) over (partition by race_id), 0.22) as trainer_direction_te,
-  coalesce(trainer_course_type_venue_te, percentile_cont(trainer_course_type_venue_te, 0.5) over (partition by race_id), 0.22) as trainer_course_type_venue_te,
-  coalesce(trainer_course_type_distance_te, percentile_cont(trainer_course_type_distance_te, 0.5) over (partition by race_id), 0.22) as trainer_course_type_distance_te,
-  coalesce(trainer_course_type_distance_venue_te, percentile_cont(trainer_course_type_distance_venue_te, 0.5) over (partition by race_id), 0.22) as trainer_course_type_distance_venue_te,
-  coalesce(trainer_course_type_te_diff, percentile_cont(trainer_course_type_te_diff, 0.5) over (partition by race_id), 0.0) as trainer_course_type_te_diff,
-  coalesce(trainer_venue_te_diff, percentile_cont(trainer_venue_te_diff, 0.5) over (partition by race_id), 0.0) as trainer_venue_te_diff,
-  coalesce(trainer_distance_band_te_diff, percentile_cont(trainer_distance_band_te_diff, 0.5) over (partition by race_id), 0.0) as trainer_distance_band_te_diff,
-  coalesce(trainer_distance_te_diff, percentile_cont(trainer_distance_te_diff, 0.5) over (partition by race_id), 0.0) as trainer_distance_te_diff,
-  coalesce(trainer_direction_te_diff, percentile_cont(trainer_direction_te_diff, 0.5) over (partition by race_id), 0.0) as trainer_direction_te_diff,
-  coalesce(trainer_course_type_venue_te_diff, percentile_cont(trainer_course_type_venue_te_diff, 0.5) over (partition by race_id), 0.0) as trainer_course_type_venue_te_diff,
-  coalesce(trainer_course_type_distance_te_diff, percentile_cont(trainer_course_type_distance_te_diff, 0.5) over (partition by race_id), 0.0) as trainer_course_type_distance_te_diff,
-  coalesce(trainer_course_type_distance_venue_te_diff, percentile_cont(trainer_course_type_distance_venue_te_diff, 0.5) over (partition by race_id), 0.0) as trainer_course_type_distance_venue_te_diff,
-  coalesce(sire_te, percentile_cont(sire_te, 0.5) over (partition by race_id), 0.22) as sire_te,
-  coalesce(sire_course_type_te, percentile_cont(sire_course_type_te, 0.5) over (partition by race_id), 0.22) as sire_course_type_te,
-  coalesce(sire_venue_te, percentile_cont(sire_venue_te, 0.5) over (partition by race_id), 0.22) as sire_venue_te,
-  coalesce(sire_distance_band_te, percentile_cont(sire_distance_band_te, 0.5) over (partition by race_id), 0.22) as sire_distance_band_te,
-  coalesce(sire_distance_te, percentile_cont(sire_distance_te, 0.5) over (partition by race_id), 0.22) as sire_distance_te,
-  coalesce(sire_direction_te, percentile_cont(sire_direction_te, 0.5) over (partition by race_id), 0.22) as sire_direction_te,
-  coalesce(sire_course_type_venue_te, percentile_cont(sire_course_type_venue_te, 0.5) over (partition by race_id), 0.22) as sire_course_type_venue_te,
-  coalesce(sire_course_type_distance_te, percentile_cont(sire_course_type_distance_te, 0.5) over (partition by race_id), 0.22) as sire_course_type_distance_te,
-  coalesce(sire_course_type_distance_venue_te, percentile_cont(sire_course_type_distance_venue_te, 0.5) over (partition by race_id), 0.22) as sire_course_type_distance_venue_te,
-  coalesce(sire_course_type_te_diff, percentile_cont(sire_course_type_te_diff, 0.5) over (partition by race_id), 0.0) as sire_course_type_te_diff,
-  coalesce(sire_venue_te_diff, percentile_cont(sire_venue_te_diff, 0.5) over (partition by race_id), 0.0) as sire_venue_te_diff,
-  coalesce(sire_distance_band_te_diff, percentile_cont(sire_distance_band_te_diff, 0.5) over (partition by race_id), 0.0) as sire_distance_band_te_diff,
-  coalesce(sire_distance_te_diff, percentile_cont(sire_distance_te_diff, 0.5) over (partition by race_id), 0.0) as sire_distance_te_diff,
-  coalesce(sire_direction_te_diff, percentile_cont(sire_direction_te_diff, 0.5) over (partition by race_id), 0.0) as sire_direction_te_diff,
-  coalesce(sire_course_type_venue_te_diff, percentile_cont(sire_course_type_venue_te_diff, 0.5) over (partition by race_id), 0.0) as sire_course_type_venue_te_diff,
-  coalesce(sire_course_type_distance_te_diff, percentile_cont(sire_course_type_distance_te_diff, 0.5) over (partition by race_id), 0.0) as sire_course_type_distance_te_diff,
-  coalesce(sire_course_type_distance_venue_te_diff, percentile_cont(sire_course_type_distance_venue_te_diff, 0.5) over (partition by race_id), 0.0) as sire_course_type_distance_venue_te_diff,
-  coalesce(sire_age2_te, percentile_cont(sire_age2_te, 0.5) over (partition by race_id), 0.22) as sire_age2_te,
-  coalesce(sire_age3_te, percentile_cont(sire_age3_te, 0.5) over (partition by race_id), 0.22) as sire_age3_te,
-  coalesce(sire_age4_te, percentile_cont(sire_age4_te, 0.5) over (partition by race_id), 0.22) as sire_age4_te,
-  coalesce(sire_age5plus_te, percentile_cont(sire_age5plus_te, 0.5) over (partition by race_id), 0.22) as sire_age5plus_te,
-  coalesce(sire_current_age_te, percentile_cont(sire_current_age_te, 0.5) over (partition by race_id), 0.22) as sire_current_age_te,
-  coalesce(sire_precocity_diff, percentile_cont(sire_precocity_diff, 0.5) over (partition by race_id), 0.0) as sire_precocity_diff,
-  coalesce(sire_age_vs_career_diff, percentile_cont(sire_age_vs_career_diff, 0.5) over (partition by race_id), 0.0) as sire_age_vs_career_diff,
-  coalesce(sire_course_type_run_ratio, percentile_cont(sire_course_type_run_ratio, 0.5) over (partition by race_id), 0.5) as sire_course_type_run_ratio,
-  coalesce(sire_venue_run_ratio, percentile_cont(sire_venue_run_ratio, 0.5) over (partition by race_id), 0.0) as sire_venue_run_ratio,
-  coalesce(sire_distance_band_run_ratio, percentile_cont(sire_distance_band_run_ratio, 0.5) over (partition by race_id), 0.25) as sire_distance_band_run_ratio,
-  coalesce(sire_distance_run_ratio, percentile_cont(sire_distance_run_ratio, 0.5) over (partition by race_id), 0.0) as sire_distance_run_ratio,
-  coalesce(horse_te, percentile_cont(horse_te, 0.5) over (partition by race_id), 0.22) as horse_te,
-  coalesce(horse_course_type_te, percentile_cont(horse_course_type_te, 0.5) over (partition by race_id), 0.22) as horse_course_type_te,
-  coalesce(horse_venue_te, percentile_cont(horse_venue_te, 0.5) over (partition by race_id), 0.22) as horse_venue_te,
-  coalesce(horse_distance_band_te, percentile_cont(horse_distance_band_te, 0.5) over (partition by race_id), 0.22) as horse_distance_band_te,
-  coalesce(horse_distance_te, percentile_cont(horse_distance_te, 0.5) over (partition by race_id), 0.22) as horse_distance_te,
-  coalesce(horse_direction_te, percentile_cont(horse_direction_te, 0.5) over (partition by race_id), 0.22) as horse_direction_te,
-  coalesce(horse_jockey_te, percentile_cont(horse_jockey_te, 0.5) over (partition by race_id), 0.22) as horse_jockey_te,
-  coalesce(horse_season_te, percentile_cont(horse_season_te, 0.5) over (partition by race_id), 0.22) as horse_season_te,
-  coalesce(horse_course_type_venue_te, percentile_cont(horse_course_type_venue_te, 0.5) over (partition by race_id), 0.22) as horse_course_type_venue_te,
-  coalesce(horse_course_type_distance_te, percentile_cont(horse_course_type_distance_te, 0.5) over (partition by race_id), 0.22) as horse_course_type_distance_te,
-  coalesce(horse_course_type_distance_venue_te, percentile_cont(horse_course_type_distance_venue_te, 0.5) over (partition by race_id), 0.22) as horse_course_type_distance_venue_te,
-  coalesce(horse_distance_change_te, percentile_cont(horse_distance_change_te, 0.5) over (partition by race_id), 0.22) as horse_distance_change_te,
-  coalesce(horse_weight_carried_change_te, percentile_cont(horse_weight_carried_change_te, 0.5) over (partition by race_id), 0.22) as horse_weight_carried_change_te,
-  coalesce(horse_course_type_te_diff, percentile_cont(horse_course_type_te_diff, 0.5) over (partition by race_id), 0.0) as horse_course_type_te_diff,
-  coalesce(horse_venue_te_diff, percentile_cont(horse_venue_te_diff, 0.5) over (partition by race_id), 0.0) as horse_venue_te_diff,
-  coalesce(horse_distance_band_te_diff, percentile_cont(horse_distance_band_te_diff, 0.5) over (partition by race_id), 0.0) as horse_distance_band_te_diff,
-  coalesce(horse_distance_te_diff, percentile_cont(horse_distance_te_diff, 0.5) over (partition by race_id), 0.0) as horse_distance_te_diff,
-  coalesce(horse_direction_te_diff, percentile_cont(horse_direction_te_diff, 0.5) over (partition by race_id), 0.0) as horse_direction_te_diff,
-  coalesce(horse_jockey_te_diff, percentile_cont(horse_jockey_te_diff, 0.5) over (partition by race_id), 0.0) as horse_jockey_te_diff,
-  coalesce(horse_season_te_diff, percentile_cont(horse_season_te_diff, 0.5) over (partition by race_id), 0.0) as horse_season_te_diff,
-  coalesce(horse_course_type_venue_te_diff, percentile_cont(horse_course_type_venue_te_diff, 0.5) over (partition by race_id), 0.0) as horse_course_type_venue_te_diff,
-  coalesce(horse_course_type_distance_te_diff, percentile_cont(horse_course_type_distance_te_diff, 0.5) over (partition by race_id), 0.0) as horse_course_type_distance_te_diff,
-  coalesce(horse_course_type_distance_venue_te_diff, percentile_cont(horse_course_type_distance_venue_te_diff, 0.5) over (partition by race_id), 0.0) as horse_course_type_distance_venue_te_diff,
-  coalesce(horse_distance_change_te_diff, percentile_cont(horse_distance_change_te_diff, 0.5) over (partition by race_id), 0.0) as horse_distance_change_te_diff,
-  coalesce(horse_weight_carried_change_te_diff, percentile_cont(horse_weight_carried_change_te_diff, 0.5) over (partition by race_id), 0.0) as horse_weight_carried_change_te_diff,
-  coalesce(mare_te, percentile_cont(mare_te, 0.5) over (partition by race_id), 0.22) as mare_te,
-  coalesce(mare_course_type_te, percentile_cont(mare_course_type_te, 0.5) over (partition by race_id), 0.22) as mare_course_type_te,
-  coalesce(mare_venue_te, percentile_cont(mare_venue_te, 0.5) over (partition by race_id), 0.22) as mare_venue_te,
-  coalesce(mare_distance_band_te, percentile_cont(mare_distance_band_te, 0.5) over (partition by race_id), 0.22) as mare_distance_band_te,
-  coalesce(mare_distance_te, percentile_cont(mare_distance_te, 0.5) over (partition by race_id), 0.22) as mare_distance_te,
-  coalesce(mare_direction_te, percentile_cont(mare_direction_te, 0.5) over (partition by race_id), 0.22) as mare_direction_te,
-  coalesce(mare_course_type_venue_te, percentile_cont(mare_course_type_venue_te, 0.5) over (partition by race_id), 0.22) as mare_course_type_venue_te,
-  coalesce(mare_course_type_distance_te, percentile_cont(mare_course_type_distance_te, 0.5) over (partition by race_id), 0.22) as mare_course_type_distance_te,
-  coalesce(mare_course_type_distance_venue_te, percentile_cont(mare_course_type_distance_venue_te, 0.5) over (partition by race_id), 0.22) as mare_course_type_distance_venue_te,
-  coalesce(mare_course_type_te_diff, percentile_cont(mare_course_type_te_diff, 0.5) over (partition by race_id), 0.0) as mare_course_type_te_diff,
-  coalesce(mare_venue_te_diff, percentile_cont(mare_venue_te_diff, 0.5) over (partition by race_id), 0.0) as mare_venue_te_diff,
-  coalesce(mare_distance_band_te_diff, percentile_cont(mare_distance_band_te_diff, 0.5) over (partition by race_id), 0.0) as mare_distance_band_te_diff,
-  coalesce(mare_distance_te_diff, percentile_cont(mare_distance_te_diff, 0.5) over (partition by race_id), 0.0) as mare_distance_te_diff,
-  coalesce(mare_direction_te_diff, percentile_cont(mare_direction_te_diff, 0.5) over (partition by race_id), 0.0) as mare_direction_te_diff,
-  coalesce(mare_course_type_venue_te_diff, percentile_cont(mare_course_type_venue_te_diff, 0.5) over (partition by race_id), 0.0) as mare_course_type_venue_te_diff,
-  coalesce(mare_course_type_distance_te_diff, percentile_cont(mare_course_type_distance_te_diff, 0.5) over (partition by race_id), 0.0) as mare_course_type_distance_te_diff,
-  coalesce(mare_course_type_distance_venue_te_diff, percentile_cont(mare_course_type_distance_venue_te_diff, 0.5) over (partition by race_id), 0.0) as mare_course_type_distance_venue_te_diff,
-  coalesce(mare_age2_te, percentile_cont(mare_age2_te, 0.5) over (partition by race_id), 0.22) as mare_age2_te,
-  coalesce(mare_age3_te, percentile_cont(mare_age3_te, 0.5) over (partition by race_id), 0.22) as mare_age3_te,
-  coalesce(mare_age4_te, percentile_cont(mare_age4_te, 0.5) over (partition by race_id), 0.22) as mare_age4_te,
-  coalesce(mare_age5plus_te, percentile_cont(mare_age5plus_te, 0.5) over (partition by race_id), 0.22) as mare_age5plus_te,
-  coalesce(mare_current_age_te, percentile_cont(mare_current_age_te, 0.5) over (partition by race_id), 0.22) as mare_current_age_te,
-  coalesce(mare_precocity_diff, percentile_cont(mare_precocity_diff, 0.5) over (partition by race_id), 0.0) as mare_precocity_diff,
-  coalesce(mare_age_vs_career_diff, percentile_cont(mare_age_vs_career_diff, 0.5) over (partition by race_id), 0.0) as mare_age_vs_career_diff,
-  coalesce(mare_course_type_run_ratio, percentile_cont(mare_course_type_run_ratio, 0.5) over (partition by race_id), 0.5) as mare_course_type_run_ratio,
-  coalesce(mare_venue_run_ratio, percentile_cont(mare_venue_run_ratio, 0.5) over (partition by race_id), 0.0) as mare_venue_run_ratio,
-  coalesce(mare_distance_band_run_ratio, percentile_cont(mare_distance_band_run_ratio, 0.5) over (partition by race_id), 0.25) as mare_distance_band_run_ratio,
-  coalesce(mare_distance_run_ratio, percentile_cont(mare_distance_run_ratio, 0.5) over (partition by race_id), 0.0) as mare_distance_run_ratio,
-  -- 過去走特徴量（デビュー馬・初出走条件の馬でNULLになる列）: 同一レース内中央値 → フォールバック0
-  coalesce(idm_1, percentile_cont(idm_1, 0.5) over (partition by race_id), 0) as idm_1,
-  coalesce(finish_position_1, percentile_cont(finish_position_1, 0.5) over (partition by race_id), 0) as finish_position_1,
-  coalesce(finish_position_rate_1, percentile_cont(finish_position_rate_1, 0.5) over (partition by race_id), 0) as finish_position_rate_1,
-  coalesce(win_odds_1, percentile_cont(win_odds_1, 0.5) over (partition by race_id), 0) as win_odds_1,
-  coalesce(win_popularity_1, percentile_cont(win_popularity_1, 0.5) over (partition by race_id), 0) as win_popularity_1,
-  coalesce(popularity_rate_1, percentile_cont(popularity_rate_1, 0.5) over (partition by race_id), 0) as popularity_rate_1,
-  coalesce(upside_rate_1, percentile_cont(upside_rate_1, 0.5) over (partition by race_id), 0) as upside_rate_1,
-  coalesce(finish_time_1, percentile_cont(finish_time_1, 0.5) over (partition by race_id), 0) as finish_time_1,
-  coalesce(last_3f_1, percentile_cont(last_3f_1, 0.5) over (partition by race_id), 0) as last_3f_1,
-  coalesce(last_3f_rank_in_race_1, percentile_cont(last_3f_rank_in_race_1, 0.5) over (partition by race_id), 0) as last_3f_rank_in_race_1,
-  coalesce(race_date_diff_1, percentile_cont(race_date_diff_1, 0.5) over (partition by race_id), 0) as race_date_diff_1,
-  coalesce(race_date_diff_2, percentile_cont(race_date_diff_2, 0.5) over (partition by race_id), 0) as race_date_diff_2,
-  coalesce(race_date_diff_3, percentile_cont(race_date_diff_3, 0.5) over (partition by race_id), 0) as race_date_diff_3,
-  coalesce(race_date_diff_4, percentile_cont(race_date_diff_4, 0.5) over (partition by race_id), 0) as race_date_diff_4,
-  coalesce(race_date_diff_5, percentile_cont(race_date_diff_5, 0.5) over (partition by race_id), 0) as race_date_diff_5,
-  coalesce(mean_idm, percentile_cont(mean_idm, 0.5) over (partition by race_id), 0) as mean_idm,
-  coalesce(ema_idm, percentile_cont(ema_idm, 0.5) over (partition by race_id), 0) as ema_idm,
-  coalesce(max_idm, percentile_cont(max_idm, 0.5) over (partition by race_id), 0) as max_idm,
-  coalesce(min_idm, percentile_cont(min_idm, 0.5) over (partition by race_id), 0) as min_idm,
-  coalesce(idm_diff, percentile_cont(idm_diff, 0.5) over (partition by race_id), 0) as idm_diff,
-  coalesce(mean_idm_diff, percentile_cont(mean_idm_diff, 0.5) over (partition by race_id), 0) as mean_idm_diff,
-  coalesce(ema_idm_diff, percentile_cont(ema_idm_diff, 0.5) over (partition by race_id), 0) as ema_idm_diff,
-  coalesce(max_idm_diff, percentile_cont(max_idm_diff, 0.5) over (partition by race_id), 0) as max_idm_diff,
-  coalesce(mean_finish_position_rate, percentile_cont(mean_finish_position_rate, 0.5) over (partition by race_id), 0) as mean_finish_position_rate,
-  coalesce(ema_finish_position_rate, percentile_cont(ema_finish_position_rate, 0.5) over (partition by race_id), 0) as ema_finish_position_rate,
-  coalesce(max_finish_position_rate, percentile_cont(max_finish_position_rate, 0.5) over (partition by race_id), 0) as max_finish_position_rate,
-  coalesce(min_finish_position_rate, percentile_cont(min_finish_position_rate, 0.5) over (partition by race_id), 0) as min_finish_position_rate,
-  coalesce(mean_popularity_rate, percentile_cont(mean_popularity_rate, 0.5) over (partition by race_id), 0) as mean_popularity_rate,
-  coalesce(ema_popularity_rate, percentile_cont(ema_popularity_rate, 0.5) over (partition by race_id), 0) as ema_popularity_rate,
-  coalesce(max_popularity_rate, percentile_cont(max_popularity_rate, 0.5) over (partition by race_id), 0) as max_popularity_rate,
-  coalesce(min_popularity_rate, percentile_cont(min_popularity_rate, 0.5) over (partition by race_id), 0) as min_popularity_rate,
-  coalesce(mean_upside_rate, percentile_cont(mean_upside_rate, 0.5) over (partition by race_id), 0) as mean_upside_rate,
-  coalesce(ema_upside_rate, percentile_cont(ema_upside_rate, 0.5) over (partition by race_id), 0) as ema_upside_rate,
-  coalesce(max_upside_rate, percentile_cont(max_upside_rate, 0.5) over (partition by race_id), 0) as max_upside_rate,
-  coalesce(min_upside_rate, percentile_cont(min_upside_rate, 0.5) over (partition by race_id), 0) as min_upside_rate,
-  coalesce(finish_time_normalized, percentile_cont(finish_time_normalized, 0.5) over (partition by race_id), 0) as finish_time_normalized,
-  coalesce(last_3f_normalized, percentile_cont(last_3f_normalized, 0.5) over (partition by race_id), 0) as last_3f_normalized,
-  coalesce(idm_trend_3, percentile_cont(idm_trend_3, 0.5) over (partition by race_id), 0) as idm_trend_3,
-  coalesce(finish_position_trend_3, percentile_cont(finish_position_trend_3, 0.5) over (partition by race_id), 0) as finish_position_trend_3,
-  coalesce(mean_corner_gain_1to4, percentile_cont(mean_corner_gain_1to4, 0.5) over (partition by race_id), 0) as mean_corner_gain_1to4,
-  coalesce(ema_corner_gain_1to4, percentile_cont(ema_corner_gain_1to4, 0.5) over (partition by race_id), 0) as ema_corner_gain_1to4,
-  coalesce(corner1_to_finish_delta_prev_1, percentile_cont(corner1_to_finish_delta_prev_1, 0.5) over (partition by race_id), 0) as corner1_to_finish_delta_prev_1,
-  -- 距離帯別・距離別特徴量（出走歴なしでNULLになる列）
-  coalesce(distance_band_top3_finish_rate, percentile_cont(distance_band_top3_finish_rate, 0.5) over (partition by race_id), 0) as distance_band_top3_finish_rate,
-  coalesce(distance_band_top1_finish_rate, percentile_cont(distance_band_top1_finish_rate, 0.5) over (partition by race_id), 0) as distance_band_top1_finish_rate,
-  coalesce(distance_band_rate_diff, percentile_cont(distance_band_rate_diff, 0.5) over (partition by race_id), 0) as distance_band_rate_diff,
-  coalesce(distance_top3_finish_rate, percentile_cont(distance_top3_finish_rate, 0.5) over (partition by race_id), 0) as distance_top3_finish_rate,
-  coalesce(distance_top1_finish_rate, percentile_cont(distance_top1_finish_rate, 0.5) over (partition by race_id), 0) as distance_top1_finish_rate,
-  coalesce(distance_rate_diff, percentile_cont(distance_rate_diff, 0.5) over (partition by race_id), 0) as distance_rate_diff,
-  -- キャリア最長・最短距離特徴量（デビュー馬でNULLになる列）
-  coalesce(career_max_distance_diff, percentile_cont(career_max_distance_diff, 0.5) over (partition by race_id), 0) as career_max_distance_diff,
-  coalesce(career_min_distance_diff, percentile_cont(career_min_distance_diff, 0.5) over (partition by race_id), 0) as career_min_distance_diff,
-  coalesce(career_distance_range, percentile_cont(career_distance_range, 0.5) over (partition by race_id), 0) as career_distance_range,
-  coalesce(career_distance_count, percentile_cont(career_distance_count, 0.5) over (partition by race_id), 0) as career_distance_count,
-  coalesce(placed_max_distance_diff, percentile_cont(placed_max_distance_diff, 0.5) over (partition by race_id), 0) as placed_max_distance_diff,
-  coalesce(placed_min_distance_diff, percentile_cont(placed_min_distance_diff, 0.5) over (partition by race_id), 0) as placed_min_distance_diff,
-  coalesce(placed_distance_range, percentile_cont(placed_distance_range, 0.5) over (partition by race_id), 0) as placed_distance_range,
-  coalesce(placed_distance_count, percentile_cont(placed_distance_count, 0.5) over (partition by race_id), 0) as placed_distance_count,
-  -- 調教特徴量（CHAデータ未取得馬でNULLになる列）
-  coalesce(cha_training_index, percentile_cont(cha_training_index, 0.5) over (partition by race_id), 0) as cha_training_index,
-  coalesce(training_last_3f, percentile_cont(training_last_3f, 0.5) over (partition by race_id), 0) as training_last_3f,
-  coalesce(training_furlongs, percentile_cont(training_furlongs, 0.5) over (partition by race_id), 0) as training_furlongs,
-  coalesce(training_intensity, percentile_cont(training_intensity, 0.5) over (partition by race_id), 0) as training_intensity,
-  coalesce(training_count, percentile_cont(training_count, 0.5) over (partition by race_id), 0) as training_count,
-  -- 母馬実績特徴量（血統情報なし・実績なしでNULLになる列）
-  coalesce(mare_race_count, percentile_cont(mare_race_count, 0.5) over (partition by race_id), 0) as mare_race_count,
-  coalesce(mare_avg_race_distance, percentile_cont(mare_avg_race_distance, 0.5) over (partition by race_id), 0) as mare_avg_race_distance,
-  coalesce(mare_max_race_distance, percentile_cont(mare_max_race_distance, 0.5) over (partition by race_id), 0) as mare_max_race_distance,
-  coalesce(mare_min_race_distance, percentile_cont(mare_min_race_distance, 0.5) over (partition by race_id), 0) as mare_min_race_distance,
-  coalesce(mare_distance_range, percentile_cont(mare_distance_range, 0.5) over (partition by race_id), 0) as mare_distance_range,
-  coalesce(mare_distance_diff, percentile_cont(mare_distance_diff, 0.5) over (partition by race_id), 0) as mare_distance_diff,
-  coalesce(mare_max_distance_diff, percentile_cont(mare_max_distance_diff, 0.5) over (partition by race_id), 0) as mare_max_distance_diff,
-  coalesce(mare_min_distance_diff, percentile_cont(mare_min_distance_diff, 0.5) over (partition by race_id), 0) as mare_min_distance_diff,
-  coalesce(mare_placed_race_count, percentile_cont(mare_placed_race_count, 0.5) over (partition by race_id), 0) as mare_placed_race_count,
-  coalesce(mare_placed_avg_distance, percentile_cont(mare_placed_avg_distance, 0.5) over (partition by race_id), 0) as mare_placed_avg_distance,
-  coalesce(mare_placed_max_distance, percentile_cont(mare_placed_max_distance, 0.5) over (partition by race_id), 0) as mare_placed_max_distance,
-  coalesce(mare_placed_min_distance, percentile_cont(mare_placed_min_distance, 0.5) over (partition by race_id), 0) as mare_placed_min_distance,
-  coalesce(mare_placed_distance_range, percentile_cont(mare_placed_distance_range, 0.5) over (partition by race_id), 0) as mare_placed_distance_range,
-  coalesce(mare_placed_max_distance_diff, percentile_cont(mare_placed_max_distance_diff, 0.5) over (partition by race_id), 0) as mare_placed_max_distance_diff,
-  coalesce(mare_placed_min_distance_diff, percentile_cont(mare_placed_min_distance_diff, 0.5) over (partition by race_id), 0) as mare_placed_min_distance_diff,
-  coalesce(mare_place_rate, percentile_cont(mare_place_rate, 0.5) over (partition by race_id), 0) as mare_place_rate,
-  coalesce(mare_turf_place_rate, percentile_cont(mare_turf_place_rate, 0.5) over (partition by race_id), 0) as mare_turf_place_rate,
-  coalesce(mare_dirt_place_rate, percentile_cont(mare_dirt_place_rate, 0.5) over (partition by race_id), 0) as mare_dirt_place_rate,
-  coalesce(mare_venue_place_rate, percentile_cont(mare_venue_place_rate, 0.5) over (partition by race_id), 0) as mare_venue_place_rate,
-  coalesce(mare_distance_band_place_rate, percentile_cont(mare_distance_band_place_rate, 0.5) over (partition by race_id), 0) as mare_distance_band_place_rate,
-  coalesce(mare_distance_place_rate, percentile_cont(mare_distance_place_rate, 0.5) over (partition by race_id), 0) as mare_distance_place_rate,
-  coalesce(mare_direction_place_rate, percentile_cont(mare_direction_place_rate, 0.5) over (partition by race_id), 0) as mare_direction_place_rate,
-  coalesce(mare_course_type_venue_place_rate, percentile_cont(mare_course_type_venue_place_rate, 0.5) over (partition by race_id), 0) as mare_course_type_venue_place_rate,
-  coalesce(mare_course_type_distance_band_place_rate, percentile_cont(mare_course_type_distance_band_place_rate, 0.5) over (partition by race_id), 0) as mare_course_type_distance_band_place_rate,
-  coalesce(mare_turf_place_diff, percentile_cont(mare_turf_place_diff, 0.5) over (partition by race_id), 0) as mare_turf_place_diff,
-  coalesce(mare_venue_place_rate_diff, percentile_cont(mare_venue_place_rate_diff, 0.5) over (partition by race_id), 0) as mare_venue_place_rate_diff,
-  coalesce(mare_distance_band_place_rate_diff, percentile_cont(mare_distance_band_place_rate_diff, 0.5) over (partition by race_id), 0) as mare_distance_band_place_rate_diff,
-  coalesce(mare_distance_place_rate_diff, percentile_cont(mare_distance_place_rate_diff, 0.5) over (partition by race_id), 0) as mare_distance_place_rate_diff,
-  coalesce(mare_direction_place_rate_diff, percentile_cont(mare_direction_place_rate_diff, 0.5) over (partition by race_id), 0) as mare_direction_place_rate_diff,
-  coalesce(mare_course_type_venue_place_rate_diff, percentile_cont(mare_course_type_venue_place_rate_diff, 0.5) over (partition by race_id), 0) as mare_course_type_venue_place_rate_diff,
-  coalesce(mare_course_type_distance_band_place_rate_diff, percentile_cont(mare_course_type_distance_band_place_rate_diff, 0.5) over (partition by race_id), 0) as mare_course_type_distance_band_place_rate_diff,
-  coalesce(mare_early_career_place_rate, percentile_cont(mare_early_career_place_rate, 0.5) over (partition by race_id), 0) as mare_early_career_place_rate,
-  coalesce(mare_late_career_place_rate, percentile_cont(mare_late_career_place_rate, 0.5) over (partition by race_id), 0) as mare_late_career_place_rate,
-  coalesce(mare_precocity_index, percentile_cont(mare_precocity_index, 0.5) over (partition by race_id), 0) as mare_precocity_index,
-  -- バイアス補正特徴量（前走データなし・コース取り不明でNULLになる列）
-  coalesce(prev1_course_bias_score, percentile_cont(prev1_course_bias_score, 0.5) over (partition by race_id), 0) as prev1_course_bias_score,
-  coalesce(prev2_course_bias_score, percentile_cont(prev2_course_bias_score, 0.5) over (partition by race_id), 0) as prev2_course_bias_score,
-  coalesce(prev3_course_bias_score, percentile_cont(prev3_course_bias_score, 0.5) over (partition by race_id), 0) as prev3_course_bias_score,
-  coalesce(prev4_course_bias_score, percentile_cont(prev4_course_bias_score, 0.5) over (partition by race_id), 0) as prev4_course_bias_score,
-  coalesce(prev5_course_bias_score, percentile_cont(prev5_course_bias_score, 0.5) over (partition by race_id), 0) as prev5_course_bias_score,
-  coalesce(gate_bias_score, percentile_cont(gate_bias_score, 0.5) over (partition by race_id), 0) as gate_bias_score,
-  coalesce(straight_bias_range, percentile_cont(straight_bias_range, 0.5) over (partition by race_id), 0) as straight_bias_range,
-  coalesce(course_position_bias_risk, percentile_cont(course_position_bias_risk, 0.5) over (partition by race_id), 0) as course_position_bias_risk,
-  coalesce(idm_zone_neutral_1, percentile_cont(idm_zone_neutral_1, 0.5) over (partition by race_id), 0) as idm_zone_neutral_1,
-  coalesce(idm_zone_neutral_2, percentile_cont(idm_zone_neutral_2, 0.5) over (partition by race_id), 0) as idm_zone_neutral_2,
-  coalesce(idm_zone_neutral_3, percentile_cont(idm_zone_neutral_3, 0.5) over (partition by race_id), 0) as idm_zone_neutral_3,
-  coalesce(idm_zone_neutral_4, percentile_cont(idm_zone_neutral_4, 0.5) over (partition by race_id), 0) as idm_zone_neutral_4,
-  coalesce(idm_zone_neutral_5, percentile_cont(idm_zone_neutral_5, 0.5) over (partition by race_id), 0) as idm_zone_neutral_5,
-  coalesce(idm_zone_neutral_trend, percentile_cont(idm_zone_neutral_trend, 0.5) over (partition by race_id), 0) as idm_zone_neutral_trend
+,temp_null_fill_med as (
+  select
+    *
+    ,percentile_cont(jockey_te, 0.5) over (partition by race_id) as _jockey_te_med
+    ,percentile_cont(jockey_course_type_te, 0.5) over (partition by race_id) as _jockey_course_type_te_med
+    ,percentile_cont(jockey_venue_te, 0.5) over (partition by race_id) as _jockey_venue_te_med
+    ,percentile_cont(jockey_distance_band_te, 0.5) over (partition by race_id) as _jockey_distance_band_te_med
+    ,percentile_cont(jockey_distance_te, 0.5) over (partition by race_id) as _jockey_distance_te_med
+    ,percentile_cont(jockey_direction_te, 0.5) over (partition by race_id) as _jockey_direction_te_med
+    ,percentile_cont(jockey_course_type_venue_te, 0.5) over (partition by race_id) as _jockey_course_type_venue_te_med
+    ,percentile_cont(jockey_course_type_distance_te, 0.5) over (partition by race_id) as _jockey_course_type_distance_te_med
+    ,percentile_cont(jockey_course_type_distance_venue_te, 0.5) over (partition by race_id) as _jockey_course_type_distance_venue_te_med
+    ,percentile_cont(jockey_course_type_te_diff, 0.5) over (partition by race_id) as _jockey_course_type_te_diff_med
+    ,percentile_cont(jockey_venue_te_diff, 0.5) over (partition by race_id) as _jockey_venue_te_diff_med
+    ,percentile_cont(jockey_distance_band_te_diff, 0.5) over (partition by race_id) as _jockey_distance_band_te_diff_med
+    ,percentile_cont(jockey_distance_te_diff, 0.5) over (partition by race_id) as _jockey_distance_te_diff_med
+    ,percentile_cont(jockey_direction_te_diff, 0.5) over (partition by race_id) as _jockey_direction_te_diff_med
+    ,percentile_cont(jockey_course_type_venue_te_diff, 0.5) over (partition by race_id) as _jockey_course_type_venue_te_diff_med
+    ,percentile_cont(jockey_course_type_distance_te_diff, 0.5) over (partition by race_id) as _jockey_course_type_distance_te_diff_med
+    ,percentile_cont(jockey_course_type_distance_venue_te_diff, 0.5) over (partition by race_id) as _jockey_course_type_distance_venue_te_diff_med
+    ,percentile_cont(trainer_te, 0.5) over (partition by race_id) as _trainer_te_med
+    ,percentile_cont(trainer_course_type_te, 0.5) over (partition by race_id) as _trainer_course_type_te_med
+    ,percentile_cont(trainer_venue_te, 0.5) over (partition by race_id) as _trainer_venue_te_med
+    ,percentile_cont(trainer_distance_band_te, 0.5) over (partition by race_id) as _trainer_distance_band_te_med
+    ,percentile_cont(trainer_distance_te, 0.5) over (partition by race_id) as _trainer_distance_te_med
+    ,percentile_cont(trainer_direction_te, 0.5) over (partition by race_id) as _trainer_direction_te_med
+    ,percentile_cont(trainer_course_type_venue_te, 0.5) over (partition by race_id) as _trainer_course_type_venue_te_med
+    ,percentile_cont(trainer_course_type_distance_te, 0.5) over (partition by race_id) as _trainer_course_type_distance_te_med
+    ,percentile_cont(trainer_course_type_distance_venue_te, 0.5) over (partition by race_id) as _trainer_course_type_distance_venue_te_med
+    ,percentile_cont(trainer_course_type_te_diff, 0.5) over (partition by race_id) as _trainer_course_type_te_diff_med
+    ,percentile_cont(trainer_venue_te_diff, 0.5) over (partition by race_id) as _trainer_venue_te_diff_med
+    ,percentile_cont(trainer_distance_band_te_diff, 0.5) over (partition by race_id) as _trainer_distance_band_te_diff_med
+    ,percentile_cont(trainer_distance_te_diff, 0.5) over (partition by race_id) as _trainer_distance_te_diff_med
+    ,percentile_cont(trainer_direction_te_diff, 0.5) over (partition by race_id) as _trainer_direction_te_diff_med
+    ,percentile_cont(trainer_course_type_venue_te_diff, 0.5) over (partition by race_id) as _trainer_course_type_venue_te_diff_med
+    ,percentile_cont(trainer_course_type_distance_te_diff, 0.5) over (partition by race_id) as _trainer_course_type_distance_te_diff_med
+    ,percentile_cont(trainer_course_type_distance_venue_te_diff, 0.5) over (partition by race_id) as _trainer_course_type_distance_venue_te_diff_med
+    ,percentile_cont(sire_te, 0.5) over (partition by race_id) as _sire_te_med
+    ,percentile_cont(sire_course_type_te, 0.5) over (partition by race_id) as _sire_course_type_te_med
+    ,percentile_cont(sire_venue_te, 0.5) over (partition by race_id) as _sire_venue_te_med
+    ,percentile_cont(sire_distance_band_te, 0.5) over (partition by race_id) as _sire_distance_band_te_med
+    ,percentile_cont(sire_distance_te, 0.5) over (partition by race_id) as _sire_distance_te_med
+    ,percentile_cont(sire_direction_te, 0.5) over (partition by race_id) as _sire_direction_te_med
+    ,percentile_cont(sire_course_type_venue_te, 0.5) over (partition by race_id) as _sire_course_type_venue_te_med
+    ,percentile_cont(sire_course_type_distance_te, 0.5) over (partition by race_id) as _sire_course_type_distance_te_med
+    ,percentile_cont(sire_course_type_distance_venue_te, 0.5) over (partition by race_id) as _sire_course_type_distance_venue_te_med
+    ,percentile_cont(sire_course_type_te_diff, 0.5) over (partition by race_id) as _sire_course_type_te_diff_med
+    ,percentile_cont(sire_venue_te_diff, 0.5) over (partition by race_id) as _sire_venue_te_diff_med
+    ,percentile_cont(sire_distance_band_te_diff, 0.5) over (partition by race_id) as _sire_distance_band_te_diff_med
+    ,percentile_cont(sire_distance_te_diff, 0.5) over (partition by race_id) as _sire_distance_te_diff_med
+    ,percentile_cont(sire_direction_te_diff, 0.5) over (partition by race_id) as _sire_direction_te_diff_med
+    ,percentile_cont(sire_course_type_venue_te_diff, 0.5) over (partition by race_id) as _sire_course_type_venue_te_diff_med
+    ,percentile_cont(sire_course_type_distance_te_diff, 0.5) over (partition by race_id) as _sire_course_type_distance_te_diff_med
+    ,percentile_cont(sire_course_type_distance_venue_te_diff, 0.5) over (partition by race_id) as _sire_course_type_distance_venue_te_diff_med
+    ,percentile_cont(sire_age2_te, 0.5) over (partition by race_id) as _sire_age2_te_med
+    ,percentile_cont(sire_age3_te, 0.5) over (partition by race_id) as _sire_age3_te_med
+    ,percentile_cont(sire_age4_te, 0.5) over (partition by race_id) as _sire_age4_te_med
+    ,percentile_cont(sire_age5plus_te, 0.5) over (partition by race_id) as _sire_age5plus_te_med
+    ,percentile_cont(sire_current_age_te, 0.5) over (partition by race_id) as _sire_current_age_te_med
+    ,percentile_cont(sire_precocity_diff, 0.5) over (partition by race_id) as _sire_precocity_diff_med
+    ,percentile_cont(sire_age_vs_career_diff, 0.5) over (partition by race_id) as _sire_age_vs_career_diff_med
+    ,percentile_cont(sire_course_type_run_ratio, 0.5) over (partition by race_id) as _sire_course_type_run_ratio_med
+    ,percentile_cont(sire_venue_run_ratio, 0.5) over (partition by race_id) as _sire_venue_run_ratio_med
+    ,percentile_cont(sire_distance_band_run_ratio, 0.5) over (partition by race_id) as _sire_distance_band_run_ratio_med
+    ,percentile_cont(sire_distance_run_ratio, 0.5) over (partition by race_id) as _sire_distance_run_ratio_med
+    ,percentile_cont(horse_te, 0.5) over (partition by race_id) as _horse_te_med
+    ,percentile_cont(horse_course_type_te, 0.5) over (partition by race_id) as _horse_course_type_te_med
+    ,percentile_cont(horse_venue_te, 0.5) over (partition by race_id) as _horse_venue_te_med
+    ,percentile_cont(horse_distance_band_te, 0.5) over (partition by race_id) as _horse_distance_band_te_med
+    ,percentile_cont(horse_distance_te, 0.5) over (partition by race_id) as _horse_distance_te_med
+    ,percentile_cont(horse_direction_te, 0.5) over (partition by race_id) as _horse_direction_te_med
+    ,percentile_cont(horse_jockey_te, 0.5) over (partition by race_id) as _horse_jockey_te_med
+    ,percentile_cont(horse_season_te, 0.5) over (partition by race_id) as _horse_season_te_med
+    ,percentile_cont(horse_course_type_venue_te, 0.5) over (partition by race_id) as _horse_course_type_venue_te_med
+    ,percentile_cont(horse_course_type_distance_te, 0.5) over (partition by race_id) as _horse_course_type_distance_te_med
+    ,percentile_cont(horse_course_type_distance_venue_te, 0.5) over (partition by race_id) as _horse_course_type_distance_venue_te_med
+    ,percentile_cont(horse_distance_change_te, 0.5) over (partition by race_id) as _horse_distance_change_te_med
+    ,percentile_cont(horse_weight_carried_change_te, 0.5) over (partition by race_id) as _horse_weight_carried_change_te_med
+    ,percentile_cont(horse_course_type_te_diff, 0.5) over (partition by race_id) as _horse_course_type_te_diff_med
+    ,percentile_cont(horse_venue_te_diff, 0.5) over (partition by race_id) as _horse_venue_te_diff_med
+    ,percentile_cont(horse_distance_band_te_diff, 0.5) over (partition by race_id) as _horse_distance_band_te_diff_med
+    ,percentile_cont(horse_distance_te_diff, 0.5) over (partition by race_id) as _horse_distance_te_diff_med
+    ,percentile_cont(horse_direction_te_diff, 0.5) over (partition by race_id) as _horse_direction_te_diff_med
+    ,percentile_cont(horse_jockey_te_diff, 0.5) over (partition by race_id) as _horse_jockey_te_diff_med
+    ,percentile_cont(horse_season_te_diff, 0.5) over (partition by race_id) as _horse_season_te_diff_med
+    ,percentile_cont(horse_course_type_venue_te_diff, 0.5) over (partition by race_id) as _horse_course_type_venue_te_diff_med
+    ,percentile_cont(horse_course_type_distance_te_diff, 0.5) over (partition by race_id) as _horse_course_type_distance_te_diff_med
+    ,percentile_cont(horse_course_type_distance_venue_te_diff, 0.5) over (partition by race_id) as _horse_course_type_distance_venue_te_diff_med
+    ,percentile_cont(horse_distance_change_te_diff, 0.5) over (partition by race_id) as _horse_distance_change_te_diff_med
+    ,percentile_cont(horse_weight_carried_change_te_diff, 0.5) over (partition by race_id) as _horse_weight_carried_change_te_diff_med
+    ,percentile_cont(mare_te, 0.5) over (partition by race_id) as _mare_te_med
+    ,percentile_cont(mare_course_type_te, 0.5) over (partition by race_id) as _mare_course_type_te_med
+    ,percentile_cont(mare_venue_te, 0.5) over (partition by race_id) as _mare_venue_te_med
+    ,percentile_cont(mare_distance_band_te, 0.5) over (partition by race_id) as _mare_distance_band_te_med
+    ,percentile_cont(mare_distance_te, 0.5) over (partition by race_id) as _mare_distance_te_med
+    ,percentile_cont(mare_direction_te, 0.5) over (partition by race_id) as _mare_direction_te_med
+    ,percentile_cont(mare_course_type_venue_te, 0.5) over (partition by race_id) as _mare_course_type_venue_te_med
+    ,percentile_cont(mare_course_type_distance_te, 0.5) over (partition by race_id) as _mare_course_type_distance_te_med
+    ,percentile_cont(mare_course_type_distance_venue_te, 0.5) over (partition by race_id) as _mare_course_type_distance_venue_te_med
+    ,percentile_cont(mare_course_type_te_diff, 0.5) over (partition by race_id) as _mare_course_type_te_diff_med
+    ,percentile_cont(mare_venue_te_diff, 0.5) over (partition by race_id) as _mare_venue_te_diff_med
+    ,percentile_cont(mare_distance_band_te_diff, 0.5) over (partition by race_id) as _mare_distance_band_te_diff_med
+    ,percentile_cont(mare_distance_te_diff, 0.5) over (partition by race_id) as _mare_distance_te_diff_med
+    ,percentile_cont(mare_direction_te_diff, 0.5) over (partition by race_id) as _mare_direction_te_diff_med
+    ,percentile_cont(mare_course_type_venue_te_diff, 0.5) over (partition by race_id) as _mare_course_type_venue_te_diff_med
+    ,percentile_cont(mare_course_type_distance_te_diff, 0.5) over (partition by race_id) as _mare_course_type_distance_te_diff_med
+    ,percentile_cont(mare_course_type_distance_venue_te_diff, 0.5) over (partition by race_id) as _mare_course_type_distance_venue_te_diff_med
+    ,percentile_cont(mare_age2_te, 0.5) over (partition by race_id) as _mare_age2_te_med
+    ,percentile_cont(mare_age3_te, 0.5) over (partition by race_id) as _mare_age3_te_med
+    ,percentile_cont(mare_age4_te, 0.5) over (partition by race_id) as _mare_age4_te_med
+    ,percentile_cont(mare_age5plus_te, 0.5) over (partition by race_id) as _mare_age5plus_te_med
+    ,percentile_cont(mare_current_age_te, 0.5) over (partition by race_id) as _mare_current_age_te_med
+    ,percentile_cont(mare_precocity_diff, 0.5) over (partition by race_id) as _mare_precocity_diff_med
+    ,percentile_cont(mare_age_vs_career_diff, 0.5) over (partition by race_id) as _mare_age_vs_career_diff_med
+    ,percentile_cont(mare_course_type_run_ratio, 0.5) over (partition by race_id) as _mare_course_type_run_ratio_med
+    ,percentile_cont(mare_venue_run_ratio, 0.5) over (partition by race_id) as _mare_venue_run_ratio_med
+    ,percentile_cont(mare_distance_band_run_ratio, 0.5) over (partition by race_id) as _mare_distance_band_run_ratio_med
+    ,percentile_cont(mare_distance_run_ratio, 0.5) over (partition by race_id) as _mare_distance_run_ratio_med
+    ,percentile_cont(idm_1, 0.5) over (partition by race_id) as _idm_1_med
+    ,percentile_cont(finish_position_1, 0.5) over (partition by race_id) as _finish_position_1_med
+    ,percentile_cont(finish_position_rate_1, 0.5) over (partition by race_id) as _finish_position_rate_1_med
+    ,percentile_cont(win_odds_1, 0.5) over (partition by race_id) as _win_odds_1_med
+    ,percentile_cont(win_popularity_1, 0.5) over (partition by race_id) as _win_popularity_1_med
+    ,percentile_cont(popularity_rate_1, 0.5) over (partition by race_id) as _popularity_rate_1_med
+    ,percentile_cont(upside_rate_1, 0.5) over (partition by race_id) as _upside_rate_1_med
+    ,percentile_cont(finish_time_1, 0.5) over (partition by race_id) as _finish_time_1_med
+    ,percentile_cont(last_3f_1, 0.5) over (partition by race_id) as _last_3f_1_med
+    ,percentile_cont(last_3f_rank_in_race_1, 0.5) over (partition by race_id) as _last_3f_rank_in_race_1_med
+    ,percentile_cont(race_date_diff_1, 0.5) over (partition by race_id) as _race_date_diff_1_med
+    ,percentile_cont(race_date_diff_2, 0.5) over (partition by race_id) as _race_date_diff_2_med
+    ,percentile_cont(race_date_diff_3, 0.5) over (partition by race_id) as _race_date_diff_3_med
+    ,percentile_cont(race_date_diff_4, 0.5) over (partition by race_id) as _race_date_diff_4_med
+    ,percentile_cont(race_date_diff_5, 0.5) over (partition by race_id) as _race_date_diff_5_med
+    ,percentile_cont(mean_idm, 0.5) over (partition by race_id) as _mean_idm_med
+    ,percentile_cont(ema_idm, 0.5) over (partition by race_id) as _ema_idm_med
+    ,percentile_cont(max_idm, 0.5) over (partition by race_id) as _max_idm_med
+    ,percentile_cont(min_idm, 0.5) over (partition by race_id) as _min_idm_med
+    ,percentile_cont(idm_diff, 0.5) over (partition by race_id) as _idm_diff_med
+    ,percentile_cont(mean_idm_diff, 0.5) over (partition by race_id) as _mean_idm_diff_med
+    ,percentile_cont(ema_idm_diff, 0.5) over (partition by race_id) as _ema_idm_diff_med
+    ,percentile_cont(max_idm_diff, 0.5) over (partition by race_id) as _max_idm_diff_med
+    ,percentile_cont(mean_finish_position_rate, 0.5) over (partition by race_id) as _mean_finish_position_rate_med
+    ,percentile_cont(ema_finish_position_rate, 0.5) over (partition by race_id) as _ema_finish_position_rate_med
+    ,percentile_cont(max_finish_position_rate, 0.5) over (partition by race_id) as _max_finish_position_rate_med
+    ,percentile_cont(min_finish_position_rate, 0.5) over (partition by race_id) as _min_finish_position_rate_med
+    ,percentile_cont(mean_popularity_rate, 0.5) over (partition by race_id) as _mean_popularity_rate_med
+    ,percentile_cont(ema_popularity_rate, 0.5) over (partition by race_id) as _ema_popularity_rate_med
+    ,percentile_cont(max_popularity_rate, 0.5) over (partition by race_id) as _max_popularity_rate_med
+    ,percentile_cont(min_popularity_rate, 0.5) over (partition by race_id) as _min_popularity_rate_med
+    ,percentile_cont(mean_upside_rate, 0.5) over (partition by race_id) as _mean_upside_rate_med
+    ,percentile_cont(ema_upside_rate, 0.5) over (partition by race_id) as _ema_upside_rate_med
+    ,percentile_cont(max_upside_rate, 0.5) over (partition by race_id) as _max_upside_rate_med
+    ,percentile_cont(min_upside_rate, 0.5) over (partition by race_id) as _min_upside_rate_med
+    ,percentile_cont(finish_time_normalized, 0.5) over (partition by race_id) as _finish_time_normalized_med
+    ,percentile_cont(last_3f_normalized, 0.5) over (partition by race_id) as _last_3f_normalized_med
+    ,percentile_cont(idm_trend_3, 0.5) over (partition by race_id) as _idm_trend_3_med
+    ,percentile_cont(finish_position_trend_3, 0.5) over (partition by race_id) as _finish_position_trend_3_med
+    ,percentile_cont(mean_corner_gain_1to4, 0.5) over (partition by race_id) as _mean_corner_gain_1to4_med
+    ,percentile_cont(ema_corner_gain_1to4, 0.5) over (partition by race_id) as _ema_corner_gain_1to4_med
+    ,percentile_cont(corner1_to_finish_delta_prev_1, 0.5) over (partition by race_id) as _corner1_to_finish_delta_prev_1_med
+    ,percentile_cont(distance_band_top3_finish_rate, 0.5) over (partition by race_id) as _distance_band_top3_finish_rate_med
+    ,percentile_cont(distance_band_top1_finish_rate, 0.5) over (partition by race_id) as _distance_band_top1_finish_rate_med
+    ,percentile_cont(distance_band_rate_diff, 0.5) over (partition by race_id) as _distance_band_rate_diff_med
+    ,percentile_cont(distance_top3_finish_rate, 0.5) over (partition by race_id) as _distance_top3_finish_rate_med
+    ,percentile_cont(distance_top1_finish_rate, 0.5) over (partition by race_id) as _distance_top1_finish_rate_med
+    ,percentile_cont(distance_rate_diff, 0.5) over (partition by race_id) as _distance_rate_diff_med
+    ,percentile_cont(career_max_distance_diff, 0.5) over (partition by race_id) as _career_max_distance_diff_med
+    ,percentile_cont(career_min_distance_diff, 0.5) over (partition by race_id) as _career_min_distance_diff_med
+    ,percentile_cont(career_distance_range, 0.5) over (partition by race_id) as _career_distance_range_med
+    ,percentile_cont(career_distance_count, 0.5) over (partition by race_id) as _career_distance_count_med
+    ,percentile_cont(placed_max_distance_diff, 0.5) over (partition by race_id) as _placed_max_distance_diff_med
+    ,percentile_cont(placed_min_distance_diff, 0.5) over (partition by race_id) as _placed_min_distance_diff_med
+    ,percentile_cont(placed_distance_range, 0.5) over (partition by race_id) as _placed_distance_range_med
+    ,percentile_cont(placed_distance_count, 0.5) over (partition by race_id) as _placed_distance_count_med
+    ,percentile_cont(cha_training_index, 0.5) over (partition by race_id) as _cha_training_index_med
+    ,percentile_cont(training_last_3f, 0.5) over (partition by race_id) as _training_last_3f_med
+    ,percentile_cont(training_furlongs, 0.5) over (partition by race_id) as _training_furlongs_med
+    ,percentile_cont(training_intensity, 0.5) over (partition by race_id) as _training_intensity_med
+    ,percentile_cont(training_count, 0.5) over (partition by race_id) as _training_count_med
+    ,percentile_cont(mare_race_count, 0.5) over (partition by race_id) as _mare_race_count_med
+    ,percentile_cont(mare_avg_race_distance, 0.5) over (partition by race_id) as _mare_avg_race_distance_med
+    ,percentile_cont(mare_max_race_distance, 0.5) over (partition by race_id) as _mare_max_race_distance_med
+    ,percentile_cont(mare_min_race_distance, 0.5) over (partition by race_id) as _mare_min_race_distance_med
+    ,percentile_cont(mare_distance_range, 0.5) over (partition by race_id) as _mare_distance_range_med
+    ,percentile_cont(mare_distance_diff, 0.5) over (partition by race_id) as _mare_distance_diff_med
+    ,percentile_cont(mare_max_distance_diff, 0.5) over (partition by race_id) as _mare_max_distance_diff_med
+    ,percentile_cont(mare_min_distance_diff, 0.5) over (partition by race_id) as _mare_min_distance_diff_med
+    ,percentile_cont(mare_placed_race_count, 0.5) over (partition by race_id) as _mare_placed_race_count_med
+    ,percentile_cont(mare_placed_avg_distance, 0.5) over (partition by race_id) as _mare_placed_avg_distance_med
+    ,percentile_cont(mare_placed_max_distance, 0.5) over (partition by race_id) as _mare_placed_max_distance_med
+    ,percentile_cont(mare_placed_min_distance, 0.5) over (partition by race_id) as _mare_placed_min_distance_med
+    ,percentile_cont(mare_placed_distance_range, 0.5) over (partition by race_id) as _mare_placed_distance_range_med
+    ,percentile_cont(mare_placed_max_distance_diff, 0.5) over (partition by race_id) as _mare_placed_max_distance_diff_med
+    ,percentile_cont(mare_placed_min_distance_diff, 0.5) over (partition by race_id) as _mare_placed_min_distance_diff_med
+    ,percentile_cont(mare_place_rate, 0.5) over (partition by race_id) as _mare_place_rate_med
+    ,percentile_cont(mare_turf_place_rate, 0.5) over (partition by race_id) as _mare_turf_place_rate_med
+    ,percentile_cont(mare_dirt_place_rate, 0.5) over (partition by race_id) as _mare_dirt_place_rate_med
+    ,percentile_cont(mare_venue_place_rate, 0.5) over (partition by race_id) as _mare_venue_place_rate_med
+    ,percentile_cont(mare_distance_band_place_rate, 0.5) over (partition by race_id) as _mare_distance_band_place_rate_med
+    ,percentile_cont(mare_distance_place_rate, 0.5) over (partition by race_id) as _mare_distance_place_rate_med
+    ,percentile_cont(mare_direction_place_rate, 0.5) over (partition by race_id) as _mare_direction_place_rate_med
+    ,percentile_cont(mare_course_type_venue_place_rate, 0.5) over (partition by race_id) as _mare_course_type_venue_place_rate_med
+    ,percentile_cont(mare_course_type_distance_band_place_rate, 0.5) over (partition by race_id) as _mare_course_type_distance_band_place_rate_med
+    ,percentile_cont(mare_turf_place_diff, 0.5) over (partition by race_id) as _mare_turf_place_diff_med
+    ,percentile_cont(mare_venue_place_rate_diff, 0.5) over (partition by race_id) as _mare_venue_place_rate_diff_med
+    ,percentile_cont(mare_distance_band_place_rate_diff, 0.5) over (partition by race_id) as _mare_distance_band_place_rate_diff_med
+    ,percentile_cont(mare_distance_place_rate_diff, 0.5) over (partition by race_id) as _mare_distance_place_rate_diff_med
+    ,percentile_cont(mare_direction_place_rate_diff, 0.5) over (partition by race_id) as _mare_direction_place_rate_diff_med
+    ,percentile_cont(mare_course_type_venue_place_rate_diff, 0.5) over (partition by race_id) as _mare_course_type_venue_place_rate_diff_med
+    ,percentile_cont(mare_course_type_distance_band_place_rate_diff, 0.5) over (partition by race_id) as _mare_course_type_distance_band_place_rate_diff_med
+    ,percentile_cont(mare_early_career_place_rate, 0.5) over (partition by race_id) as _mare_early_career_place_rate_med
+    ,percentile_cont(mare_late_career_place_rate, 0.5) over (partition by race_id) as _mare_late_career_place_rate_med
+    ,percentile_cont(mare_precocity_index, 0.5) over (partition by race_id) as _mare_precocity_index_med
+    ,percentile_cont(prev1_course_bias_score, 0.5) over (partition by race_id) as _prev1_course_bias_score_med
+    ,percentile_cont(prev2_course_bias_score, 0.5) over (partition by race_id) as _prev2_course_bias_score_med
+    ,percentile_cont(prev3_course_bias_score, 0.5) over (partition by race_id) as _prev3_course_bias_score_med
+    ,percentile_cont(prev4_course_bias_score, 0.5) over (partition by race_id) as _prev4_course_bias_score_med
+    ,percentile_cont(prev5_course_bias_score, 0.5) over (partition by race_id) as _prev5_course_bias_score_med
+    ,percentile_cont(gate_bias_score, 0.5) over (partition by race_id) as _gate_bias_score_med
+    ,percentile_cont(straight_bias_range, 0.5) over (partition by race_id) as _straight_bias_range_med
+    ,percentile_cont(course_position_bias_risk, 0.5) over (partition by race_id) as _course_position_bias_risk_med
+    ,percentile_cont(idm_zone_neutral_1, 0.5) over (partition by race_id) as _idm_zone_neutral_1_med
+    ,percentile_cont(idm_zone_neutral_2, 0.5) over (partition by race_id) as _idm_zone_neutral_2_med
+    ,percentile_cont(idm_zone_neutral_3, 0.5) over (partition by race_id) as _idm_zone_neutral_3_med
+    ,percentile_cont(idm_zone_neutral_4, 0.5) over (partition by race_id) as _idm_zone_neutral_4_med
+    ,percentile_cont(idm_zone_neutral_5, 0.5) over (partition by race_id) as _idm_zone_neutral_5_med
+    ,percentile_cont(idm_zone_neutral_trend, 0.5) over (partition by race_id) as _idm_zone_neutral_trend_med
+  from temp_final_raw
 )
-from temp_final_raw
+,temp_null_filled as (
+  select * except(
+    _jockey_te_med,
+    _jockey_course_type_te_med,
+    _jockey_venue_te_med,
+    _jockey_distance_band_te_med,
+    _jockey_distance_te_med,
+    _jockey_direction_te_med,
+    _jockey_course_type_venue_te_med,
+    _jockey_course_type_distance_te_med,
+    _jockey_course_type_distance_venue_te_med,
+    _jockey_course_type_te_diff_med,
+    _jockey_venue_te_diff_med,
+    _jockey_distance_band_te_diff_med,
+    _jockey_distance_te_diff_med,
+    _jockey_direction_te_diff_med,
+    _jockey_course_type_venue_te_diff_med,
+    _jockey_course_type_distance_te_diff_med,
+    _jockey_course_type_distance_venue_te_diff_med,
+    _trainer_te_med,
+    _trainer_course_type_te_med,
+    _trainer_venue_te_med,
+    _trainer_distance_band_te_med,
+    _trainer_distance_te_med,
+    _trainer_direction_te_med,
+    _trainer_course_type_venue_te_med,
+    _trainer_course_type_distance_te_med,
+    _trainer_course_type_distance_venue_te_med,
+    _trainer_course_type_te_diff_med,
+    _trainer_venue_te_diff_med,
+    _trainer_distance_band_te_diff_med,
+    _trainer_distance_te_diff_med,
+    _trainer_direction_te_diff_med,
+    _trainer_course_type_venue_te_diff_med,
+    _trainer_course_type_distance_te_diff_med,
+    _trainer_course_type_distance_venue_te_diff_med,
+    _sire_te_med,
+    _sire_course_type_te_med,
+    _sire_venue_te_med,
+    _sire_distance_band_te_med,
+    _sire_distance_te_med,
+    _sire_direction_te_med,
+    _sire_course_type_venue_te_med,
+    _sire_course_type_distance_te_med,
+    _sire_course_type_distance_venue_te_med,
+    _sire_course_type_te_diff_med,
+    _sire_venue_te_diff_med,
+    _sire_distance_band_te_diff_med,
+    _sire_distance_te_diff_med,
+    _sire_direction_te_diff_med,
+    _sire_course_type_venue_te_diff_med,
+    _sire_course_type_distance_te_diff_med,
+    _sire_course_type_distance_venue_te_diff_med,
+    _sire_age2_te_med,
+    _sire_age3_te_med,
+    _sire_age4_te_med,
+    _sire_age5plus_te_med,
+    _sire_current_age_te_med,
+    _sire_precocity_diff_med,
+    _sire_age_vs_career_diff_med,
+    _sire_course_type_run_ratio_med,
+    _sire_venue_run_ratio_med,
+    _sire_distance_band_run_ratio_med,
+    _sire_distance_run_ratio_med,
+    _horse_te_med,
+    _horse_course_type_te_med,
+    _horse_venue_te_med,
+    _horse_distance_band_te_med,
+    _horse_distance_te_med,
+    _horse_direction_te_med,
+    _horse_jockey_te_med,
+    _horse_season_te_med,
+    _horse_course_type_venue_te_med,
+    _horse_course_type_distance_te_med,
+    _horse_course_type_distance_venue_te_med,
+    _horse_distance_change_te_med,
+    _horse_weight_carried_change_te_med,
+    _horse_course_type_te_diff_med,
+    _horse_venue_te_diff_med,
+    _horse_distance_band_te_diff_med,
+    _horse_distance_te_diff_med,
+    _horse_direction_te_diff_med,
+    _horse_jockey_te_diff_med,
+    _horse_season_te_diff_med,
+    _horse_course_type_venue_te_diff_med,
+    _horse_course_type_distance_te_diff_med,
+    _horse_course_type_distance_venue_te_diff_med,
+    _horse_distance_change_te_diff_med,
+    _horse_weight_carried_change_te_diff_med,
+    _mare_te_med,
+    _mare_course_type_te_med,
+    _mare_venue_te_med,
+    _mare_distance_band_te_med,
+    _mare_distance_te_med,
+    _mare_direction_te_med,
+    _mare_course_type_venue_te_med,
+    _mare_course_type_distance_te_med,
+    _mare_course_type_distance_venue_te_med,
+    _mare_course_type_te_diff_med,
+    _mare_venue_te_diff_med,
+    _mare_distance_band_te_diff_med,
+    _mare_distance_te_diff_med,
+    _mare_direction_te_diff_med,
+    _mare_course_type_venue_te_diff_med,
+    _mare_course_type_distance_te_diff_med,
+    _mare_course_type_distance_venue_te_diff_med,
+    _mare_age2_te_med,
+    _mare_age3_te_med,
+    _mare_age4_te_med,
+    _mare_age5plus_te_med,
+    _mare_current_age_te_med,
+    _mare_precocity_diff_med,
+    _mare_age_vs_career_diff_med,
+    _mare_course_type_run_ratio_med,
+    _mare_venue_run_ratio_med,
+    _mare_distance_band_run_ratio_med,
+    _mare_distance_run_ratio_med,
+    _idm_1_med,
+    _finish_position_1_med,
+    _finish_position_rate_1_med,
+    _win_odds_1_med,
+    _win_popularity_1_med,
+    _popularity_rate_1_med,
+    _upside_rate_1_med,
+    _finish_time_1_med,
+    _last_3f_1_med,
+    _last_3f_rank_in_race_1_med,
+    _race_date_diff_1_med,
+    _race_date_diff_2_med,
+    _race_date_diff_3_med,
+    _race_date_diff_4_med,
+    _race_date_diff_5_med,
+    _mean_idm_med,
+    _ema_idm_med,
+    _max_idm_med,
+    _min_idm_med,
+    _idm_diff_med,
+    _mean_idm_diff_med,
+    _ema_idm_diff_med,
+    _max_idm_diff_med,
+    _mean_finish_position_rate_med,
+    _ema_finish_position_rate_med,
+    _max_finish_position_rate_med,
+    _min_finish_position_rate_med,
+    _mean_popularity_rate_med,
+    _ema_popularity_rate_med,
+    _max_popularity_rate_med,
+    _min_popularity_rate_med,
+    _mean_upside_rate_med,
+    _ema_upside_rate_med,
+    _max_upside_rate_med,
+    _min_upside_rate_med,
+    _finish_time_normalized_med,
+    _last_3f_normalized_med,
+    _idm_trend_3_med,
+    _finish_position_trend_3_med,
+    _mean_corner_gain_1to4_med,
+    _ema_corner_gain_1to4_med,
+    _corner1_to_finish_delta_prev_1_med,
+    _distance_band_top3_finish_rate_med,
+    _distance_band_top1_finish_rate_med,
+    _distance_band_rate_diff_med,
+    _distance_top3_finish_rate_med,
+    _distance_top1_finish_rate_med,
+    _distance_rate_diff_med,
+    _career_max_distance_diff_med,
+    _career_min_distance_diff_med,
+    _career_distance_range_med,
+    _career_distance_count_med,
+    _placed_max_distance_diff_med,
+    _placed_min_distance_diff_med,
+    _placed_distance_range_med,
+    _placed_distance_count_med,
+    _cha_training_index_med,
+    _training_last_3f_med,
+    _training_furlongs_med,
+    _training_intensity_med,
+    _training_count_med,
+    _mare_race_count_med,
+    _mare_avg_race_distance_med,
+    _mare_max_race_distance_med,
+    _mare_min_race_distance_med,
+    _mare_distance_range_med,
+    _mare_distance_diff_med,
+    _mare_max_distance_diff_med,
+    _mare_min_distance_diff_med,
+    _mare_placed_race_count_med,
+    _mare_placed_avg_distance_med,
+    _mare_placed_max_distance_med,
+    _mare_placed_min_distance_med,
+    _mare_placed_distance_range_med,
+    _mare_placed_max_distance_diff_med,
+    _mare_placed_min_distance_diff_med,
+    _mare_place_rate_med,
+    _mare_turf_place_rate_med,
+    _mare_dirt_place_rate_med,
+    _mare_venue_place_rate_med,
+    _mare_distance_band_place_rate_med,
+    _mare_distance_place_rate_med,
+    _mare_direction_place_rate_med,
+    _mare_course_type_venue_place_rate_med,
+    _mare_course_type_distance_band_place_rate_med,
+    _mare_turf_place_diff_med,
+    _mare_venue_place_rate_diff_med,
+    _mare_distance_band_place_rate_diff_med,
+    _mare_distance_place_rate_diff_med,
+    _mare_direction_place_rate_diff_med,
+    _mare_course_type_venue_place_rate_diff_med,
+    _mare_course_type_distance_band_place_rate_diff_med,
+    _mare_early_career_place_rate_med,
+    _mare_late_career_place_rate_med,
+    _mare_precocity_index_med,
+    _prev1_course_bias_score_med,
+    _prev2_course_bias_score_med,
+    _prev3_course_bias_score_med,
+    _prev4_course_bias_score_med,
+    _prev5_course_bias_score_med,
+    _gate_bias_score_med,
+    _straight_bias_range_med,
+    _course_position_bias_risk_med,
+    _idm_zone_neutral_1_med,
+    _idm_zone_neutral_2_med,
+    _idm_zone_neutral_3_med,
+    _idm_zone_neutral_4_med,
+    _idm_zone_neutral_5_med,
+    _idm_zone_neutral_trend_med
+  ) replace (
+  -- NULL補完: 同一レース内の中央値で補完し、全員NULLの場合はフォールバック値を使用（Issue #330）
+  -- TE系（低頻度マスクによりNULLになる列）: 同一レース内中央値 → フォールバック0.22（グローバル複勝率）
+  coalesce(jockey_te, _jockey_te_med, 0.22) as jockey_te,
+  coalesce(jockey_course_type_te, _jockey_course_type_te_med, 0.22) as jockey_course_type_te,
+  coalesce(jockey_venue_te, _jockey_venue_te_med, 0.22) as jockey_venue_te,
+  coalesce(jockey_distance_band_te, _jockey_distance_band_te_med, 0.22) as jockey_distance_band_te,
+  coalesce(jockey_distance_te, _jockey_distance_te_med, 0.22) as jockey_distance_te,
+  coalesce(jockey_direction_te, _jockey_direction_te_med, 0.22) as jockey_direction_te,
+  coalesce(jockey_course_type_venue_te, _jockey_course_type_venue_te_med, 0.22) as jockey_course_type_venue_te,
+  coalesce(jockey_course_type_distance_te, _jockey_course_type_distance_te_med, 0.22) as jockey_course_type_distance_te,
+  coalesce(jockey_course_type_distance_venue_te, _jockey_course_type_distance_venue_te_med, 0.22) as jockey_course_type_distance_venue_te,
+  coalesce(jockey_course_type_te_diff, _jockey_course_type_te_diff_med, 0.0) as jockey_course_type_te_diff,
+  coalesce(jockey_venue_te_diff, _jockey_venue_te_diff_med, 0.0) as jockey_venue_te_diff,
+  coalesce(jockey_distance_band_te_diff, _jockey_distance_band_te_diff_med, 0.0) as jockey_distance_band_te_diff,
+  coalesce(jockey_distance_te_diff, _jockey_distance_te_diff_med, 0.0) as jockey_distance_te_diff,
+  coalesce(jockey_direction_te_diff, _jockey_direction_te_diff_med, 0.0) as jockey_direction_te_diff,
+  coalesce(jockey_course_type_venue_te_diff, _jockey_course_type_venue_te_diff_med, 0.0) as jockey_course_type_venue_te_diff,
+  coalesce(jockey_course_type_distance_te_diff, _jockey_course_type_distance_te_diff_med, 0.0) as jockey_course_type_distance_te_diff,
+  coalesce(jockey_course_type_distance_venue_te_diff, _jockey_course_type_distance_venue_te_diff_med, 0.0) as jockey_course_type_distance_venue_te_diff,
+  coalesce(trainer_te, _trainer_te_med, 0.22) as trainer_te,
+  coalesce(trainer_course_type_te, _trainer_course_type_te_med, 0.22) as trainer_course_type_te,
+  coalesce(trainer_venue_te, _trainer_venue_te_med, 0.22) as trainer_venue_te,
+  coalesce(trainer_distance_band_te, _trainer_distance_band_te_med, 0.22) as trainer_distance_band_te,
+  coalesce(trainer_distance_te, _trainer_distance_te_med, 0.22) as trainer_distance_te,
+  coalesce(trainer_direction_te, _trainer_direction_te_med, 0.22) as trainer_direction_te,
+  coalesce(trainer_course_type_venue_te, _trainer_course_type_venue_te_med, 0.22) as trainer_course_type_venue_te,
+  coalesce(trainer_course_type_distance_te, _trainer_course_type_distance_te_med, 0.22) as trainer_course_type_distance_te,
+  coalesce(trainer_course_type_distance_venue_te, _trainer_course_type_distance_venue_te_med, 0.22) as trainer_course_type_distance_venue_te,
+  coalesce(trainer_course_type_te_diff, _trainer_course_type_te_diff_med, 0.0) as trainer_course_type_te_diff,
+  coalesce(trainer_venue_te_diff, _trainer_venue_te_diff_med, 0.0) as trainer_venue_te_diff,
+  coalesce(trainer_distance_band_te_diff, _trainer_distance_band_te_diff_med, 0.0) as trainer_distance_band_te_diff,
+  coalesce(trainer_distance_te_diff, _trainer_distance_te_diff_med, 0.0) as trainer_distance_te_diff,
+  coalesce(trainer_direction_te_diff, _trainer_direction_te_diff_med, 0.0) as trainer_direction_te_diff,
+  coalesce(trainer_course_type_venue_te_diff, _trainer_course_type_venue_te_diff_med, 0.0) as trainer_course_type_venue_te_diff,
+  coalesce(trainer_course_type_distance_te_diff, _trainer_course_type_distance_te_diff_med, 0.0) as trainer_course_type_distance_te_diff,
+  coalesce(trainer_course_type_distance_venue_te_diff, _trainer_course_type_distance_venue_te_diff_med, 0.0) as trainer_course_type_distance_venue_te_diff,
+  coalesce(sire_te, _sire_te_med, 0.22) as sire_te,
+  coalesce(sire_course_type_te, _sire_course_type_te_med, 0.22) as sire_course_type_te,
+  coalesce(sire_venue_te, _sire_venue_te_med, 0.22) as sire_venue_te,
+  coalesce(sire_distance_band_te, _sire_distance_band_te_med, 0.22) as sire_distance_band_te,
+  coalesce(sire_distance_te, _sire_distance_te_med, 0.22) as sire_distance_te,
+  coalesce(sire_direction_te, _sire_direction_te_med, 0.22) as sire_direction_te,
+  coalesce(sire_course_type_venue_te, _sire_course_type_venue_te_med, 0.22) as sire_course_type_venue_te,
+  coalesce(sire_course_type_distance_te, _sire_course_type_distance_te_med, 0.22) as sire_course_type_distance_te,
+  coalesce(sire_course_type_distance_venue_te, _sire_course_type_distance_venue_te_med, 0.22) as sire_course_type_distance_venue_te,
+  coalesce(sire_course_type_te_diff, _sire_course_type_te_diff_med, 0.0) as sire_course_type_te_diff,
+  coalesce(sire_venue_te_diff, _sire_venue_te_diff_med, 0.0) as sire_venue_te_diff,
+  coalesce(sire_distance_band_te_diff, _sire_distance_band_te_diff_med, 0.0) as sire_distance_band_te_diff,
+  coalesce(sire_distance_te_diff, _sire_distance_te_diff_med, 0.0) as sire_distance_te_diff,
+  coalesce(sire_direction_te_diff, _sire_direction_te_diff_med, 0.0) as sire_direction_te_diff,
+  coalesce(sire_course_type_venue_te_diff, _sire_course_type_venue_te_diff_med, 0.0) as sire_course_type_venue_te_diff,
+  coalesce(sire_course_type_distance_te_diff, _sire_course_type_distance_te_diff_med, 0.0) as sire_course_type_distance_te_diff,
+  coalesce(sire_course_type_distance_venue_te_diff, _sire_course_type_distance_venue_te_diff_med, 0.0) as sire_course_type_distance_venue_te_diff,
+  coalesce(sire_age2_te, _sire_age2_te_med, 0.22) as sire_age2_te,
+  coalesce(sire_age3_te, _sire_age3_te_med, 0.22) as sire_age3_te,
+  coalesce(sire_age4_te, _sire_age4_te_med, 0.22) as sire_age4_te,
+  coalesce(sire_age5plus_te, _sire_age5plus_te_med, 0.22) as sire_age5plus_te,
+  coalesce(sire_current_age_te, _sire_current_age_te_med, 0.22) as sire_current_age_te,
+  coalesce(sire_precocity_diff, _sire_precocity_diff_med, 0.0) as sire_precocity_diff,
+  coalesce(sire_age_vs_career_diff, _sire_age_vs_career_diff_med, 0.0) as sire_age_vs_career_diff,
+  coalesce(sire_course_type_run_ratio, _sire_course_type_run_ratio_med, 0.5) as sire_course_type_run_ratio,
+  coalesce(sire_venue_run_ratio, _sire_venue_run_ratio_med, 0.0) as sire_venue_run_ratio,
+  coalesce(sire_distance_band_run_ratio, _sire_distance_band_run_ratio_med, 0.25) as sire_distance_band_run_ratio,
+  coalesce(sire_distance_run_ratio, _sire_distance_run_ratio_med, 0.0) as sire_distance_run_ratio,
+  coalesce(horse_te, _horse_te_med, 0.22) as horse_te,
+  coalesce(horse_course_type_te, _horse_course_type_te_med, 0.22) as horse_course_type_te,
+  coalesce(horse_venue_te, _horse_venue_te_med, 0.22) as horse_venue_te,
+  coalesce(horse_distance_band_te, _horse_distance_band_te_med, 0.22) as horse_distance_band_te,
+  coalesce(horse_distance_te, _horse_distance_te_med, 0.22) as horse_distance_te,
+  coalesce(horse_direction_te, _horse_direction_te_med, 0.22) as horse_direction_te,
+  coalesce(horse_jockey_te, _horse_jockey_te_med, 0.22) as horse_jockey_te,
+  coalesce(horse_season_te, _horse_season_te_med, 0.22) as horse_season_te,
+  coalesce(horse_course_type_venue_te, _horse_course_type_venue_te_med, 0.22) as horse_course_type_venue_te,
+  coalesce(horse_course_type_distance_te, _horse_course_type_distance_te_med, 0.22) as horse_course_type_distance_te,
+  coalesce(horse_course_type_distance_venue_te, _horse_course_type_distance_venue_te_med, 0.22) as horse_course_type_distance_venue_te,
+  coalesce(horse_distance_change_te, _horse_distance_change_te_med, 0.22) as horse_distance_change_te,
+  coalesce(horse_weight_carried_change_te, _horse_weight_carried_change_te_med, 0.22) as horse_weight_carried_change_te,
+  coalesce(horse_course_type_te_diff, _horse_course_type_te_diff_med, 0.0) as horse_course_type_te_diff,
+  coalesce(horse_venue_te_diff, _horse_venue_te_diff_med, 0.0) as horse_venue_te_diff,
+  coalesce(horse_distance_band_te_diff, _horse_distance_band_te_diff_med, 0.0) as horse_distance_band_te_diff,
+  coalesce(horse_distance_te_diff, _horse_distance_te_diff_med, 0.0) as horse_distance_te_diff,
+  coalesce(horse_direction_te_diff, _horse_direction_te_diff_med, 0.0) as horse_direction_te_diff,
+  coalesce(horse_jockey_te_diff, _horse_jockey_te_diff_med, 0.0) as horse_jockey_te_diff,
+  coalesce(horse_season_te_diff, _horse_season_te_diff_med, 0.0) as horse_season_te_diff,
+  coalesce(horse_course_type_venue_te_diff, _horse_course_type_venue_te_diff_med, 0.0) as horse_course_type_venue_te_diff,
+  coalesce(horse_course_type_distance_te_diff, _horse_course_type_distance_te_diff_med, 0.0) as horse_course_type_distance_te_diff,
+  coalesce(horse_course_type_distance_venue_te_diff, _horse_course_type_distance_venue_te_diff_med, 0.0) as horse_course_type_distance_venue_te_diff,
+  coalesce(horse_distance_change_te_diff, _horse_distance_change_te_diff_med, 0.0) as horse_distance_change_te_diff,
+  coalesce(horse_weight_carried_change_te_diff, _horse_weight_carried_change_te_diff_med, 0.0) as horse_weight_carried_change_te_diff,
+  coalesce(mare_te, _mare_te_med, 0.22) as mare_te,
+  coalesce(mare_course_type_te, _mare_course_type_te_med, 0.22) as mare_course_type_te,
+  coalesce(mare_venue_te, _mare_venue_te_med, 0.22) as mare_venue_te,
+  coalesce(mare_distance_band_te, _mare_distance_band_te_med, 0.22) as mare_distance_band_te,
+  coalesce(mare_distance_te, _mare_distance_te_med, 0.22) as mare_distance_te,
+  coalesce(mare_direction_te, _mare_direction_te_med, 0.22) as mare_direction_te,
+  coalesce(mare_course_type_venue_te, _mare_course_type_venue_te_med, 0.22) as mare_course_type_venue_te,
+  coalesce(mare_course_type_distance_te, _mare_course_type_distance_te_med, 0.22) as mare_course_type_distance_te,
+  coalesce(mare_course_type_distance_venue_te, _mare_course_type_distance_venue_te_med, 0.22) as mare_course_type_distance_venue_te,
+  coalesce(mare_course_type_te_diff, _mare_course_type_te_diff_med, 0.0) as mare_course_type_te_diff,
+  coalesce(mare_venue_te_diff, _mare_venue_te_diff_med, 0.0) as mare_venue_te_diff,
+  coalesce(mare_distance_band_te_diff, _mare_distance_band_te_diff_med, 0.0) as mare_distance_band_te_diff,
+  coalesce(mare_distance_te_diff, _mare_distance_te_diff_med, 0.0) as mare_distance_te_diff,
+  coalesce(mare_direction_te_diff, _mare_direction_te_diff_med, 0.0) as mare_direction_te_diff,
+  coalesce(mare_course_type_venue_te_diff, _mare_course_type_venue_te_diff_med, 0.0) as mare_course_type_venue_te_diff,
+  coalesce(mare_course_type_distance_te_diff, _mare_course_type_distance_te_diff_med, 0.0) as mare_course_type_distance_te_diff,
+  coalesce(mare_course_type_distance_venue_te_diff, _mare_course_type_distance_venue_te_diff_med, 0.0) as mare_course_type_distance_venue_te_diff,
+  coalesce(mare_age2_te, _mare_age2_te_med, 0.22) as mare_age2_te,
+  coalesce(mare_age3_te, _mare_age3_te_med, 0.22) as mare_age3_te,
+  coalesce(mare_age4_te, _mare_age4_te_med, 0.22) as mare_age4_te,
+  coalesce(mare_age5plus_te, _mare_age5plus_te_med, 0.22) as mare_age5plus_te,
+  coalesce(mare_current_age_te, _mare_current_age_te_med, 0.22) as mare_current_age_te,
+  coalesce(mare_precocity_diff, _mare_precocity_diff_med, 0.0) as mare_precocity_diff,
+  coalesce(mare_age_vs_career_diff, _mare_age_vs_career_diff_med, 0.0) as mare_age_vs_career_diff,
+  coalesce(mare_course_type_run_ratio, _mare_course_type_run_ratio_med, 0.5) as mare_course_type_run_ratio,
+  coalesce(mare_venue_run_ratio, _mare_venue_run_ratio_med, 0.0) as mare_venue_run_ratio,
+  coalesce(mare_distance_band_run_ratio, _mare_distance_band_run_ratio_med, 0.25) as mare_distance_band_run_ratio,
+  coalesce(mare_distance_run_ratio, _mare_distance_run_ratio_med, 0.0) as mare_distance_run_ratio,
+  -- 過去走特徴量（デビュー馬・初出走条件の馬でNULLになる列）: 同一レース内中央値 → フォールバック0
+  coalesce(idm_1, _idm_1_med, 0) as idm_1,
+  coalesce(finish_position_1, _finish_position_1_med, 0) as finish_position_1,
+  coalesce(finish_position_rate_1, _finish_position_rate_1_med, 0) as finish_position_rate_1,
+  coalesce(win_odds_1, _win_odds_1_med, 0) as win_odds_1,
+  coalesce(win_popularity_1, _win_popularity_1_med, 0) as win_popularity_1,
+  coalesce(popularity_rate_1, _popularity_rate_1_med, 0) as popularity_rate_1,
+  coalesce(upside_rate_1, _upside_rate_1_med, 0) as upside_rate_1,
+  coalesce(finish_time_1, _finish_time_1_med, 0) as finish_time_1,
+  coalesce(last_3f_1, _last_3f_1_med, 0) as last_3f_1,
+  coalesce(last_3f_rank_in_race_1, _last_3f_rank_in_race_1_med, 0) as last_3f_rank_in_race_1,
+  coalesce(race_date_diff_1, _race_date_diff_1_med, 0) as race_date_diff_1,
+  coalesce(race_date_diff_2, _race_date_diff_2_med, 0) as race_date_diff_2,
+  coalesce(race_date_diff_3, _race_date_diff_3_med, 0) as race_date_diff_3,
+  coalesce(race_date_diff_4, _race_date_diff_4_med, 0) as race_date_diff_4,
+  coalesce(race_date_diff_5, _race_date_diff_5_med, 0) as race_date_diff_5,
+  coalesce(mean_idm, _mean_idm_med, 0) as mean_idm,
+  coalesce(ema_idm, _ema_idm_med, 0) as ema_idm,
+  coalesce(max_idm, _max_idm_med, 0) as max_idm,
+  coalesce(min_idm, _min_idm_med, 0) as min_idm,
+  coalesce(idm_diff, _idm_diff_med, 0) as idm_diff,
+  coalesce(mean_idm_diff, _mean_idm_diff_med, 0) as mean_idm_diff,
+  coalesce(ema_idm_diff, _ema_idm_diff_med, 0) as ema_idm_diff,
+  coalesce(max_idm_diff, _max_idm_diff_med, 0) as max_idm_diff,
+  coalesce(mean_finish_position_rate, _mean_finish_position_rate_med, 0) as mean_finish_position_rate,
+  coalesce(ema_finish_position_rate, _ema_finish_position_rate_med, 0) as ema_finish_position_rate,
+  coalesce(max_finish_position_rate, _max_finish_position_rate_med, 0) as max_finish_position_rate,
+  coalesce(min_finish_position_rate, _min_finish_position_rate_med, 0) as min_finish_position_rate,
+  coalesce(mean_popularity_rate, _mean_popularity_rate_med, 0) as mean_popularity_rate,
+  coalesce(ema_popularity_rate, _ema_popularity_rate_med, 0) as ema_popularity_rate,
+  coalesce(max_popularity_rate, _max_popularity_rate_med, 0) as max_popularity_rate,
+  coalesce(min_popularity_rate, _min_popularity_rate_med, 0) as min_popularity_rate,
+  coalesce(mean_upside_rate, _mean_upside_rate_med, 0) as mean_upside_rate,
+  coalesce(ema_upside_rate, _ema_upside_rate_med, 0) as ema_upside_rate,
+  coalesce(max_upside_rate, _max_upside_rate_med, 0) as max_upside_rate,
+  coalesce(min_upside_rate, _min_upside_rate_med, 0) as min_upside_rate,
+  coalesce(finish_time_normalized, _finish_time_normalized_med, 0) as finish_time_normalized,
+  coalesce(last_3f_normalized, _last_3f_normalized_med, 0) as last_3f_normalized,
+  coalesce(idm_trend_3, _idm_trend_3_med, 0) as idm_trend_3,
+  coalesce(finish_position_trend_3, _finish_position_trend_3_med, 0) as finish_position_trend_3,
+  coalesce(mean_corner_gain_1to4, _mean_corner_gain_1to4_med, 0) as mean_corner_gain_1to4,
+  coalesce(ema_corner_gain_1to4, _ema_corner_gain_1to4_med, 0) as ema_corner_gain_1to4,
+  coalesce(corner1_to_finish_delta_prev_1, _corner1_to_finish_delta_prev_1_med, 0) as corner1_to_finish_delta_prev_1,
+  -- 距離帯別・距離別特徴量（出走歴なしでNULLになる列）
+  coalesce(distance_band_top3_finish_rate, _distance_band_top3_finish_rate_med, 0) as distance_band_top3_finish_rate,
+  coalesce(distance_band_top1_finish_rate, _distance_band_top1_finish_rate_med, 0) as distance_band_top1_finish_rate,
+  coalesce(distance_band_rate_diff, _distance_band_rate_diff_med, 0) as distance_band_rate_diff,
+  coalesce(distance_top3_finish_rate, _distance_top3_finish_rate_med, 0) as distance_top3_finish_rate,
+  coalesce(distance_top1_finish_rate, _distance_top1_finish_rate_med, 0) as distance_top1_finish_rate,
+  coalesce(distance_rate_diff, _distance_rate_diff_med, 0) as distance_rate_diff,
+  -- キャリア最長・最短距離特徴量（デビュー馬でNULLになる列）
+  coalesce(career_max_distance_diff, _career_max_distance_diff_med, 0) as career_max_distance_diff,
+  coalesce(career_min_distance_diff, _career_min_distance_diff_med, 0) as career_min_distance_diff,
+  coalesce(career_distance_range, _career_distance_range_med, 0) as career_distance_range,
+  coalesce(career_distance_count, _career_distance_count_med, 0) as career_distance_count,
+  coalesce(placed_max_distance_diff, _placed_max_distance_diff_med, 0) as placed_max_distance_diff,
+  coalesce(placed_min_distance_diff, _placed_min_distance_diff_med, 0) as placed_min_distance_diff,
+  coalesce(placed_distance_range, _placed_distance_range_med, 0) as placed_distance_range,
+  coalesce(placed_distance_count, _placed_distance_count_med, 0) as placed_distance_count,
+  -- 調教特徴量（CHAデータ未取得馬でNULLになる列）
+  coalesce(cha_training_index, _cha_training_index_med, 0) as cha_training_index,
+  coalesce(training_last_3f, _training_last_3f_med, 0) as training_last_3f,
+  coalesce(training_furlongs, _training_furlongs_med, 0) as training_furlongs,
+  coalesce(training_intensity, _training_intensity_med, 0) as training_intensity,
+  coalesce(training_count, _training_count_med, 0) as training_count,
+  -- 母馬実績特徴量（血統情報なし・実績なしでNULLになる列）
+  coalesce(mare_race_count, _mare_race_count_med, 0) as mare_race_count,
+  coalesce(mare_avg_race_distance, _mare_avg_race_distance_med, 0) as mare_avg_race_distance,
+  coalesce(mare_max_race_distance, _mare_max_race_distance_med, 0) as mare_max_race_distance,
+  coalesce(mare_min_race_distance, _mare_min_race_distance_med, 0) as mare_min_race_distance,
+  coalesce(mare_distance_range, _mare_distance_range_med, 0) as mare_distance_range,
+  coalesce(mare_distance_diff, _mare_distance_diff_med, 0) as mare_distance_diff,
+  coalesce(mare_max_distance_diff, _mare_max_distance_diff_med, 0) as mare_max_distance_diff,
+  coalesce(mare_min_distance_diff, _mare_min_distance_diff_med, 0) as mare_min_distance_diff,
+  coalesce(mare_placed_race_count, _mare_placed_race_count_med, 0) as mare_placed_race_count,
+  coalesce(mare_placed_avg_distance, _mare_placed_avg_distance_med, 0) as mare_placed_avg_distance,
+  coalesce(mare_placed_max_distance, _mare_placed_max_distance_med, 0) as mare_placed_max_distance,
+  coalesce(mare_placed_min_distance, _mare_placed_min_distance_med, 0) as mare_placed_min_distance,
+  coalesce(mare_placed_distance_range, _mare_placed_distance_range_med, 0) as mare_placed_distance_range,
+  coalesce(mare_placed_max_distance_diff, _mare_placed_max_distance_diff_med, 0) as mare_placed_max_distance_diff,
+  coalesce(mare_placed_min_distance_diff, _mare_placed_min_distance_diff_med, 0) as mare_placed_min_distance_diff,
+  coalesce(mare_place_rate, _mare_place_rate_med, 0) as mare_place_rate,
+  coalesce(mare_turf_place_rate, _mare_turf_place_rate_med, 0) as mare_turf_place_rate,
+  coalesce(mare_dirt_place_rate, _mare_dirt_place_rate_med, 0) as mare_dirt_place_rate,
+  coalesce(mare_venue_place_rate, _mare_venue_place_rate_med, 0) as mare_venue_place_rate,
+  coalesce(mare_distance_band_place_rate, _mare_distance_band_place_rate_med, 0) as mare_distance_band_place_rate,
+  coalesce(mare_distance_place_rate, _mare_distance_place_rate_med, 0) as mare_distance_place_rate,
+  coalesce(mare_direction_place_rate, _mare_direction_place_rate_med, 0) as mare_direction_place_rate,
+  coalesce(mare_course_type_venue_place_rate, _mare_course_type_venue_place_rate_med, 0) as mare_course_type_venue_place_rate,
+  coalesce(mare_course_type_distance_band_place_rate, _mare_course_type_distance_band_place_rate_med, 0) as mare_course_type_distance_band_place_rate,
+  coalesce(mare_turf_place_diff, _mare_turf_place_diff_med, 0) as mare_turf_place_diff,
+  coalesce(mare_venue_place_rate_diff, _mare_venue_place_rate_diff_med, 0) as mare_venue_place_rate_diff,
+  coalesce(mare_distance_band_place_rate_diff, _mare_distance_band_place_rate_diff_med, 0) as mare_distance_band_place_rate_diff,
+  coalesce(mare_distance_place_rate_diff, _mare_distance_place_rate_diff_med, 0) as mare_distance_place_rate_diff,
+  coalesce(mare_direction_place_rate_diff, _mare_direction_place_rate_diff_med, 0) as mare_direction_place_rate_diff,
+  coalesce(mare_course_type_venue_place_rate_diff, _mare_course_type_venue_place_rate_diff_med, 0) as mare_course_type_venue_place_rate_diff,
+  coalesce(mare_course_type_distance_band_place_rate_diff, _mare_course_type_distance_band_place_rate_diff_med, 0) as mare_course_type_distance_band_place_rate_diff,
+  coalesce(mare_early_career_place_rate, _mare_early_career_place_rate_med, 0) as mare_early_career_place_rate,
+  coalesce(mare_late_career_place_rate, _mare_late_career_place_rate_med, 0) as mare_late_career_place_rate,
+  coalesce(mare_precocity_index, _mare_precocity_index_med, 0) as mare_precocity_index,
+  -- バイアス補正特徴量（前走データなし・コース取り不明でNULLになる列）
+  coalesce(prev1_course_bias_score, _prev1_course_bias_score_med, 0) as prev1_course_bias_score,
+  coalesce(prev2_course_bias_score, _prev2_course_bias_score_med, 0) as prev2_course_bias_score,
+  coalesce(prev3_course_bias_score, _prev3_course_bias_score_med, 0) as prev3_course_bias_score,
+  coalesce(prev4_course_bias_score, _prev4_course_bias_score_med, 0) as prev4_course_bias_score,
+  coalesce(prev5_course_bias_score, _prev5_course_bias_score_med, 0) as prev5_course_bias_score,
+  coalesce(gate_bias_score, _gate_bias_score_med, 0) as gate_bias_score,
+  coalesce(straight_bias_range, _straight_bias_range_med, 0) as straight_bias_range,
+  coalesce(course_position_bias_risk, _course_position_bias_risk_med, 0) as course_position_bias_risk,
+  coalesce(idm_zone_neutral_1, _idm_zone_neutral_1_med, 0) as idm_zone_neutral_1,
+  coalesce(idm_zone_neutral_2, _idm_zone_neutral_2_med, 0) as idm_zone_neutral_2,
+  coalesce(idm_zone_neutral_3, _idm_zone_neutral_3_med, 0) as idm_zone_neutral_3,
+  coalesce(idm_zone_neutral_4, _idm_zone_neutral_4_med, 0) as idm_zone_neutral_4,
+  coalesce(idm_zone_neutral_5, _idm_zone_neutral_5_med, 0) as idm_zone_neutral_5,
+  coalesce(idm_zone_neutral_trend, _idm_zone_neutral_trend_med, 0) as idm_zone_neutral_trend
+  )
+  from temp_null_fill_med
 )
 
 -- 同一レース内RANK特徴量を追加（Issue #333）

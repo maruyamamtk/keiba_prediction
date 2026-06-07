@@ -14,6 +14,8 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import date, datetime
+
+from dateutil.relativedelta import relativedelta
 from typing import TYPE_CHECKING
 
 from src.automation.data.jrdb_downloader import JRDBDownloader, create_downloader_from_env
@@ -513,13 +515,15 @@ class FullLoadPipeline:
 
         try:
             # デフォルト日付範囲の設定
-            start_str = (
-                start_date.strftime("%Y-%m-%d") if start_date else "2016-01-01"
-            )
             end_str = (
                 end_date.strftime("%Y-%m-%d")
                 if end_date
                 else date.today().strftime("%Y-%m-%d")
+            )
+            start_str = (
+                start_date.strftime("%Y-%m-%d")
+                if start_date
+                else (date.fromisoformat(end_str) - relativedelta(years=6)).strftime("%Y-%m-%d")
             )
             logger.info(f"特徴量生成開始: {start_str} 〜 {end_str}")
 
