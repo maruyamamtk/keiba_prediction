@@ -540,7 +540,7 @@ class TestFetchPredictionData:
         result = fetch_prediction_data(project_id="test-project", target_dates=target_dates)
 
         mock_pipeline_cls.assert_called_once_with("test-project")
-        mock_pipeline.generate_query.assert_called_once_with("2026-05-17", "2026-05-17")
+        mock_pipeline.generate_query.assert_called_once_with("2023-05-18", "2026-05-17")
         mock_bq.query.assert_called_once_with("SELECT 1")
         assert len(result) == 1
 
@@ -573,7 +573,7 @@ class TestFetchPredictionData:
 
         fetch_prediction_data(project_id="test-project", target_dates=target_dates)
 
-        mock_pipeline.generate_query.assert_called_once_with("2026-05-17", "2026-05-18")
+        mock_pipeline.generate_query.assert_called_once_with("2023-05-18", "2026-05-18")
 
     @patch("src.models.predict.bigquery.Client")
     @patch("src.models.predict.FeaturePipeline")

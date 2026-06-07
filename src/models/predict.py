@@ -42,6 +42,9 @@ VENUE_MAP = {
 }
 
 
+_WINDOW_BUFFER_DAYS = 365 * 3  # ウィンドウ関数（finish_time_normalized等）に必要な過去データ期間
+
+
 def fetch_prediction_data(
     project_id: str,
     target_dates: list[datetime.date],
@@ -52,6 +55,12 @@ def fetch_prediction_data(
     features.training_data キャッシュには依存しない。
     当日マージされた特徴量SQL変更も即時反映される。
 
+    NOTE: feature_query_raw.sql の先頭 CTE に race_date フィルタがあるため、
+    target_dates のみで実行すると finish_time_normalized 等のウィンドウ関数が
+    過去データなしで計算され stddev=0 → NULL → 0 にfallbackする。
+    これを防ぐため SQL 実行時は _WINDOW_BUFFER_DAYS 分の過去データを含め、
+    結果を target_dates でフィルタして返す。
+
     Args:
         project_id: GCPプロジェクトID
         target_dates: 推論対象日のリスト
@@ -59,13 +68,14 @@ def fetch_prediction_data(
     Returns:
         推論対象データのDataFrame
     """
-    start_date = min(target_dates).isoformat()
     end_date = max(target_dates).isoformat()
+    # ウィンドウ関数が正しく動作するよう十分な過去データを含む期間でSQLを実行する
+    sql_start_date = (min(target_dates) - datetime.timedelta(days=_WINDOW_BUFFER_DAYS)).isoformat()
 
     pipeline = FeaturePipeline(project_id)
-    sql = pipeline.generate_query(start_date, end_date)
+    sql = pipeline.generate_query(sql_start_date, end_date)
 
-    logger.info(f"Executing feature SQL directly for dates: {target_dates}")
+    logger.info(f"Executing feature SQL directly for dates: {target_dates} (sql_range: {sql_start_date} to {end_date})")
     client = bigquery.Client(project=project_id)
     df = client.query(sql).to_dataframe()
 

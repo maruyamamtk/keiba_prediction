@@ -134,6 +134,9 @@ def _compute_realtime_predictions(ranker, feature_names: list[str], race_df: pd.
     """
     レース全馬の pred_score・win_place_prob・rank_in_race をリアルタイム計算する。
 
+    predict.py と同じ ranker.predict() 経路を使うことで複勝率を一致させる。
+    （NaN維持・学習時カテゴリ情報を使用）
+
     Returns:
         horse_number / horse_name / pred_score / win_place_prob / rank_in_race を持つ DataFrame
     """
@@ -148,11 +151,9 @@ def _compute_realtime_predictions(ranker, feature_names: list[str], race_df: pd.
         return result
 
     X = race_df[available].copy()
-    for col in X.select_dtypes(include=["object", "category"]).columns:
-        X[col] = pd.factorize(X[col])[0].astype(float)
-    X_np = X.to_numpy(dtype=float, na_value=0.0)
-
-    scores = ranker.model.predict(X_np)
+    # ranker.predict() → _prepare_prediction_data() を経由することで
+    # 学習時と同じ特徴量整列・カテゴリ変換・NaN維持が保証される
+    scores = ranker.predict(X)
 
     probs = _scores_to_place_prob(scores, n_places=3)
 
@@ -299,8 +300,9 @@ def _render_shap_table(shap_df: pd.DataFrame) -> None:
         display = shap_df[["label", "feature", "shap_value", "feature_value"]].copy()
         display.columns = ["特徴量(日本語)", "カラム名", "SHAP値", "特徴量値"]
         display["SHAP値"] = display["SHAP値"].round(6)
+        # 文字列型に統一してArrow変換エラーを回避（数値は小数4桁で表示）
         display["特徴量値"] = display["特徴量値"].apply(
-            lambda v: round(float(v), 4) if _is_numeric(v) else v
+            lambda v: f"{float(v):.4g}" if _is_numeric(v) else str(v)
         )
 
         def color_shap(val):
@@ -311,7 +313,7 @@ def _render_shap_table(shap_df: pd.DataFrame) -> None:
             return ""
 
         st.dataframe(
-            display.style.applymap(color_shap, subset=["SHAP値"]),
+            display.style.map(color_shap, subset=["SHAP値"]),
             hide_index=True,
             use_container_width=True,
         )

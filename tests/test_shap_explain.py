@@ -206,7 +206,7 @@ class TestComputeRealtimePredictions:
         feature_names = ["feat_0", "feat_1", "feat_2"]
         race_df = self._make_race_df(5)
         ranker = MagicMock()
-        ranker.model.predict.return_value = np.array([0.9, 0.7, 0.5, 0.3, 0.1])
+        ranker.predict.return_value = np.array([0.9, 0.7, 0.5, 0.3, 0.1])
 
         result = _compute_realtime_predictions(ranker, feature_names, race_df)
 
@@ -223,7 +223,7 @@ class TestComputeRealtimePredictions:
             "feat_0": [1.0, 2.0, 3.0],
         })
         ranker = MagicMock()
-        ranker.model.predict.return_value = np.array([0.3, 0.8, 0.5])
+        ranker.predict.return_value = np.array([0.3, 0.8, 0.5])
 
         result = _compute_realtime_predictions(ranker, feature_names, race_df)
 
@@ -243,7 +243,7 @@ class TestComputeRealtimePredictions:
             "feat_0": [float(i) for i in range(8)],
         })
         ranker = MagicMock()
-        ranker.model.predict.return_value = np.array([0.9, 0.8, 0.7, 0.4, 0.3, 0.2, 0.1, 0.05])
+        ranker.predict.return_value = np.array([0.9, 0.8, 0.7, 0.4, 0.3, 0.2, 0.1, 0.05])
 
         result = _compute_realtime_predictions(ranker, feature_names, race_df)
 
