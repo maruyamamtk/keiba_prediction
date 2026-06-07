@@ -2460,3 +2460,160 @@ class TestHorseTEDiffSummary:
         result = s.mean(skipna=True)
         expected = np.mean([0.05, -0.02, 0.03])
         assert abs(result - expected) < 1e-9
+
+
+class TestGateStyleFeature:
+    """脚質分類・ペース展開特徴量のテスト（Issue #343）"""
+
+    def test_sql_has_avg_corner_prevN_in_prf(self):
+        """avg_corner_prev1〜avg_corner_prev5 が temp_past_race_features に定義されていること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        prf_start = content.find("temp_past_race_features as (")
+        prf2_start = content.find("temp_past_race_features2 as (")
+        prf_section = content[prf_start:prf2_start]
+        for i in range(1, 6):
+            col = f"avg_corner_prev{i}"
+            assert col in prf_section, f"temp_past_race_features に '{col}' が見つかりません"
+
+    def test_sql_avg_corner_uses_all_four_corners(self):
+        """avg_corner_prev1 が全4コーナー (corner_position_1〜4) を平均すること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        prf_start = content.find("temp_past_race_features as (")
+        prf2_start = content.find("temp_past_race_features2 as (")
+        prf_section = content[prf_start:prf2_start]
+        for col in ["r_r_1.corner_position_1", "r_r_1.corner_position_2",
+                    "r_r_1.corner_position_3", "r_r_1.corner_position_4"]:
+            assert col in prf_section, f"avg_corner_prev1 の計算に '{col}' が含まれていません"
+
+    def test_sql_has_gate_style_prev123_in_prf2(self):
+        """gate_style_prev1〜gate_style_prev3 が temp_past_race_features2 に定義されていること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        prf2_start = content.find("temp_past_race_features2 as (")
+        horse_master_start = content.find("temp_horse_master_feature as (")
+        prf2_section = content[prf2_start:horse_master_start]
+        for i in range(1, 4):
+            col = f"gate_style_prev{i}"
+            assert col in prf2_section, f"temp_past_race_features2 に '{col}' が見つかりません"
+
+    def test_sql_has_avg_gate_style_score_in_prf2(self):
+        """avg_gate_style_score が temp_past_race_features2 に定義されていること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        prf2_start = content.find("temp_past_race_features2 as (")
+        horse_master_start = content.find("temp_horse_master_feature as (")
+        prf2_section = content[prf2_start:horse_master_start]
+        assert "avg_gate_style_score" in prf2_section
+
+    def test_sql_gate_style_thresholds_correct(self):
+        """gate_style_prev1 の閾値が front=3.5/mid_front=7.0/mid=10.0 になっていること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        prf2_start = content.find("temp_past_race_features2 as (")
+        horse_master_start = content.find("temp_horse_master_feature as (")
+        prf2_section = content[prf2_start:horse_master_start]
+        gate_style_section = prf2_section[prf2_section.find("gate_style_prev1"):]
+        assert "<= 3.5 then 1" in gate_style_section
+        assert "<= 7.0 then 2" in gate_style_section
+        assert "<= 10.0 then 3" in gate_style_section
+
+    def test_sql_has_same_race_front_count_in_final_raw(self):
+        """same_race_front_count が temp_final_raw に window 関数で定義されていること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        final_raw_start = content.find(",temp_final_raw as (")
+        null_fill_start = content.find(",temp_null_fill_med as (")
+        final_raw_section = content[final_raw_start:null_fill_start]
+        assert "same_race_front_count" in final_raw_section
+        assert "countif" in final_raw_section
+        assert "partition by" in final_raw_section
+
+    def test_sql_has_same_race_style_rank_in_final_raw(self):
+        """same_race_style_rank が temp_final_raw に window 関数で定義されていること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        final_raw_start = content.find(",temp_final_raw as (")
+        null_fill_start = content.find(",temp_null_fill_med as (")
+        final_raw_section = content[final_raw_start:null_fill_start]
+        assert "same_race_style_rank" in final_raw_section
+        assert "rank()" in final_raw_section
+
+    def test_gate_style_classification_logic(self):
+        """脚質スコア分類ロジックの正確性をPythonで検証"""
+        def gate_style_score(avg_corner):
+            if avg_corner is None:
+                return None
+            if avg_corner <= 3.5:
+                return 1
+            if avg_corner <= 7.0:
+                return 2
+            if avg_corner <= 10.0:
+                return 3
+            return 4
+
+        assert gate_style_score(None) is None
+        assert gate_style_score(1.0) == 1   # front (逃/先行)
+        assert gate_style_score(3.5) == 1   # 境界値 front
+        assert gate_style_score(4.0) == 2   # mid_front (先行差し)
+        assert gate_style_score(7.0) == 2   # 境界値 mid_front
+        assert gate_style_score(8.0) == 3   # mid (差し)
+        assert gate_style_score(10.0) == 3  # 境界値 mid
+        assert gate_style_score(11.0) == 4  # back (追い込み)
+        assert gate_style_score(18.0) == 4  # 最後方
+
+    def test_avg_gate_style_score_logic(self):
+        """avg_gate_style_score 計算ロジックの正確性をPythonで検証"""
+        import numpy as np
+
+        def gate_style_score(avg_corner):
+            if avg_corner is None:
+                return None
+            if avg_corner <= 3.5:
+                return 1
+            if avg_corner <= 7.0:
+                return 2
+            if avg_corner <= 10.0:
+                return 3
+            return 4
+
+        def avg_gate_style_score(corners):
+            scores = [gate_style_score(c) for c in corners if gate_style_score(c) is not None]
+            return np.mean(scores) if scores else None
+
+        assert avg_gate_style_score([2.0, 3.0, None, None, None]) == pytest.approx(1.0)
+        assert avg_gate_style_score([2.0, 6.0, None, None, None]) == pytest.approx(1.5)
+        assert avg_gate_style_score([None, None, None, None, None]) is None
+        assert avg_gate_style_score([3.5, 7.0, 10.0, 11.0, 1.0]) == pytest.approx(11 / 5)
+
+    def test_same_race_front_count_logic(self):
+        """same_race_front_count: avg_gate_style_score <= 2.5 の馬の頭数を正しく集計"""
+        import pandas as pd
+
+        df = pd.DataFrame({
+            "race_id": ["R1", "R1", "R1", "R1"],
+            "horse_number": [1, 2, 3, 4],
+            "avg_gate_style_score": [1.0, 2.0, 2.5, 3.0],
+        })
+        df["same_race_front_count"] = df.groupby("race_id")["avg_gate_style_score"].transform(
+            lambda x: (x <= 2.5).sum()
+        )
+        assert df.loc[df["horse_number"] == 1, "same_race_front_count"].iloc[0] == 3
+        assert df.loc[df["horse_number"] == 4, "same_race_front_count"].iloc[0] == 3
+
+    def test_same_race_style_rank_logic(self):
+        """same_race_style_rank: 脚質スコアが小さい（前目の）馬ほど順位が低い"""
+        import pandas as pd
+
+        df = pd.DataFrame({
+            "race_id": ["R1", "R1", "R1"],
+            "horse_number": [1, 2, 3],
+            "avg_gate_style_score": [1.0, 2.5, 4.0],
+        })
+        df["same_race_style_rank"] = df.groupby("race_id")["avg_gate_style_score"].rank(method="min")
+        assert df.loc[df["horse_number"] == 1, "same_race_style_rank"].iloc[0] == 1
+        assert df.loc[df["horse_number"] == 2, "same_race_style_rank"].iloc[0] == 2
+        assert df.loc[df["horse_number"] == 3, "same_race_style_rank"].iloc[0] == 3
+
+    def test_no_future_data_in_avg_corner(self):
+        """avg_corner_prevN は過去走データ（race_date < 当日）のみを参照すること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        prf_start = content.find("temp_past_race_features as (")
+        prf2_start = content.find("temp_past_race_features2 as (")
+        prf_section = content[prf_start:prf2_start]
+        assert "r_r_1.race_date < t_b_r_e.race_date" in prf_section, \
+            "r_r_1 の JOIN に過去日付制約がありません"
