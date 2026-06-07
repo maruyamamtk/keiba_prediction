@@ -270,12 +270,17 @@ class FeaturePipeline:
         )
 
         def execute():
+            # WRITE_TRUNCATE（全テーブル置換）時は ALLOW_FIELD_ADDITION 不可（BQ制約）
+            # WRITE_APPEND 時のみ ALLOW_FIELD_ADDITION を指定して差分カラム追加を許可
+            schema_update_options = (
+                []
+                if write_truncate
+                else [bigquery.SchemaUpdateOption.ALLOW_FIELD_ADDITION]
+            )
             job_config = bigquery.QueryJobConfig(
                 destination=table_ref,
                 write_disposition=write_disposition,
-                schema_update_options=[
-                    bigquery.SchemaUpdateOption.ALLOW_FIELD_ADDITION,
-                ],
+                schema_update_options=schema_update_options,
                 time_partitioning=bigquery.TimePartitioning(
                     field="race_date",
                 ),
