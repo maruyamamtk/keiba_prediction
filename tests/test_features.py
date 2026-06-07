@@ -1363,7 +1363,7 @@ class TestMareFeature:
         section = content[mare_base_start:mare_stats_start]
         assert "!= 'obstacle'" in section, "temp_mare_race_base に障害戦除外フィルタがありません"
         assert "finish_position > 0" in section, "temp_mare_race_base に finish_position > 0 フィルタがありません"
-        assert "dam_id is not null" in section, "temp_mare_race_base に dam_id not null フィルタがありません"
+        assert "dam_name is not null" in section, "temp_mare_race_base に dam_name not null フィルタがありません"
 
     def test_sql_mare_race_base_joins_on_horse_number(self):
         """temp_mare_race_base が race_results を horse_number でも JOIN すること（クロスJOIN防止）"""
@@ -1554,13 +1554,13 @@ class TestAgeBasedTEFeature:
             "mare_precocity_index の計算式が正しくありません"
 
     def test_sql_mare_race_base_joins_horse_master_for_birth_date(self):
-        """temp_mare_race_base が horse_master を dam_id でJOINして birth_date を取得すること"""
+        """temp_mare_race_base が dam_id_lookup を使って horse_results を JOIN して birth_date を取得すること"""
         content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
         mare_base_start = content.find("temp_mare_race_base as (")
         mare_stats_start = content.find("temp_mare_stats as (")
         section = content[mare_base_start:mare_stats_start]
-        assert "hm_d.horse_id = p.dam_id" in section, \
-            "temp_mare_race_base に horse_master の dam_id JOIN がありません"
+        assert "dam_id_lookup" in section, \
+            "temp_mare_race_base に dam_id_lookup サブクエリがありません"
         assert "horse_age_at_race" in section, \
             "temp_mare_race_base に horse_age_at_race がありません"
 
