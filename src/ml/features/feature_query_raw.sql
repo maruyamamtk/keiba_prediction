@@ -418,6 +418,52 @@ with temp_race_horse_count as (
         case when r_r_5.corner_position_4 is not null then 0.5 else 0 end)
         , 0)
     ) as ema_corner_position
+    /* 脚質分類用: 過去1〜5走コーナー平均通過順位（全コーナー非NULL値平均、Issue #343） */
+    ,safe_divide(
+      (coalesce(r_r_1.corner_position_1, 0) + coalesce(r_r_1.corner_position_2, 0) + coalesce(r_r_1.corner_position_3, 0) + coalesce(r_r_1.corner_position_4, 0))
+      ,nullif(
+        (case when r_r_1.corner_position_1 is not null then 1 else 0 end +
+        case when r_r_1.corner_position_2 is not null then 1 else 0 end +
+        case when r_r_1.corner_position_3 is not null then 1 else 0 end +
+        case when r_r_1.corner_position_4 is not null then 1 else 0 end)
+        , 0)
+    ) as avg_corner_prev1
+    ,safe_divide(
+      (coalesce(r_r_2.corner_position_1, 0) + coalesce(r_r_2.corner_position_2, 0) + coalesce(r_r_2.corner_position_3, 0) + coalesce(r_r_2.corner_position_4, 0))
+      ,nullif(
+        (case when r_r_2.corner_position_1 is not null then 1 else 0 end +
+        case when r_r_2.corner_position_2 is not null then 1 else 0 end +
+        case when r_r_2.corner_position_3 is not null then 1 else 0 end +
+        case when r_r_2.corner_position_4 is not null then 1 else 0 end)
+        , 0)
+    ) as avg_corner_prev2
+    ,safe_divide(
+      (coalesce(r_r_3.corner_position_1, 0) + coalesce(r_r_3.corner_position_2, 0) + coalesce(r_r_3.corner_position_3, 0) + coalesce(r_r_3.corner_position_4, 0))
+      ,nullif(
+        (case when r_r_3.corner_position_1 is not null then 1 else 0 end +
+        case when r_r_3.corner_position_2 is not null then 1 else 0 end +
+        case when r_r_3.corner_position_3 is not null then 1 else 0 end +
+        case when r_r_3.corner_position_4 is not null then 1 else 0 end)
+        , 0)
+    ) as avg_corner_prev3
+    ,safe_divide(
+      (coalesce(r_r_4.corner_position_1, 0) + coalesce(r_r_4.corner_position_2, 0) + coalesce(r_r_4.corner_position_3, 0) + coalesce(r_r_4.corner_position_4, 0))
+      ,nullif(
+        (case when r_r_4.corner_position_1 is not null then 1 else 0 end +
+        case when r_r_4.corner_position_2 is not null then 1 else 0 end +
+        case when r_r_4.corner_position_3 is not null then 1 else 0 end +
+        case when r_r_4.corner_position_4 is not null then 1 else 0 end)
+        , 0)
+    ) as avg_corner_prev4
+    ,safe_divide(
+      (coalesce(r_r_5.corner_position_1, 0) + coalesce(r_r_5.corner_position_2, 0) + coalesce(r_r_5.corner_position_3, 0) + coalesce(r_r_5.corner_position_4, 0))
+      ,nullif(
+        (case when r_r_5.corner_position_1 is not null then 1 else 0 end +
+        case when r_r_5.corner_position_2 is not null then 1 else 0 end +
+        case when r_r_5.corner_position_3 is not null then 1 else 0 end +
+        case when r_r_5.corner_position_4 is not null then 1 else 0 end)
+        , 0)
+    ) as avg_corner_prev5
     /* last_3f_rank (レース内上がり順位) の集計 */
     ,safe_divide(
       (coalesce(r_l3f_1.last_3f_rank_in_race, 0) + coalesce(r_l3f_2.last_3f_rank_in_race, 0) + coalesce(r_l3f_3.last_3f_rank_in_race, 0) + coalesce(r_l3f_4.last_3f_rank_in_race, 0) + coalesce(r_l3f_5.last_3f_rank_in_race, 0))
@@ -754,6 +800,59 @@ with temp_race_horse_count as (
         case when t_p_r_f.course_position_prev3 is not null then 0.5 else 0 end),
         0)
     ) as ema_course_position
+    /* 脚質スコア（front=1, mid_front=2, mid=3, back=4）（Issue #343） */
+    ,case
+      when t_p_r_f.avg_corner_prev1 is null then null
+      when t_p_r_f.avg_corner_prev1 <= 3.5 then 1
+      when t_p_r_f.avg_corner_prev1 <= 7.0 then 2
+      when t_p_r_f.avg_corner_prev1 <= 10.0 then 3
+      else 4
+    end as gate_style_prev1
+    ,case
+      when t_p_r_f.avg_corner_prev2 is null then null
+      when t_p_r_f.avg_corner_prev2 <= 3.5 then 1
+      when t_p_r_f.avg_corner_prev2 <= 7.0 then 2
+      when t_p_r_f.avg_corner_prev2 <= 10.0 then 3
+      else 4
+    end as gate_style_prev2
+    ,case
+      when t_p_r_f.avg_corner_prev3 is null then null
+      when t_p_r_f.avg_corner_prev3 <= 3.5 then 1
+      when t_p_r_f.avg_corner_prev3 <= 7.0 then 2
+      when t_p_r_f.avg_corner_prev3 <= 10.0 then 3
+      else 4
+    end as gate_style_prev3
+    ,case
+      when t_p_r_f.avg_corner_prev4 is null then null
+      when t_p_r_f.avg_corner_prev4 <= 3.5 then 1
+      when t_p_r_f.avg_corner_prev4 <= 7.0 then 2
+      when t_p_r_f.avg_corner_prev4 <= 10.0 then 3
+      else 4
+    end as gate_style_prev4
+    ,case
+      when t_p_r_f.avg_corner_prev5 is null then null
+      when t_p_r_f.avg_corner_prev5 <= 3.5 then 1
+      when t_p_r_f.avg_corner_prev5 <= 7.0 then 2
+      when t_p_r_f.avg_corner_prev5 <= 10.0 then 3
+      else 4
+    end as gate_style_prev5
+    /* 近5走脚質スコア平均（Issue #343） */
+    ,safe_divide(
+      (
+        coalesce(case when t_p_r_f.avg_corner_prev1 is null then null when t_p_r_f.avg_corner_prev1 <= 3.5 then 1 when t_p_r_f.avg_corner_prev1 <= 7.0 then 2 when t_p_r_f.avg_corner_prev1 <= 10.0 then 3 else 4 end, 0) +
+        coalesce(case when t_p_r_f.avg_corner_prev2 is null then null when t_p_r_f.avg_corner_prev2 <= 3.5 then 1 when t_p_r_f.avg_corner_prev2 <= 7.0 then 2 when t_p_r_f.avg_corner_prev2 <= 10.0 then 3 else 4 end, 0) +
+        coalesce(case when t_p_r_f.avg_corner_prev3 is null then null when t_p_r_f.avg_corner_prev3 <= 3.5 then 1 when t_p_r_f.avg_corner_prev3 <= 7.0 then 2 when t_p_r_f.avg_corner_prev3 <= 10.0 then 3 else 4 end, 0) +
+        coalesce(case when t_p_r_f.avg_corner_prev4 is null then null when t_p_r_f.avg_corner_prev4 <= 3.5 then 1 when t_p_r_f.avg_corner_prev4 <= 7.0 then 2 when t_p_r_f.avg_corner_prev4 <= 10.0 then 3 else 4 end, 0) +
+        coalesce(case when t_p_r_f.avg_corner_prev5 is null then null when t_p_r_f.avg_corner_prev5 <= 3.5 then 1 when t_p_r_f.avg_corner_prev5 <= 7.0 then 2 when t_p_r_f.avg_corner_prev5 <= 10.0 then 3 else 4 end, 0)
+      ),
+      nullif(
+        (case when t_p_r_f.avg_corner_prev1 is not null then 1 else 0 end +
+        case when t_p_r_f.avg_corner_prev2 is not null then 1 else 0 end +
+        case when t_p_r_f.avg_corner_prev3 is not null then 1 else 0 end +
+        case when t_p_r_f.avg_corner_prev4 is not null then 1 else 0 end +
+        case when t_p_r_f.avg_corner_prev5 is not null then 1 else 0 end),
+        0)
+    ) as avg_gate_style_score
   from
     temp_past_race_features as t_p_r_f
 )
@@ -3673,6 +3772,9 @@ select
        END
      + t_p_r_f.track_bias_prev3)
   AS idm_zone_neutral_trend
+  /* 同一レース内展開指標（avg_gate_style_scoreに基づく集計、Issue #343） */
+  ,countif(t_p_r_f.avg_gate_style_score <= 2.5) over (partition by t_p_r_f.race_id) as same_race_front_count
+  ,rank() over (partition by t_p_r_f.race_id order by t_p_r_f.avg_gate_style_score nulls last) as same_race_style_rank
 from
   temp_past_race_features2 as t_p_r_f
   left join temp_horse_master_feature2 as t_h_m_f
