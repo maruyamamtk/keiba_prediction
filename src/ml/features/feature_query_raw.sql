@@ -1775,12 +1775,13 @@ with temp_race_horse_count as (
   from temp_sire_te_pre
 )
 
-/* 母馬（繁殖牝馬）競走実績特徴量（Issue #307）
-   カテゴリA: pedigree.dam_id 経由で母馬自身の実績を集計
-   dam_id IS NULL（外国産馬等）の場合は全カラム NULL で対応 */
+/* 母馬（繁殖牝馬）競走実績特徴量（Issue #307 / Issue #325修正）
+   pedigree.dam_id 経由から horse_results.horse_name = horse_master.dam_name への直接JOINに変更。
+   horse_master 未収録の古い繁殖牝馬（2005〜2015年頃現役）も horse_results 経由で実績取得できる。
+   同名馬が複数存在する場合は出走数最多の馬を母馬として選択する。 */
 ,temp_mare_race_base as (
   select
-    p.horse_id
+    h_m.horse_id
     ,ri_d.course_type
     ,ri_d.venue_code
     ,case
@@ -1793,17 +1794,35 @@ with temp_race_horse_count as (
     ,ri_d.distance
     ,case when rr_d.finish_position between 1 and 3 then 1 else 0 end as is_top3
     ,date_diff(ri_d.race_date, hm_d.birth_date, year) as horse_age_at_race
-  from `{project_id}`.raw.pedigree as p
+  from `{project_id}`.raw.horse_master as h_m
+  join (
+    /* 同名馬が複数存在する場合は出走数最多の馬を母馬として採用 */
+    select
+      horse_name
+      ,horse_id
+      ,row_number() over (
+        partition by horse_name
+        order by race_count desc, horse_id
+      ) as rn
+    from (
+      select horse_name, horse_id, count(*) as race_count
+      from `{project_id}`.raw.horse_results
+      where horse_name is not null
+      group by horse_name, horse_id
+    )
+  ) as dam_id_lookup
+    on dam_id_lookup.horse_name = h_m.dam_name
+    and dam_id_lookup.rn = 1
   join `{project_id}`.raw.horse_results as hr_d
-    on hr_d.horse_id = p.dam_id
+    on hr_d.horse_id = dam_id_lookup.horse_id
   join `{project_id}`.raw.race_results as rr_d
     on rr_d.race_id = hr_d.race_id
     and rr_d.horse_number = hr_d.horse_number
   join `{project_id}`.raw.race_info as ri_d
     on ri_d.race_id = hr_d.race_id
-  join `{project_id}`.raw.horse_master as hm_d
-    on hm_d.horse_id = p.dam_id
-  where p.dam_id is not null
+  left join `{project_id}`.raw.horse_master as hm_d
+    on hm_d.horse_id = dam_id_lookup.horse_id
+  where h_m.dam_name is not null
     and rr_d.finish_position > 0
     and ri_d.course_type != 'obstacle'
 )
