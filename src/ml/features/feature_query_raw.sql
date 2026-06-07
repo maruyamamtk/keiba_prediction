@@ -2624,6 +2624,75 @@ with temp_race_horse_count as (
   )
 )
 
+/* 開催条件別ペース傾向スコア（venue_code × distance × course_type の過去平均脚質スコア、Issue #349）
+   値が小さい（≒1〜2）→ 先行馬が多いコース、値が大きい（≒3〜4）→ 差し追込馬が多いコース
+   ウィンドウ: UNBOUNDED PRECEDING AND 1 PRECEDING（当日レース除外）*/
+,temp_course_pace_stats as (
+  select
+    race_id
+    ,horse_number
+    ,avg(avg_gate_style_score) over (
+      partition by venue_code, distance, course_type
+      order by unix_date(race_date)
+      range between unbounded preceding and 1 preceding
+    ) as course_pace_score
+  from temp_past_race_features2
+)
+
+/* 開催条件別・脚質グループ別 TE 計算ベース: avg_gate_style_score と is_top3 を結合（Issue #349）
+   gate_style_group = round(avg_gate_style_score): 1=front, 2=mid_front, 3=mid, 4=back */
+,temp_gate_style_te_base as (
+  select
+    p.race_id
+    ,p.horse_number
+    ,p.race_date
+    ,p.venue_code
+    ,p.distance
+    ,p.course_type
+    ,h.is_top3
+    ,cast(round(p.avg_gate_style_score) as int64) as gate_style_group
+  from temp_past_race_features2 as p
+    inner join temp_te_history_raw as h
+      on p.race_id = h.race_id and p.horse_number = h.horse_number
+  where p.avg_gate_style_score is not null
+)
+
+/* 開催条件別・脚質グループ別 TE 生値（スムージング係数m=10、直近5年、Issue #349） */
+,temp_gate_style_te_pre as (
+  select
+    race_id
+    ,horse_number
+    ,coalesce(count(*) over (
+      partition by venue_code, distance, course_type, gate_style_group
+      order by unix_date(race_date)
+      range between 1826 preceding and 1 preceding
+    ), 0) as gs_course_count
+    ,safe_divide(
+      coalesce(sum(is_top3) over (
+        partition by venue_code, distance, course_type, gate_style_group
+        order by unix_date(race_date)
+        range between 1826 preceding and 1 preceding
+      ), 0) + 10 * g.global_top3_rate,
+      coalesce(count(*) over (
+        partition by venue_code, distance, course_type, gate_style_group
+        order by unix_date(race_date)
+        range between 1826 preceding and 1 preceding
+      ), 0) + 10
+    ) as gate_style_course_te
+  from temp_gate_style_te_base
+    cross join temp_global_mean_te as g
+)
+
+/* 開催条件別・脚質グループ別 TE（出走数 < 10 は NULL マスク、Issue #349）
+   「差し馬がこのコース・距離で過去どれくらい複勝圏に入っているか」を表す */
+,temp_gate_style_te as (
+  select
+    race_id
+    ,horse_number
+    ,IF(gs_course_count >= 10, gate_style_course_te, NULL) as gate_style_course_te
+  from temp_gate_style_te_pre
+)
+
 /* 調教本追切データ (raw.cha_data から) */
 ,temp_training as (
   select
@@ -3775,6 +3844,15 @@ select
   /* 同一レース内展開指標（avg_gate_style_scoreに基づく集計、Issue #343） */
   ,countif(t_p_r_f.avg_gate_style_score <= 2.5) over (partition by t_p_r_f.race_id) as same_race_front_count
   ,rank() over (partition by t_p_r_f.race_id order by t_p_r_f.avg_gate_style_score nulls last) as same_race_style_rank
+  /* 開催条件別ペース傾向・脚質適性特徴量（Issue #349） */
+  ,t_cps.course_pace_score
+  ,-(abs(t_p_r_f.avg_gate_style_score - t_cps.course_pace_score)) as gate_style_advantage_score
+  ,case
+    when t_p_r_f.avg_gate_style_score is null or t_cps.course_pace_score is null then null
+    when abs(t_p_r_f.avg_gate_style_score - t_cps.course_pace_score) <= 0.5 then 1
+    else 0
+  end as gate_style_advantage_flag
+  ,t_gs_te.gate_style_course_te
 from
   temp_past_race_features2 as t_p_r_f
   left join temp_horse_master_feature2 as t_h_m_f
@@ -3832,6 +3910,12 @@ from
   left join temp_horse_te_diff_summary as t_h_te_diff_s
     on t_p_r_f.race_id = t_h_te_diff_s.race_id
     and t_p_r_f.horse_number = t_h_te_diff_s.horse_number
+  left join temp_course_pace_stats as t_cps
+    on t_p_r_f.race_id = t_cps.race_id
+    and t_p_r_f.horse_number = t_cps.horse_number
+  left join temp_gate_style_te as t_gs_te
+    on t_p_r_f.race_id = t_gs_te.race_id
+    and t_p_r_f.horse_number = t_gs_te.horse_number
 )
 
 -- NULL補完: 同一レース内の中央値で補完し、全員NULLの場合はフォールバック値を使用（Issue #330）
@@ -4086,6 +4170,9 @@ from
     ,percentile_cont(idm_zone_neutral_4, 0.5) over (partition by race_id) as _idm_zone_neutral_4_med
     ,percentile_cont(idm_zone_neutral_5, 0.5) over (partition by race_id) as _idm_zone_neutral_5_med
     ,percentile_cont(idm_zone_neutral_trend, 0.5) over (partition by race_id) as _idm_zone_neutral_trend_med
+    ,percentile_cont(course_pace_score, 0.5) over (partition by race_id) as _course_pace_score_med
+    ,percentile_cont(gate_style_advantage_score, 0.5) over (partition by race_id) as _gate_style_advantage_score_med
+    ,percentile_cont(gate_style_course_te, 0.5) over (partition by race_id) as _gate_style_course_te_med
   from temp_final_raw
 )
 ,temp_null_filled as (
@@ -4337,7 +4424,10 @@ from
     _idm_zone_neutral_3_med,
     _idm_zone_neutral_4_med,
     _idm_zone_neutral_5_med,
-    _idm_zone_neutral_trend_med
+    _idm_zone_neutral_trend_med,
+    _course_pace_score_med,
+    _gate_style_advantage_score_med,
+    _gate_style_course_te_med
   ) replace (
   -- NULL補完: 同一レース内の中央値で補完し、全員NULLの場合はフォールバック値を使用（Issue #330）
   -- TE系（低頻度マスクによりNULLになる列）: 同一レース内中央値 → フォールバック0.22（グローバル複勝率）
@@ -4594,7 +4684,10 @@ from
   coalesce(idm_zone_neutral_3, _idm_zone_neutral_3_med, 0) as idm_zone_neutral_3,
   coalesce(idm_zone_neutral_4, _idm_zone_neutral_4_med, 0) as idm_zone_neutral_4,
   coalesce(idm_zone_neutral_5, _idm_zone_neutral_5_med, 0) as idm_zone_neutral_5,
-  coalesce(idm_zone_neutral_trend, _idm_zone_neutral_trend_med, 0) as idm_zone_neutral_trend
+  coalesce(idm_zone_neutral_trend, _idm_zone_neutral_trend_med, 0) as idm_zone_neutral_trend,
+  coalesce(course_pace_score, _course_pace_score_med, 2.5) as course_pace_score,
+  coalesce(gate_style_advantage_score, _gate_style_advantage_score_med, 0.0) as gate_style_advantage_score,
+  coalesce(gate_style_course_te, _gate_style_course_te_med, 0.22) as gate_style_course_te
   )
   from temp_null_fill_med
 )

@@ -2617,3 +2617,153 @@ class TestGateStyleFeature:
         prf_section = content[prf_start:prf2_start]
         assert "r_r_1.race_date < t_b_r_e.race_date" in prf_section, \
             "r_r_1 の JOIN に過去日付制約がありません"
+
+
+class TestCoursePaceAndGateStyleTEFeature:
+    """Issue #349: 開催条件別ペース傾向・脚質適性TE特徴量のテスト"""
+
+    def test_sql_has_temp_course_pace_stats_cte(self):
+        """temp_course_pace_stats CTE が feature_query_raw.sql に定義されていること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        assert "temp_course_pace_stats as (" in content
+
+    def test_sql_course_pace_stats_uses_unbounded_preceding_window(self):
+        """course_pace_score が UNBOUNDED PRECEDING AND 1 PRECEDING ウィンドウを使用すること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        cps_start = content.find("temp_course_pace_stats as (")
+        gate_style_te_start = content.find("temp_gate_style_te_base as (")
+        cps_section = content[cps_start:gate_style_te_start]
+        assert "unbounded preceding and 1 preceding" in cps_section, \
+            "course_pace_stats に unbounded preceding ウィンドウがありません"
+        assert "partition by venue_code, distance, course_type" in cps_section, \
+            "course_pace_stats に正しい PARTITION BY がありません"
+
+    def test_sql_has_gate_style_te_ctEs(self):
+        """temp_gate_style_te_base / _pre / gate_style_te の3 CTE が定義されていること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        assert "temp_gate_style_te_base as (" in content
+        assert "temp_gate_style_te_pre as (" in content
+        assert "temp_gate_style_te as (" in content
+
+    def test_sql_gate_style_te_pre_uses_1826_day_window(self):
+        """gate_style_course_te が直近5年（1826日）のウィンドウを使用すること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        te_pre_start = content.find("temp_gate_style_te_pre as (")
+        te_start = content.find("temp_gate_style_te as (")
+        te_pre_section = content[te_pre_start:te_start]
+        assert "1826 preceding and 1 preceding" in te_pre_section, \
+            "gate_style_te_pre に 1826 preceding ウィンドウがありません"
+
+    def test_sql_gate_style_te_has_low_freq_mask(self):
+        """gate_style_te に出走数 >= 10 の低頻度マスクがあること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        te_start = content.find("temp_gate_style_te as (")
+        training_start = content.find("temp_training as (")
+        te_section = content[te_start:training_start]
+        assert "gs_course_count >= 10" in te_section, \
+            "gate_style_te に出走数 >= 10 のマスクがありません"
+
+    def test_sql_gate_style_te_base_excludes_null_avg_gate_style(self):
+        """temp_gate_style_te_base が avg_gate_style_score IS NULL の行を除外すること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        base_start = content.find("temp_gate_style_te_base as (")
+        te_pre_start = content.find("temp_gate_style_te_pre as (")
+        base_section = content[base_start:te_pre_start]
+        assert "avg_gate_style_score is not null" in base_section, \
+            "temp_gate_style_te_base で NULL avg_gate_style_score が除外されていません"
+
+    def test_sql_has_course_pace_score_in_final_raw(self):
+        """course_pace_score が temp_final_raw に定義されていること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        final_raw_start = content.find(",temp_final_raw as (")
+        null_fill_start = content.find(",temp_null_fill_med as (")
+        final_raw_section = content[final_raw_start:null_fill_start]
+        assert "course_pace_score" in final_raw_section
+        assert "temp_course_pace_stats" in final_raw_section
+
+    def test_sql_has_gate_style_advantage_in_final_raw(self):
+        """gate_style_advantage_score / flag / gate_style_course_te が temp_final_raw に定義されていること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        final_raw_start = content.find(",temp_final_raw as (")
+        null_fill_start = content.find(",temp_null_fill_med as (")
+        final_raw_section = content[final_raw_start:null_fill_start]
+        assert "gate_style_advantage_score" in final_raw_section
+        assert "gate_style_advantage_flag" in final_raw_section
+        assert "gate_style_course_te" in final_raw_section
+
+    def test_course_pace_score_logic(self):
+        """course_pace_score: 同一条件（venue × distance × course_type）の過去レース平均脚質スコアを検証"""
+        import pandas as pd
+        import numpy as np
+
+        data = [
+            {"race_id": "R1", "horse_number": 1, "venue_code": "05", "distance": 1600,
+             "course_type": "turf", "race_date": pd.Timestamp("2024-01-07"), "avg_gate_style_score": 1.5},
+            {"race_id": "R1", "horse_number": 2, "venue_code": "05", "distance": 1600,
+             "course_type": "turf", "race_date": pd.Timestamp("2024-01-07"), "avg_gate_style_score": 2.5},
+            # 1週後の新レース
+            {"race_id": "R2", "horse_number": 1, "venue_code": "05", "distance": 1600,
+             "course_type": "turf", "race_date": pd.Timestamp("2024-01-14"), "avg_gate_style_score": 3.0},
+        ]
+        df = pd.DataFrame(data)
+
+        def compute_course_pace_score(row, df_all):
+            mask = (
+                (df_all["venue_code"] == row["venue_code"]) &
+                (df_all["distance"] == row["distance"]) &
+                (df_all["course_type"] == row["course_type"]) &
+                (df_all["race_date"] < row["race_date"])
+            )
+            past = df_all.loc[mask, "avg_gate_style_score"].dropna()
+            return past.mean() if len(past) > 0 else np.nan
+
+        r2_h1 = df[(df["race_id"] == "R2") & (df["horse_number"] == 1)].iloc[0]
+        score = compute_course_pace_score(r2_h1, df)
+        assert score == pytest.approx(2.0), f"R2の course_pace_score が期待値 2.0 でなく {score}"
+
+    def test_gate_style_advantage_score_logic(self):
+        """gate_style_advantage_score = -(|avg_gate_style_score - course_pace_score|) の検証"""
+        import math
+
+        def advantage_score(avg_gs, course_pace):
+            if avg_gs is None or course_pace is None:
+                return None
+            return -abs(avg_gs - course_pace)
+
+        assert advantage_score(1.5, 1.5) == pytest.approx(0.0)
+        assert advantage_score(1.0, 3.0) == pytest.approx(-2.0)
+        assert advantage_score(3.5, 2.0) == pytest.approx(-1.5)
+        assert advantage_score(None, 2.0) is None
+        assert advantage_score(2.0, None) is None
+
+    def test_gate_style_advantage_flag_boundary(self):
+        """gate_style_advantage_flag: |diff| <= 0.5 で 1、それ以上で 0 になること"""
+        def advantage_flag(avg_gs, course_pace):
+            if avg_gs is None or course_pace is None:
+                return None
+            return 1 if abs(avg_gs - course_pace) <= 0.5 else 0
+
+        assert advantage_flag(2.0, 2.0) == 1   # 完全一致
+        assert advantage_flag(2.0, 2.5) == 1   # diff = 0.5 (境界値、有利)
+        assert advantage_flag(2.0, 2.51) == 0  # diff > 0.5 (不利)
+        assert advantage_flag(1.0, 3.5) == 0   # 大きく不一致
+        assert advantage_flag(None, 2.0) is None
+
+    def test_sql_course_pace_stats_excludes_current_race_day(self):
+        """course_pace_score ウィンドウが 1 PRECEDING で当日レースを除外すること（リークなし）"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        cps_start = content.find("temp_course_pace_stats as (")
+        gate_style_te_start = content.find("temp_gate_style_te_base as (")
+        cps_section = content[cps_start:gate_style_te_start]
+        assert "1 preceding" in cps_section, \
+            "course_pace_stats のウィンドウが当日レースを除外していません"
+        assert "and 1 preceding" in cps_section
+
+    def test_sql_gate_style_course_te_excludes_current_race_day(self):
+        """gate_style_course_te ウィンドウが 1 PRECEDING で当日レースを除外すること（リークなし）"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        te_pre_start = content.find("temp_gate_style_te_pre as (")
+        te_start = content.find("temp_gate_style_te as (")
+        te_pre_section = content[te_pre_start:te_start]
+        assert "and 1 preceding" in te_pre_section, \
+            "gate_style_te_pre のウィンドウが当日レースを除外していません"
