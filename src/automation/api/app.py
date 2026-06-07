@@ -42,6 +42,9 @@ def _today_jst() -> datetime.date:
     return datetime.datetime.now(ZoneInfo("Asia/Tokyo")).date()
 
 
+# 長時間バックグラウンドタスクの参照を保持してGCによる早期終了を防ぐ
+_long_running_tasks: set[asyncio.Task] = set()
+
 # FastAPIアプリケーション
 app = FastAPI(
     title="JRDB Pipeline API",
@@ -396,18 +399,13 @@ async def load_daily_async(
 
 
 @app.post("/api/v1/load/full", response_model=FullLoadResponse)
-async def load_full(
-    request: FullLoadRequest, background_tasks: BackgroundTasks
-):
+async def load_full(request: FullLoadRequest):
     """
     過去分全件ロードを実行（バックグラウンド）
 
-    長時間処理のため、バックグラウンドで実行しすぐにレスポンスを返す。
+    長時間処理のため、asyncio.create_task でリクエストライフサイクルから切り離して実行。
+    BackgroundTasks は timeoutSeconds でキャンセルされるため使用しない。
     初回セットアップやデータ欠損の補完に使用。
-
-    Args:
-        request: リクエストボディ
-        background_tasks: バックグラウンドタスク
 
     Returns:
         受付結果
@@ -433,7 +431,11 @@ async def load_full(
         except Exception as e:
             logger.error(f"全件ロードエラー: job_id={job_id}, error={e}")
 
-    background_tasks.add_task(run_full_load)
+    # asyncio.create_task でリクエストタイムアウトから独立させる
+    # タスク参照を保持してGCによる早期終了を防ぐ
+    task = asyncio.create_task(asyncio.to_thread(run_full_load))
+    _long_running_tasks.add(task)
+    task.add_done_callback(_long_running_tasks.discard)
 
     return FullLoadResponse(
         status="started",
