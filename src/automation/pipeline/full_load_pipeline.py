@@ -689,6 +689,74 @@ class FullLoadPipeline:
                     logger.warning(f"クリーンアップエラー: {e}")
 
 
+def rebuild_pedigree_table(project_id: str) -> dict:
+    """
+    raw.pedigree を horse_master の最新データで再構築する。
+
+    dam_id は horse_master.dam_name → horse_master.horse_id の名前マッチングで解決。
+    特徴量生成前に呼び出すことで母馬TE特徴量の解決率を最大化する。
+
+    Returns:
+        {"total": int, "dam_id_resolved": int, "resolution_pct": float}
+    """
+    from google.cloud import bigquery as _bigquery
+
+    client = _bigquery.Client(project=project_id)
+    query = f"""
+    CREATE OR REPLACE TABLE `{project_id}`.raw.pedigree AS
+    WITH dam_lookup AS (
+      SELECT
+        horse_name,
+        horse_id,
+        ROW_NUMBER() OVER (
+          PARTITION BY horse_name
+          ORDER BY sex_code = 2 DESC, horse_id
+        ) AS rn
+      FROM `{project_id}`.raw.horse_master
+      WHERE horse_name IS NOT NULL
+    )
+    SELECT
+      h.horse_id,
+      h.horse_name,
+      NULL        AS sire_id,
+      h.sire_name,
+      d.horse_id  AS dam_id,
+      h.dam_name,
+      NULL        AS dam_sire_id,
+      h.broodmare_sire_name AS dam_sire_name,
+      CAST(h.sire_line_code AS STRING) AS sire_line,
+      EXTRACT(YEAR FROM h.birth_date) AS birth_year,
+      h.sex,
+      CAST(h.coat_color_code AS STRING) AS coat_color,
+      h.breeder_name AS breeder,
+      h.owner_name   AS owner,
+      CURRENT_TIMESTAMP() AS created_at,
+      CURRENT_TIMESTAMP() AS updated_at
+    FROM `{project_id}`.raw.horse_master AS h
+    LEFT JOIN dam_lookup AS d
+      ON h.dam_name = d.horse_name AND d.rn = 1
+    """
+    client.query(query).result()
+
+    stats = list(
+        client.query(
+            f"SELECT COUNT(*) as total, COUNTIF(dam_id IS NOT NULL) as resolved "
+            f"FROM `{project_id}`.raw.pedigree"
+        ).result()
+    )[0]
+    total = stats.total
+    resolved = stats.resolved
+    logger.info(
+        f"raw.pedigree 再構築完了: total={total}, dam_id解決={resolved} "
+        f"({resolved / total * 100:.1f}%)"
+    )
+    return {
+        "total": total,
+        "dam_id_resolved": resolved,
+        "resolution_pct": round(resolved / total * 100, 1) if total else 0.0,
+    }
+
+
 def main():
     """CLIエントリーポイント"""
     import argparse

@@ -426,7 +426,9 @@ class TestFullLoadStepGenerateFeatures:
 
         assert result.status == "success"
         call_args = feature_pipeline.run.call_args
-        assert call_args[1]["start_date"] == "2016-01-01"
+        from dateutil.relativedelta import relativedelta
+        expected_start = (date.today() - relativedelta(years=6)).strftime("%Y-%m-%d")
+        assert call_args[1]["start_date"] == expected_start
         assert call_args[1]["end_date"] == date.today().strftime("%Y-%m-%d")
 
     def test_step_generate_features_error(self):

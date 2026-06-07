@@ -521,7 +521,17 @@ async def generate_features(request: FeatureGenerateRequest):
                 status_code=500, detail="GCP_PROJECT_IDが未設定です"
             )
 
+        from src.automation.pipeline.full_load_pipeline import rebuild_pedigree_table
         from src.ml.features.feature_pipeline import FeaturePipeline
+
+        logger.info("raw.pedigree 再構築を開始します")
+        try:
+            pedigree_stats = rebuild_pedigree_table(project_id)
+            logger.info(
+                f"raw.pedigree 再構築完了: dam_id解決率={pedigree_stats['resolution_pct']}%"
+            )
+        except Exception as e:
+            logger.warning(f"raw.pedigree 再構築エラー（特徴量生成は継続）: {e}")
 
         pipeline = FeaturePipeline(project_id=project_id)
         result = pipeline.run(request.start_date, request.end_date)
