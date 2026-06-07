@@ -406,6 +406,67 @@ def fetch_horse_features(
         return pd.DataFrame()
 
 
+@st.cache_data(ttl=3600)
+def fetch_race_features(
+    race_date: str,
+    venue_code: str,
+    race_number: int,
+) -> pd.DataFrame:
+    """
+    features.training_data から指定レースの全馬特徴量を取得する。
+    """
+    project_id = get_project_id()
+    if not project_id:
+        return pd.DataFrame()
+    try:
+        client = _get_bq_client()
+        query = f"""
+        SELECT *
+        FROM `{project_id}.features.training_data`
+        WHERE race_date = '{race_date}'
+          AND venue_code = '{venue_code}'
+          AND race_number = {race_number}
+        ORDER BY horse_number
+        """
+        return client.query(query).to_dataframe()
+    except Exception as e:
+        logger.warning(f"race_features 取得失敗: {e}")
+        return pd.DataFrame()
+
+
+@st.cache_data(ttl=300)
+def fetch_race_place_odds(
+    race_date: str,
+    venue_code: str,
+    race_number: int,
+) -> pd.DataFrame:
+    """
+    predictions.daily_odds から指定レースの複勝オッズを取得する。
+    horse_number をキーとして place_odds_min を返す。
+    """
+    project_id = get_project_id()
+    if not project_id:
+        return pd.DataFrame()
+    try:
+        client = _get_bq_client()
+        query = f"""
+        SELECT
+            o.horse_number,
+            o.place_odds_min
+        FROM `{project_id}.predictions.daily_odds` o
+        JOIN `{project_id}.raw.race_info` r
+            ON o.race_id = r.race_id
+        WHERE o.race_date = '{race_date}'
+          AND r.venue_code = '{venue_code}'
+          AND r.race_number = {race_number}
+        ORDER BY o.horse_number
+        """
+        return client.query(query).to_dataframe()
+    except Exception as e:
+        logger.warning(f"race_place_odds 取得失敗: {e}")
+        return pd.DataFrame()
+
+
 def get_available_dates(days_back: int = 30) -> list[str]:
     """
     過去 N 日間で予測データが存在する日付リストを返す
