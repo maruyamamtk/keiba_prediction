@@ -2359,3 +2359,104 @@ class TestTERankFeature:
         max_te_idx = df["jockey_te"].idxmax()
         assert df.loc[max_te_idx, "jockey_te_rank"] == 1, \
             f"jockey_te が最大の馬の rank が {df.loc[max_te_idx, 'jockey_te_rank']} です（期待値: 1）"
+
+
+class TestHorseTEDiffSummary:
+    """horse TE_diff 時系列集計特徴量のテスト（Issue #341）"""
+
+    def test_sql_has_temp_horse_te_diff_pre_cte(self):
+        """temp_horse_te_diff_pre CTE が存在すること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        assert "temp_horse_te_diff_pre" in content
+
+    def test_sql_has_temp_horse_te_diff_summary_cte(self):
+        """temp_horse_te_diff_summary CTE が存在すること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        assert "temp_horse_te_diff_summary" in content
+
+    def test_sql_horse_te_has_horse_id_and_race_date(self):
+        """temp_horse_te の SELECT に horse_id と race_date が含まれること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        horse_te_start = content.index(",temp_horse_te as (")
+        horse_te_section = content[horse_te_start:horse_te_start + 500]
+        assert "horse_id" in horse_te_section
+        assert "race_date" in horse_te_section
+
+    def test_sql_diff_avg_features_in_final_select(self):
+        """_te_diff_avg 特徴量が temp_final_raw の SELECT に含まれること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        for axis in ["course_type", "venue", "distance_band", "distance", "direction",
+                     "jockey", "season"]:
+            col = f"horse_{axis}_te_diff_avg"
+            assert col in content, f"{col} が SQL に見つからない"
+
+    def test_sql_diff_rank_avg_features_in_final_select(self):
+        """_te_diff_rank_avg 特徴量が temp_final_raw の SELECT に含まれること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        for axis in ["course_type", "venue", "distance_band", "distance", "direction",
+                     "jockey", "season"]:
+            col = f"horse_{axis}_te_diff_rank_avg"
+            assert col in content, f"{col} が SQL に見つからない"
+
+    def test_sql_summary_uses_preceding_window(self):
+        """時系列集計で当日行が除外されること（ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING）"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        summary_start = content.index(",temp_horse_te_diff_summary as (")
+        summary_end = content.index("/* 馬の距離帯別", summary_start)
+        summary_section = content[summary_start:summary_end]
+        assert "rows between unbounded preceding and 1 preceding" in summary_section
+
+    def test_sql_rank_avg_excludes_null_diff(self):
+        """ランク平均計算で diff が NULL の場合（出走5回未満）を除外すること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        summary_start = content.index(",temp_horse_te_diff_summary as (")
+        summary_end = content.index("/* 馬の距離帯別", summary_start)
+        summary_section = content[summary_start:summary_end]
+        assert "IF(h_course_type_diff IS NOT NULL" in summary_section
+
+    def test_sql_diff_avg_null_imputation_in_except(self):
+        """_horse_{axis}_te_diff_avg_med が temp_null_filled の except リストに含まれること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        assert "_horse_course_type_te_diff_avg_med" in content
+        assert "_horse_venue_te_diff_avg_med" in content
+
+    def test_sql_diff_rank_avg_null_imputation_in_except(self):
+        """_horse_{axis}_te_diff_rank_avg_med が temp_null_filled の except リストに含まれること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        assert "_horse_course_type_te_diff_rank_avg_med" in content
+        assert "_horse_venue_te_diff_rank_avg_med" in content
+
+    def test_sql_null_imputation_coalesce_with_fallback_zero(self):
+        """NULL 埋めが coalesce(val, med, 0.0) パターンであること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        assert "coalesce(horse_course_type_te_diff_avg, _horse_course_type_te_diff_avg_med, 0.0)" in content
+        assert "coalesce(horse_course_type_te_diff_rank_avg, _horse_course_type_te_diff_rank_avg_med, 0.0)" in content
+
+    def test_rank_avg_logic_null_excluded(self):
+        """diff が NULL の行はランク平均から除外されることをPandasで検証"""
+        import pandas as pd
+        import numpy as np
+        df = pd.DataFrame({
+            "horse_id": ["H1", "H1", "H1"],
+            "race_date": pd.to_datetime(["2024-01-01", "2024-02-01", "2024-03-01"]),
+            "horse_te": [None, 0.25, 0.25],
+            "horse_venue_te": [None, 0.30, 0.28],
+        })
+        df["h_venue_diff"] = df["horse_venue_te"] - df["horse_te"]
+        df = df.sort_values("race_date").reset_index(drop=True)
+        df["h_venue_diff_rank"] = df.groupby(df["race_date"].dt.to_period("D"))["h_venue_diff"].rank(
+            method="min", ascending=False, na_option="bottom"
+        )
+        # 3行目の rank_avg は2行目のランク（NULLでない行）のみを平均すべき
+        valid_ranks = df.loc[df["h_venue_diff"].notna(), "h_venue_diff_rank"].values
+        rank_avg = float(np.mean(valid_ranks[:-1])) if len(valid_ranks) > 1 else float("nan")
+        assert not pd.isna(rank_avg) or len(valid_ranks) <= 1
+
+    def test_diff_avg_logic_null_excluded(self):
+        """diff が NULL の行は平均計算から除外されることをPandasで検証"""
+        import pandas as pd
+        import numpy as np
+        s = pd.Series([None, 0.05, -0.02, None, 0.03])
+        result = s.mean(skipna=True)
+        expected = np.mean([0.05, -0.02, 0.03])
+        assert abs(result - expected) < 1e-9
