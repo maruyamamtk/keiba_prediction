@@ -4,7 +4,7 @@
 
 ---
 
-## ステップ1: 特徴量パイプラインを実行（features.training_data を全件再生成）
+## ステップ1: pedigree 再構築 → 特徴量パイプラインを実行（features.training_data を全件再生成）
 
 ```bash
 .venv/bin/python scripts/generate_features.py \
@@ -14,9 +14,10 @@
     --truncate
 ```
 
+- スクリプト実行前に `raw.pedigree` を自動再構築します（母馬TE特徴量の dam_id 解決率を最大化）
 - `--truncate` は必須です。TRUNCATE TABLE → WRITE_TRUNCATE の冪等操作で重複を防ぎます。
 - SQL（`feature_query_raw.sql`）の変更を training_data に反映するため、全期間を再生成します
-- 完了ログから「Inserted X rows」を確認し、前回の行数（約50万行）と大きく乖離していないことを確認してください
+- 完了ログから「Inserted X rows」を確認し、前回の行数（約67万行）と大きく乖離していないことを確認してください
 - 完了まで10〜30分かかる場合があります
 
 ## ステップ2: ローカルでモデルを学習

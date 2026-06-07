@@ -242,6 +242,17 @@ def main() -> int:
     logger.info("=" * 50)
 
     try:
+        # pedigree 再構築（母馬TE特徴量の dam_id 解決率を最大化）
+        if not args.dry_run:
+            from src.automation.pipeline.full_load_pipeline import rebuild_pedigree_table
+            logger.info("raw.pedigree を再構築しています...")
+            stats = rebuild_pedigree_table(args.project_id)
+            logger.info(
+                f"raw.pedigree 再構築完了: "
+                f"dam_id解決率={stats['resolution_pct']}% "
+                f"({stats['dam_id_resolved']}/{stats['total']})"
+            )
+
         # パイプライン設定
         config = FeaturePipelineConfig(
             output_dataset=args.output_dataset,

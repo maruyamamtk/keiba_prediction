@@ -127,6 +127,13 @@ def download_model_from_gcs(gcs_uri: str, project_id: str, tmpdir: Path) -> tupl
 
 def run_feature_pipeline(project_id: str, start_date: str, end_date: str) -> None:
     logger.info(f"特徴量パイプライン実行: {start_date} 〜 {end_date}")
+    from src.automation.pipeline.full_load_pipeline import rebuild_pedigree_table
+    logger.info("raw.pedigree を再構築しています...")
+    stats = rebuild_pedigree_table(project_id)
+    logger.info(
+        f"raw.pedigree 再構築完了: dam_id解決率={stats['resolution_pct']}% "
+        f"({stats['dam_id_resolved']}/{stats['total']})"
+    )
     config = FeaturePipelineConfig()
     pipeline = FeaturePipeline(project_id, config)
     result = pipeline.run(start_date, end_date)
