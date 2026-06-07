@@ -188,3 +188,81 @@ class TestFetchHorseFeatures:
             result = dash_data.fetch_horse_features("2026-03-15", "09", 5, 3)
 
         assert result.empty
+
+
+class TestComputeRealtimePredictions:
+    """_compute_realtime_predictions のテスト"""
+
+    def _make_race_df(self, n: int = 5):
+        return pd.DataFrame({
+            "horse_number": list(range(1, n + 1)),
+            "horse_name": [f"馬{i}" for i in range(1, n + 1)],
+            **{f"feat_{i}": [float(j) for j in range(n)] for i in range(3)},
+        })
+
+    def test_returns_required_columns(self):
+        from src.dashboard.components.shap_explain import _compute_realtime_predictions
+
+        feature_names = ["feat_0", "feat_1", "feat_2"]
+        race_df = self._make_race_df(5)
+        ranker = MagicMock()
+        ranker.model.predict.return_value = np.array([0.9, 0.7, 0.5, 0.3, 0.1])
+
+        result = _compute_realtime_predictions(ranker, feature_names, race_df)
+
+        assert {"horse_number", "horse_name", "pred_score", "win_place_prob", "rank_in_race"}.issubset(result.columns)
+        assert len(result) == 5
+
+    def test_rank_is_assigned_by_descending_score(self):
+        from src.dashboard.components.shap_explain import _compute_realtime_predictions
+
+        feature_names = ["feat_0"]
+        race_df = pd.DataFrame({
+            "horse_number": [1, 2, 3],
+            "horse_name": ["馬A", "馬B", "馬C"],
+            "feat_0": [1.0, 2.0, 3.0],
+        })
+        ranker = MagicMock()
+        ranker.model.predict.return_value = np.array([0.3, 0.8, 0.5])
+
+        result = _compute_realtime_predictions(ranker, feature_names, race_df)
+
+        horse2 = result[result["horse_number"] == 2].iloc[0]
+        horse1 = result[result["horse_number"] == 1].iloc[0]
+        assert horse2["rank_in_race"] == 1  # スコア最大
+        assert horse1["rank_in_race"] == 3  # スコア最小
+
+    def test_win_place_prob_sums_to_n_places(self):
+        """win_place_prob の合計が min(3, 出走頭数) になる"""
+        from src.dashboard.components.shap_explain import _compute_realtime_predictions
+
+        feature_names = ["feat_0"]
+        race_df = pd.DataFrame({
+            "horse_number": list(range(1, 9)),
+            "horse_name": [f"馬{i}" for i in range(1, 9)],
+            "feat_0": [float(i) for i in range(8)],
+        })
+        ranker = MagicMock()
+        ranker.model.predict.return_value = np.array([0.9, 0.8, 0.7, 0.4, 0.3, 0.2, 0.1, 0.05])
+
+        result = _compute_realtime_predictions(ranker, feature_names, race_df)
+
+        assert result["win_place_prob"].sum() == pytest.approx(3.0, abs=1e-6)
+
+    def test_returns_nan_scores_when_no_features_available(self):
+        """モデル特徴量が race_df に存在しない場合は NaN を返す"""
+        from src.dashboard.components.shap_explain import _compute_realtime_predictions
+
+        feature_names = ["model_feat_A", "model_feat_B"]
+        race_df = pd.DataFrame({
+            "horse_number": [1, 2],
+            "horse_name": ["馬A", "馬B"],
+            "unrelated_col": [1.0, 2.0],
+        })
+        ranker = MagicMock()
+
+        result = _compute_realtime_predictions(ranker, feature_names, race_df)
+
+        assert len(result) == 2
+        assert result["pred_score"].isna().all()
+        assert result["win_place_prob"].isna().all()

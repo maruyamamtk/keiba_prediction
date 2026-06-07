@@ -235,3 +235,79 @@ class TestVenueMapping:
         assert BET_TYPE_LABELS["wide"] == "ワイド"
         assert BET_TYPE_LABELS["umaren"] == "馬連"
         assert BET_TYPE_LABELS["sanrenpuku"] == "三連複"
+
+
+class TestFetchRaceFeatures:
+    """fetch_race_features のテスト"""
+
+    def test_returns_all_horses_in_race(self):
+        mock_df = pd.DataFrame({
+            "race_date": ["2026-03-15"] * 3,
+            "venue_code": ["09"] * 3,
+            "race_number": [5] * 3,
+            "horse_number": [1, 2, 3],
+            "horse_name": ["馬A", "馬B", "馬C"],
+            "feat_0": [1.0, 2.0, 3.0],
+        })
+
+        with patch("src.dashboard.data._get_bq_client") as mock_client_fn:
+            mock_client = MagicMock()
+            mock_client.query.return_value.to_dataframe.return_value = mock_df
+            mock_client_fn.return_value = mock_client
+
+            from src.dashboard import data as dash_data
+            dash_data.fetch_race_features.clear()
+            result = dash_data.fetch_race_features("2026-03-15", "09", 5)
+
+        assert len(result) == 3
+        assert list(result["horse_number"]) == [1, 2, 3]
+
+    def test_returns_empty_on_error(self):
+        with patch("src.dashboard.data._get_bq_client") as mock_client_fn:
+            mock_client_fn.side_effect = Exception("BQ error")
+
+            from src.dashboard import data as dash_data
+            dash_data.fetch_race_features.clear()
+            result = dash_data.fetch_race_features("2026-03-15", "09", 5)
+
+        assert result.empty
+
+    def test_returns_empty_when_no_project_id(self):
+        with patch("src.dashboard.data.get_project_id", return_value=""):
+            from src.dashboard import data as dash_data
+            dash_data.fetch_race_features.clear()
+            result = dash_data.fetch_race_features("2026-03-15", "09", 5)
+
+        assert result.empty
+
+
+class TestFetchRacePlaceOdds:
+    """fetch_race_place_odds のテスト"""
+
+    def test_returns_place_odds_per_horse(self):
+        mock_df = pd.DataFrame({
+            "horse_number": [1, 2, 3],
+            "place_odds_min": [2.5, 4.0, 6.0],
+        })
+
+        with patch("src.dashboard.data._get_bq_client") as mock_client_fn:
+            mock_client = MagicMock()
+            mock_client.query.return_value.to_dataframe.return_value = mock_df
+            mock_client_fn.return_value = mock_client
+
+            from src.dashboard import data as dash_data
+            dash_data.fetch_race_place_odds.clear()
+            result = dash_data.fetch_race_place_odds("2026-03-15", "09", 5)
+
+        assert len(result) == 3
+        assert result.iloc[0]["place_odds_min"] == pytest.approx(2.5)
+
+    def test_returns_empty_on_error(self):
+        with patch("src.dashboard.data._get_bq_client") as mock_client_fn:
+            mock_client_fn.side_effect = Exception("BQ error")
+
+            from src.dashboard import data as dash_data
+            dash_data.fetch_race_place_odds.clear()
+            result = dash_data.fetch_race_place_odds("2026-03-15", "09", 5)
+
+        assert result.empty

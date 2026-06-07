@@ -20,9 +20,9 @@ import streamlit as st
 from src.dashboard.feature_labels import to_label
 from src.dashboard.data import (
     VENUE_CODE_TO_NAME,
-    fetch_horse_features,
-    fetch_race_detail,
+    fetch_race_features,
     fetch_race_list,
+    fetch_race_place_odds,
     load_lgbm_ranker_for_shap,
 )
 
@@ -64,23 +64,9 @@ def render(race_date: str) -> None:
         "レース番号", race_numbers, format_func=lambda r: f"{r}R", key="shap_race"
     )
 
-    detail_df = fetch_race_detail(race_date, selected_venue_code, int(selected_race))
-    if detail_df.empty:
-        st.warning("詳細データを取得できませんでした。")
-        return
-
-    horse_options = {
-        f"{int(row['horse_number'])}番 {row['horse_name']} (複勝率 {row['win_place_prob']*100:.1f}%)": int(row["horse_number"])
-        for _, row in detail_df.sort_values("rank_in_race").iterrows()
-    }
-    selected_horse_label = col3.selectbox("馬", list(horse_options.keys()), key="shap_horse")
-    selected_horse_number = horse_options[selected_horse_label]
-
-    selected_horse_row = detail_df[detail_df["horse_number"] == selected_horse_number].iloc[0]
-
     st.divider()
 
-    # ── 2. SHAP計算 ──────────────────────────────────────────────────────
+    # ── 2. モデル読み込み & 全馬リアルタイム計算 ─────────────────────────
     with st.spinner("モデルを読み込み中...（初回のみ時間がかかります）"):
         ranker, feature_names = load_lgbm_ranker_for_shap()
 
@@ -88,24 +74,53 @@ def render(race_date: str) -> None:
         st.error("モデルの読み込みに失敗しました。GCS 上のモデルファイルを確認してください。")
         return
 
-    with st.spinner("特徴量を取得し SHAP 値を計算中..."):
-        horse_df = fetch_horse_features(
-            race_date, selected_venue_code, int(selected_race), selected_horse_number
-        )
+    with st.spinner("全馬の特徴量を取得中..."):
+        race_df = fetch_race_features(race_date, selected_venue_code, int(selected_race))
 
-    if horse_df.empty:
+    if race_df.empty:
         st.warning(
-            "features.training_data に該当馬のデータが見つかりませんでした。"
+            "features.training_data に該当レースのデータが見つかりませんでした。"
             " 特徴量生成バッチが完了しているか確認してください。"
         )
         return
+
+    # 全馬のスコアをリアルタイム計算
+    realtime_df = _compute_realtime_predictions(ranker, feature_names, race_df)
+
+    # 複勝オッズをdaily_oddsから取得してJOIN
+    place_odds_df = fetch_race_place_odds(race_date, selected_venue_code, int(selected_race))
+    if not place_odds_df.empty:
+        realtime_df = realtime_df.merge(
+            place_odds_df[["horse_number", "place_odds_min"]],
+            on="horse_number", how="left",
+        )
+        realtime_df["place_odds"] = realtime_df["place_odds_min"]
+        realtime_df["expected_return"] = (
+            realtime_df["win_place_prob"] * realtime_df["place_odds_min"]
+        ).round(3)
+    else:
+        realtime_df["place_odds"] = float("nan")
+        realtime_df["expected_return"] = float("nan")
+
+    # 馬選択プルダウン（リアルタイム計算値で表示）
+    horse_options = {
+        f"{int(row['horse_number'])}番 {row['horse_name']} (複勝率 {row['win_place_prob']*100:.1f}%)": int(row["horse_number"])
+        for _, row in realtime_df.sort_values("rank_in_race").iterrows()
+    }
+    selected_horse_label = col3.selectbox("馬", list(horse_options.keys()), key="shap_horse")
+    selected_horse_number = horse_options[selected_horse_label]
+
+    selected_horse_row = realtime_df[realtime_df["horse_number"] == selected_horse_number].iloc[0]
+
+    # ── 3. 選択馬のSHAP計算 ──────────────────────────────────────────────
+    horse_df = race_df[race_df["horse_number"] == selected_horse_number]
 
     shap_df, error_msg = _compute_shap(ranker, horse_df, feature_names)
     if shap_df is None:
         st.error(f"SHAP 値の計算に失敗しました。\n\n```\n{error_msg}\n```")
         return
 
-    # ── 3. 結果表示 ─────────────────────────────────────────────────────
+    # ── 4. 結果表示 ─────────────────────────────────────────────────────
     _render_horse_header(selected_horse_row, selected_venue_name, int(selected_race))
     _render_waterfall(shap_df, top_n=20)
     _render_shap_table(shap_df)
@@ -114,6 +129,39 @@ def render(race_date: str) -> None:
 # ---------------------------------------------------------------------------
 # 内部関数
 # ---------------------------------------------------------------------------
+
+def _compute_realtime_predictions(ranker, feature_names: list[str], race_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    レース全馬の pred_score・win_place_prob・rank_in_race をリアルタイム計算する。
+
+    Returns:
+        horse_number / horse_name / pred_score / win_place_prob / rank_in_race を持つ DataFrame
+    """
+    from src.models.predict import _scores_to_place_prob
+
+    available = [f for f in feature_names if f in race_df.columns]
+    if not available:
+        result = race_df[["horse_number", "horse_name"]].copy()
+        result["pred_score"] = float("nan")
+        result["win_place_prob"] = float("nan")
+        result["rank_in_race"] = range(1, len(result) + 1)
+        return result
+
+    X = race_df[available].copy()
+    for col in X.select_dtypes(include=["object", "category"]).columns:
+        X[col] = pd.factorize(X[col])[0].astype(float)
+    X_np = X.to_numpy(dtype=float, na_value=0.0)
+
+    scores = ranker.model.predict(X_np)
+
+    probs = _scores_to_place_prob(scores, n_places=3)
+
+    result = race_df[["horse_number", "horse_name"]].copy()
+    result["pred_score"] = scores
+    result["win_place_prob"] = probs
+    result["rank_in_race"] = pd.Series(scores).rank(ascending=False, method="min").astype(int).values
+    return result.reset_index(drop=True)
+
 
 def _compute_shap(ranker, horse_df: pd.DataFrame, feature_names: list[str]):
     """
