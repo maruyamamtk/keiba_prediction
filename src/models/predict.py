@@ -303,13 +303,13 @@ def normalize_win_place_prob(df: pd.DataFrame, temperature: float = 1.5) -> pd.D
         win_place_prob カラムを上書きした DataFrame（元の DataFrame は変更しない）
     """
     df = df.copy()
-    probs = np.empty(len(df), dtype=float)
-    for _, group in df.groupby("race_id"):
-        scores = group["pred_score"].values
+
+    def _softmax(scores: pd.Series) -> pd.Series:
         shifted = scores - scores.max()
-        exp_scores = np.exp(shifted / temperature)
-        probs[group.index] = exp_scores / exp_scores.sum()
-    df["win_place_prob"] = probs
+        exp_s = np.exp(shifted / temperature)
+        return exp_s / exp_s.sum()
+
+    df["win_place_prob"] = df.groupby("race_id")["pred_score"].transform(_softmax)
     return df
 
 
