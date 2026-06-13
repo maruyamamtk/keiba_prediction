@@ -333,10 +333,10 @@ class FeaturePipeline:
 
     def run_te_daily(self, as_of_date: str) -> dict:
         """
-        指定日の entity_te_daily を計算して features.entity_te_daily に WRITE_APPEND する
+        指定日の entity_te_daily を計算して features.entity_te_daily に保存する
 
-        te_daily_query.sql を GROUP BY で実行し、事前計算された TE 値を保存する。
-        エンティティ（騎手・調教師・種牡馬・母馬・馬）× 条件ごとに 1 行を追記する。
+        パーティション単位の WRITE_TRUNCATE を使用するため冪等性がある。
+        同じ日付で複数回実行しても重複行は発生しない。
 
         Args:
             as_of_date: TE計算対象日 (YYYY-MM-DD)。この日以前のデータを使って計算する。
@@ -357,11 +357,25 @@ class FeaturePipeline:
         sql_template = TE_DAILY_SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
         sql = sql_template.format(project_id=self.project_id, target_date=as_of_date)
 
-        table_ref = f"{self.project_id}.features.entity_te_daily"
-        logger.info(f"entity_te_daily 計算開始: {as_of_date}")
+        # パーティション単位で上書き（冪等性確保）: entity_te_daily$YYYYMMDD
+        partition_suffix = as_of_date.replace("-", "")
+        partition_ref = f"{self.project_id}.features.entity_te_daily${partition_suffix}"
+        logger.info(f"entity_te_daily 計算開始: {as_of_date} (partition: {partition_suffix})")
 
-        inserted_rows = self._execute_query_to_table(
-            sql, table_ref, write_truncate=False
+        def execute():
+            job_config = bigquery.QueryJobConfig(
+                destination=partition_ref,
+                write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
+            )
+            job = self.client.query(sql, job_config=job_config)
+            result = job.result()
+            return result.total_rows
+
+        inserted_rows = retry_with_backoff(
+            func=execute,
+            max_retries=self.config.max_retries,
+            base_delay=self.config.retry_base_delay,
+            max_delay=self.config.retry_max_delay,
         )
 
         elapsed = time.time() - start_time
@@ -430,15 +444,13 @@ class FeaturePipeline:
         self._validate_date(target_date)
         try:
             query = f"""
-            SELECT COUNT(*) as cnt
+            SELECT 1
             FROM `{self.project_id}.features.entity_te_daily`
             WHERE as_of_date = DATE('{target_date}')
             LIMIT 1
             """
             result = self.client.query(query).result()
-            for row in result:
-                return row["cnt"] > 0
-            return False
+            return result.total_rows > 0
         except Exception as e:
             logger.warning(f"entity_te_daily の存在確認に失敗: {e}")
             return False

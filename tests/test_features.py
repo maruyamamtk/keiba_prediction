@@ -2970,9 +2970,9 @@ class TestHasEntityTeForDate:
     def test_returns_true_when_data_exists(self, mock_bq_class):
         mock_client = MagicMock()
         mock_bq_class.return_value = mock_client
-        mock_row = MagicMock()
-        mock_row.__getitem__ = lambda self, key: 100
-        mock_client.query.return_value.result.return_value = iter([mock_row])
+        mock_result = MagicMock()
+        mock_result.total_rows = 1
+        mock_client.query.return_value.result.return_value = mock_result
 
         pipeline = FeaturePipeline("test-project")
         assert pipeline.has_entity_te_for_date("2026-06-14") is True
@@ -2981,9 +2981,9 @@ class TestHasEntityTeForDate:
     def test_returns_false_when_no_data(self, mock_bq_class):
         mock_client = MagicMock()
         mock_bq_class.return_value = mock_client
-        mock_row = MagicMock()
-        mock_row.__getitem__ = lambda self, key: 0
-        mock_client.query.return_value.result.return_value = iter([mock_row])
+        mock_result = MagicMock()
+        mock_result.total_rows = 0
+        mock_client.query.return_value.result.return_value = mock_result
 
         pipeline = FeaturePipeline("test-project")
         assert pipeline.has_entity_te_for_date("2026-06-14") is False
@@ -2996,3 +2996,24 @@ class TestHasEntityTeForDate:
 
         pipeline = FeaturePipeline("test-project")
         assert pipeline.has_entity_te_for_date("2026-06-14") is False
+
+    @patch("src.ml.features.feature_pipeline.bigquery.Client")
+    def test_run_te_daily_uses_partition_write_truncate(self, mock_bq_class):
+        """run_te_daily がパーティション単位の WRITE_TRUNCATE を使用することを確認（冪等性）"""
+        from unittest.mock import call
+        from google.cloud import bigquery as bq
+        mock_client = MagicMock()
+        mock_bq_class.return_value = mock_client
+        mock_job = MagicMock()
+        mock_result = MagicMock()
+        mock_result.total_rows = 50
+        mock_job.result.return_value = mock_result
+        mock_client.query.return_value = mock_job
+
+        pipeline = FeaturePipeline("test-project")
+        pipeline.run_te_daily("2026-06-14")
+
+        _, kwargs = mock_client.query.call_args
+        job_config = kwargs["job_config"]
+        assert job_config.write_disposition == bq.WriteDisposition.WRITE_TRUNCATE
+        assert "20260614" in str(job_config.destination)
