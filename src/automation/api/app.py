@@ -22,6 +22,8 @@ from datetime import date
 
 from zoneinfo import ZoneInfo
 
+from typing import Optional
+
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
@@ -608,7 +610,10 @@ async def generate_features_async(
 
 
 class TeDailyRequest(BaseModel):
-    as_of_date: str = Field(..., description="TE計算対象日 (YYYY-MM-DD)")
+    as_of_date: Optional[str] = Field(
+        default=None,
+        description="TE計算対象日 (YYYY-MM-DD)。未指定時は実行日（JST当日）を使用",
+    )
 
 
 class TeDailyResponse(BaseModel):
@@ -625,9 +630,13 @@ async def run_te_daily(request: TeDailyRequest):
 
     指定日時点のエンティティ別 Target Encoding 値を GROUP BY で計算し、
     features.entity_te_daily に追記する。
-    毎朝 7:45 JST に Cloud Scheduler から呼び出す。
+    毎朝 7:45 JST に Cloud Scheduler から呼び出す。as_of_date 省略時は当日を使用。
     """
-    logger.info(f"entity_te_daily バッチ開始: {request.as_of_date}")
+    import datetime as _dt
+    as_of_date = request.as_of_date or _dt.datetime.now(_dt.timezone(
+        _dt.timedelta(hours=9)
+    )).date().isoformat()
+    logger.info(f"entity_te_daily バッチ開始: {as_of_date}")
     try:
         project_id = os.environ.get("GCP_PROJECT_ID")
         if not project_id:
@@ -636,7 +645,7 @@ async def run_te_daily(request: TeDailyRequest):
         from src.ml.features.feature_pipeline import FeaturePipeline
 
         pipeline = FeaturePipeline(project_id=project_id)
-        result = pipeline.run_te_daily(request.as_of_date)
+        result = pipeline.run_te_daily(as_of_date)
 
         logger.info(
             f"entity_te_daily バッチ完了: inserted={result['inserted_rows']}, "
