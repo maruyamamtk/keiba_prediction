@@ -92,6 +92,10 @@ STRATEGY_SCHEDULE="30 8 * * *"
 RETRAIN_JOB_NAME="weekly-model-retrain"
 RETRAIN_SCHEDULE="0 8 * * 1"
 RETRAIN_CLOUD_RUN_JOB_NAME="keiba-model-retrain"
+# entity_te_daily 事前計算ジョブ（毎日 AM 7:45）
+# race-day-predict(AM 8:00) の前に TE 値を計算・保存して予測を高速化する
+TE_DAILY_JOB_NAME="te-daily-batch"
+TE_DAILY_SCHEDULE="45 7 * * *"
 # IPAT自動購入ジョブ（土日 8:00〜17:00 の5分おき）
 # race-day-strategy(AM 8:30) 完了後に稼働し、発走5分前のレースを自動購入する
 PURCHASE_JOB_NAME="race-day-purchase"
@@ -154,6 +158,9 @@ log_info "投資戦略URI: ${STRATEGY_TARGET_URI}"
 # Cloud Run Jobs を Cloud Run API 経由で実行する（OAuth2 スコープが必要）
 RETRAIN_JOBS_URI="https://${GCP_REGION}-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/${GCP_PROJECT_ID}/jobs/${RETRAIN_CLOUD_RUN_JOB_NAME}:run"
 log_info "週次再学習Jobs起動URI: ${RETRAIN_JOBS_URI}"
+# ターゲットURL（entity_te_daily 事前計算: 予測高速化のため TE 値を事前計算）
+TE_DAILY_TARGET_URI="${SERVICE_URL}/api/v1/features/te-daily"
+log_info "TE_Daily URI: ${TE_DAILY_TARGET_URI}"
 # ターゲットURL（IPAT自動購入: 発走5分前レースを自動購入）
 PURCHASE_TARGET_URI="${SERVICE_URL}/api/v1/purchase/daily"
 log_info "IPAT自動購入URI: ${PURCHASE_TARGET_URI}"
@@ -350,6 +357,16 @@ create_or_update_job \
     "${PURCHASE_SCHEDULE}" \
     "${PURCHASE_TARGET_URI}" \
     "180s"
+
+# 4-8. entity_te_daily 事前計算ジョブ（te-daily-batch）
+# 毎日 AM 7:45 に entity_te_daily を計算・保存して race-day-predict(AM 8:00) を高速化する
+# attempt-deadline=900s: BigQuery GROUP BY 集計（全エンティティ）の余裕を確保
+log_info "--- entity_te_daily 事前計算ジョブの設定 ---"
+create_or_update_job \
+    "${TE_DAILY_JOB_NAME}" \
+    "${TE_DAILY_SCHEDULE}" \
+    "${TE_DAILY_TARGET_URI}" \
+    "900s"
 
 # ========================================
 # 5. ジョブの確認
