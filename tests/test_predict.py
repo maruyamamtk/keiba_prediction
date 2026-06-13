@@ -615,29 +615,40 @@ class TestNormalizeWinPlaceProb:
     """normalize_win_place_prob のテスト"""
 
     def _make_df(self, race_scores: dict[str, list]) -> pd.DataFrame:
-        """race_id → pred_score のリストからテスト用DataFrameを生成"""
         rows = []
         for race_id, scores in race_scores.items():
             for i, s in enumerate(scores):
                 rows.append({"race_id": race_id, "pred_score": float(s), "horse_number": i + 1})
         return pd.DataFrame(rows)
 
-    def test_probabilities_sum_to_one_per_race(self):
-        """各レース内でwin_place_probの合計が1.0になること"""
-        df = self._make_df({"R1": [2.0, 1.0, 0.5, 0.1], "R2": [3.0, 0.0, -1.0]})
-        result = normalize_win_place_prob(df)
-        for race_id, group in result.groupby("race_id"):
-            total = group["win_place_prob"].sum()
-            assert abs(total - 1.0) < 1e-9, f"race {race_id}: sum={total}"
+    def test_probabilities_sum_to_n_places_per_race(self):
+        """各レース内でwin_place_probの合計がmin(3, 出走頭数)になること"""
+        # 4頭レース → 合計 3.0
+        df4 = self._make_df({"R1": [2.0, 1.0, 0.5, 0.1]})
+        result4 = normalize_win_place_prob(df4)
+        assert abs(result4["win_place_prob"].sum() - 3.0) < 1e-6
 
-    def test_no_hard_cap_at_one(self):
-        """実運用スコア差の範囲ではwin_place_probが1.0にならないこと"""
-        # LambdaRankの実スコア差は数点程度（100点差のような極端ケースは起きない）
-        df = self._make_df({"R1": [3.0, 1.0, 0.5, 0.1]})
+        # 2頭レース → 合計 min(3,2) = 2.0
+        df2 = self._make_df({"R2": [1.0, 0.0]})
+        result2 = normalize_win_place_prob(df2)
+        assert abs(result2["win_place_prob"].sum() - 2.0) < 1e-6
+
+    def test_each_prob_at_most_one(self):
+        """各馬のwin_place_probが1.0を超えないこと"""
+        df = self._make_df({"R1": [5.0, 1.0, 0.5, 0.1, 0.0]})
         result = normalize_win_place_prob(df)
-        max_prob = result["win_place_prob"].max()
-        # 合計=1.0 かつ残り3頭も>0 なので最大でも1.0未満
-        assert max_prob < 1.0
+        assert (result["win_place_prob"] <= 1.0 + 1e-9).all()
+
+    def test_temperature_softens_top_horse_prob(self):
+        """temperature > 1.0 で上位馬の確率が低下すること（過信抑制）"""
+        df = self._make_df({"R1": [3.0, 0.5, 0.0, 0.0, 0.0]})
+        result_default = normalize_win_place_prob(df, temperature=1.0)
+        result_tempered = normalize_win_place_prob(df, temperature=1.5)
+        # temperature=1.0（旧アルゴリズム相当）より temperature=1.5 の方が
+        # 上位馬のprobが低く、他馬に分散される
+        top_prob_default = result_default.sort_values("pred_score", ascending=False)["win_place_prob"].iloc[0]
+        top_prob_tempered = result_tempered.sort_values("pred_score", ascending=False)["win_place_prob"].iloc[0]
+        assert top_prob_tempered <= top_prob_default
 
     def test_higher_score_gets_higher_prob(self):
         """スコアが高い馬ほど高いwin_place_probを得ること"""
@@ -648,11 +659,16 @@ class TestNormalizeWinPlaceProb:
             assert probs[i] >= probs[i + 1]
 
     def test_equal_scores_give_equal_probs(self):
-        """スコアが同一の場合、win_place_probが均等になること"""
-        df = self._make_df({"R1": [1.0, 1.0, 1.0]})
+        """スコアが同一の場合、win_place_probが均等（k/n）になること"""
+        # 4頭均等 → 各馬 3/4 = 0.75
+        df = self._make_df({"R1": [1.0, 1.0, 1.0, 1.0]})
         result = normalize_win_place_prob(df)
-        probs = result["win_place_prob"].values
-        assert np.allclose(probs, 1 / 3)
+        assert np.allclose(result["win_place_prob"].values, 0.75)
+
+        # 3頭均等 → 各馬 3/3 = 1.0
+        df3 = self._make_df({"R2": [1.0, 1.0, 1.0]})
+        result3 = normalize_win_place_prob(df3)
+        assert np.allclose(result3["win_place_prob"].values, 1.0)
 
     def test_original_df_not_modified(self):
         """入力DataFrameが変更されないこと（コピーを返すこと）"""
@@ -664,22 +680,19 @@ class TestNormalizeWinPlaceProb:
 
     def test_multiple_races_independent(self):
         """複数レースが独立して正規化されること"""
-        df = self._make_df({"R1": [2.0, 1.0], "R2": [10.0, 0.0]})
+        df = self._make_df({"R1": [2.0, 1.0, 0.0, 0.0], "R2": [5.0, 0.0, 0.0, 0.0]})
         result = normalize_win_place_prob(df)
-        r1_probs = result[result["race_id"] == "R1"]["win_place_prob"]
-        r2_probs = result[result["race_id"] == "R2"]["win_place_prob"]
-        assert abs(r1_probs.sum() - 1.0) < 1e-9
-        assert abs(r2_probs.sum() - 1.0) < 1e-9
-        # R2の最高スコアはR1より高いが、レース内正規化なので独立して評価される
-        r2_max = r2_probs.max()
-        assert r2_max < 1.0
+        r1_sum = result[result["race_id"] == "R1"]["win_place_prob"].sum()
+        r2_sum = result[result["race_id"] == "R2"]["win_place_prob"].sum()
+        assert abs(r1_sum - 3.0) < 1e-6
+        assert abs(r2_sum - 3.0) < 1e-6
 
     def test_temperature_effect(self):
-        """温度パラメータが大きいほど確率が均一化されること"""
-        df = self._make_df({"R1": [2.0, 0.0]})
-        result_low_temp = normalize_win_place_prob(df, temperature=0.5)
-        result_high_temp = normalize_win_place_prob(df, temperature=5.0)
-        # 低温度の方が最大確率が高い（より偏る）
-        max_low = result_low_temp["win_place_prob"].max()
-        max_high = result_high_temp["win_place_prob"].max()
-        assert max_low > max_high
+        """温度パラメータが大きいほど下位馬への確率が増えること"""
+        df = self._make_df({"R1": [3.0, 0.0, 0.0, 0.0, 0.0]})
+        result_low = normalize_win_place_prob(df, temperature=0.5)
+        result_high = normalize_win_place_prob(df, temperature=5.0)
+        # 低温度の方が最下位馬の確率が低い（より上位集中）
+        min_low = result_low.sort_values("pred_score")["win_place_prob"].iloc[0]
+        min_high = result_high.sort_values("pred_score")["win_place_prob"].iloc[0]
+        assert min_low < min_high
