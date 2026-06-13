@@ -36,6 +36,12 @@ RETRYABLE_EXCEPTIONS = (
 
 # SQLテンプレートファイルのパス
 SQL_TEMPLATE_PATH = Path(__file__).parent / "feature_query_raw.sql"
+TE_DAILY_SQL_TEMPLATE_PATH = Path(__file__).parent / "te_daily_query.sql"
+PREDICT_TE_SQL_TEMPLATE_PATH = Path(__file__).parent / "feature_query_predict_te.sql"
+
+# generate_predict_query() で使用する文字列置換マーカー
+_TE_BLOCK_START = "/* TEスムージング用グローバル平均（全期間3着以内率） */"
+_TE_BLOCK_END = "\n/* 馬の距離帯別・距離別 TE 計算の元データ"
 
 
 def retry_with_backoff(
@@ -324,6 +330,130 @@ class FeaturePipeline:
             パラメータ埋め込み済みのSQL文字列
         """
         return self._build_query(start_date, end_date)
+
+    def run_te_daily(self, as_of_date: str) -> dict:
+        """
+        指定日の entity_te_daily を計算して features.entity_te_daily に保存する
+
+        パーティション単位の WRITE_TRUNCATE を使用するため冪等性がある。
+        同じ日付で複数回実行しても重複行は発生しない。
+
+        Args:
+            as_of_date: TE計算対象日 (YYYY-MM-DD)。この日以前のデータを使って計算する。
+
+        Returns:
+            処理結果の統計（inserted_rows, elapsed_time 等）
+        """
+        import time
+        self._validate_date(as_of_date)
+
+        start_time = time.time()
+
+        if not TE_DAILY_SQL_TEMPLATE_PATH.exists():
+            raise FileNotFoundError(
+                f"te_daily_query.sql が見つかりません: {TE_DAILY_SQL_TEMPLATE_PATH}"
+            )
+
+        sql_template = TE_DAILY_SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        sql = sql_template.format(project_id=self.project_id, target_date=as_of_date)
+
+        # パーティション単位で上書き（冪等性確保）: entity_te_daily$YYYYMMDD
+        partition_suffix = as_of_date.replace("-", "")
+        partition_ref = f"{self.project_id}.features.entity_te_daily${partition_suffix}"
+        logger.info(f"entity_te_daily 計算開始: {as_of_date} (partition: {partition_suffix})")
+
+        def execute():
+            job_config = bigquery.QueryJobConfig(
+                destination=partition_ref,
+                write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
+            )
+            job = self.client.query(sql, job_config=job_config)
+            result = job.result()
+            return result.total_rows
+
+        inserted_rows = retry_with_backoff(
+            func=execute,
+            max_retries=self.config.max_retries,
+            base_delay=self.config.retry_base_delay,
+            max_delay=self.config.retry_max_delay,
+        )
+
+        elapsed = time.time() - start_time
+        result = {
+            "as_of_date": as_of_date,
+            "inserted_rows": inserted_rows,
+            "elapsed_time": elapsed,
+        }
+        logger.info(f"entity_te_daily 計算完了: {result}")
+        return result
+
+    def generate_predict_query(self, target_date: str) -> str:
+        """
+        当日予測向け軽量クエリを生成して返す（デバッグ・確認用）
+
+        feature_query_raw.sql をベースに以下の変換を行う:
+          1. 日付フィルタ (BETWEEN '{start_date}' AND '{end_date}') を = date('{target_date}') に置換
+          2. 重いTE計算ブロック（temp_global_mean_te〜temp_horse_te_diff_summary）を
+             entity_te_daily JOIN 版（feature_query_predict_te.sql）に差し替える
+
+        Args:
+            target_date: 予測対象日 (YYYY-MM-DD)
+
+        Returns:
+            パラメータ埋め込み済みのSQL文字列
+        """
+        self._validate_date(target_date)
+        if not PREDICT_TE_SQL_TEMPLATE_PATH.exists():
+            raise FileNotFoundError(
+                f"feature_query_predict_te.sql が見つかりません: {PREDICT_TE_SQL_TEMPLATE_PATH}"
+            )
+
+        raw_sql = self.sql_template
+
+        # Step 1: 日付フィルタを target_date 単日指定に置換（2箇所存在する）
+        raw_sql = raw_sql.replace(
+            "BETWEEN '{start_date}' AND '{end_date}'",
+            "= date('{target_date}')",
+        )
+
+        # Step 2: TE計算ブロックを entity_te_daily JOIN 版に差し替える
+        start_idx = raw_sql.find(_TE_BLOCK_START)
+        end_idx = raw_sql.find(_TE_BLOCK_END)
+        if start_idx == -1 or end_idx == -1:
+            raise ValueError(
+                "feature_query_raw.sql 内の TE ブロックマーカーが見つかりません。"
+                f"start={_TE_BLOCK_START!r}, end={_TE_BLOCK_END!r}"
+            )
+
+        predict_te_sql = PREDICT_TE_SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        raw_sql = raw_sql[:start_idx] + predict_te_sql + raw_sql[end_idx:]
+
+        # Step 3: project_id と target_date を埋め込む
+        return raw_sql.format(project_id=self.project_id, target_date=target_date)
+
+    def has_entity_te_for_date(self, target_date: str) -> bool:
+        """
+        指定日の entity_te_daily が存在するか確認する
+
+        Args:
+            target_date: 確認対象日 (YYYY-MM-DD)
+
+        Returns:
+            存在する場合 True
+        """
+        self._validate_date(target_date)
+        try:
+            query = f"""
+            SELECT 1
+            FROM `{self.project_id}.features.entity_te_daily`
+            WHERE as_of_date = DATE('{target_date}')
+            LIMIT 1
+            """
+            result = self.client.query(query).result()
+            return result.total_rows > 0
+        except Exception as e:
+            logger.warning(f"entity_te_daily の存在確認に失敗: {e}")
+            return False
 
 
 def main():

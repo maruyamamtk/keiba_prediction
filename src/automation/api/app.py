@@ -607,6 +607,55 @@ async def generate_features_async(
     }
 
 
+class TeDailyRequest(BaseModel):
+    as_of_date: str = Field(..., description="TE計算対象日 (YYYY-MM-DD)")
+
+
+class TeDailyResponse(BaseModel):
+    status: str
+    as_of_date: str
+    inserted_rows: int
+    elapsed_time: float
+
+
+@app.post("/api/v1/features/te-daily", response_model=TeDailyResponse)
+async def run_te_daily(request: TeDailyRequest):
+    """
+    entity_te_daily 日次バッチを同期実行
+
+    指定日時点のエンティティ別 Target Encoding 値を GROUP BY で計算し、
+    features.entity_te_daily に追記する。
+    毎朝 7:45 JST に Cloud Scheduler から呼び出す。
+    """
+    logger.info(f"entity_te_daily バッチ開始: {request.as_of_date}")
+    try:
+        project_id = os.environ.get("GCP_PROJECT_ID")
+        if not project_id:
+            raise HTTPException(status_code=500, detail="GCP_PROJECT_IDが未設定です")
+
+        from src.ml.features.feature_pipeline import FeaturePipeline
+
+        pipeline = FeaturePipeline(project_id=project_id)
+        result = pipeline.run_te_daily(request.as_of_date)
+
+        logger.info(
+            f"entity_te_daily バッチ完了: inserted={result['inserted_rows']}, "
+            f"elapsed={result['elapsed_time']:.2f}s"
+        )
+        return TeDailyResponse(
+            status="success",
+            as_of_date=result["as_of_date"],
+            inserted_rows=result["inserted_rows"],
+            elapsed_time=round(result["elapsed_time"], 2),
+        )
+    except ValueError as e:
+        logger.warning(f"バリデーションエラー: {e}")
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        logger.error(f"entity_te_daily バッチエラー: {e}")
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
 def _get_latest_model_from_gcs(project_id: str, bucket_suffix: str = "keiba-models", prefix: str = "lgbm_ranker/") -> str:
     """
     GCSから最新のモデルファイルURIを取得する

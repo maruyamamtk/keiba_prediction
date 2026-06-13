@@ -9,6 +9,7 @@
 | ジョブ名 | スケジュール (JST) | cron式 | ターゲットエンドポイント | 用途 |
 |---------|-----------------|--------|----------------------|------|
 | `daily-data-pipeline` | 毎日 AM 6:00 | `0 6 * * *` | `POST /api/v1/load/daily/async` | JRDBデータロード |
+| `te-daily-batch` | 毎日 AM 7:45 | `45 7 * * *` | `POST /api/v1/features/te-daily` | entity_te_daily 計算・追記（予測高速化） |
 | `race-day-predict` | 毎日 AM 8:00 | `0 8 * * *` | `POST /api/v1/predict/daily` | レース予測・BQ/GCS保存 |
 | `race-day-odds-scrape` | 毎日 AM 8:15 | `15 8 * * *` | `POST /api/v1/odds/scrape` | netkeibaオッズ取得 |
 | `race-day-strategy` | 毎日 AM 8:30 | `30 8 * * *` | `POST /api/v1/strategy/daily` | 投資戦略策定（dry_run=true） |

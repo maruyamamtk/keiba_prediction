@@ -15,6 +15,10 @@ from src.ml.features.feature_pipeline import (
     FeaturePipelineConfig,
     retry_with_backoff,
     SQL_TEMPLATE_PATH,
+    TE_DAILY_SQL_TEMPLATE_PATH,
+    PREDICT_TE_SQL_TEMPLATE_PATH,
+    _TE_BLOCK_START,
+    _TE_BLOCK_END,
 )
 
 
@@ -2767,3 +2771,249 @@ class TestCoursePaceAndGateStyleTEFeature:
         te_pre_section = content[te_pre_start:te_start]
         assert "and 1 preceding" in te_pre_section, \
             "gate_style_te_pre のウィンドウが当日レースを除外していません"
+
+
+class TestEntityTeDailySqlTemplate:
+    """te_daily_query.sql の構造テスト"""
+
+    def test_te_daily_sql_file_exists(self):
+        assert TE_DAILY_SQL_TEMPLATE_PATH.exists(), "te_daily_query.sql が存在しません"
+
+    def test_te_daily_sql_has_template_vars(self):
+        content = TE_DAILY_SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        assert "{project_id}" in content
+        assert "{target_date}" in content
+
+    def test_te_daily_sql_has_all_entity_types(self):
+        content = TE_DAILY_SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        for entity in ("jockey", "trainer", "sire", "mare", "horse"):
+            assert f"'{entity}'" in content, f"entity_type '{entity}' が te_daily_query.sql にありません"
+
+    def test_te_daily_sql_has_required_output_columns(self):
+        content = TE_DAILY_SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        for col in ("entity_type", "entity_id", "condition_type", "condition_key", "as_of_date", "cnt", "sum_top3"):
+            assert col in content, f"出力列 '{col}' が te_daily_query.sql にありません"
+
+    def test_te_daily_sql_excludes_target_date(self):
+        content = TE_DAILY_SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        assert "race_date < date('{target_date}')" in content, \
+            "target_date 当日レースの除外条件がありません"
+
+    def test_te_daily_sql_has_window_1826_days(self):
+        content = TE_DAILY_SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        assert "1826" in content, "直近 1826 日ウィンドウが te_daily_query.sql にありません"
+
+    def test_te_daily_sql_has_history_all_for_mare(self):
+        content = TE_DAILY_SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        assert "history_all" in content, "母馬用の全期間テーブル (history_all) がありません"
+
+    def test_te_daily_sql_has_age_band_for_sire_and_mare(self):
+        content = TE_DAILY_SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        assert "'2yo'" in content and "'5plus'" in content, \
+            "年齢帯 TE（2yo/5plus）が te_daily_query.sql にありません"
+
+
+class TestPredictTeSqlTemplate:
+    """feature_query_predict_te.sql の構造テスト"""
+
+    def test_predict_te_sql_file_exists(self):
+        assert PREDICT_TE_SQL_TEMPLATE_PATH.exists(), "feature_query_predict_te.sql が存在しません"
+
+    def test_predict_te_sql_has_template_vars(self):
+        content = PREDICT_TE_SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        assert "{project_id}" in content
+        assert "{target_date}" in content
+        assert "{start_date}" not in content, "feature_query_predict_te.sql に start_date が残っています"
+
+    def test_predict_te_sql_has_required_ctes(self):
+        content = PREDICT_TE_SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        required = [
+            "temp_global_mean_te",
+            "temp_entity_te",
+            "temp_jockey_te",
+            "temp_trainer_te",
+            "temp_sire_te",
+            "temp_mare_te",
+            "temp_horse_te",
+            "temp_horse_te_diff_pre",
+            "temp_horse_te_diff_summary",
+        ]
+        for cte in required:
+            assert cte in content, f"必須 CTE '{cte}' が feature_query_predict_te.sql にありません"
+
+    def test_predict_te_sql_uses_entity_te_daily(self):
+        content = PREDICT_TE_SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        assert "features.entity_te_daily" in content
+
+    def test_predict_te_sql_filters_target_date(self):
+        content = PREDICT_TE_SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        assert "= date('{target_date}')" in content
+
+    def test_predict_te_sql_no_range_between_window(self):
+        content = PREDICT_TE_SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        assert "range between" not in content.lower(), \
+            "feature_query_predict_te.sql に RANGE BETWEEN 窓関数が残っています（パフォーマンス問題の原因）"
+
+    def test_predict_te_sql_horse_diff_summary_has_all_avg_columns(self):
+        content = PREDICT_TE_SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        for col in (
+            "horse_course_type_te_diff_avg",
+            "horse_venue_te_diff_avg",
+            "horse_wcc_te_diff_avg",
+            "horse_course_type_te_diff_rank_avg",
+            "horse_wcc_te_diff_rank_avg",
+        ):
+            assert col in content, f"diff_summary 列 '{col}' が見つかりません"
+
+
+class TestGeneratePredictQuery:
+    """generate_predict_query() の動作テスト"""
+
+    @patch("src.ml.features.feature_pipeline.bigquery.Client")
+    def test_generate_predict_query_replaces_date_filter(self, mock_bq):
+        pipeline = FeaturePipeline("test-project")
+        sql = pipeline.generate_predict_query("2026-06-14")
+        assert "'{start_date}'" not in sql
+        assert "'{end_date}'" not in sql
+        assert "date('2026-06-14')" in sql
+
+    @patch("src.ml.features.feature_pipeline.bigquery.Client")
+    def test_generate_predict_query_replaces_te_block(self, mock_bq):
+        pipeline = FeaturePipeline("test-project")
+        sql = pipeline.generate_predict_query("2026-06-14")
+        assert "temp_entity_te" in sql, "TEブロックが entity_te_daily 版に置換されていません"
+        assert "features.entity_te_daily" in sql
+
+    @patch("src.ml.features.feature_pipeline.bigquery.Client")
+    def test_generate_predict_query_removes_range_between_from_te(self, mock_bq):
+        pipeline = FeaturePipeline("test-project")
+        sql = pipeline.generate_predict_query("2026-06-14")
+        # TE ブロックの RANGE BETWEEN が除去されているか確認
+        # （temp_global_mean_te 以降、temp_horse_distance_base より前）
+        te_start = sql.find("temp_global_mean_te")
+        dist_base_start = sql.find("temp_horse_distance_base")
+        te_section = sql[te_start:dist_base_start]
+        assert "range between" not in te_section.lower(), \
+            "予測クエリの TE セクションに RANGE BETWEEN が残っています"
+
+    @patch("src.ml.features.feature_pipeline.bigquery.Client")
+    def test_generate_predict_query_keeps_downstream_ctes(self, mock_bq):
+        pipeline = FeaturePipeline("test-project")
+        sql = pipeline.generate_predict_query("2026-06-14")
+        assert "temp_horse_distance_base" in sql, "下流 CTE が失われています"
+        assert "temp_past_race_features" in sql
+
+    @patch("src.ml.features.feature_pipeline.bigquery.Client")
+    def test_generate_predict_query_invalid_date_raises(self, mock_bq):
+        pipeline = FeaturePipeline("test-project")
+        with pytest.raises(ValueError):
+            pipeline.generate_predict_query("not-a-date")
+
+
+class TestRunTeDaily:
+    """run_te_daily() のモックテスト"""
+
+    @patch("src.ml.features.feature_pipeline.bigquery.Client")
+    def test_run_te_daily_calls_execute_to_table(self, mock_bq_class):
+        mock_client = MagicMock()
+        mock_bq_class.return_value = mock_client
+
+        mock_job = MagicMock()
+        mock_result = MagicMock()
+        mock_result.total_rows = 12345
+        mock_job.result.return_value = mock_result
+        mock_client.query.return_value = mock_job
+
+        pipeline = FeaturePipeline("test-project")
+        result = pipeline.run_te_daily("2026-06-14")
+
+        assert result["as_of_date"] == "2026-06-14"
+        assert result["inserted_rows"] == 12345
+        assert "elapsed_time" in result
+        mock_client.query.assert_called_once()
+
+    @patch("src.ml.features.feature_pipeline.bigquery.Client")
+    def test_run_te_daily_invalid_date_raises(self, mock_bq):
+        pipeline = FeaturePipeline("test-project")
+        with pytest.raises(ValueError):
+            pipeline.run_te_daily("20260614")
+
+    @patch("src.ml.features.feature_pipeline.bigquery.Client")
+    def test_run_te_daily_query_contains_target_date(self, mock_bq_class):
+        mock_client = MagicMock()
+        mock_bq_class.return_value = mock_client
+
+        captured_sql = []
+        mock_job = MagicMock()
+        mock_result = MagicMock()
+        mock_result.total_rows = 0
+        mock_job.result.return_value = mock_result
+
+        def capture_query(sql, **kwargs):
+            captured_sql.append(sql)
+            return mock_job
+
+        mock_client.query.side_effect = capture_query
+
+        pipeline = FeaturePipeline("test-project")
+        pipeline.run_te_daily("2026-06-14")
+
+        assert len(captured_sql) == 1
+        assert "2026-06-14" in captured_sql[0]
+        assert "test-project" in captured_sql[0]
+
+
+class TestHasEntityTeForDate:
+    """has_entity_te_for_date() のモックテスト"""
+
+    @patch("src.ml.features.feature_pipeline.bigquery.Client")
+    def test_returns_true_when_data_exists(self, mock_bq_class):
+        mock_client = MagicMock()
+        mock_bq_class.return_value = mock_client
+        mock_result = MagicMock()
+        mock_result.total_rows = 1
+        mock_client.query.return_value.result.return_value = mock_result
+
+        pipeline = FeaturePipeline("test-project")
+        assert pipeline.has_entity_te_for_date("2026-06-14") is True
+
+    @patch("src.ml.features.feature_pipeline.bigquery.Client")
+    def test_returns_false_when_no_data(self, mock_bq_class):
+        mock_client = MagicMock()
+        mock_bq_class.return_value = mock_client
+        mock_result = MagicMock()
+        mock_result.total_rows = 0
+        mock_client.query.return_value.result.return_value = mock_result
+
+        pipeline = FeaturePipeline("test-project")
+        assert pipeline.has_entity_te_for_date("2026-06-14") is False
+
+    @patch("src.ml.features.feature_pipeline.bigquery.Client")
+    def test_returns_false_on_exception(self, mock_bq_class):
+        mock_client = MagicMock()
+        mock_bq_class.return_value = mock_client
+        mock_client.query.side_effect = Exception("table not found")
+
+        pipeline = FeaturePipeline("test-project")
+        assert pipeline.has_entity_te_for_date("2026-06-14") is False
+
+    @patch("src.ml.features.feature_pipeline.bigquery.Client")
+    def test_run_te_daily_uses_partition_write_truncate(self, mock_bq_class):
+        """run_te_daily がパーティション単位の WRITE_TRUNCATE を使用することを確認（冪等性）"""
+        from unittest.mock import call
+        from google.cloud import bigquery as bq
+        mock_client = MagicMock()
+        mock_bq_class.return_value = mock_client
+        mock_job = MagicMock()
+        mock_result = MagicMock()
+        mock_result.total_rows = 50
+        mock_job.result.return_value = mock_result
+        mock_client.query.return_value = mock_job
+
+        pipeline = FeaturePipeline("test-project")
+        pipeline.run_te_daily("2026-06-14")
+
+        _, kwargs = mock_client.query.call_args
+        job_config = kwargs["job_config"]
+        assert job_config.write_disposition == bq.WriteDisposition.WRITE_TRUNCATE
+        assert "20260614" in str(job_config.destination)
