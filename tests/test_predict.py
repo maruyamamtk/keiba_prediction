@@ -511,7 +511,7 @@ class TestSavePredictionsToGCS:
 
 
 class TestFetchPredictionData:
-    """fetch_prediction_data が feature_query_raw.sql を直接実行することを検証 (Issue #288)"""
+    """fetch_prediction_data が force_sql=True 時に feature_query_raw.sql を直接実行することを検証 (Issue #288)"""
 
     def _make_mock_df(self, dates: list[datetime.date]) -> pd.DataFrame:
         rows = []
@@ -528,16 +528,16 @@ class TestFetchPredictionData:
     @patch("src.models.predict.bigquery.Client")
     @patch("src.models.predict.FeaturePipeline")
     def test_uses_feature_pipeline_generate_query(self, mock_pipeline_cls, mock_bq_cls):
-        """FeaturePipeline.generate_query() が呼ばれてSQLが直接実行されること"""
+        """force_sql=True 時に FeaturePipeline.generate_query() が呼ばれてSQLが直接実行されること"""
         target_dates = [datetime.date(2026, 5, 17)]
         mock_pipeline = mock_pipeline_cls.return_value
         mock_pipeline.generate_query.return_value = "SELECT 1"
 
         mock_bq = mock_bq_cls.return_value
         mock_df = self._make_mock_df(target_dates)
-        mock_bq.query.return_value.to_dataframe.return_value = mock_df
+        mock_bq.query.return_value.result.return_value.to_dataframe.return_value = mock_df
 
-        result = fetch_prediction_data(project_id="test-project", target_dates=target_dates)
+        result = fetch_prediction_data(project_id="test-project", target_dates=target_dates, force_sql=True)
 
         mock_pipeline_cls.assert_called_once_with("test-project")
         mock_pipeline.generate_query.assert_called_once_with("2023-05-18", "2026-05-17")
@@ -547,15 +547,15 @@ class TestFetchPredictionData:
     @patch("src.models.predict.bigquery.Client")
     @patch("src.models.predict.FeaturePipeline")
     def test_does_not_query_training_data_table(self, mock_pipeline_cls, mock_bq_cls):
-        """features.training_data を直接参照するクエリが実行されないこと"""
+        """force_sql=True 時は training_data を直接参照するクエリが実行されないこと"""
         target_dates = [datetime.date(2026, 5, 17)]
         mock_pipeline = mock_pipeline_cls.return_value
         mock_pipeline.generate_query.return_value = "SELECT * FROM raw.horse_results"
 
         mock_bq = mock_bq_cls.return_value
-        mock_bq.query.return_value.to_dataframe.return_value = self._make_mock_df(target_dates)
+        mock_bq.query.return_value.result.return_value.to_dataframe.return_value = self._make_mock_df(target_dates)
 
-        fetch_prediction_data(project_id="test-project", target_dates=target_dates)
+        fetch_prediction_data(project_id="test-project", target_dates=target_dates, force_sql=True)
 
         executed_sql = mock_bq.query.call_args[0][0]
         assert "training_data" not in executed_sql
@@ -569,9 +569,9 @@ class TestFetchPredictionData:
         mock_pipeline.generate_query.return_value = "SELECT 1"
 
         mock_bq = mock_bq_cls.return_value
-        mock_bq.query.return_value.to_dataframe.return_value = self._make_mock_df(target_dates)
+        mock_bq.query.return_value.result.return_value.to_dataframe.return_value = self._make_mock_df(target_dates)
 
-        fetch_prediction_data(project_id="test-project", target_dates=target_dates)
+        fetch_prediction_data(project_id="test-project", target_dates=target_dates, force_sql=True)
 
         mock_pipeline.generate_query.assert_called_once_with("2023-05-18", "2026-05-18")
 
@@ -586,9 +586,9 @@ class TestFetchPredictionData:
         mock_bq = mock_bq_cls.return_value
         # 2日分を返すが target_dates は1日のみ
         extra_dates = [datetime.date(2026, 5, 17), datetime.date(2026, 5, 16)]
-        mock_bq.query.return_value.to_dataframe.return_value = self._make_mock_df(extra_dates)
+        mock_bq.query.return_value.result.return_value.to_dataframe.return_value = self._make_mock_df(extra_dates)
 
-        result = fetch_prediction_data(project_id="test-project", target_dates=target_dates)
+        result = fetch_prediction_data(project_id="test-project", target_dates=target_dates, force_sql=True)
 
         # target_dates にある 2026-05-17 の行のみ残ること
         assert len(result) == 1
@@ -603,8 +603,8 @@ class TestFetchPredictionData:
         mock_pipeline.generate_query.return_value = "SELECT 1"
 
         mock_bq = mock_bq_cls.return_value
-        mock_bq.query.return_value.to_dataframe.return_value = pd.DataFrame()
+        mock_bq.query.return_value.result.return_value.to_dataframe.return_value = pd.DataFrame()
 
-        result = fetch_prediction_data(project_id="test-project", target_dates=target_dates)
+        result = fetch_prediction_data(project_id="test-project", target_dates=target_dates, force_sql=True)
 
         assert len(result) == 0

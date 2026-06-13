@@ -45,47 +45,124 @@ VENUE_MAP = {
 _WINDOW_BUFFER_DAYS = 365 * 3  # ウィンドウ関数（finish_time_normalized等）に必要な過去データ期間
 
 
-def fetch_prediction_data(
+def _try_fetch_from_training_data(
     project_id: str,
     target_dates: list[datetime.date],
 ) -> pd.DataFrame:
+    """features.training_data から対象日のデータを読む（高速パス）"""
+    client = bigquery.Client(project=project_id)
+    dates_str = ", ".join(f"DATE '{d.isoformat()}'" for d in target_dates)
+    query = f"""
+    SELECT *
+    FROM `{project_id}.features.training_data`
+    WHERE race_date IN ({dates_str})
     """
-    feature_query_raw.sql を直接実行して推論対象データを取得する
+    try:
+        df = client.query(query).to_dataframe()
+        if len(df) > 0:
+            df["race_date"] = pd.to_datetime(df["race_date"]).dt.date
+            df = df.sort_values(["race_date", "race_id", "horse_number"]).reset_index(drop=True)
+        return df
+    except Exception as e:
+        logger.warning(f"features.training_data からの取得失敗: {e}")
+        return pd.DataFrame()
 
-    features.training_data キャッシュには依存しない。
-    当日マージされた特徴量SQL変更も即時反映される。
 
-    NOTE: feature_query_raw.sql の先頭 CTE に race_date フィルタがあるため、
-    target_dates のみで実行すると finish_time_normalized 等のウィンドウ関数が
-    過去データなしで計算され stddev=0 → NULL → 0 にfallbackする。
-    これを防ぐため SQL 実行時は _WINDOW_BUFFER_DAYS 分の過去データを含め、
-    結果を target_dates でフィルタして返す。
+def fetch_prediction_data(
+    project_id: str,
+    target_dates: list[datetime.date],
+    force_sql: bool = False,
+) -> pd.DataFrame:
+    """
+    推論対象データを取得する
+
+    デフォルトでは features.training_data テーブルから直接読み込む（数秒）。
+    対象日のデータが存在しない場合（未来日等）のみ、feature_query_raw.sql を
+    実行するフォールバックパスを使用する。
+
+    force_sql=True を指定した場合は常にfull SQLを実行する（最新SQL変更を
+    features.training_data 再生成前に反映したい場合に使用）。
+
+    NOTE: full SQL実行時は _WINDOW_BUFFER_DAYS 分の過去データを含んで実行し、
+    ウィンドウ関数（finish_time_normalized 等）が正しく計算されるようにする。
 
     Args:
         project_id: GCPプロジェクトID
         target_dates: 推論対象日のリスト
+        force_sql: True の場合は training_data を参照せず full SQL を実行する
 
     Returns:
         推論対象データのDataFrame
     """
-    end_date = max(target_dates).isoformat()
-    # ウィンドウ関数が正しく動作するよう十分な過去データを含む期間でSQLを実行する
-    sql_start_date = (min(target_dates) - datetime.timedelta(days=_WINDOW_BUFFER_DAYS)).isoformat()
-
     pipeline = FeaturePipeline(project_id)
+    client = bigquery.Client(project=project_id)
+
+    if not force_sql:
+        # パス1: features.training_data キャッシュ（最速）
+        df = _try_fetch_from_training_data(project_id, target_dates)
+        if len(df) > 0:
+            fetched_dates = set(df["race_date"].unique())
+            missing = {d for d in target_dates if d not in fetched_dates}
+            if not missing:
+                logger.info(f"features.training_data からキャッシュ取得: {len(df)} rows")
+                return df
+            logger.info(f"training_data に存在しない日付: {missing}")
+        else:
+            missing = set(target_dates)
+
+        # パス2: entity_te_daily 軽量クエリ（当日予測向け、数分で完了）
+        te_dates = [d for d in missing if pipeline.has_entity_te_for_date(d.isoformat())]
+        no_te_dates = [d for d in missing if d not in te_dates]
+
+        dfs = [df] if len(df) > 0 else []
+        for d in sorted(te_dates):
+            logger.info(f"entity_te_daily 軽量クエリ実行: {d}")
+            sql = pipeline.generate_predict_query(d.isoformat())
+            job = client.query(sql)
+            df_day = job.result().to_dataframe()
+            if len(df_day) > 0:
+                df_day["race_date"] = pd.to_datetime(df_day["race_date"]).dt.date
+                df_day = df_day[df_day["race_date"] == d].copy()
+                dfs.append(df_day)
+                logger.info(f"  → {len(df_day)} rows")
+
+        if not no_te_dates:
+            if dfs:
+                result = pd.concat(dfs, ignore_index=True)
+                result = result.sort_values(["race_date", "race_id", "horse_number"]).reset_index(drop=True)
+                logger.info(f"entity_te_daily パス完了: {len(result)} rows")
+                return result
+            return pd.DataFrame()
+
+        # entity_te_daily が未生成の日付が残っている場合は full SQL にフォールバック
+        logger.info(f"entity_te_daily 未生成の日付: {no_te_dates}、full SQL にフォールバック")
+        remaining = sorted(no_te_dates)
+    else:
+        dfs = []
+        remaining = sorted(target_dates)
+
+    # パス3: full SQL（最も重い。ウィンドウ関数のため _WINDOW_BUFFER_DAYS 分の過去データを含む）
+    end_date = max(remaining).isoformat()
+    sql_start_date = (min(remaining) - datetime.timedelta(days=_WINDOW_BUFFER_DAYS)).isoformat()
     sql = pipeline.generate_query(sql_start_date, end_date)
 
-    logger.info(f"Executing feature SQL directly for dates: {target_dates} (sql_range: {sql_start_date} to {end_date})")
-    client = bigquery.Client(project=project_id)
-    df = client.query(sql).to_dataframe()
+    logger.info(f"Full SQL実行: {remaining} (sql_range: {sql_start_date} to {end_date})")
+    job = client.query(sql)
+    df_full = job.result().to_dataframe()
 
-    if len(df) > 0:
-        df["race_date"] = pd.to_datetime(df["race_date"]).dt.date
-        df = df[df["race_date"].isin(set(target_dates))].copy()
-        df = df.sort_values(["race_date", "race_id", "horse_number"]).reset_index(drop=True)
+    if len(df_full) > 0:
+        df_full["race_date"] = pd.to_datetime(df_full["race_date"]).dt.date
+        df_full = df_full[df_full["race_date"].isin(set(remaining))].copy()
+        df_full = df_full.sort_values(["race_date", "race_id", "horse_number"]).reset_index(drop=True)
+        dfs.append(df_full)
 
-    logger.info(f"Fetched {len(df)} rows")
-    return df
+    if not dfs:
+        return pd.DataFrame()
+
+    result = pd.concat(dfs, ignore_index=True)
+    result = result.sort_values(["race_date", "race_id", "horse_number"]).reset_index(drop=True)
+    logger.info(f"Fetched {len(result)} rows")
+    return result
 
 
 def fetch_race_results(
@@ -216,6 +293,7 @@ def predict_pipeline(
     config: dict,
     model_path: str,
     target_dates: list[datetime.date] | None = None,
+    force_sql: bool = False,
 ) -> pd.DataFrame:
     """
     推論パイプラインを実行する
@@ -227,6 +305,7 @@ def predict_pipeline(
         model_path: モデルファイルパス
         target_dates: 推論対象日のリスト。指定した場合はその日付のみ対象とする。
                       未指定の場合は execution_date の週の土曜・日曜を使用する。
+        force_sql: True の場合は training_data を参照せず full feature SQL を実行する
 
     Returns:
         予測結果のDataFrame
@@ -264,6 +343,7 @@ def predict_pipeline(
     df = fetch_prediction_data(
         project_id=project_id,
         target_dates=target_dates,
+        force_sql=force_sql,
     )
 
     if len(df) == 0:
@@ -585,6 +665,15 @@ def main():
     )
     parser.add_argument("--verbose", "-v", action="store_true", help="詳細ログ")
     parser.add_argument(
+        "--force-sql",
+        action="store_true",
+        default=False,
+        help=(
+            "features.training_data キャッシュを使わず full feature SQL を実行する。"
+            "最新のSQL変更をtraining_data再生成前に反映したい場合に使用。"
+        ),
+    )
+    parser.add_argument(
         "--save-to-bq",
         action="store_true",
         default=False,
@@ -633,6 +722,7 @@ def main():
         config=config,
         model_path=args.model_path,
         target_dates=parsed_target_dates,
+        force_sql=args.force_sql,
     )
 
     # 結果表示
