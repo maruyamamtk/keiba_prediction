@@ -3017,3 +3017,117 @@ class TestHasEntityTeForDate:
         job_config = kwargs["job_config"]
         assert job_config.write_disposition == bq.WriteDisposition.WRITE_TRUNCATE
         assert "20260614" in str(job_config.destination)
+
+
+class TestJockeyHorseComboFeature:
+    """Issue #345: 騎手×馬コンビTE・乗り替わりフラグ特徴量のテスト"""
+
+    def test_sql_has_combo_te_ctes(self):
+        """temp_jockey_horse_combo_te_pre / temp_jockey_horse_combo_te CTE が定義されていること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        assert "temp_jockey_horse_combo_te_pre as (" in content
+        assert "temp_jockey_horse_combo_te as (" in content
+
+    def test_sql_has_jockey_change_cte(self):
+        """temp_jockey_change CTE が定義されていること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        assert "temp_jockey_change as (" in content
+
+    def test_sql_combo_te_uses_1826_day_window_with_1_preceding(self):
+        """combo_te が1826日ウィンドウかつ当日除外（AND 1 PRECEDING）を使用すること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        combo_start = content.find("temp_jockey_horse_combo_te_pre as (")
+        combo_end = content.find("temp_jockey_horse_combo_te as (")
+        combo_section = content[combo_start:combo_end]
+        assert "range between 1826 preceding and 1 preceding" in combo_section, \
+            "combo_te に当日除外ウィンドウがありません"
+        assert "partition by jockey_code, horse_id" in combo_section, \
+            "combo_te のパーティションが jockey_code, horse_id でありません"
+
+    def test_sql_combo_te_uses_smoothing_m5(self):
+        """combo_te のスムージング係数が m=5 であること（m=10 ではなく）"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        combo_start = content.find("temp_jockey_horse_combo_te_pre as (")
+        combo_end = content.find("temp_jockey_horse_combo_te as (")
+        combo_section = content[combo_start:combo_end]
+        assert "+ 5 * g.global_top3_rate" in combo_section, \
+            "スムージング係数が m=5 ではありません"
+        assert ", 0) + 5\n" in combo_section or "), 0) + 5\n" in combo_section, \
+            "分母のスムージング係数が 5 ではありません"
+
+    def test_sql_combo_te_has_low_freq_mask_3(self):
+        """combo_te の低頻度マスクが 3戦未満はNULL であること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        combo_wrapper_start = content.find("temp_jockey_horse_combo_te as (")
+        combo_wrapper_end = content.find("temp_jockey_change as (")
+        combo_wrapper = content[combo_wrapper_start:combo_wrapper_end]
+        assert "combo_count >= 3" in combo_wrapper, \
+            "低頻度マスク(combo_count >= 3)がありません"
+        assert "jockey_horse_combo_count" in combo_wrapper, \
+            "jockey_horse_combo_count カラムがありません"
+
+    def test_sql_jockey_change_has_prev_jockey_codes(self):
+        """temp_jockey_change が直近3走の騎手コードを LAG で取得すること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        change_start = content.find("temp_jockey_change as (")
+        # 次のCTEを探す
+        change_end = content.find("/* 調教師 Target Encoding", change_start)
+        change_section = content[change_start:change_end]
+        assert "lag(b.jockey_code, 1)" in change_section, "prev1_jockey_code の LAG がありません"
+        assert "lag(b.jockey_code, 2)" in change_section, "prev2_jockey_code の LAG がありません"
+        assert "lag(b.jockey_code, 3)" in change_section, "prev3_jockey_code の LAG がありません"
+        assert "partition by b.horse_id order by b.race_date" in change_section, \
+            "LAGのウィンドウが horse_id パーティション + race_date ORDER でありません"
+
+    def test_sql_jockey_change_has_jockey_te_join(self):
+        """temp_jockey_change が temp_jockey_te_pre を INNER JOIN して jockey_te を取得すること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        change_start = content.find("temp_jockey_change as (")
+        change_end = content.find("/* 調教師 Target Encoding", change_start)
+        change_section = content[change_start:change_end]
+        assert "inner join temp_jockey_te_pre as p" in change_section, \
+            "temp_jockey_te_pre への INNER JOIN がありません"
+        assert "p.jockey_te as cur_jockey_te" in change_section, \
+            "cur_jockey_te がありません"
+        assert "lag(p.jockey_te, 1)" in change_section, \
+            "prev_jockey_te の LAG がありません"
+
+    def test_sql_final_select_has_all_new_features(self):
+        """最終SELECTに4特徴量（combo_te, combo_count, is_regular_jockey, jockey_change_type）が含まれること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        assert "jockey_horse_combo_te" in content
+        assert "jockey_horse_combo_count" in content
+        assert "is_regular_jockey" in content
+        assert "jockey_change_type" in content
+
+    def test_sql_is_regular_jockey_logic_uses_2_of_3(self):
+        """is_regular_jockey が直近3走中2走以上同一騎手の条件を使用すること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        # is_regular_jockey の CASE 式を確認
+        assert "prev1_jockey_code" in content, "prev1_jockey_code の参照がありません"
+        assert "prev2_jockey_code" in content, "prev2_jockey_code の参照がありません"
+        assert "prev3_jockey_code" in content, "prev3_jockey_code の参照がありません"
+        assert ">= 2" in content, "2走以上の条件がありません"
+
+    def test_sql_null_fill_has_combo_te_median(self):
+        """temp_null_fill_med に jockey_horse_combo_te の中央値計算が含まれること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        null_fill_start = content.find("temp_null_fill_med as (")
+        null_filled_start = content.find("temp_null_filled as (")
+        null_fill_section = content[null_fill_start:null_filled_start]
+        assert "_jockey_horse_combo_te_med" in null_fill_section, \
+            "temp_null_fill_med に _jockey_horse_combo_te_med がありません"
+
+    def test_sql_null_fill_coalesces_combo_te_with_fallback(self):
+        """temp_null_filled が combo_te を中央値→0.22 でフォールバックすること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        null_filled_start = content.find("temp_null_filled as (")
+        null_filled_section = content[null_filled_start:]
+        assert "coalesce(jockey_horse_combo_te, _jockey_horse_combo_te_med, 0.22)" in null_filled_section, \
+            "jockey_horse_combo_te の NULL 補完が正しくありません"
+
+    def test_sql_rank_section_has_combo_te_rank(self):
+        """最終 RANK セクションに jockey_horse_combo_te_rank が含まれること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        assert "jockey_horse_combo_te_rank" in content, \
+            "jockey_horse_combo_te_rank が見つかりません"

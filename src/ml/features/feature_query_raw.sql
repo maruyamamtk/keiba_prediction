@@ -1368,6 +1368,62 @@ with temp_race_horse_count as (
   from temp_jockey_te_pre
 )
 
+/* 騎手×馬コンビ Target Encoding（Issue #345）
+   jockey_code × horse_id の累積3着以内率。スムージング係数m=5（コンビ実績は少ないため小さめ）。
+   低頻度マスク: 3戦未満はNULL。当日レース除外: RANGE BETWEEN ... AND 1 PRECEDING */
+,temp_jockey_horse_combo_te_pre as (
+  select
+    race_id
+    ,horse_number
+    ,coalesce(count(*) over (
+      partition by jockey_code, horse_id
+      order by unix_date(race_date)
+      range between 1826 preceding and 1 preceding
+    ), 0) as combo_count
+    ,safe_divide(
+      coalesce(sum(is_top3) over (
+        partition by jockey_code, horse_id
+        order by unix_date(race_date)
+        range between 1826 preceding and 1 preceding
+      ), 0) + 5 * g.global_top3_rate,
+      coalesce(count(*) over (
+        partition by jockey_code, horse_id
+        order by unix_date(race_date)
+        range between 1826 preceding and 1 preceding
+      ), 0) + 5
+    ) as jockey_horse_combo_te_raw
+  from temp_te_history_base
+    cross join temp_global_mean_te as g
+)
+,temp_jockey_horse_combo_te as (
+  select
+    race_id
+    ,horse_number
+    ,combo_count as jockey_horse_combo_count
+    ,if(combo_count >= 3, jockey_horse_combo_te_raw, null) as jockey_horse_combo_te
+  from temp_jockey_horse_combo_te_pre
+)
+
+/* 乗り替わりフラグ（Issue #345）
+   is_regular_jockey: 直近3走のうち2走以上で同一騎手 → 1（主戦継続）、それ以外 → 0
+   jockey_change_type: 0=継続, 1=格上乗り替わり（今走jockey_te > 前走jockey_te）, -1=格下乗り替わり
+   prev_jockey_te は前走時点の騎手TE（temp_jockey_te_pre から取得） */
+,temp_jockey_change as (
+  select
+    b.race_id
+    ,b.horse_number
+    ,b.horse_id
+    ,b.jockey_code
+    ,lag(b.jockey_code, 1) over (partition by b.horse_id order by b.race_date) as prev1_jockey_code
+    ,lag(b.jockey_code, 2) over (partition by b.horse_id order by b.race_date) as prev2_jockey_code
+    ,lag(b.jockey_code, 3) over (partition by b.horse_id order by b.race_date) as prev3_jockey_code
+    ,p.jockey_te as cur_jockey_te
+    ,lag(p.jockey_te, 1) over (partition by b.horse_id order by b.race_date) as prev_jockey_te
+  from temp_te_history_base as b
+    inner join temp_jockey_te_pre as p
+      on b.race_id = p.race_id and b.horse_number = p.horse_number
+)
+
 /* 調教師 Target Encoding（累積3着以内率、スムージング係数m=10、同日除外）
    出走数 < 20 の調教師は全TE値をNULLとして扱う（低頻度エンティティのノイズ除去） */
 ,temp_trainer_te_pre as (
@@ -2894,6 +2950,24 @@ select
   ,t_j_te.jockey_course_type_venue_te - t_j_te.jockey_te as jockey_course_type_venue_te_diff
   ,t_j_te.jockey_course_type_distance_te - t_j_te.jockey_te as jockey_course_type_distance_te_diff
   ,t_j_te.jockey_course_type_distance_venue_te - t_j_te.jockey_te as jockey_course_type_distance_venue_te_diff
+  -- 騎手×馬コンビTE / 乗り替わりフラグ（Issue #345）
+  ,t_jh_te.jockey_horse_combo_te
+  ,t_jh_te.jockey_horse_combo_count
+  ,case
+    when t_j_c.prev1_jockey_code is null then null
+    when (case when t_j_c.jockey_code = t_j_c.prev1_jockey_code then 1 else 0 end
+         + case when t_j_c.jockey_code = t_j_c.prev2_jockey_code then 1 else 0 end
+         + case when t_j_c.jockey_code = t_j_c.prev3_jockey_code then 1 else 0 end) >= 2
+      then 1
+    else 0
+  end as is_regular_jockey
+  ,case
+    when t_j_c.prev1_jockey_code is null then null
+    when t_j_c.jockey_code = t_j_c.prev1_jockey_code then 0
+    when t_j_c.cur_jockey_te > t_j_c.prev_jockey_te then 1
+    when t_j_c.cur_jockey_te < t_j_c.prev_jockey_te then -1
+    else 0
+  end as jockey_change_type
   -- 調教師TE
   ,t_tr_te.trainer_te
   ,t_tr_te.trainer_course_type_te
@@ -3880,6 +3954,12 @@ from
   left join temp_jockey_te as t_j_te
     on t_p_r_f.race_id = t_j_te.race_id
     and t_p_r_f.horse_number = t_j_te.horse_number
+  left join temp_jockey_horse_combo_te as t_jh_te
+    on t_p_r_f.race_id = t_jh_te.race_id
+    and t_p_r_f.horse_number = t_jh_te.horse_number
+  left join temp_jockey_change as t_j_c
+    on t_p_r_f.race_id = t_j_c.race_id
+    and t_p_r_f.horse_number = t_j_c.horse_number
   left join temp_trainer_te as t_tr_te
     on t_p_r_f.race_id = t_tr_te.race_id
     and t_p_r_f.horse_number = t_tr_te.horse_number
@@ -3958,6 +4038,7 @@ from
     ,percentile_cont(jockey_course_type_venue_te_diff, 0.5) over (partition by race_id) as _jockey_course_type_venue_te_diff_med
     ,percentile_cont(jockey_course_type_distance_te_diff, 0.5) over (partition by race_id) as _jockey_course_type_distance_te_diff_med
     ,percentile_cont(jockey_course_type_distance_venue_te_diff, 0.5) over (partition by race_id) as _jockey_course_type_distance_venue_te_diff_med
+    ,percentile_cont(jockey_horse_combo_te, 0.5) over (partition by race_id) as _jockey_horse_combo_te_med
     ,percentile_cont(trainer_te, 0.5) over (partition by race_id) as _trainer_te_med
     ,percentile_cont(trainer_course_type_te, 0.5) over (partition by race_id) as _trainer_course_type_te_med
     ,percentile_cont(trainer_venue_te, 0.5) over (partition by race_id) as _trainer_venue_te_med
@@ -4213,6 +4294,7 @@ from
     _jockey_course_type_venue_te_diff_med,
     _jockey_course_type_distance_te_diff_med,
     _jockey_course_type_distance_venue_te_diff_med,
+    _jockey_horse_combo_te_med,
     _trainer_te_med,
     _trainer_course_type_te_med,
     _trainer_venue_te_med,
@@ -4467,6 +4549,9 @@ from
   coalesce(jockey_course_type_venue_te_diff, _jockey_course_type_venue_te_diff_med, 0.0) as jockey_course_type_venue_te_diff,
   coalesce(jockey_course_type_distance_te_diff, _jockey_course_type_distance_te_diff_med, 0.0) as jockey_course_type_distance_te_diff,
   coalesce(jockey_course_type_distance_venue_te_diff, _jockey_course_type_distance_venue_te_diff_med, 0.0) as jockey_course_type_distance_venue_te_diff,
+  coalesce(jockey_horse_combo_te, _jockey_horse_combo_te_med, 0.22) as jockey_horse_combo_te,
+  coalesce(is_regular_jockey, 0) as is_regular_jockey,
+  coalesce(jockey_change_type, 0) as jockey_change_type,
   coalesce(trainer_te, _trainer_te_med, 0.22) as trainer_te,
   coalesce(trainer_course_type_te, _trainer_course_type_te_med, 0.22) as trainer_course_type_te,
   coalesce(trainer_venue_te, _trainer_venue_te_med, 0.22) as trainer_venue_te,
@@ -4731,6 +4816,7 @@ select *
   ,RANK() OVER (PARTITION BY race_id ORDER BY jockey_course_type_venue_te_diff DESC NULLS LAST) AS jockey_course_type_venue_te_diff_rank
   ,RANK() OVER (PARTITION BY race_id ORDER BY jockey_course_type_distance_te_diff DESC NULLS LAST) AS jockey_course_type_distance_te_diff_rank
   ,RANK() OVER (PARTITION BY race_id ORDER BY jockey_course_type_distance_venue_te_diff DESC NULLS LAST) AS jockey_course_type_distance_venue_te_diff_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY jockey_horse_combo_te DESC NULLS LAST) AS jockey_horse_combo_te_rank
   -- 調教師TE系 RANK（17列）
   ,RANK() OVER (PARTITION BY race_id ORDER BY trainer_te DESC NULLS LAST) AS trainer_te_rank
   ,RANK() OVER (PARTITION BY race_id ORDER BY trainer_course_type_te DESC NULLS LAST) AS trainer_course_type_te_rank
