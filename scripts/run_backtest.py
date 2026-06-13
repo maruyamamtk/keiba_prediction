@@ -45,7 +45,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from src.backtest.metrics import compute_metrics
 from src.backtest.strategy_optimizer import StrategyOptimizer
 from src.models.lgbm_ranker import LGBMRanker
-from src.models.predict import _scores_to_place_prob
+from src.models.predict import normalize_win_place_prob
 from src.models.train import (
     build_feature_matrix,
     load_config,
@@ -437,10 +437,8 @@ def generate_predictions(
 
     result_df["pred_score"] = scores
 
-    # レースごとに複勝率を計算
-    for race_id, group in result_df.groupby("race_id"):
-        probs = _scores_to_place_prob(group["pred_score"].values, n_places=3)
-        result_df.loc[group.index, "win_place_prob"] = probs
+    # レースごとにソフトマックス正規化でwin_place_probを計算
+    result_df = normalize_win_place_prob(result_df)
 
     # 着順の付与
     if len(results_df) > 0:

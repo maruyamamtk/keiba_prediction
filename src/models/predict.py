@@ -287,6 +287,32 @@ def _scores_to_place_prob(scores: np.ndarray, n_places: int = 3) -> np.ndarray:
     return np.clip(probs, 0.0, 1.0)
 
 
+def normalize_win_place_prob(df: pd.DataFrame, temperature: float = 1.5) -> pd.DataFrame:
+    """レース内ソフトマックス正規化でwin_place_probの上限(1.0クリップ)を緩和する
+
+    水充填アルゴリズムでは高スコア馬がprob=1.0にハードクリップされ、
+    実際のスコア差が投資判断に反映されない問題を解消する。
+    ソフトマックスは確率の合計が1.0になるよう正規化し、
+    temperature > 1.0 でスコア差を緩やかに保持する。
+
+    Args:
+        df: race_id と pred_score カラムを持つ DataFrame
+        temperature: ソフトマックス温度パラメータ（大きいほど均一化、デフォルト1.5）
+
+    Returns:
+        win_place_prob カラムを上書きした DataFrame（元の DataFrame は変更しない）
+    """
+    df = df.copy()
+    probs = np.empty(len(df), dtype=float)
+    for _, group in df.groupby("race_id"):
+        scores = group["pred_score"].values
+        shifted = scores - scores.max()
+        exp_scores = np.exp(shifted / temperature)
+        probs[group.index] = exp_scores / exp_scores.sum()
+    df["win_place_prob"] = probs
+    return df
+
+
 def predict_pipeline(
     project_id: str,
     execution_date: datetime.date,
@@ -370,11 +396,8 @@ def predict_pipeline(
         result_df["race_number"] = df["race_number"]
 
     result_df["pred_score"] = scores
-    # レースごとに複勝率を計算（水充填アルゴリズム）
-    # 各馬の複勝率が0~1に収まり、合計がmin(3, 出走頭数)になるよう変換する
-    for race_id, group in result_df.groupby("race_id"):
-        probs = _scores_to_place_prob(group["pred_score"].values, n_places=3)
-        result_df.loc[group.index, "win_place_prob"] = probs
+    # レースごとにソフトマックス正規化でwin_place_probを計算
+    result_df = normalize_win_place_prob(result_df)
 
     # レース内での予測順位を付与
     result_df["pred_rank"] = result_df.groupby("race_id")["pred_score"].rank(
