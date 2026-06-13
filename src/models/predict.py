@@ -287,29 +287,59 @@ def _scores_to_place_prob(scores: np.ndarray, n_places: int = 3) -> np.ndarray:
     return np.clip(probs, 0.0, 1.0)
 
 
-def normalize_win_place_prob(df: pd.DataFrame, temperature: float = 1.5) -> pd.DataFrame:
-    """レース内ソフトマックス正規化でwin_place_probの上限(1.0クリップ)を緩和する
+def normalize_win_place_prob(
+    df: pd.DataFrame, temperature: float = 1.5, n_places: int = 3
+) -> pd.DataFrame:
+    """温度付きソフトマックス＋水充填でwin_place_probを計算する
 
-    水充填アルゴリズムでは高スコア馬がprob=1.0にハードクリップされ、
-    実際のスコア差が投資判断に反映されない問題を解消する。
-    ソフトマックスは確率の合計が1.0になるよう正規化し、
-    temperature > 1.0 でスコア差を緩やかに保持する。
+    旧実装（_scores_to_place_prob, temperature=1.0）は高スコア馬がprob=1.0に
+    ハードクリップされやすく、スコア差が投資判断に反映されない問題があった。
+    temperature > 1.0 でスコア差を緩やかにしてクリップ頻度を抑えつつ、
+    水充填により各レース内の合計を min(n_places, 出走頭数) に保持する。
 
     Args:
         df: race_id と pred_score カラムを持つ DataFrame
-        temperature: ソフトマックス温度パラメータ（大きいほど均一化、デフォルト1.5）
+        temperature: ソフトマックス温度（大きいほど均一化、デフォルト1.5）
+        n_places: 複勝対象着順数（デフォルト3）
 
     Returns:
         win_place_prob カラムを上書きした DataFrame（元の DataFrame は変更しない）
     """
     df = df.copy()
 
-    def _softmax(scores: pd.Series) -> pd.Series:
-        shifted = scores - scores.max()
-        exp_s = np.exp(shifted / temperature)
-        return exp_s / exp_s.sum()
+    def _tempered_water_fill(scores: pd.Series) -> pd.Series:
+        vals = scores.values
+        n = len(vals)
+        k = float(min(n_places, n))
 
-    df["win_place_prob"] = df.groupby("race_id")["pred_score"].transform(_softmax)
+        # 温度付きソフトマックス（数値安定性のためmaxを引く）
+        shifted = vals - vals.max()
+        exp_s = np.exp(shifted / temperature)
+        p = exp_s / exp_s.sum()
+
+        # 水充填アルゴリズム: k単位を各馬に分配（上限1.0）
+        # temperature > 1.0 によりクリップが必要になるケースが大幅に減少する
+        probs = p * k
+        for _ in range(n):
+            mask_over = probs > 1.0
+            if not mask_over.any():
+                break
+            excess = (probs[mask_over] - 1.0).sum()
+            probs[mask_over] = 1.0
+            mask_under = probs < 1.0
+            if not mask_under.any():
+                break
+            p_under_sum = p[mask_under].sum()
+            if p_under_sum < 1e-12:
+                probs[mask_under] += excess / mask_under.sum()
+            else:
+                probs[mask_under] += excess * p[mask_under] / p_under_sum
+
+        return pd.Series(np.clip(probs, 0.0, 1.0), index=scores.index)
+
+    df["win_place_prob"] = df.groupby("race_id")["pred_score"].transform(
+        _tempered_water_fill
+    )
     return df
 
 
