@@ -6,7 +6,9 @@ JRA賞金ウェイト（1着=120, 2着=90, ..., 10着=2, 11着以下=0）を
 label_gain[i]=i とすることでラベル値がそのままNDCGゲインになる。
 """
 
+import json
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from src.models.lgbm_ranker import LGBMRanker, LGBMRankerConfig
 
@@ -63,8 +65,6 @@ class LGBMRankerMulti(LGBMRanker):
         """モデルをローカルに保存する（meta.jsonにmodel_typeを追記）"""
         super().save(path, training_period=training_period)
 
-        import json
-        from pathlib import Path
         meta_path = Path(path).with_suffix(".meta.json")
         if meta_path.exists():
             meta = json.loads(meta_path.read_text())

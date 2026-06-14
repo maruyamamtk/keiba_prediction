@@ -27,7 +27,7 @@ from sklearn.metrics import roc_auc_score
 
 from src.ml.features.feature_pipeline import FeaturePipeline
 from src.models.lgbm_ranker import LGBMRanker, LGBMRankerConfig
-from src.models.lgbm_ranker_multi import LGBMRankerMulti, LGBMRankerMultiConfig
+from src.models.lgbm_ranker_multi import JRA_PRIZE_WEIGHTS, LGBMRankerMulti, LGBMRankerMultiConfig
 from src.models.tuning import run_tuning, save_best_params
 
 logger = logging.getLogger(__name__)
@@ -311,8 +311,6 @@ def prepare_features_multi_label(
         (X, y, groups) のタプル
         y: 多値ラベル（整数, JRA賞金ウェイト値）
     """
-    from src.models.lgbm_ranker_multi import JRA_PRIZE_WEIGHTS
-
     X = build_feature_matrix(df, exclude_columns, categorical_columns)
 
     # 着順をJRA賞金ウェイト整数値に直接変換
