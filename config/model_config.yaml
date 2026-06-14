@@ -115,3 +115,7 @@ evaluation:
     - "ndcg@3"
     - "recall@3"
     - "auc"
+
+# アンサンブル設定
+ensemble:
+  weight_multi: 0.7  # 多値ランク学習の重み（着差回帰は 1 - weight_multi）
