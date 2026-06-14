@@ -96,16 +96,6 @@ def main() -> None:
         default="output/tuning",
         help="最適パラメータ保存先ディレクトリ（default: output/tuning）",
     )
-    parser.add_argument(
-        "--start-date",
-        default=None,
-        help="学習データ取得開始日 YYYY-MM-DD（default: 全期間）",
-    )
-    parser.add_argument(
-        "--end-date",
-        default=None,
-        help="学習データ取得終了日 YYYY-MM-DD（default: execution-date）",
-    )
     args = parser.parse_args()
 
     project_id = args.project_id or os.environ.get("GCP_PROJECT_ID", "")
@@ -172,10 +162,10 @@ def main() -> None:
         )
         groups_train = groups_valid = None
     else:  # classifier
-        X_train, y_train, groups_train = prepare_features(
+        X_train, y_train, _ = prepare_features(
             train_df, exclude_columns=exclude_cols, categorical_columns=cat_cols,
         )
-        X_valid, y_valid, groups_valid = prepare_features(
+        X_valid, y_valid, _ = prepare_features(
             valid_df, exclude_columns=exclude_cols, categorical_columns=cat_cols,
         )
         groups_train = groups_valid = None
