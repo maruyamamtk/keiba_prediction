@@ -12,7 +12,6 @@ import logging
 from pathlib import Path
 
 import lightgbm as lgb
-import numpy as np
 import pandas as pd
 
 logger = logging.getLogger(__name__)
@@ -80,6 +79,12 @@ class LGBMModelBase:
     def _build_categorical_dtypes(self) -> None:
         """_categorical_feature_names と pandas_categorical から dtype キャッシュを構築する。"""
         model_cats = getattr(self.model, "pandas_categorical", [])
+        if len(self._categorical_feature_names) != len(model_cats):
+            logger.warning(
+                f"カテゴリカル特徴量数が不一致: "
+                f"names={len(self._categorical_feature_names)}, "
+                f"pandas_categorical={len(model_cats)}"
+            )
         self._categorical_dtypes = {
             col: pd.CategoricalDtype(categories=cats)
             for col, cats in zip(self._categorical_feature_names, model_cats)
