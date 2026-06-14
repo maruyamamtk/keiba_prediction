@@ -28,6 +28,7 @@ from sklearn.metrics import roc_auc_score
 from src.ml.features.feature_pipeline import FeaturePipeline
 from src.models.lgbm_ranker import LGBMRanker, LGBMRankerConfig
 from src.models.lgbm_ranker_multi import JRA_PRIZE_WEIGHTS, LGBMRankerMulti, LGBMRankerMultiConfig
+from src.models.lgbm_regression import LGBMRegression, LGBMRegressionConfig
 from src.models.tuning import run_tuning, save_best_params
 
 logger = logging.getLogger(__name__)
@@ -99,7 +100,8 @@ def fetch_training_data(
     query = f"""
     SELECT
         t.*,
-        r_r.finish_position
+        r_r.finish_position,
+        r_r.finish_time
     FROM `{project_id}.{dataset}.{table}` AS t
     LEFT JOIN `{project_id}.raw.race_results` AS r_r
         ON t.race_id = r_r.race_id
@@ -142,9 +144,9 @@ def fetch_training_data_from_sql(
     df = df.sort_values(["race_date", "race_id", "horse_number"]).reset_index(drop=True)
     logger.info(f"Fetched {len(df)} rows, {len(df.columns)} columns from SQL")
 
-    # finish_position を raw.race_results から JOIN（features.training_data 方式と統一）
+    # finish_position / finish_time を raw.race_results から JOIN
     finish_query = f"""
-    SELECT race_id, horse_number, finish_position
+    SELECT race_id, horse_number, finish_position, finish_time
     FROM `{project_id}.raw.race_results`
     WHERE race_date BETWEEN '{start_date}' AND '{end_date}'
     """
@@ -322,6 +324,85 @@ def prepare_features_multi_label(
     groups = df.groupby("race_id", sort=False).size().tolist()
 
     return X, y, groups
+
+
+def compute_time_diff_zscore(df: pd.DataFrame) -> pd.Series:
+    """
+    1着馬との走破タイム差をレース内σで正規化したZスコアを計算する
+
+    変換ルール:
+    - time_diff = finish_time - winner_finish_time（>= 0）
+    - zscore = -time_diff / std（値が高いほど強い: 1着馬≒0, 大敗馬＜0）
+    - finish_time が NULL の馬は NaN を返す
+    - レース内 std == 0（全馬同タイム）のレースは NaN を返す
+    - 1着馬が存在しない（finish_time が NULL）レースは NaN を返す
+
+    Args:
+        df: race_id / finish_position / finish_time カラムを持つ DataFrame
+
+    Returns:
+        各行のZスコア（NaN = 学習から除外すべき行）
+    """
+    result = pd.Series(np.nan, index=df.index)
+
+    for race_id, group in df.groupby("race_id", sort=False):
+        ft = group["finish_time"]
+        pos = group["finish_position"].fillna(0).astype(int)
+
+        # 1着馬のfinish_timeを取得
+        winner_mask = (pos == 1) & ft.notna()
+        if not winner_mask.any():
+            continue
+        winner_time = ft[winner_mask].iloc[0]
+
+        # time_diff（>= 0）を計算（タイム不明の馬はNaN）
+        time_diff = ft - winner_time
+
+        # レース内の有効なtime_diffの標準偏差
+        std = time_diff.dropna().std(ddof=0)
+        if std == 0 or pd.isna(std):
+            continue
+
+        zscore = -time_diff / std
+        result.loc[group.index] = zscore
+
+    return result
+
+
+def prepare_features_regression(
+    df: pd.DataFrame,
+    exclude_columns: list,
+    categorical_columns: list,
+) -> tuple:
+    """
+    DataFrameから特徴量・着差Zスコアラベルを準備する（回帰モデル用）
+
+    finish_time が NULL のレースや std==0 のレースは学習から除外される（NaN行を除去）。
+    グループ（レースID）は回帰モデルでは不要なため返さない。
+
+    Args:
+        df: finish_time カラムを含む DataFrame
+        exclude_columns: 除外カラムリスト
+        categorical_columns: カテゴリカル特徴量リスト
+
+    Returns:
+        (X, y) のタプル（NaN行除去済み）
+    """
+    if "finish_time" not in df.columns:
+        raise ValueError("DataFrameに 'finish_time' カラムがありません")
+
+    y_all = compute_time_diff_zscore(df)
+    valid_mask = y_all.notna()
+    df_valid = df[valid_mask].copy()
+    y = y_all[valid_mask].values.astype(float)
+
+    X = build_feature_matrix(df_valid, exclude_columns, categorical_columns)
+
+    logger.info(
+        f"Regression features: {len(df_valid)}/{len(df)} rows after NaN removal "
+        f"({len(df) - len(df_valid)} excluded)"
+    )
+    return X, y
 
 
 def evaluate_predictions(
@@ -793,6 +874,163 @@ def train_pipeline_multi(
     }
 
 
+def train_pipeline_regression(
+    project_id: str,
+    execution_date: datetime.date,
+    config: dict,
+    output_dir: str | None = None,
+    skip_gcs_upload: bool = False,
+    use_feature_sql: bool = False,
+    start_date: str | None = None,
+    end_date: str | None = None,
+) -> dict:
+    """
+    着差回帰モデルの学習パイプラインを実行する
+
+    目的変数: 1着馬との走破タイム差をレース内σで正規化したZスコア
+    finish_time が NULL、またはレース内 std==0 の行は学習から除外される。
+
+    Args:
+        project_id: GCPプロジェクトID
+        execution_date: 実行日
+        config: 設定辞書
+        output_dir: モデル出力ディレクトリ（Noneの場合は一時ディレクトリ）
+        skip_gcs_upload: GCSアップロードをスキップするか
+        use_feature_sql: feature_query_raw.sql を直接実行して学習データを取得する
+        start_date: use_feature_sql=True 時の取得開始日 (YYYY-MM-DD)
+        end_date: use_feature_sql=True 時の取得終了日 (YYYY-MM-DD)
+
+    Returns:
+        学習結果の辞書（model_type="regression" を含む）
+    """
+    data_config = config["data"]
+    model_config = config["model"]
+    gcs_config = config["gcs"]
+
+    # 1. データ取得（finish_time 付き）
+    if use_feature_sql:
+        sql_end = end_date or execution_date.isoformat()
+        sql_start = start_date or "2016-01-01"
+        df = fetch_training_data_from_sql(
+            project_id=project_id,
+            start_date=sql_start,
+            end_date=sql_end,
+        )
+    else:
+        df = fetch_training_data(
+            project_id=project_id,
+            dataset=data_config["dataset"],
+            table=data_config["table"],
+        )
+
+    if "finish_time" not in df.columns:
+        raise ValueError(
+            "finish_time カラムが取得できませんでした。"
+            "fetch_training_data() が finish_time を JOIN していることを確認してください。"
+        )
+
+    # 2. データ分割
+    train_df, valid_df, predict_df = split_train_valid_predict(
+        df=df,
+        execution_date=execution_date,
+        validation_months=model_config["training"]["validation_months"],
+        date_column=data_config["date_column"],
+    )
+
+    if len(train_df) == 0:
+        raise ValueError("学習データがありません")
+    if len(valid_df) == 0:
+        raise ValueError("検証データがありません")
+
+    # 3. 特徴量準備（NaN行は自動除外）
+    X_train, y_train = prepare_features_regression(
+        train_df,
+        exclude_columns=data_config["exclude_columns"],
+        categorical_columns=data_config.get("categorical_columns", []),
+    )
+    X_valid, y_valid = prepare_features_regression(
+        valid_df,
+        exclude_columns=data_config["exclude_columns"],
+        categorical_columns=data_config.get("categorical_columns", []),
+    )
+
+    if len(X_train) == 0:
+        raise ValueError("有効な学習データがありません（finish_time が全てNULL等）")
+    if len(X_valid) == 0:
+        raise ValueError("有効な検証データがありません")
+
+    categorical_in_features = [
+        c for c in data_config.get("categorical_columns", [])
+        if c in X_train.columns
+    ]
+
+    # 4. モデル学習
+    reg_config = LGBMRegressionConfig(
+        num_boost_round=model_config["training"]["num_boost_round"],
+        early_stopping_rounds=model_config["training"]["early_stopping_rounds"],
+        log_evaluation=model_config["training"]["log_evaluation"],
+    )
+    regressor = LGBMRegression(config=reg_config)
+
+    regressor.train(
+        X_train=X_train,
+        y_train=y_train,
+        X_valid=X_valid,
+        y_valid=y_valid,
+        categorical_feature=categorical_in_features or None,
+    )
+
+    # 5. 検証データで RMSE 評価
+    valid_pred = regressor.predict(X_valid)
+    rmse = float(np.sqrt(np.mean((y_valid - valid_pred) ** 2)))
+    logger.info(f"Regression validation RMSE: {rmse:.4f}")
+
+    # 6. モデル保存
+    if output_dir is None:
+        output_dir = tempfile.mkdtemp(prefix="keiba_model_regression_")
+
+    date_str = execution_date.strftime("%Y%m%d")
+    model_path = str(Path(output_dir) / f"lgbm_regression_{date_str}.txt")
+    training_period = {
+        "train_from": str(train_df[data_config["date_column"]].min()),
+        "train_to": str(train_df[data_config["date_column"]].max()),
+        "train_rows": len(X_train),
+        "valid_from": str(valid_df[data_config["date_column"]].min()),
+        "valid_to": str(valid_df[data_config["date_column"]].max()),
+        "valid_rows": len(X_valid),
+    }
+    regressor.save(model_path, training_period=training_period)
+
+    # 7. GCSアップロード（プレフィックスは lgbm_regression に固定）
+    gcs_uri = ""
+    if not skip_gcs_upload:
+        gcs_uri = upload_model_to_gcs(
+            project_id=project_id,
+            local_path=model_path,
+            bucket_suffix=gcs_config["bucket_suffix"],
+            model_prefix="lgbm_regression",
+            execution_date=execution_date,
+        )
+
+    # 8. 特徴量重要度
+    importance = regressor.feature_importance()
+    logger.info(f"Top 10 features:\n{importance.head(10).to_string()}")
+
+    return {
+        "model_type": "regression",
+        "execution_date": str(execution_date),
+        "model_path": model_path,
+        "gcs_uri": gcs_uri,
+        "metrics": {"rmse": rmse},
+        "best_iteration": regressor.model.best_iteration,
+        "train_rows": len(X_train),
+        "valid_rows": len(X_valid),
+        "predict_rows": len(predict_df),
+        "num_features": X_train.shape[1],
+        "top_features": importance.head(10).to_dict(orient="records"),
+    }
+
+
 def main():
     """メイン関数（CLIから実行）"""
     from dotenv import load_dotenv
@@ -863,11 +1101,12 @@ def main():
     parser.add_argument(
         "--model-type",
         default="ranker",
-        choices=["ranker", "multi"],
+        choices=["ranker", "multi", "regression"],
         help=(
             "学習するモデルの種類。"
             "ranker: 二値ラベル LambdaRank（デフォルト）, "
-            "multi: JRA賞金ウェイト多値ラベル LambdaRank"
+            "multi: JRA賞金ウェイト多値ラベル LambdaRank, "
+            "regression: 着差Zスコア回帰"
         ),
     )
 
@@ -888,6 +1127,17 @@ def main():
 
     if args.model_type == "multi":
         result = train_pipeline_multi(
+            project_id=args.project_id,
+            execution_date=execution_date,
+            config=config,
+            output_dir=args.output_dir,
+            skip_gcs_upload=args.skip_gcs_upload,
+            use_feature_sql=args.use_feature_sql,
+            start_date=args.start_date,
+            end_date=args.end_date,
+        )
+    elif args.model_type == "regression":
+        result = train_pipeline_regression(
             project_id=args.project_id,
             execution_date=execution_date,
             config=config,
