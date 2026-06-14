@@ -16,6 +16,8 @@ import lightgbm as lgb
 import numpy as np
 import pandas as pd
 
+from src.models.lgbm_base import LGBMModelBase
+
 logger = logging.getLogger(__name__)
 
 
@@ -41,7 +43,7 @@ class LGBMRegressionConfig:
     log_evaluation: int = 100
 
 
-class LGBMRegression:
+class LGBMRegression(LGBMModelBase):
     """LightGBM 回帰モデル（着差Zスコア予測）
 
     LGBMRanker と同等のインターフェースを提供するが、
@@ -49,11 +51,8 @@ class LGBMRegression:
     """
 
     def __init__(self, config: LGBMRegressionConfig | None = None):
+        super().__init__()
         self.config = config or LGBMRegressionConfig()
-        self.model: lgb.Booster | None = None
-        self.feature_names: list[str] | None = None
-        self._categorical_feature_names: list[str] = []
-        self._categorical_dtypes: dict[str, pd.CategoricalDtype] = {}
 
     def train(
         self,
@@ -132,26 +131,6 @@ class LGBMRegression:
         X_pred = self._prepare_prediction_data(X)
         return self.model.predict(X_pred)
 
-    def _prepare_prediction_data(self, X: pd.DataFrame) -> pd.DataFrame:
-        """予測用にDataFrameをモデルの期待に合わせて整形する"""
-        model_feature_names = self.feature_names or self.model.feature_name()
-
-        missing = [c for c in model_feature_names if c not in X.columns]
-        if missing:
-            logger.warning(f"モデルの特徴量がデータに不足: {missing}")
-
-        X_pred = X.reindex(columns=model_feature_names)
-
-        for col, dtype in self._categorical_dtypes.items():
-            if col in X_pred.columns:
-                X_pred[col] = X_pred[col].astype(dtype)
-
-        for col in X_pred.select_dtypes(include="object").columns:
-            if not isinstance(X_pred[col].dtype, pd.CategoricalDtype):
-                X_pred[col] = X_pred[col].astype("category")
-
-        return X_pred
-
     def save(self, path: str, training_period: dict | None = None) -> None:
         """
         モデルをローカルに保存する
@@ -207,38 +186,3 @@ class LGBMRegression:
 
         self._categorical_feature_names = self._parse_categorical_feature_names(model_path)
         self._build_categorical_dtypes()
-
-    def _parse_categorical_feature_names(self, model_path: Path) -> list[str]:
-        """モデルファイルのcategorical_feature行からカテゴリカル特徴量名を返す。"""
-        feature_names = self.feature_names or self.model.feature_name()
-        with open(model_path) as f:
-            for raw_line in f:
-                stripped = raw_line.strip()
-                if stripped.startswith("[categorical_feature:"):
-                    content = stripped.split(":", 1)[1].strip().rstrip("]").strip()
-                    if not content or content == "none":
-                        return []
-                    indices = [int(x.strip()) for x in content.split(",")]
-                    return [feature_names[i] for i in indices]
-                if stripped.startswith("[Tree"):
-                    break
-        return []
-
-    def _build_categorical_dtypes(self) -> None:
-        """カテゴリカル特徴量のdtypeキャッシュを構築する。"""
-        model_cats = getattr(self.model, "pandas_categorical", [])
-        self._categorical_dtypes = {
-            col: pd.CategoricalDtype(categories=cats)
-            for col, cats in zip(self._categorical_feature_names, model_cats)
-        }
-
-    def feature_importance(self, importance_type: str = "gain") -> pd.DataFrame:
-        """特徴量重要度を取得する"""
-        if self.model is None:
-            raise RuntimeError("モデルが学習されていません。")
-
-        importance = self.model.feature_importance(importance_type=importance_type)
-        names = self.feature_names or self.model.feature_name()
-
-        df = pd.DataFrame({"feature": names, "importance": importance})
-        return df.sort_values("importance", ascending=False).reset_index(drop=True)
