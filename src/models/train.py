@@ -27,6 +27,7 @@ from sklearn.metrics import roc_auc_score
 
 from src.ml.features.feature_pipeline import FeaturePipeline
 from src.models.lgbm_ranker import LGBMRanker, LGBMRankerConfig
+from src.models.lgbm_ranker_multi import LGBMRankerMulti, LGBMRankerMultiConfig
 from src.models.tuning import run_tuning, save_best_params
 
 logger = logging.getLogger(__name__)
@@ -279,6 +280,45 @@ def prepare_features(
     # BigQuery Storageモジュール経由だとNullable Int64で返るためfillna(0)が必要
     positions = df["finish_position"].fillna(0).values.astype(int)
     y = np.where((positions >= 1) & (positions <= 3), 1, 0)
+
+    # グループサイズ（各レースの馬数）
+    groups = df.groupby("race_id", sort=False).size().tolist()
+
+    return X, y, groups
+
+
+def prepare_features_multi_label(
+    df: pd.DataFrame,
+    exclude_columns: list,
+    categorical_columns: list,
+) -> tuple:
+    """
+    DataFrameから特徴量・多値ラベル・グループを準備する（多値ランク学習用）
+
+    JRA賞金ウェイト値をそのまま整数ラベルとして使用する。
+    ラベル値: 1着=120, 2着=90, 3着=70, 4着=15, 5着=10,
+              6着=8, 7着=7, 8着=6, 9着=4, 10着=2, 11着以下/欠損=0
+
+    LGBMRankerMultiConfig の label_gain[i]=i により、
+    各ラベル値がそのままNDCGゲインとして機能する。
+
+    Args:
+        df: 入力DataFrame
+        exclude_columns: 除外カラムリスト
+        categorical_columns: カテゴリカル特徴量リスト
+
+    Returns:
+        (X, y, groups) のタプル
+        y: 多値ラベル（整数, JRA賞金ウェイト値）
+    """
+    from src.models.lgbm_ranker_multi import JRA_PRIZE_WEIGHTS
+
+    X = build_feature_matrix(df, exclude_columns, categorical_columns)
+
+    # 着順をJRA賞金ウェイト整数値に直接変換
+    # finish_position=0（出走取消等）またはNULL（欠損）および11着以下は0
+    positions = df["finish_position"].fillna(0).values.astype(int)
+    y = np.array([JRA_PRIZE_WEIGHTS.get(int(p), 0) for p in positions], dtype=int)
 
     # グループサイズ（各レースの馬数）
     groups = df.groupby("race_id", sort=False).size().tolist()
@@ -604,6 +644,157 @@ def train_pipeline(
     return result
 
 
+def train_pipeline_multi(
+    project_id: str,
+    execution_date: datetime.date,
+    config: dict,
+    output_dir: str | None = None,
+    skip_gcs_upload: bool = False,
+    use_feature_sql: bool = False,
+    start_date: str | None = None,
+    end_date: str | None = None,
+) -> dict:
+    """
+    多値ランク学習パイプラインを実行する（JRA賞金ウェイト多値ラベル + LambdaRank）
+
+    Args:
+        project_id: GCPプロジェクトID
+        execution_date: 実行日
+        config: 設定辞書
+        output_dir: モデル出力ディレクトリ（Noneの場合は一時ディレクトリ）
+        skip_gcs_upload: GCSアップロードをスキップするか
+        use_feature_sql: feature_query_raw.sql を直接実行して学習データを取得する
+        start_date: use_feature_sql=True 時の取得開始日 (YYYY-MM-DD)
+        end_date: use_feature_sql=True 時の取得終了日 (YYYY-MM-DD)
+
+    Returns:
+        学習結果の辞書（model_type="ranker_multi" を含む）
+    """
+    data_config = config["data"]
+    model_config = config["model"]
+    gcs_config = config["gcs"]
+
+    # 1. データ取得（train_pipeline と共通）
+    if use_feature_sql:
+        sql_end = end_date or execution_date.isoformat()
+        sql_start = start_date or "2016-01-01"
+        df = fetch_training_data_from_sql(
+            project_id=project_id,
+            start_date=sql_start,
+            end_date=sql_end,
+        )
+    else:
+        df = fetch_training_data(
+            project_id=project_id,
+            dataset=data_config["dataset"],
+            table=data_config["table"],
+        )
+
+    # 2. データ分割
+    train_df, valid_df, predict_df = split_train_valid_predict(
+        df=df,
+        execution_date=execution_date,
+        validation_months=model_config["training"]["validation_months"],
+        date_column=data_config["date_column"],
+    )
+
+    if len(train_df) == 0:
+        raise ValueError("学習データがありません")
+    if len(valid_df) == 0:
+        raise ValueError("検証データがありません")
+
+    # 3. 特徴量準備（多値ラベル）
+    X_train, y_train, groups_train = prepare_features_multi_label(
+        train_df,
+        exclude_columns=data_config["exclude_columns"],
+        categorical_columns=data_config.get("categorical_columns", []),
+    )
+    X_valid, y_valid, groups_valid = prepare_features_multi_label(
+        valid_df,
+        exclude_columns=data_config["exclude_columns"],
+        categorical_columns=data_config.get("categorical_columns", []),
+    )
+
+    categorical_in_features = [
+        c for c in data_config.get("categorical_columns", [])
+        if c in X_train.columns
+    ]
+
+    # 4. モデル学習（LGBMRankerMulti）
+    ranker_config = LGBMRankerMultiConfig(
+        num_boost_round=model_config["training"]["num_boost_round"],
+        early_stopping_rounds=model_config["training"]["early_stopping_rounds"],
+        log_evaluation=model_config["training"]["log_evaluation"],
+    )
+    ranker = LGBMRankerMulti(config=ranker_config)
+
+    ranker.train(
+        X_train=X_train,
+        y_train=y_train,
+        groups_train=groups_train,
+        X_valid=X_valid,
+        y_valid=y_valid,
+        groups_valid=groups_valid,
+        categorical_feature=categorical_in_features or None,
+    )
+
+    # 5. 検証データで評価（評価はbinary視点でも計算）
+    valid_pred = ranker.predict(X_valid)
+    metrics = evaluate_predictions(
+        y_true_positions=valid_df["finish_position"].fillna(0).values.astype(int),
+        y_pred=valid_pred,
+        groups=groups_valid,
+    )
+    logger.info(f"Validation metrics (multi-label): {metrics}")
+
+    # 6. モデル保存
+    if output_dir is None:
+        output_dir = tempfile.mkdtemp(prefix="keiba_model_multi_")
+
+    date_str = execution_date.strftime("%Y%m%d")
+    model_path = str(Path(output_dir) / f"lgbm_ranker_multi_{date_str}.txt")
+    training_period = {
+        "train_from": str(train_df[data_config["date_column"]].min()),
+        "train_to": str(train_df[data_config["date_column"]].max()),
+        "train_rows": len(train_df),
+        "train_races": train_df[data_config["group_column"]].nunique(),
+        "valid_from": str(valid_df[data_config["date_column"]].min()),
+        "valid_to": str(valid_df[data_config["date_column"]].max()),
+        "valid_rows": len(valid_df),
+        "valid_races": valid_df[data_config["group_column"]].nunique(),
+    }
+    ranker.save(model_path, training_period=training_period)
+
+    # 7. GCSアップロード（プレフィックスはranker_multiに固定）
+    gcs_uri = ""
+    if not skip_gcs_upload:
+        gcs_uri = upload_model_to_gcs(
+            project_id=project_id,
+            local_path=model_path,
+            bucket_suffix=gcs_config["bucket_suffix"],
+            model_prefix="lgbm_ranker_multi",
+            execution_date=execution_date,
+        )
+
+    # 8. 特徴量重要度
+    importance = ranker.feature_importance()
+    logger.info(f"Top 10 features:\n{importance.head(10).to_string()}")
+
+    return {
+        "model_type": "ranker_multi",
+        "execution_date": str(execution_date),
+        "model_path": model_path,
+        "gcs_uri": gcs_uri,
+        "metrics": metrics,
+        "best_iteration": ranker.model.best_iteration,
+        "train_rows": len(train_df),
+        "valid_rows": len(valid_df),
+        "predict_rows": len(predict_df),
+        "num_features": X_train.shape[1],
+        "top_features": importance.head(10).to_dict(orient="records"),
+    }
+
+
 def main():
     """メイン関数（CLIから実行）"""
     from dotenv import load_dotenv
@@ -671,6 +862,16 @@ def main():
         default=None,
         help="--use-feature-sql 時の取得終了日 (YYYY-MM-DD, デフォルト: 実行日)",
     )
+    parser.add_argument(
+        "--model-type",
+        default="ranker",
+        choices=["ranker", "multi"],
+        help=(
+            "学習するモデルの種類。"
+            "ranker: 二値ラベル LambdaRank（デフォルト）, "
+            "multi: JRA賞金ウェイト多値ラベル LambdaRank"
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -687,19 +888,31 @@ def main():
     config = load_config(args.config)
     execution_date = datetime.date.fromisoformat(args.execution_date)
 
-    result = train_pipeline(
-        project_id=args.project_id,
-        execution_date=execution_date,
-        config=config,
-        output_dir=args.output_dir,
-        skip_gcs_upload=args.skip_gcs_upload,
-        tune=args.tune,
-        n_trials=args.n_trials,
-        tune_timeout=args.tune_timeout,
-        use_feature_sql=args.use_feature_sql,
-        start_date=args.start_date,
-        end_date=args.end_date,
-    )
+    if args.model_type == "multi":
+        result = train_pipeline_multi(
+            project_id=args.project_id,
+            execution_date=execution_date,
+            config=config,
+            output_dir=args.output_dir,
+            skip_gcs_upload=args.skip_gcs_upload,
+            use_feature_sql=args.use_feature_sql,
+            start_date=args.start_date,
+            end_date=args.end_date,
+        )
+    else:
+        result = train_pipeline(
+            project_id=args.project_id,
+            execution_date=execution_date,
+            config=config,
+            output_dir=args.output_dir,
+            skip_gcs_upload=args.skip_gcs_upload,
+            tune=args.tune,
+            n_trials=args.n_trials,
+            tune_timeout=args.tune_timeout,
+            use_feature_sql=args.use_feature_sql,
+            start_date=args.start_date,
+            end_date=args.end_date,
+        )
 
     print("\n" + "=" * 60)
     print("学習結果")
