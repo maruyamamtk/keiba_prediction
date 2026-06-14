@@ -8,6 +8,12 @@ Usage:
     python src/models/predict.py --project-id <PROJECT_ID> --model-path <MODEL_PATH>
     python src/models/predict.py --project-id <PROJECT_ID> --model-path <MODEL_PATH> --execution-date 2026-02-15
     python src/models/predict.py --project-id <PROJECT_ID> --model-path <MODEL_PATH> --save-to-bq
+
+    # ハイブリッドアンサンブルモード（3モデル統合）
+    python src/models/predict.py --project-id <PROJECT_ID> \
+        --model-path-multi gs://...lgbm_ranker_multi.txt \
+        --model-path-regression gs://...lgbm_regression.txt \
+        --model-path-classifier gs://...lgbm_classifier.txt
 """
 
 
@@ -26,7 +32,11 @@ import yaml
 from google.cloud import bigquery, storage
 
 from src.ml.features.feature_pipeline import FeaturePipeline
+from src.models.ensemble import ensemble_rank_scores
+from src.models.lgbm_classifier import LGBMClassifier
 from src.models.lgbm_ranker import LGBMRanker
+from src.models.lgbm_ranker_multi import LGBMRankerMulti
+from src.models.lgbm_regression import LGBMRegression
 from src.models.train import (
     CONFIG_PATH,
     build_feature_matrix,
@@ -241,6 +251,86 @@ def load_model_from_gcs(
     return model_file
 
 
+def _download_model_from_gcs(
+    project_id: str,
+    gcs_uri: str,
+    tmp_dir: str,
+) -> str:
+    """GCS URI からモデルファイルをローカルにダウンロードし、ローカルパスを返す。"""
+    parts = gcs_uri[len("gs://"):].split("/", 1)
+    bucket_name, blob_name = parts[0], parts[1]
+    client = storage.Client(project=project_id)
+    bucket = client.bucket(bucket_name)
+    local_model = Path(tmp_dir) / Path(blob_name).name
+    bucket.blob(blob_name).download_to_filename(str(local_model))
+    logger.info(f"Downloaded {gcs_uri} to {local_model}")
+    meta_blob_name = blob_name.rsplit(".", 1)[0] + ".meta.json"
+    local_meta = Path(tmp_dir) / Path(meta_blob_name).name
+    meta_blob = bucket.blob(meta_blob_name)
+    if meta_blob.exists():
+        meta_blob.download_to_filename(str(local_meta))
+    return str(local_model)
+
+
+def _load_model(model_cls, project_id: str, path: str, tmp_dir: str):
+    """ローカルパスまたは GCS URI からモデルをロードする。"""
+    model = model_cls()
+    if path.startswith("gs://"):
+        local_path = _download_model_from_gcs(project_id, path, tmp_dir)
+    else:
+        local_path = path
+    model.load(local_path)
+    return model
+
+
+def calibrate_place_prob(df: pd.DataFrame, n_places: int = 3) -> pd.DataFrame:
+    """
+    二値分類モデルが出力する複勝率（0〜1）をレース内で比例補正し、
+    1レース内の合計が必ず min(n_places, 出走頭数) になるよう正規化する。
+
+    既存の normalize_win_place_prob()（水充填）と類似だが、
+    入力が「分類モデルの確率」である点が異なる。
+    水充填アルゴリズムにより clip 後も合計値を保持する。
+
+    Args:
+        df: race_id と classifier_prob カラムを持つ DataFrame
+        n_places: 複勝対象着順数（デフォルト3）
+
+    Returns:
+        win_place_prob カラムを上書きした DataFrame（元の DataFrame は変更しない）
+    """
+    def _water_fill(group: pd.Series) -> pd.Series:
+        vals = group.values.astype(float)
+        n = len(vals)
+        k = float(min(n_places, n))
+        total = vals.sum()
+        if total < 1e-10:
+            return pd.Series(k / n, index=group.index)
+        # 比例スケーリング
+        p = vals / total
+        probs = p * k
+        # 水充填: 1.0 を超えた分を未達馬に再配分
+        for _ in range(n):
+            mask_over = probs > 1.0
+            if not mask_over.any():
+                break
+            excess = (probs[mask_over] - 1.0).sum()
+            probs[mask_over] = 1.0
+            mask_under = probs < 1.0
+            if not mask_under.any():
+                break
+            p_under_sum = p[mask_under].sum()
+            if p_under_sum < 1e-12:
+                probs[mask_under] += excess / mask_under.sum()
+            else:
+                probs[mask_under] += excess * p[mask_under] / p_under_sum
+        return pd.Series(np.clip(probs, 0.0, 1.0), index=group.index)
+
+    df = df.copy()
+    df["win_place_prob"] = df.groupby("race_id")["classifier_prob"].transform(_water_fill)
+    return df
+
+
 def _scores_to_place_prob(scores: np.ndarray, n_places: int = 3) -> np.ndarray:
     """
     スコアを複勝率に変換する（水充填アルゴリズム）
@@ -347,115 +437,157 @@ def predict_pipeline(
     project_id: str,
     execution_date: datetime.date,
     config: dict,
-    model_path: str,
+    model_path: str | None = None,
     target_dates: list[datetime.date] | None = None,
     force_sql: bool = False,
+    model_path_multi: str | None = None,
+    model_path_regression: str | None = None,
+    model_path_classifier: str | None = None,
 ) -> pd.DataFrame:
     """
-    推論パイプラインを実行する
+    推論パイプラインを実行する。
+
+    単一モデルモード（後方互換）:
+        model_path のみ指定時は従来の LambdaRank モデルで動作する。
+
+    ハイブリッドアンサンブルモード:
+        model_path_multi / model_path_regression / model_path_classifier を追加指定する。
+        - multi + regression が揃う場合は ensemble_rank_scores() で final_rank_score を生成し
+          pred_score を上書きする。
+        - classifier が指定される場合は calibrate_place_prob() で win_place_prob を生成する。
 
     Args:
         project_id: GCPプロジェクトID
         execution_date: 実行日（target_dates未指定時に週の土日を算出する基準日）
         config: 設定辞書
-        model_path: モデルファイルパス
-        target_dates: 推論対象日のリスト。指定した場合はその日付のみ対象とする。
-                      未指定の場合は execution_date の週の土曜・日曜を使用する。
+        model_path: 既存 LambdaRank モデルファイルパス（任意）
+        target_dates: 推論対象日のリスト。未指定の場合は execution_date の週の土日。
         force_sql: True の場合は training_data を参照せず full feature SQL を実行する
+        model_path_multi: 多値ランク学習モデルパス（任意）
+        model_path_regression: 着差回帰モデルパス（任意）
+        model_path_classifier: 二値分類モデルパス（任意）
 
     Returns:
         予測結果のDataFrame
     """
+    if not any([model_path, model_path_multi, model_path_regression]):
+        raise ValueError(
+            "model_path, model_path_multi, model_path_regression のいずれかを指定してください。"
+        )
+
     data_config = config["data"]
 
-    # 1. モデル読み込み
-    ranker = LGBMRanker()
-    if model_path.startswith("gs://"):
-        # GCS URI の場合は一時ディレクトリにダウンロードしてからロード
-        gcs_uri = model_path  # e.g. gs://bucket/path/to/model.txt
-        parts = gcs_uri[len("gs://"):].split("/", 1)
-        bucket_name, blob_name = parts[0], parts[1]
-        client = storage.Client(project=project_id)
-        bucket = client.bucket(bucket_name)
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            local_model = Path(tmp_dir) / Path(blob_name).name
-            bucket.blob(blob_name).download_to_filename(str(local_model))
-            logger.info(f"Downloaded {gcs_uri} to {local_model}")
-            # .meta.json も同じフォルダからダウンロード（存在すれば）
-            meta_blob_name = blob_name.rsplit(".", 1)[0] + ".meta.json"
-            local_meta = Path(tmp_dir) / Path(meta_blob_name).name
-            meta_blob = bucket.blob(meta_blob_name)
-            if meta_blob.exists():
-                meta_blob.download_to_filename(str(local_meta))
-            ranker.load(str(local_model))
-    else:
-        ranker.load(model_path)
+    # 1. モデル読み込み（GCS または ローカル）
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        ranker: LGBMRanker | None = None
+        if model_path:
+            ranker = _load_model(LGBMRanker, project_id, model_path, tmp_dir)
 
-    # 2. 推論対象日の決定
-    if target_dates is None:
-        saturday, sunday = compute_week_boundaries(execution_date)
-        target_dates = [saturday, sunday]
+        ranker_multi: LGBMRankerMulti | None = None
+        if model_path_multi:
+            ranker_multi = _load_model(LGBMRankerMulti, project_id, model_path_multi, tmp_dir)
 
-    df = fetch_prediction_data(
-        project_id=project_id,
-        target_dates=target_dates,
-        force_sql=force_sql,
-    )
+        regressor: LGBMRegression | None = None
+        if model_path_regression:
+            regressor = _load_model(LGBMRegression, project_id, model_path_regression, tmp_dir)
 
-    if len(df) == 0:
-        logger.warning("推論対象データがありません")
-        return pd.DataFrame()
+        classifier: LGBMClassifier | None = None
+        if model_path_classifier:
+            classifier = _load_model(LGBMClassifier, project_id, model_path_classifier, tmp_dir)
 
-    # 3. 特徴量準備（train.pyと共通ロジックを使用）
-    X = build_feature_matrix(
-        df,
-        exclude_columns=data_config["exclude_columns"],
-        categorical_columns=data_config.get("categorical_columns", []),
-    )
+        # 2. 推論対象日の決定
+        if target_dates is None:
+            saturday, sunday = compute_week_boundaries(execution_date)
+            target_dates = [saturday, sunday]
 
-    # 4. 予測
-    scores = ranker.predict(X)
-
-    # 5. 結果の整形
-    result_df = df[
-        ["race_id", "race_date", "horse_id", "horse_number", "horse_name"]
-    ].copy()
-    if "venue_code" in df.columns:
-        result_df["venue_code"] = df["venue_code"]
-    if "race_number" in df.columns:
-        result_df["race_number"] = df["race_number"]
-
-    result_df["pred_score"] = scores
-    # レースごとにソフトマックス正規化でwin_place_probを計算
-    result_df = normalize_win_place_prob(result_df)
-
-    # レース内での予測順位を付与
-    result_df["pred_rank"] = result_df.groupby("race_id")["pred_score"].rank(
-        ascending=False, method="min"
-    ).astype(int)
-
-    # 着順情報: raw.race_resultsから直接取得する
-    # features.training_dataのfinish_positionは不正な値（0/1等）が格納されている
-    # 場合があるため、信頼性の高いデータソースを使用する
-    race_results_df = fetch_race_results(project_id=project_id, target_dates=target_dates)
-    if len(race_results_df) > 0:
-        result_df = result_df.merge(
-            race_results_df[["race_id", "horse_id", "finish_position"]],
-            on=["race_id", "horse_id"],
-            how="left",
+        df = fetch_prediction_data(
+            project_id=project_id,
+            target_dates=target_dates,
+            force_sql=force_sql,
         )
-    else:
-        result_df["finish_position"] = np.nan
 
-    # オッズ情報がある場合
-    for odds_col in ["odds_yesterday", "odds_today"]:
-        if odds_col in df.columns:
-            result_df[odds_col] = df[odds_col]
+        if len(df) == 0:
+            logger.warning("推論対象データがありません")
+            return pd.DataFrame()
 
-    # ソート
-    result_df = result_df.sort_values(
-        ["race_date", "race_id", "pred_rank"]
-    ).reset_index(drop=True)
+        # 3. 特徴量準備（train.pyと共通ロジックを使用）
+        X = build_feature_matrix(
+            df,
+            exclude_columns=data_config["exclude_columns"],
+            categorical_columns=data_config.get("categorical_columns", []),
+        )
+
+        # 4. 各モデルで推論
+        result_df = df[
+            ["race_id", "race_date", "horse_id", "horse_number", "horse_name"]
+        ].copy()
+        if "venue_code" in df.columns:
+            result_df["venue_code"] = df["venue_code"]
+        if "race_number" in df.columns:
+            result_df["race_number"] = df["race_number"]
+
+        # 既存 LambdaRank スコア（後方互換用ベース）
+        if ranker is not None:
+            result_df["pred_score"] = ranker.predict(X)
+        else:
+            result_df["pred_score"] = np.nan
+
+        # 多値ランク学習スコア
+        if ranker_multi is not None:
+            result_df["rank_score_multi"] = ranker_multi.predict(X)
+
+        # 着差回帰スコア
+        if regressor is not None:
+            result_df["rank_score_regression"] = regressor.predict(X)
+
+        # 二値分類スコア（生確率）
+        if classifier is not None:
+            result_df["classifier_prob"] = classifier.predict(X)
+
+        # 5. アンサンブルスコアで pred_score を上書き
+        has_multi = "rank_score_multi" in result_df.columns
+        has_regression = "rank_score_regression" in result_df.columns
+        if has_multi or has_regression:
+            result_df["final_rank_score"] = ensemble_rank_scores(
+                result_df,
+                score_col_multi="rank_score_multi",
+                score_col_regression="rank_score_regression",
+            )
+            result_df["pred_score"] = result_df["final_rank_score"]
+            logger.info("final_rank_score を pred_score に適用しました")
+
+        # 6. 複勝率の計算
+        if "classifier_prob" in result_df.columns:
+            result_df = calibrate_place_prob(result_df)
+            logger.info("calibrate_place_prob で win_place_prob を計算しました")
+        else:
+            result_df = normalize_win_place_prob(result_df)
+
+        # 7. レース内での予測順位を付与
+        result_df["pred_rank"] = result_df.groupby("race_id")["pred_score"].rank(
+            ascending=False, method="min"
+        ).astype(int)
+
+        # 8. 着順情報: raw.race_resultsから直接取得する
+        race_results_df = fetch_race_results(project_id=project_id, target_dates=target_dates)
+        if len(race_results_df) > 0:
+            result_df = result_df.merge(
+                race_results_df[["race_id", "horse_id", "finish_position"]],
+                on=["race_id", "horse_id"],
+                how="left",
+            )
+        else:
+            result_df["finish_position"] = np.nan
+
+        # オッズ情報がある場合
+        for odds_col in ["odds_yesterday", "odds_today"]:
+            if odds_col in df.columns:
+                result_df[odds_col] = df[odds_col]
+
+        # ソート
+        result_df = result_df.sort_values(
+            ["race_date", "race_id", "pred_rank"]
+        ).reset_index(drop=True)
 
     return result_df
 
@@ -506,6 +638,10 @@ def save_predictions_to_bq(
         if col in result_df.columns:
             save_columns.append(col)
             break
+    # アンサンブル・分類スコアがあれば含める（デバッグ用）
+    for col in ["classifier_prob", "rank_score_multi", "rank_score_regression", "final_rank_score"]:
+        if col in result_df.columns:
+            save_columns.append(col)
 
     available_columns = [c for c in save_columns if c in result_df.columns]
     save_df = result_df[available_columns].copy()
@@ -686,8 +822,23 @@ def main():
     )
     parser.add_argument(
         "--model-path",
-        required=True,
-        help="モデルファイルパス（ローカル）",
+        default=None,
+        help="既存 LambdaRank モデルファイルパス（ローカルまたは GCS URI）",
+    )
+    parser.add_argument(
+        "--model-path-multi",
+        default=None,
+        help="多値ランク学習モデルパス（LGBMRankerMulti、ローカルまたは GCS URI）",
+    )
+    parser.add_argument(
+        "--model-path-regression",
+        default=None,
+        help="着差回帰モデルパス（LGBMRegression、ローカルまたは GCS URI）",
+    )
+    parser.add_argument(
+        "--model-path-classifier",
+        default=None,
+        help="二値分類モデルパス（LGBMClassifier、ローカルまたは GCS URI）",
     )
     parser.add_argument(
         "--execution-date",
@@ -769,6 +920,12 @@ def main():
             logger.error(f"--target-dates のフォーマットが不正です: {e}")
             return 1
 
+    if not any([args.model_path, args.model_path_multi, args.model_path_regression]):
+        logger.error(
+            "--model-path, --model-path-multi, --model-path-regression のいずれかを指定してください。"
+        )
+        return 1
+
     result_df = predict_pipeline(
         project_id=project_id,
         execution_date=execution_date,
@@ -776,6 +933,9 @@ def main():
         model_path=args.model_path,
         target_dates=parsed_target_dates,
         force_sql=args.force_sql,
+        model_path_multi=args.model_path_multi,
+        model_path_regression=args.model_path_regression,
+        model_path_classifier=args.model_path_classifier,
     )
 
     # 結果表示
