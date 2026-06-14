@@ -3131,3 +3131,100 @@ class TestJockeyHorseComboFeature:
         content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
         assert "jockey_horse_combo_te_rank" in content, \
             "jockey_horse_combo_te_rank が見つかりません"
+
+
+class TestLast3fRankFeature:
+    """Issue #346: 近走上がり3F レース内相対順位特徴量のテスト"""
+
+    def test_sql_has_last3f_rank_improvement_3(self):
+        """last3f_rank_improvement_3 が temp_past_race_features2 に定義されていること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        prf2_start = content.find("temp_past_race_features2 as (")
+        prf2_end = content.find("temp_horse_master_feature as (", prf2_start)
+        prf2_section = content[prf2_start:prf2_end]
+        assert "last3f_rank_improvement_3" in prf2_section, \
+            "last3f_rank_improvement_3 が temp_past_race_features2 に定義されていません"
+
+    def test_sql_has_last3f_rank_avg_3(self):
+        """last3f_rank_avg_3 が temp_past_race_features2 に定義されていること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        prf2_start = content.find("temp_past_race_features2 as (")
+        prf2_end = content.find("temp_horse_master_feature as (", prf2_start)
+        prf2_section = content[prf2_start:prf2_end]
+        assert "last3f_rank_avg_3" in prf2_section, \
+            "last3f_rank_avg_3 が temp_past_race_features2 に定義されていません"
+
+    def test_sql_improvement_uses_past_rank_columns(self):
+        """last3f_rank_improvement_3 が last_3f_rank_in_race_1/3 の差分であること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        prf2_start = content.find("temp_past_race_features2 as (")
+        prf2_end = content.find("temp_horse_master_feature as (", prf2_start)
+        prf2_section = content[prf2_start:prf2_end]
+        assert "last_3f_rank_in_race_1 - t_p_r_f.last_3f_rank_in_race_3" in prf2_section or \
+               "last_3f_rank_in_race_1 - last_3f_rank_in_race_3" in prf2_section, \
+            "last3f_rank_improvement_3 が rank_1 - rank_3 でありません"
+
+    def test_sql_improvement_null_check(self):
+        """last3f_rank_improvement_3 が prev1 または prev3 が NULL の場合に NULL を返すこと"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        prf2_start = content.find("temp_past_race_features2 as (")
+        prf2_end = content.find("temp_horse_master_feature as (", prf2_start)
+        prf2_section = content[prf2_start:prf2_end]
+        assert "last_3f_rank_in_race_1 is null or t_p_r_f.last_3f_rank_in_race_3 is null" in prf2_section, \
+            "prev1/prev3 が NULL の場合の NULL ガードがありません"
+
+    def test_sql_avg3_uses_safe_divide(self):
+        """last3f_rank_avg_3 が safe_divide と nullif を使用していること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        prf2_start = content.find("temp_past_race_features2 as (")
+        prf2_end = content.find("temp_horse_master_feature as (", prf2_start)
+        prf2_section = content[prf2_start:prf2_end]
+        avg_idx = prf2_section.find("last3f_rank_avg_3")
+        assert avg_idx >= 0, "last3f_rank_avg_3 が見つかりません"
+        # safe_divide があることを確認（avg_3 定義部分の前にあるはず）
+        assert "safe_divide(" in prf2_section[max(0, avg_idx - 500):avg_idx + 500], \
+            "last3f_rank_avg_3 に safe_divide がありません"
+
+    def test_sql_null_fill_has_improvement_median(self):
+        """temp_null_fill_med に last3f_rank_improvement_3 の中央値計算が含まれること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        null_fill_start = content.find("temp_null_fill_med as (")
+        null_filled_start = content.find("temp_null_filled as (")
+        null_fill_section = content[null_fill_start:null_filled_start]
+        assert "_last3f_rank_improvement_3_med" in null_fill_section, \
+            "temp_null_fill_med に _last3f_rank_improvement_3_med がありません"
+        assert "_last3f_rank_avg_3_med" in null_fill_section, \
+            "temp_null_fill_med に _last3f_rank_avg_3_med がありません"
+
+    def test_sql_null_filled_coalesces_with_zero_fallback(self):
+        """temp_null_filled が last3f_rank 特徴量を中央値→0 でフォールバックすること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        null_filled_start = content.find("temp_null_filled as (")
+        null_filled_end = content.find("from temp_null_fill_med")
+        null_filled_section = content[null_filled_start:null_filled_end]
+        assert "coalesce(last3f_rank_improvement_3, _last3f_rank_improvement_3_med, 0)" in null_filled_section, \
+            "last3f_rank_improvement_3 の NULL 補完が正しくありません（フォールバック=0 が必要）"
+        assert "coalesce(last3f_rank_avg_3, _last3f_rank_avg_3_med, 0)" in null_filled_section, \
+            "last3f_rank_avg_3 の NULL 補完が正しくありません（フォールバック=0 が必要）"
+
+    def test_sql_rank_section_has_new_rank_features(self):
+        """最終 RANK セクションに last3f_rank_improvement_3_rank / last3f_rank_avg_3_rank が含まれること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        rank_section_start = content.find("-- 同一レース内RANK特徴量を追加")
+        rank_section = content[rank_section_start:]
+        assert "last3f_rank_improvement_3_rank" in rank_section, \
+            "last3f_rank_improvement_3_rank が RANK セクションにありません"
+        assert "last3f_rank_avg_3_rank" in rank_section, \
+            "last3f_rank_avg_3_rank が RANK セクションにありません"
+
+    def test_sql_rank_uses_asc_order(self):
+        """RANK は末脚順位 ASC（小さい=良い）で降順ではないこと"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        imp_idx = content.find("last3f_rank_improvement_3_rank")
+        avg_idx = content.find("last3f_rank_avg_3_rank")
+        imp_line = content[max(0, imp_idx - 100):imp_idx + 100]
+        avg_line = content[max(0, avg_idx - 100):avg_idx + 100]
+        assert "ORDER BY last3f_rank_improvement_3 ASC" in imp_line, \
+            "last3f_rank_improvement_3_rank が ASC 順でありません"
+        assert "ORDER BY last3f_rank_avg_3 ASC" in avg_line, \
+            "last3f_rank_avg_3_rank が ASC 順でありません"
