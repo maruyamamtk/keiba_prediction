@@ -256,9 +256,13 @@ def train_and_evaluate_new_model(
 
     logger.info(f"Optuna チューニング開始: n_trials={n_trials}, timeout={timeout}s")
     tuning_result = run_tuning(
-        X_train, y_train, groups_train,
-        X_valid, y_valid, groups_valid,
-        tune_config,
+        X_train=X_train,
+        y_train=y_train,
+        X_valid=X_valid,
+        y_valid=y_valid,
+        config=tune_config,
+        groups_train=groups_train,
+        groups_valid=groups_valid,
     )
     best_params = tuning_result["best_params"]
     logger.info(f"チューニング完了: best_auc={tuning_result['best_value']:.4f}, params={best_params}")

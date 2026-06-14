@@ -733,6 +733,9 @@ def train_pipeline_multi(
     use_feature_sql: bool = False,
     start_date: str | None = None,
     end_date: str | None = None,
+    tune: bool = False,
+    n_trials: int | None = None,
+    tune_timeout: int | None = None,
 ) -> dict:
     """
     多値ランク学習パイプラインを実行する（JRA賞金ウェイト多値ラベル + LambdaRank）
@@ -746,6 +749,9 @@ def train_pipeline_multi(
         use_feature_sql: feature_query_raw.sql を直接実行して学習データを取得する
         start_date: use_feature_sql=True 時の取得開始日 (YYYY-MM-DD)
         end_date: use_feature_sql=True 時の取得終了日 (YYYY-MM-DD)
+        tune: True のとき Optuna でハイパーパラメータ調整を実行
+        n_trials: チューニング試行回数（None のとき config 値を使用）
+        tune_timeout: チューニングタイムアウト秒数（None のとき config 値を使用）
 
     Returns:
         学習結果の辞書（model_type="ranker_multi" を含む）
@@ -800,8 +806,34 @@ def train_pipeline_multi(
         if c in X_train.columns
     ]
 
-    # 4. モデル学習（LGBMRankerMulti）
+    # 4. ハイパーパラメータ調整（--tune 指定時）
+    tuning_result = None
+    model_params = model_config["params"]
+
+    if tune:
+        tuning_config = dict(config.get("tuning", {}))
+        if n_trials is not None:
+            tuning_config["n_trials"] = n_trials
+        if tune_timeout is not None:
+            tuning_config["timeout"] = tune_timeout
+
+        tuning_result = run_tuning(
+            X_train=X_train,
+            y_train=y_train,
+            X_valid=X_valid,
+            y_valid=y_valid,
+            config={"model": model_config, "tuning": tuning_config},
+            model_type="ranker_multi",
+            groups_train=groups_train,
+            groups_valid=groups_valid,
+            categorical_feature=categorical_in_features or None,
+        )
+        model_params = tuning_result["best_params"]
+        logger.info(f"Using tuned params (ranker_multi): {model_params}")
+
+    # 5. モデル学習（LGBMRankerMulti）
     ranker_config = LGBMRankerMultiConfig(
+        params=model_params,
         num_boost_round=model_config["training"]["num_boost_round"],
         early_stopping_rounds=model_config["training"]["early_stopping_rounds"],
         log_evaluation=model_config["training"]["log_evaluation"],
@@ -845,6 +877,10 @@ def train_pipeline_multi(
     }
     ranker.save(model_path, training_period=training_period)
 
+    if tuning_result is not None:
+        params_path = str(Path(output_dir) / f"best_params_ranker_multi_{date_str}.json")
+        save_best_params(tuning_result["best_params"], params_path)
+
     # 7. GCSアップロード（プレフィックスはranker_multiに固定）
     gcs_uri = ""
     if not skip_gcs_upload:
@@ -860,7 +896,7 @@ def train_pipeline_multi(
     importance = ranker.feature_importance()
     logger.info(f"Top 10 features:\n{importance.head(10).to_string()}")
 
-    return {
+    result = {
         "model_type": "ranker_multi",
         "execution_date": str(execution_date),
         "model_path": model_path,
@@ -873,6 +909,14 @@ def train_pipeline_multi(
         "num_features": X_train.shape[1],
         "top_features": importance.head(10).to_dict(orient="records"),
     }
+    if tuning_result is not None:
+        result["tuning"] = {
+            "best_value": tuning_result["best_value"],
+            "best_trial_number": tuning_result["best_trial_number"],
+            "n_trials": tuning_result["n_trials"],
+            "best_params": tuning_result["best_params"],
+        }
+    return result
 
 
 def train_pipeline_regression(
@@ -884,6 +928,9 @@ def train_pipeline_regression(
     use_feature_sql: bool = False,
     start_date: str | None = None,
     end_date: str | None = None,
+    tune: bool = False,
+    n_trials: int | None = None,
+    tune_timeout: int | None = None,
 ) -> dict:
     """
     着差回帰モデルの学習パイプラインを実行する
@@ -900,6 +947,9 @@ def train_pipeline_regression(
         use_feature_sql: feature_query_raw.sql を直接実行して学習データを取得する
         start_date: use_feature_sql=True 時の取得開始日 (YYYY-MM-DD)
         end_date: use_feature_sql=True 時の取得終了日 (YYYY-MM-DD)
+        tune: True のとき Optuna でハイパーパラメータ調整を実行
+        n_trials: チューニング試行回数（None のとき config 値を使用）
+        tune_timeout: チューニングタイムアウト秒数（None のとき config 値を使用）
 
     Returns:
         学習結果の辞書（model_type="regression" を含む）
@@ -965,8 +1015,34 @@ def train_pipeline_regression(
         if c in X_train.columns
     ]
 
-    # 4. モデル学習
+    # 4. ハイパーパラメータ調整（--tune 指定時）
+    tuning_result = None
+    _ranker_only_keys = {"objective", "metric", "ndcg_eval_at", "label_gain", "lambdarank_truncation_level"}
+    _shared_params = {k: v for k, v in model_config.get("params", {}).items() if k not in _ranker_only_keys}
+    reg_base_params = {**LGBMRegressionConfig().params, **_shared_params}
+
+    if tune:
+        tuning_config = dict(config.get("tuning", {}))
+        if n_trials is not None:
+            tuning_config["n_trials"] = n_trials
+        if tune_timeout is not None:
+            tuning_config["timeout"] = tune_timeout
+
+        tuning_result = run_tuning(
+            X_train=X_train,
+            y_train=y_train,
+            X_valid=X_valid,
+            y_valid=y_valid,
+            config={"model": {**model_config, "params": reg_base_params}, "tuning": tuning_config},
+            model_type="regression",
+            categorical_feature=categorical_in_features or None,
+        )
+        reg_base_params = tuning_result["best_params"]
+        logger.info(f"Using tuned params (regression): {reg_base_params}")
+
+    # 5. モデル学習
     reg_config = LGBMRegressionConfig(
+        params=reg_base_params,
         num_boost_round=model_config["training"]["num_boost_round"],
         early_stopping_rounds=model_config["training"]["early_stopping_rounds"],
         log_evaluation=model_config["training"]["log_evaluation"],
@@ -981,7 +1057,7 @@ def train_pipeline_regression(
         categorical_feature=categorical_in_features or None,
     )
 
-    # 5. 検証データで RMSE 評価
+    # 6. 検証データで RMSE 評価
     valid_pred = regressor.predict(X_valid)
     rmse = float(np.sqrt(np.mean((y_valid - valid_pred) ** 2)))
     logger.info(f"Regression validation RMSE: {rmse:.4f}")
@@ -1002,6 +1078,10 @@ def train_pipeline_regression(
     }
     regressor.save(model_path, training_period=training_period)
 
+    if tuning_result is not None:
+        params_path = str(Path(output_dir) / f"best_params_regression_{date_str}.json")
+        save_best_params(tuning_result["best_params"], params_path)
+
     # 7. GCSアップロード（プレフィックスは lgbm_regression に固定）
     gcs_uri = ""
     if not skip_gcs_upload:
@@ -1017,7 +1097,7 @@ def train_pipeline_regression(
     importance = regressor.feature_importance()
     logger.info(f"Top 10 features:\n{importance.head(10).to_string()}")
 
-    return {
+    result = {
         "model_type": "regression",
         "execution_date": str(execution_date),
         "model_path": model_path,
@@ -1030,6 +1110,14 @@ def train_pipeline_regression(
         "num_features": X_train.shape[1],
         "top_features": importance.head(10).to_dict(orient="records"),
     }
+    if tuning_result is not None:
+        result["tuning"] = {
+            "best_value": tuning_result["best_value"],
+            "best_trial_number": tuning_result["best_trial_number"],
+            "n_trials": tuning_result["n_trials"],
+            "best_params": tuning_result["best_params"],
+        }
+    return result
 
 
 def train_pipeline_classifier(
@@ -1041,6 +1129,9 @@ def train_pipeline_classifier(
     use_feature_sql: bool = False,
     start_date: str | None = None,
     end_date: str | None = None,
+    tune: bool = False,
+    n_trials: int | None = None,
+    tune_timeout: int | None = None,
 ) -> dict:
     """
     二値分類モデルの学習パイプラインを実行する
@@ -1058,6 +1149,9 @@ def train_pipeline_classifier(
         use_feature_sql: feature_query_raw.sql を直接実行して学習データを取得する
         start_date: use_feature_sql=True 時の取得開始日 (YYYY-MM-DD)
         end_date: use_feature_sql=True 時の取得終了日 (YYYY-MM-DD)
+        tune: True のとき Optuna でハイパーパラメータ調整を実行
+        n_trials: チューニング試行回数（None のとき config 値を使用）
+        tune_timeout: チューニングタイムアウト秒数（None のとき config 値を使用）
 
     Returns:
         学習結果の辞書（model_type="classifier" を含む）
@@ -1112,17 +1206,38 @@ def train_pipeline_classifier(
         if c in X_train.columns
     ]
 
-    # 4. モデル学習
-    # classifier 固有の objective/metric を保持しつつ、共通ハイパーパラメータ（num_leaves等）は
-    # model_config.yaml から引き継ぐ（ranker 固有の objective/metric/ndcg_eval_at は除外）
+    # 4. classifier 固有の base params を構築（ranker 固有キーを除外して共通パラメータを引き継ぐ）
     _ranker_only_keys = {"objective", "metric", "ndcg_eval_at", "label_gain", "lambdarank_truncation_level"}
     _shared_params = {
         k: v for k, v in model_config.get("params", {}).items()
         if k not in _ranker_only_keys
     }
-    clf_params = {**LGBMClassifierConfig().params, **_shared_params}
+    clf_base_params = {**LGBMClassifierConfig().params, **_shared_params}
+
+    # 4a. ハイパーパラメータ調整（--tune 指定時）
+    tuning_result = None
+    if tune:
+        tuning_config = dict(config.get("tuning", {}))
+        if n_trials is not None:
+            tuning_config["n_trials"] = n_trials
+        if tune_timeout is not None:
+            tuning_config["timeout"] = tune_timeout
+
+        tuning_result = run_tuning(
+            X_train=X_train,
+            y_train=y_train,
+            X_valid=X_valid,
+            y_valid=y_valid,
+            config={"model": {**model_config, "params": clf_base_params}, "tuning": tuning_config},
+            model_type="classifier",
+            categorical_feature=categorical_in_features or None,
+        )
+        clf_base_params = tuning_result["best_params"]
+        logger.info(f"Using tuned params (classifier): {clf_base_params}")
+
+    # 4b. モデル学習
     clf_config = LGBMClassifierConfig(
-        params=clf_params,
+        params=clf_base_params,
         num_boost_round=model_config["training"]["num_boost_round"],
         early_stopping_rounds=model_config["training"]["early_stopping_rounds"],
         log_evaluation=model_config["training"]["log_evaluation"],
@@ -1164,6 +1279,10 @@ def train_pipeline_classifier(
     }
     classifier.save(model_path, training_period=training_period)
 
+    if tuning_result is not None:
+        params_path = str(Path(output_dir) / f"best_params_classifier_{date_str}.json")
+        save_best_params(tuning_result["best_params"], params_path)
+
     # 7. GCSアップロード（プレフィックスは lgbm_classifier に固定）
     gcs_uri = ""
     if not skip_gcs_upload:
@@ -1179,7 +1298,7 @@ def train_pipeline_classifier(
     importance = classifier.feature_importance()
     logger.info(f"Top 10 features:\n{importance.head(10).to_string()}")
 
-    return {
+    result = {
         "model_type": "classifier",
         "execution_date": str(execution_date),
         "model_path": model_path,
@@ -1192,6 +1311,14 @@ def train_pipeline_classifier(
         "num_features": X_train.shape[1],
         "top_features": importance.head(10).to_dict(orient="records"),
     }
+    if tuning_result is not None:
+        result["tuning"] = {
+            "best_value": tuning_result["best_value"],
+            "best_trial_number": tuning_result["best_trial_number"],
+            "n_trials": tuning_result["n_trials"],
+            "best_params": tuning_result["best_params"],
+        }
+    return result
 
 
 def main():
