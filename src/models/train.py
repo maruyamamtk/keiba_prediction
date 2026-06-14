@@ -26,6 +26,7 @@ from google.cloud import bigquery, storage
 from sklearn.metrics import roc_auc_score
 
 from src.ml.features.feature_pipeline import FeaturePipeline
+from src.models.lgbm_classifier import LGBMClassifier, LGBMClassifierConfig
 from src.models.lgbm_ranker import LGBMRanker, LGBMRankerConfig
 from src.models.lgbm_ranker_multi import JRA_PRIZE_WEIGHTS, LGBMRankerMulti, LGBMRankerMultiConfig
 from src.models.lgbm_regression import LGBMRegression, LGBMRegressionConfig
@@ -1031,6 +1032,168 @@ def train_pipeline_regression(
     }
 
 
+def train_pipeline_classifier(
+    project_id: str,
+    execution_date: datetime.date,
+    config: dict,
+    output_dir: str | None = None,
+    skip_gcs_upload: bool = False,
+    use_feature_sql: bool = False,
+    start_date: str | None = None,
+    end_date: str | None = None,
+) -> dict:
+    """
+    二値分類モデルの学習パイプラインを実行する
+
+    objective=binary で複勝率を直接推定する。
+    predict() が [0,1] の確率を返すため期待値計算のキャリブレーション入力として使用する。
+    グループ（レースID）は不要。
+
+    Args:
+        project_id: GCPプロジェクトID
+        execution_date: 実行日
+        config: 設定辞書
+        output_dir: モデル出力ディレクトリ（Noneの場合は一時ディレクトリ）
+        skip_gcs_upload: GCSアップロードをスキップするか
+        use_feature_sql: feature_query_raw.sql を直接実行して学習データを取得する
+        start_date: use_feature_sql=True 時の取得開始日 (YYYY-MM-DD)
+        end_date: use_feature_sql=True 時の取得終了日 (YYYY-MM-DD)
+
+    Returns:
+        学習結果の辞書（model_type="classifier" を含む）
+    """
+    data_config = config["data"]
+    model_config = config["model"]
+    gcs_config = config["gcs"]
+
+    # 1. データ取得
+    if use_feature_sql:
+        sql_end = end_date or execution_date.isoformat()
+        sql_start = start_date or "2016-01-01"
+        df = fetch_training_data_from_sql(
+            project_id=project_id,
+            start_date=sql_start,
+            end_date=sql_end,
+        )
+    else:
+        df = fetch_training_data(
+            project_id=project_id,
+            dataset=data_config["dataset"],
+            table=data_config["table"],
+        )
+
+    # 2. データ分割
+    train_df, valid_df, predict_df = split_train_valid_predict(
+        df=df,
+        execution_date=execution_date,
+        validation_months=model_config["training"]["validation_months"],
+        date_column=data_config["date_column"],
+    )
+
+    if len(train_df) == 0:
+        raise ValueError("学習データがありません")
+    if len(valid_df) == 0:
+        raise ValueError("検証データがありません")
+
+    # 3. 特徴量準備（二値ラベル、グループなし）
+    X_train, y_train, _ = prepare_features(
+        train_df,
+        exclude_columns=data_config["exclude_columns"],
+        categorical_columns=data_config.get("categorical_columns", []),
+    )
+    X_valid, y_valid, groups_valid = prepare_features(
+        valid_df,
+        exclude_columns=data_config["exclude_columns"],
+        categorical_columns=data_config.get("categorical_columns", []),
+    )
+
+    categorical_in_features = [
+        c for c in data_config.get("categorical_columns", [])
+        if c in X_train.columns
+    ]
+
+    # 4. モデル学習
+    # classifier 固有の objective/metric を保持しつつ、共通ハイパーパラメータ（num_leaves等）は
+    # model_config.yaml から引き継ぐ（ranker 固有の objective/metric/ndcg_eval_at は除外）
+    _ranker_only_keys = {"objective", "metric", "ndcg_eval_at", "label_gain", "lambdarank_truncation_level"}
+    _shared_params = {
+        k: v for k, v in model_config.get("params", {}).items()
+        if k not in _ranker_only_keys
+    }
+    clf_params = {**LGBMClassifierConfig().params, **_shared_params}
+    clf_config = LGBMClassifierConfig(
+        params=clf_params,
+        num_boost_round=model_config["training"]["num_boost_round"],
+        early_stopping_rounds=model_config["training"]["early_stopping_rounds"],
+        log_evaluation=model_config["training"]["log_evaluation"],
+    )
+    classifier = LGBMClassifier(config=clf_config)
+
+    classifier.train(
+        X_train=X_train,
+        y_train=y_train,
+        X_valid=X_valid,
+        y_valid=y_valid,
+        categorical_feature=categorical_in_features or None,
+    )
+
+    # 5. 検証データで AUC 評価
+    valid_pred = classifier.predict(X_valid)
+    metrics = evaluate_predictions(
+        y_true_positions=valid_df["finish_position"].fillna(0).values.astype(int),
+        y_pred=valid_pred,
+        groups=groups_valid,
+    )
+    logger.info(f"Classifier validation metrics: {metrics}")
+
+    # 6. モデル保存
+    if output_dir is None:
+        output_dir = tempfile.mkdtemp(prefix="keiba_model_classifier_")
+
+    date_str = execution_date.strftime("%Y%m%d")
+    model_path = str(Path(output_dir) / f"lgbm_classifier_{date_str}.txt")
+    training_period = {
+        "train_from": str(train_df[data_config["date_column"]].min()),
+        "train_to": str(train_df[data_config["date_column"]].max()),
+        "train_rows": len(train_df),
+        "train_races": train_df[data_config["group_column"]].nunique(),
+        "valid_from": str(valid_df[data_config["date_column"]].min()),
+        "valid_to": str(valid_df[data_config["date_column"]].max()),
+        "valid_rows": len(valid_df),
+        "valid_races": valid_df[data_config["group_column"]].nunique(),
+    }
+    classifier.save(model_path, training_period=training_period)
+
+    # 7. GCSアップロード（プレフィックスは lgbm_classifier に固定）
+    gcs_uri = ""
+    if not skip_gcs_upload:
+        gcs_uri = upload_model_to_gcs(
+            project_id=project_id,
+            local_path=model_path,
+            bucket_suffix=gcs_config["bucket_suffix"],
+            model_prefix="lgbm_classifier",
+            execution_date=execution_date,
+        )
+
+    # 8. 特徴量重要度
+    importance = classifier.feature_importance()
+    logger.info(f"Top 10 features:\n{importance.head(10).to_string()}")
+
+    return {
+        "model_type": "classifier",
+        "execution_date": str(execution_date),
+        "model_path": model_path,
+        "gcs_uri": gcs_uri,
+        "metrics": metrics,
+        "best_iteration": classifier.model.best_iteration,
+        "train_rows": len(train_df),
+        "valid_rows": len(valid_df),
+        "predict_rows": len(predict_df),
+        "num_features": X_train.shape[1],
+        "top_features": importance.head(10).to_dict(orient="records"),
+    }
+
+
 def main():
     """メイン関数（CLIから実行）"""
     from dotenv import load_dotenv
@@ -1101,12 +1264,13 @@ def main():
     parser.add_argument(
         "--model-type",
         default="ranker",
-        choices=["ranker", "multi", "regression"],
+        choices=["ranker", "multi", "regression", "classifier"],
         help=(
             "学習するモデルの種類。"
             "ranker: 二値ラベル LambdaRank（デフォルト）, "
             "multi: JRA賞金ウェイト多値ラベル LambdaRank, "
-            "regression: 着差Zスコア回帰"
+            "regression: 着差Zスコア回帰, "
+            "classifier: 二値分類（複勝率直接予測）"
         ),
     )
 
@@ -1138,6 +1302,17 @@ def main():
         )
     elif args.model_type == "regression":
         result = train_pipeline_regression(
+            project_id=args.project_id,
+            execution_date=execution_date,
+            config=config,
+            output_dir=args.output_dir,
+            skip_gcs_upload=args.skip_gcs_upload,
+            use_feature_sql=args.use_feature_sql,
+            start_date=args.start_date,
+            end_date=args.end_date,
+        )
+    elif args.model_type == "classifier":
+        result = train_pipeline_classifier(
             project_id=args.project_id,
             execution_date=execution_date,
             config=config,
