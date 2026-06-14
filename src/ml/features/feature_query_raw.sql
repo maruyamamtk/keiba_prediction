@@ -853,6 +853,21 @@ with temp_race_horse_count as (
         case when t_p_r_f.avg_corner_prev5 is not null then 1 else 0 end),
         0)
     ) as avg_gate_style_score
+    /* 近走上がり3F レース内相対順位: 改善トレンドと平均（Issue #346）
+       last3f_rank_improvement_3: 前1走順位 - 前3走順位（負=改善中、正=悪化）
+       last3f_rank_avg_3: 前1〜3走の平均上がり3F順位 */
+    ,case
+      when t_p_r_f.last_3f_rank_in_race_1 is null or t_p_r_f.last_3f_rank_in_race_3 is null then null
+      else t_p_r_f.last_3f_rank_in_race_1 - t_p_r_f.last_3f_rank_in_race_3
+    end as last3f_rank_improvement_3
+    ,safe_divide(
+      coalesce(t_p_r_f.last_3f_rank_in_race_1, 0) + coalesce(t_p_r_f.last_3f_rank_in_race_2, 0) + coalesce(t_p_r_f.last_3f_rank_in_race_3, 0),
+      nullif(
+        case when t_p_r_f.last_3f_rank_in_race_1 is not null then 1 else 0 end +
+        case when t_p_r_f.last_3f_rank_in_race_2 is not null then 1 else 0 end +
+        case when t_p_r_f.last_3f_rank_in_race_3 is not null then 1 else 0 end,
+        0)
+    ) as last3f_rank_avg_3
   from
     temp_past_race_features as t_p_r_f
 )
@@ -4273,6 +4288,8 @@ from
     ,percentile_cont(course_pace_score, 0.5) over (partition by race_id) as _course_pace_score_med
     ,percentile_cont(gate_style_advantage_score, 0.5) over (partition by race_id) as _gate_style_advantage_score_med
     ,percentile_cont(gate_style_course_te, 0.5) over (partition by race_id) as _gate_style_course_te_med
+    ,percentile_cont(last3f_rank_improvement_3, 0.5) over (partition by race_id) as _last3f_rank_improvement_3_med
+    ,percentile_cont(last3f_rank_avg_3, 0.5) over (partition by race_id) as _last3f_rank_avg_3_med
   from temp_final_raw
 )
 ,temp_null_filled as (
@@ -4528,7 +4545,9 @@ from
     _idm_zone_neutral_trend_med,
     _course_pace_score_med,
     _gate_style_advantage_score_med,
-    _gate_style_course_te_med
+    _gate_style_course_te_med,
+    _last3f_rank_improvement_3_med,
+    _last3f_rank_avg_3_med
   ) replace (
   -- NULL補完: 同一レース内の中央値で補完し、全員NULLの場合はフォールバック値を使用（Issue #330）
   -- TE系（低頻度マスクによりNULLになる列）: 同一レース内中央値 → フォールバック0.22（グローバル複勝率）
@@ -4791,7 +4810,9 @@ from
   coalesce(idm_zone_neutral_trend, _idm_zone_neutral_trend_med, 0) as idm_zone_neutral_trend,
   coalesce(course_pace_score, _course_pace_score_med, 2.5) as course_pace_score,
   coalesce(gate_style_advantage_score, _gate_style_advantage_score_med, 0.0) as gate_style_advantage_score,
-  coalesce(gate_style_course_te, _gate_style_course_te_med, 0.22) as gate_style_course_te
+  coalesce(gate_style_course_te, _gate_style_course_te_med, 0.22) as gate_style_course_te,
+  coalesce(last3f_rank_improvement_3, _last3f_rank_improvement_3_med, 0) as last3f_rank_improvement_3,
+  coalesce(last3f_rank_avg_3, _last3f_rank_avg_3_med, 0) as last3f_rank_avg_3
   )
   from temp_null_fill_med
 )
@@ -4916,4 +4937,7 @@ select *
   ,RANK() OVER (PARTITION BY race_id ORDER BY mare_venue_run_ratio DESC NULLS LAST) AS mare_venue_run_ratio_rank
   ,RANK() OVER (PARTITION BY race_id ORDER BY mare_distance_band_run_ratio DESC NULLS LAST) AS mare_distance_band_run_ratio_rank
   ,RANK() OVER (PARTITION BY race_id ORDER BY mare_distance_run_ratio DESC NULLS LAST) AS mare_distance_run_ratio_rank
+  -- 近走上がり3F レース内相対順位 RANK（Issue #346、ASC=末脚が強い方が上位）
+  ,RANK() OVER (PARTITION BY race_id ORDER BY last3f_rank_improvement_3 ASC NULLS LAST) AS last3f_rank_improvement_3_rank
+  ,RANK() OVER (PARTITION BY race_id ORDER BY last3f_rank_avg_3 ASC NULLS LAST) AS last3f_rank_avg_3_rank
 from temp_null_filled
