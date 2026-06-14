@@ -65,13 +65,26 @@ gcs:
   model_prefix: "lgbm_ranker"
 
 # チューニング設定（Optuna）
+# 汎用設定（全モデル共通）。各モデル種別サブセクションで study_name 等を上書き可能。
 tuning:
   n_trials: 100
   timeout: 3600  # 秒
-  study_name: "keiba_lgbm_lambdarank"
+  study_name: "keiba_lgbm_ranker"
   storage: null  # null=in-memory, or "sqlite:///optuna.db"
 
-  # 探索範囲
+  # ranker_multi 専用上書き設定
+  ranker_multi:
+    study_name: "keiba_lgbm_ranker_multi"
+
+  # regression 専用上書き設定
+  regression:
+    study_name: "keiba_lgbm_regression"
+
+  # classifier 専用上書き設定
+  classifier:
+    study_name: "keiba_lgbm_classifier"
+
+  # 探索範囲（全モデル共通）
   search_space:
     num_leaves:
       type: int
