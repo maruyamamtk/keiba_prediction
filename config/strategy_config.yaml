@@ -1,16 +1,16 @@
 expected_return_threshold: 1.75
-prob_weight_r: 0.8
+prob_weight_r: 1.5
 budget_per_race: 1000
 min_bet_amount: 100
 min_prob_threshold: 0.1
 top_n: 2
 max_wide_odds: 30.0
 optimization:
-  last_run: '2026-05-17T10:08:17'
+  last_run: '2026-06-14T00:31:46'
   metric: recovery_rate
   start_date: '2025-11-15'
-  end_date: '2026-05-10'
-  recovery_rate: 175.96
-  hit_rate: 19.75
-  max_drawdown: 43.86
-  total_bets: 886
+  end_date: '2026-06-13'
+  recovery_rate: 143.0
+  hit_rate: 13.71
+  max_drawdown: 26.09
+  total_bets: 372
