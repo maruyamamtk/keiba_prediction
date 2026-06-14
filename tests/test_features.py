@@ -3228,3 +3228,82 @@ class TestLast3fRankFeature:
             "last3f_rank_improvement_3_rank が ASC 順でありません"
         assert "ORDER BY last3f_rank_avg_3 ASC" in avg_line, \
             "last3f_rank_avg_3_rank が ASC 順でありません"
+
+
+class TestGradeTEFeature:
+    """グレード別TE・格上挑戦フラグ特徴量のテスト（Issue #347）"""
+
+    def test_sql_has_grade_te_ctes(self):
+        """temp_grade_te_pre / temp_grade_te CTE が定義されていること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        assert "temp_grade_te_pre as (" in content, \
+            "temp_grade_te_pre CTE が見つかりません"
+        assert "temp_grade_te as (" in content, \
+            "temp_grade_te CTE が見つかりません"
+
+    def test_sql_grade_te_uses_race_class(self):
+        """grade_te_pre が race_class カラムを参照していること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        grade_pre_start = content.find("temp_grade_te_pre as (")
+        grade_te_start = content.find("temp_grade_te as (")
+        section = content[grade_pre_start:grade_te_start]
+        assert "race_class" in section, \
+            "temp_grade_te_pre が race_class を参照していません"
+        assert "race_class = 'G1'" in section, \
+            "temp_grade_te_pre に G1 フィルタがありません"
+        assert "race_class = 'G2'" in section, \
+            "temp_grade_te_pre に G2 フィルタがありません"
+        assert "race_class = 'G3'" in section, \
+            "temp_grade_te_pre に G3 フィルタがありません"
+
+    def test_sql_grade_te_window_excludes_current_row(self):
+        """grade_te_pre のウィンドウ関数が当日行を除外（1 PRECEDING）していること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        grade_pre_start = content.find("temp_grade_te_pre as (")
+        grade_te_start = content.find("temp_grade_te as (")
+        section = content[grade_pre_start:grade_te_start]
+        assert "range between unbounded preceding and 1 preceding" in section, \
+            "temp_grade_te_pre に当日行除外ウィンドウがありません"
+
+    def test_sql_grade_te_low_freq_mask(self):
+        """temp_grade_te が出走数 >= 3 でマスクしていること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        grade_te_start = content.find("temp_grade_te as (")
+        # 次のCTEの開始を探す
+        next_cte_start = content.find("/* 馬TE_diff 集計用Stage1", grade_te_start)
+        section = content[grade_te_start:next_cte_start]
+        assert "g1_count >= 3" in section, \
+            "horse_g1_te の低頻度マスク (g1_count >= 3) がありません"
+        assert "g2_count >= 3" in section, \
+            "horse_g2_te の低頻度マスク (g2_count >= 3) がありません"
+        assert "g3_count >= 3" in section, \
+            "horse_g3_te の低頻度マスク (g3_count >= 3) がありません"
+
+    def test_sql_grade_te_uses_smoothing_m10(self):
+        """temp_grade_te のスムージング係数が m=10 であること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        grade_te_start = content.find("temp_grade_te as (")
+        next_cte_start = content.find("/* 馬TE_diff 集計用Stage1", grade_te_start)
+        section = content[grade_te_start:next_cte_start]
+        assert "+ 10 * g.global_top3_rate" in section, \
+            "スムージング係数が m=10（g.global_top3_rate）ではありません"
+
+    def test_sql_final_select_has_all_grade_features(self):
+        """最終 SELECT に6特徴量すべてが含まれること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        for feature in [
+            "horse_g1_te",
+            "horse_g2_te",
+            "horse_g3_te",
+            "grade_step_up_flag",
+            "g1_experience_flag",
+            "best_grade_achieved",
+        ]:
+            assert feature in content, \
+                f"最終 SELECT に {feature} がありません"
+
+    def test_sql_final_join_references_grade_te(self):
+        """最終 SELECT が temp_grade_te を LEFT JOIN していること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        assert "left join temp_grade_te as t_g_te" in content, \
+            "最終 SELECT に temp_grade_te の LEFT JOIN がありません"

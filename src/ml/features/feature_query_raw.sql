@@ -1187,6 +1187,7 @@ with temp_race_horse_count as (
     ,h_m.dam_name
     ,date_diff(r_i.race_date, h_m.birth_date, year) as horse_age
     ,case when r_r.finish_position between 1 and 3 then 1 else 0 end as is_top3
+    ,r_i.race_class
   from `{project_id}`.raw.horse_results as h_r
     inner join `{project_id}`.raw.race_info as r_i
       on h_r.race_id = r_i.race_id
@@ -1240,6 +1241,7 @@ with temp_race_horse_count as (
       when weight_carried < lag(weight_carried) over (partition by horse_id order by race_date) then 'decrease'
       else 'same'
     end as weight_carried_change_type
+    ,race_class
   from temp_te_history_raw
 )
 
@@ -2442,6 +2444,121 @@ with temp_race_horse_count as (
     ,IF(horse_count >= 5, horse_distance_change_te, NULL) as horse_distance_change_te
     ,IF(horse_count >= 5, horse_weight_carried_change_te, NULL) as horse_weight_carried_change_te
   from temp_horse_te_pre
+)
+
+/* グレード別 Target Encoding（Issue #347）
+   馬ごとのG1/G2/G3グレード別 複勝率TE（スムージングm=10）、
+   格上挑戦フラグ、G1出走経験フラグ、過去最高グレードを計算する。
+   同日レース除外: RANGE BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING */
+,temp_grade_te_pre as (
+  select
+    race_id
+    ,horse_number
+    ,horse_id
+    ,race_date
+    /* G1グレード別出走数（5年以内、当日行除外） */
+    ,coalesce(countif(race_class = 'G1') over (
+      partition by horse_id
+      order by unix_date(race_date)
+      range between unbounded preceding and 1 preceding
+    ), 0) as g1_count
+    /* G2グレード別出走数 */
+    ,coalesce(countif(race_class = 'G2') over (
+      partition by horse_id
+      order by unix_date(race_date)
+      range between unbounded preceding and 1 preceding
+    ), 0) as g2_count
+    /* G3グレード別出走数 */
+    ,coalesce(countif(race_class = 'G3') over (
+      partition by horse_id
+      order by unix_date(race_date)
+      range between unbounded preceding and 1 preceding
+    ), 0) as g3_count
+    /* G1グレード別 複勝数（スムージング分子） */
+    ,coalesce(sum(case when race_class = 'G1' then is_top3 else 0 end) over (
+      partition by horse_id
+      order by unix_date(race_date)
+      range between unbounded preceding and 1 preceding
+    ), 0) as g1_top3_sum
+    /* G2グレード別 複勝数 */
+    ,coalesce(sum(case when race_class = 'G2' then is_top3 else 0 end) over (
+      partition by horse_id
+      order by unix_date(race_date)
+      range between unbounded preceding and 1 preceding
+    ), 0) as g2_top3_sum
+    /* G3グレード別 複勝数 */
+    ,coalesce(sum(case when race_class = 'G3' then is_top3 else 0 end) over (
+      partition by horse_id
+      order by unix_date(race_date)
+      range between unbounded preceding and 1 preceding
+    ), 0) as g3_top3_sum
+    /* 過去最高グレード（G1 > G2 > G3 > OP > その他）*/
+    ,case
+      when countif(race_class = 'G1') over (
+        partition by horse_id
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ) > 0 then 'G1'
+      when countif(race_class = 'G2') over (
+        partition by horse_id
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ) > 0 then 'G2'
+      when countif(race_class = 'G3') over (
+        partition by horse_id
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ) > 0 then 'G3'
+      when countif(race_class in ('OP', 'L')) over (
+        partition by horse_id
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ) > 0 then 'OP'
+      when count(*) over (
+        partition by horse_id
+        order by unix_date(race_date)
+        range between unbounded preceding and 1 preceding
+      ) > 0 then 'below_op'
+      else null
+    end as best_grade_achieved
+    ,race_class as current_race_class
+  from temp_te_history_base
+)
+,temp_grade_te as (
+  select
+    race_id
+    ,horse_number
+    ,horse_id
+    ,race_date
+    /* G1 TE: 出走数>=3 でマスク（スムージングm=10） */
+    ,IF(g1_count >= 3,
+      safe_divide(g1_top3_sum + 10 * g.global_top3_rate, g1_count + 10),
+      NULL
+    ) as horse_g1_te
+    /* G2 TE: 出走数>=3 でマスク */
+    ,IF(g2_count >= 3,
+      safe_divide(g2_top3_sum + 10 * g.global_top3_rate, g2_count + 10),
+      NULL
+    ) as horse_g2_te
+    /* G3 TE: 出走数>=3 でマスク */
+    ,IF(g3_count >= 3,
+      safe_divide(g3_top3_sum + 10 * g.global_top3_rate, g3_count + 10),
+      NULL
+    ) as horse_g3_te
+    /* 格上挑戦フラグ: 今回のグレードが過去最高より上、または今回G1/G2/G3で経験なし */
+    ,case
+      when current_race_class = 'G1' and (best_grade_achieved is null or best_grade_achieved != 'G1') then 1
+      when current_race_class = 'G2' and (best_grade_achieved is null or best_grade_achieved not in ('G1', 'G2')) then 1
+      when current_race_class = 'G3' and (best_grade_achieved is null or best_grade_achieved not in ('G1', 'G2', 'G3')) then 1
+      when current_race_class not in ('G1', 'G2', 'G3') then 0
+      else 0
+    end as grade_step_up_flag
+    /* G1出走経験フラグ */
+    ,IF(g1_count > 0, 1, 0) as g1_experience_flag
+    /* 過去最高グレード */
+    ,best_grade_achieved
+  from temp_grade_te_pre
+  cross join temp_global_mean_te as g
 )
 
 /* 馬TE_diff 集計用Stage1: 各レースのdiff値とレース内RANKを計算（時系列集計の入力）
@@ -3961,6 +4078,13 @@ select
     else 0
   end as gate_style_advantage_flag
   ,t_gs_te.gate_style_course_te
+  /* グレード別TE・格上挑戦フラグ特徴量（Issue #347） */
+  ,t_g_te.horse_g1_te
+  ,t_g_te.horse_g2_te
+  ,t_g_te.horse_g3_te
+  ,t_g_te.grade_step_up_flag
+  ,t_g_te.g1_experience_flag
+  ,t_g_te.best_grade_achieved
 from
   temp_past_race_features2 as t_p_r_f
   left join temp_horse_master_feature2 as t_h_m_f
@@ -4030,6 +4154,9 @@ from
   left join temp_gate_style_te as t_gs_te
     on t_p_r_f.race_id = t_gs_te.race_id
     and t_p_r_f.horse_number = t_gs_te.horse_number
+  left join temp_grade_te as t_g_te
+    on t_p_r_f.race_id = t_g_te.race_id
+    and t_p_r_f.horse_number = t_g_te.horse_number
 )
 
 -- NULL補完: 同一レース内の中央値で補完し、全員NULLの場合はフォールバック値を使用（Issue #330）
