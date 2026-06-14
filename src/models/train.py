@@ -1426,6 +1426,9 @@ def main():
             use_feature_sql=args.use_feature_sql,
             start_date=args.start_date,
             end_date=args.end_date,
+            tune=args.tune,
+            n_trials=args.n_trials,
+            tune_timeout=args.tune_timeout,
         )
     elif args.model_type == "regression":
         result = train_pipeline_regression(
@@ -1437,6 +1440,9 @@ def main():
             use_feature_sql=args.use_feature_sql,
             start_date=args.start_date,
             end_date=args.end_date,
+            tune=args.tune,
+            n_trials=args.n_trials,
+            tune_timeout=args.tune_timeout,
         )
     elif args.model_type == "classifier":
         result = train_pipeline_classifier(
@@ -1448,6 +1454,9 @@ def main():
             use_feature_sql=args.use_feature_sql,
             start_date=args.start_date,
             end_date=args.end_date,
+            tune=args.tune,
+            n_trials=args.n_trials,
+            tune_timeout=args.tune_timeout,
         )
     else:
         result = train_pipeline(
