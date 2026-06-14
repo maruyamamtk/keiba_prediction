@@ -1113,7 +1113,16 @@ def train_pipeline_classifier(
     ]
 
     # 4. モデル学習
+    # classifier 固有の objective/metric を保持しつつ、共通ハイパーパラメータ（num_leaves等）は
+    # model_config.yaml から引き継ぐ（ranker 固有の objective/metric/ndcg_eval_at は除外）
+    _ranker_only_keys = {"objective", "metric", "ndcg_eval_at", "label_gain", "lambdarank_truncation_level"}
+    _shared_params = {
+        k: v for k, v in model_config.get("params", {}).items()
+        if k not in _ranker_only_keys
+    }
+    clf_params = {**LGBMClassifierConfig().params, **_shared_params}
     clf_config = LGBMClassifierConfig(
+        params=clf_params,
         num_boost_round=model_config["training"]["num_boost_round"],
         early_stopping_rounds=model_config["training"]["early_stopping_rounds"],
         log_evaluation=model_config["training"]["log_evaluation"],
