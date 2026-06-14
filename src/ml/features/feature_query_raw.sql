@@ -1191,8 +1191,12 @@ with temp_race_horse_count as (
   from `{project_id}`.raw.horse_results as h_r
     inner join `{project_id}`.raw.race_info as r_i
       on h_r.race_id = r_i.race_id
-    inner join `{project_id}`.raw.horse_master as h_m
-      on h_r.horse_id = h_m.horse_id
+    inner join (
+      -- horse_master に同一 horse_id が複数行存在する場合、1行に絞る（重複JOINによる行爆発を防止）
+      select horse_id, sire_name, dam_name, birth_date
+      from `{project_id}`.raw.horse_master
+      qualify row_number() over (partition by horse_id order by horse_id) = 1
+    ) as h_m on h_r.horse_id = h_m.horse_id
     left join `{project_id}`.raw.race_results as r_r
       on h_r.race_id = r_r.race_id
       and h_r.horse_number = r_r.horse_number
@@ -1893,8 +1897,12 @@ with temp_race_horse_count as (
     and rr_d.horse_number = hr_d.horse_number
   join `{project_id}`.raw.race_info as ri_d
     on ri_d.race_id = hr_d.race_id
-  left join `{project_id}`.raw.horse_master as hm_d
-    on hm_d.horse_id = dam_id_lookup.horse_id
+  left join (
+    -- horse_master に同一 horse_id が複数行存在する場合、1行に絞る
+    select horse_id, birth_date
+    from `{project_id}`.raw.horse_master
+    qualify row_number() over (partition by horse_id order by horse_id) = 1
+  ) as hm_d on hm_d.horse_id = dam_id_lookup.horse_id
   where h_m.dam_name is not null
     and rr_d.finish_position > 0
     and ri_d.course_type != 'obstacle'
