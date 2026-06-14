@@ -808,7 +808,12 @@ def train_pipeline_multi(
 
     # 4. ハイパーパラメータ調整（--tune 指定時）
     tuning_result = None
-    model_params = model_config["params"]
+    # LGBMRankerMultiConfig の label_gain（0〜120）を YAML params にマージ
+    # model_config.yaml には label_gain がないため、チューニング時に渡らず LightGBM がデフォルト31要素で動いてしまう問題を防ぐ
+    multi_default_params = LGBMRankerMultiConfig().params
+    merged_model_config = dict(model_config)
+    merged_model_config["params"] = {**multi_default_params, **model_config["params"]}
+    model_params = merged_model_config["params"]
 
     if tune:
         tuning_config = dict(config.get("tuning", {}))
@@ -822,7 +827,7 @@ def train_pipeline_multi(
             y_train=y_train,
             X_valid=X_valid,
             y_valid=y_valid,
-            config={"model": model_config, "tuning": tuning_config},
+            config={"model": merged_model_config, "tuning": tuning_config},
             model_type="ranker_multi",
             groups_train=groups_train,
             groups_valid=groups_valid,
