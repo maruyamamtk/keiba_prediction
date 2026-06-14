@@ -205,52 +205,6 @@ def fetch_race_results(
     return df
 
 
-def load_model_from_gcs(
-    project_id: str,
-    bucket_suffix: str,
-    model_prefix: str,
-    execution_date: datetime.date,
-    local_dir: str,
-) -> str:
-    """
-    GCSからモデルファイルをダウンロードする
-
-    Args:
-        project_id: GCPプロジェクトID
-        bucket_suffix: バケット名のサフィックス
-        model_prefix: GCS内のプレフィックス
-        execution_date: 実行日
-        local_dir: ダウンロード先ディレクトリ
-
-    Returns:
-        ローカルのモデルファイルパス
-    """
-    bucket_name = f"{project_id}-{bucket_suffix}"
-    client = storage.Client(project=project_id)
-    bucket = client.bucket(bucket_name)
-
-    date_str = execution_date.strftime("%Y%m%d")
-    prefix = f"{model_prefix}/{date_str}/"
-
-    local_path = Path(local_dir)
-    local_path.mkdir(parents=True, exist_ok=True)
-
-    model_file = None
-    for blob in bucket.list_blobs(prefix=prefix):
-        local_file = local_path / blob.name.split("/")[-1]
-        blob.download_to_filename(str(local_file))
-        logger.info(f"Downloaded {blob.name} to {local_file}")
-        if local_file.suffix == ".txt":
-            model_file = str(local_file)
-
-    if model_file is None:
-        raise FileNotFoundError(
-            f"モデルファイルが見つかりません: gs://{bucket_name}/{prefix}"
-        )
-
-    return model_file
-
-
 def _download_model_from_gcs(
     project_id: str,
     gcs_uri: str,
@@ -272,7 +226,7 @@ def _download_model_from_gcs(
     return str(local_model)
 
 
-def _load_model(model_cls, project_id: str, path: str, tmp_dir: str):
+def _load_model(model_cls: type, project_id: str, path: str, tmp_dir: str):
     """ローカルパスまたは GCS URI からモデルをロードする。"""
     model = model_cls()
     if path.startswith("gs://"):
@@ -283,83 +237,18 @@ def _load_model(model_cls, project_id: str, path: str, tmp_dir: str):
     return model
 
 
-def calibrate_place_prob(df: pd.DataFrame, n_places: int = 3) -> pd.DataFrame:
-    """
-    二値分類モデルが出力する複勝率（0〜1）をレース内で比例補正し、
-    1レース内の合計が必ず min(n_places, 出走頭数) になるよう正規化する。
-
-    既存の normalize_win_place_prob()（水充填）と類似だが、
-    入力が「分類モデルの確率」である点が異なる。
-    水充填アルゴリズムにより clip 後も合計値を保持する。
+def _water_fill(p: np.ndarray, probs: np.ndarray) -> np.ndarray:
+    """水充填アルゴリズム: 1.0 を超えた分を未達馬に softmax 確率比で再配分する。
 
     Args:
-        df: race_id と classifier_prob カラムを持つ DataFrame
-        n_places: 複勝対象着順数（デフォルト3）
+        p: ベース重み（合計 ≈ 1.0、softmax 確率または比例配分）
+        probs: 初期配分 (p * k)。インプレース修正して返す。
 
     Returns:
-        win_place_prob カラムを上書きした DataFrame（元の DataFrame は変更しない）
+        clip 済みの配分ベクトル（sum ≈ min(k, n)）
     """
-    def _water_fill(group: pd.Series) -> pd.Series:
-        vals = group.values.astype(float)
-        n = len(vals)
-        k = float(min(n_places, n))
-        total = vals.sum()
-        if total < 1e-10:
-            return pd.Series(k / n, index=group.index)
-        # 比例スケーリング
-        p = vals / total
-        probs = p * k
-        # 水充填: 1.0 を超えた分を未達馬に再配分
-        for _ in range(n):
-            mask_over = probs > 1.0
-            if not mask_over.any():
-                break
-            excess = (probs[mask_over] - 1.0).sum()
-            probs[mask_over] = 1.0
-            mask_under = probs < 1.0
-            if not mask_under.any():
-                break
-            p_under_sum = p[mask_under].sum()
-            if p_under_sum < 1e-12:
-                probs[mask_under] += excess / mask_under.sum()
-            else:
-                probs[mask_under] += excess * p[mask_under] / p_under_sum
-        return pd.Series(np.clip(probs, 0.0, 1.0), index=group.index)
-
-    df = df.copy()
-    df["win_place_prob"] = df.groupby("race_id")["classifier_prob"].transform(_water_fill)
-    return df
-
-
-def _scores_to_place_prob(scores: np.ndarray, n_places: int = 3) -> np.ndarray:
-    """
-    スコアを複勝率に変換する（水充填アルゴリズム）
-
-    softmax確率を元に、各馬の複勝率が0~1(0~100%)に収まり、
-    合計がmin(n_places, 出走頭数)になるよう変換する。
-
-    単純な softmax * n_places では1頭あたりの値が1を超える可能性があるため、
-    上限1.0で超過分を未達馬に再配分する反復アルゴリズムを使用する。
-
-    Args:
-        scores: 各馬の予測スコア配列
-        n_places: 複勝対象着順数（デフォルト3）
-
-    Returns:
-        各馬の複勝率配列（各要素0~1、合計=min(n_places, len(scores))）
-    """
-    n = len(scores)
-    k = float(min(n_places, n))
-
-    # softmax（数値安定性のためmaxを引く）
-    shifted = scores - scores.max()
-    exp_s = np.exp(shifted)
-    p = exp_s / exp_s.sum()
-
-    # 水充填アルゴリズム: k単位を各馬に分配（上限1.0）
-    # 上限超過分を未上限馬にsoftmax確率比で再配分する
-    probs = p * k
-    for _ in range(n):  # 最大n回で必ず収束（毎回少なくとも1頭が確定）
+    n = len(probs)
+    for _ in range(n):
         mask_over = probs > 1.0
         if not mask_over.any():
             break
@@ -373,8 +262,55 @@ def _scores_to_place_prob(scores: np.ndarray, n_places: int = 3) -> np.ndarray:
             probs[mask_under] += excess / mask_under.sum()
         else:
             probs[mask_under] += excess * p[mask_under] / p_under_sum
-
     return np.clip(probs, 0.0, 1.0)
+
+
+def calibrate_place_prob(df: pd.DataFrame, n_places: int = 3) -> pd.DataFrame:
+    """
+    二値分類モデルが出力する複勝率（0〜1）をレース内で比例補正し、
+    1レース内の合計が必ず min(n_places, 出走頭数) になるよう正規化する。
+
+    既存の normalize_win_place_prob()（水充填）と類似だが、
+    入力が「分類モデルの確率」である点が異なる。
+
+    Args:
+        df: race_id と classifier_prob カラムを持つ DataFrame
+        n_places: 複勝対象着順数（デフォルト3）
+
+    Returns:
+        win_place_prob カラムを上書きした DataFrame（元の DataFrame は変更しない）
+    """
+    def _scale_and_fill(group: pd.Series) -> pd.Series:
+        vals = group.values.astype(float)
+        n = len(vals)
+        k = float(min(n_places, n))
+        total = vals.sum()
+        if total < 1e-10:
+            return pd.Series(k / n, index=group.index)
+        p = vals / total
+        return pd.Series(_water_fill(p, p * k), index=group.index)
+
+    df = df.copy()
+    df["win_place_prob"] = df.groupby("race_id")["classifier_prob"].transform(_scale_and_fill)
+    return df
+
+
+def _scores_to_place_prob(scores: np.ndarray, n_places: int = 3) -> np.ndarray:
+    """スコアを複勝率に変換する（水充填アルゴリズム）。
+
+    Args:
+        scores: 各馬の予測スコア配列
+        n_places: 複勝対象着順数（デフォルト3）
+
+    Returns:
+        各馬の複勝率配列（各要素0~1、合計=min(n_places, len(scores))）
+    """
+    n = len(scores)
+    k = float(min(n_places, n))
+    shifted = scores - scores.max()
+    exp_s = np.exp(shifted)
+    p = exp_s / exp_s.sum()
+    return _water_fill(p, p * k)
 
 
 def normalize_win_place_prob(
@@ -401,31 +337,10 @@ def normalize_win_place_prob(
         vals = scores.values
         n = len(vals)
         k = float(min(n_places, n))
-
-        # 温度付きソフトマックス（数値安定性のためmaxを引く）
         shifted = vals - vals.max()
         exp_s = np.exp(shifted / temperature)
         p = exp_s / exp_s.sum()
-
-        # 水充填アルゴリズム: k単位を各馬に分配（上限1.0）
-        # temperature > 1.0 によりクリップが必要になるケースが大幅に減少する
-        probs = p * k
-        for _ in range(n):
-            mask_over = probs > 1.0
-            if not mask_over.any():
-                break
-            excess = (probs[mask_over] - 1.0).sum()
-            probs[mask_over] = 1.0
-            mask_under = probs < 1.0
-            if not mask_under.any():
-                break
-            p_under_sum = p[mask_under].sum()
-            if p_under_sum < 1e-12:
-                probs[mask_under] += excess / mask_under.sum()
-            else:
-                probs[mask_under] += excess * p[mask_under] / p_under_sum
-
-        return pd.Series(np.clip(probs, 0.0, 1.0), index=scores.index)
+        return pd.Series(_water_fill(p, p * k), index=scores.index)
 
     df["win_place_prob"] = df.groupby("race_id")["pred_score"].transform(
         _tempered_water_fill
