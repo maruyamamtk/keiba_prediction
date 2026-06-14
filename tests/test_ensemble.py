@@ -197,3 +197,12 @@ class TestEdgeCases:
             ensemble_rank_scores(df, weight_multi=1.5)
         with pytest.raises(ValueError, match="weight_multi"):
             ensemble_rank_scores(df, weight_multi=-0.1)
+
+    def test_missing_race_id_raises(self):
+        """race_id カラムが存在しない場合 ValueError を発生させること"""
+        df = pd.DataFrame({
+            "pred_score_multi": [1.0, 2.0],
+            "pred_score_regression": [-1.0, -2.0],
+        })
+        with pytest.raises(ValueError, match="race_id"):
+            ensemble_rank_scores(df)

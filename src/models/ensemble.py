@@ -32,19 +32,16 @@ def ensemble_rank_scores(
 
     def _zscore_within_race(series: pd.Series) -> pd.Series:
         valid = series.dropna()
-        result = pd.Series(np.nan, index=series.index, dtype=float)
-        if len(valid) == 0:
-            return result
-        if len(valid) == 1:
-            result.loc[series.notna()] = 0.0
-            return result
+        if len(valid) < 2:
+            return series.where(series.isna(), 0.0)
         std = valid.std()
         if std < 1e-10:
-            result.loc[series.notna()] = 0.0
-            return result
+            return series.where(series.isna(), 0.0)
         mean = valid.mean()
-        result.loc[series.notna()] = (series.dropna() - mean) / std
-        return result
+        return (series - mean) / std
+
+    if "race_id" not in df.columns:
+        raise ValueError("df must contain a 'race_id' column for within-race normalization")
 
     has_multi = score_col_multi in df.columns
     has_regression = score_col_regression in df.columns
