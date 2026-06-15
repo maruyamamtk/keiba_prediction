@@ -125,53 +125,114 @@ python3 -m src.ml.features.feature_pipeline --start-date 2024-01-01 --end-date 2
 
 **モデル学習はローカルで実行します。** Cloud Run Jobs（`keiba-model-retrain`）はメモリ不足になるため使用しません。
 
+3つのモデル（ranker_multi / regression / classifier）をアンサンブルする**ハイブリッドアンサンブル方式**を採用しています。
+
 #### 学習（ローカル推奨）
 
+3モデルを順番に学習します。各学習完了後、モデルは自動的に GCS へアップロードされます。
+
 ```bash
-# Optunaハイパーパラメータチューニングあり（本番推奨）
-.venv/bin/python -m src.models.train --tune --project-id <PROJECT_ID>
+# ① 多値ランク学習モデル（メイン・Optunaチューニングあり）
+.venv/bin/python -m src.models.train \
+    --model-type multi \
+    --tune \
+    --project-id <PROJECT_ID>
 
-# チューニングなし（動作確認・高速確認用）
-.venv/bin/python -m src.models.train --project-id <PROJECT_ID>
+# ② 着差回帰モデル
+.venv/bin/python -m src.models.train \
+    --model-type regression \
+    --tune \
+    --project-id <PROJECT_ID>
+
+# ③ 二値分類モデル（複勝確率推定）
+.venv/bin/python -m src.models.train \
+    --model-type classifier \
+    --tune \
+    --project-id <PROJECT_ID>
 ```
 
-**学習完了後、モデルは自動的にGCSへアップロードされます。**
+**GCS 保存先:**
 
-```
-保存先: gs://{PROJECT_ID}-keiba-models/lgbm_ranker/{YYYYMMDD}/lgbm_ranker_{YYYYMMDD}.txt
-```
+| モデル | パス |
+|--------|------|
+| ranker_multi | `gs://{PROJECT_ID}-keiba-models/lgbm_ranker_multi/{YYYYMMDD}/` |
+| regression | `gs://{PROJECT_ID}-keiba-models/lgbm_regression/{YYYYMMDD}/` |
+| classifier | `gs://{PROJECT_ID}-keiba-models/lgbm_classifier/{YYYYMMDD}/` |
 
-翌朝の `race-day-predict`（AM 8:00）が GCS から自動的に最新モデルを選択して推論します。
+翌朝の `race-day-predict`（AM 8:00）が GCS から最新の3モデルを自動選択してアンサンブル推論を実行します。
+
+**評価指標:**
+
+| モデル | NDCG@3 | Recall@3 | AUC | RMSE |
+|--------|:---:|:---:|:---:|:---:|
+| ranker_multi | ✅ | ✅ | ✅ | — |
+| regression | ✅ | ✅ | ✅ | ✅ |
+| classifier | ✅ | ✅ | ✅ | — |
 
 **主なオプション:**
 
 | オプション | 説明 | デフォルト |
 |---|---|---|
+| `--model-type` | `multi` / `regression` / `classifier` / `ranker` | `ranker` |
 | `--project-id` | GCPプロジェクトID | `$GCP_PROJECT_ID` |
-| `--tune` | Optunaチューニングを有効化 | なし（固定パラメータ） |
-| `--n-trials` | Optunaのtrial数 | config依存 |
-| `--tune-timeout` | チューニングタイムアウト（秒） | config依存 |
-| `--output-dir` | ローカルの出力先ディレクトリ | 一時ディレクトリ |
-| `--skip-gcs-upload` | GCSへのアップロードをスキップ | なし（常にアップロード） |
+| `--tune` | Optuna チューニングを有効化 | なし |
+| `--n-trials` | Optuna の trial 数 | 100 |
+| `--tune-timeout` | チューニングタイムアウト（秒） | 3600 |
+| `--output-dir` | ローカル出力ディレクトリ | 一時ディレクトリ |
+| `--skip-gcs-upload` | GCS アップロードをスキップ | なし |
 
-詳細なオプションは [src/models/README.md](./src/models/README.md) を参照してください。
+詳細は [src/models/README.md](./src/models/README.md) を参照してください。
 
 #### 推論実行（手動・確認用）
 
 ```bash
-# 推論実行（今週の土日を自動で対象とする）
-.venv/bin/python -m src.models.predict --project-id <PROJECT_ID> --model-path ./models/lgbm_ranker.txt
+# 3モデルアンサンブル推論（特定日付を指定）
+.venv/bin/python -m src.models.predict \
+    --project-id <PROJECT_ID> \
+    --model-path-multi \
+        gs://<PROJECT_ID>-keiba-models/lgbm_ranker_multi/<YYYYMMDD>/lgbm_ranker_multi_<YYYYMMDD>.txt \
+    --model-path-regression \
+        gs://<PROJECT_ID>-keiba-models/lgbm_regression/<YYYYMMDD>/lgbm_regression_<YYYYMMDD>.txt \
+    --model-path-classifier \
+        gs://<PROJECT_ID>-keiba-models/lgbm_classifier/<YYYYMMDD>/lgbm_classifier_<YYYYMMDD>.txt \
+    --target-dates 2026-06-14 2026-06-15
+
+# CSV 出力 + BigQuery 保存
+.venv/bin/python -m src.models.predict \
+    --project-id <PROJECT_ID> \
+    --model-path-multi  gs://.../lgbm_ranker_multi_<YYYYMMDD>.txt \
+    --model-path-regression  gs://.../lgbm_regression_<YYYYMMDD>.txt \
+    --model-path-classifier  gs://.../lgbm_classifier_<YYYYMMDD>.txt \
+    --target-dates 2026-06-14 \
+    --output-csv predictions.csv \
+    --save-to-bq
 ```
+
+**主なオプション:**
+
+| オプション | 説明 |
+|---|---|
+| `--model-path-multi` | ranker_multi モデルパス（GCS URI またはローカル） |
+| `--model-path-regression` | regression モデルパス |
+| `--model-path-classifier` | classifier モデルパス |
+| `--target-dates` | 推論対象日（YYYY-MM-DD、複数指定可） |
+| `--output-csv` | CSV 出力先パス |
+| `--save-to-bq` | BigQuery（predictions.daily_predictions）に保存 |
 
 ### 6. バックテスト
 
 ```bash
+# GCS から最新の lgbm_ranker_multi モデルパスを確認
+gcloud storage ls gs://<PROJECT_ID>-keiba-models/lgbm_ranker_multi/
+
 python scripts/run_backtest.py \
     --project-id <PROJECT_ID> \
-    --model-path <MODEL_PATH> \
-    --start-date 2023-01-01 \
-    --end-date 2023-12-31
+    --model-path gs://<PROJECT_ID>-keiba-models/lgbm_ranker_multi/<YYYYMMDD>/lgbm_ranker_multi_<YYYYMMDD>.txt \
+    --start-date 2025-01-01 \
+    --end-date 2025-12-31
 ```
+
+> **注意**: バックテストは現在 `lgbm_ranker_multi` モデルのスコアを使用します。アンサンブル（3モデル合算）でのバックテストは未対応です。
 
 詳細なオプションは [src/backtest/README.md](./src/backtest/README.md) を参照してください。
 
@@ -201,7 +262,7 @@ python scripts/run_backtest.py \
 # 推奨: r 値を固定して高速実行（約30分）
 python3 scripts/run_strategy_optimization.py \
     --project-id <PROJECT_ID> \
-    --model-path gs://<PROJECT_ID>-keiba-models/lgbm_ranker/20260301/model.txt \
+    --model-path gs://<PROJECT_ID>-keiba-models/lgbm_ranker_multi/<YYYYMMDD>/lgbm_ranker_multi_<YYYYMMDD>.txt \
     --start-date 2025-01-11 \
     --end-date 2025-12-31 \
     --r-dominant-range 1.0 \
@@ -210,7 +271,7 @@ python3 scripts/run_strategy_optimization.py \
 # フルグリッドサーチ（約8時間）
 python3 scripts/run_strategy_optimization.py \
     --project-id <PROJECT_ID> \
-    --model-path gs://<PROJECT_ID>-keiba-models/lgbm_ranker/20260301/model.txt \
+    --model-path gs://<PROJECT_ID>-keiba-models/lgbm_ranker_multi/<YYYYMMDD>/lgbm_ranker_multi_<YYYYMMDD>.txt \
     --start-date 2025-01-11 \
     --end-date 2025-12-31
 ```
@@ -501,12 +562,17 @@ keiba_prediction/
 │   │       ├── __init__.py
 │   │       ├── feature_pipeline.py    # 特徴量パイプライン
 │   │       └── feature_query_raw.sql. # 特徴量集計用クエリ
-│   ├── models/                        # モデル学習・推論
+│   ├── models/                        # モデル学習・推論（ハイブリッドアンサンブル）
 │   │   ├── __init__.py
-│   │   ├── lgbm_ranker.py            # LightGBM LambdaRankモデル
-│   │   ├── train.py                  # 学習パイプライン
-│   │   ├── predict.py                # 推論パイプライン
-│   │   └── tuning.py                 # Optunaハイパーパラメータチューニング
+│   │   ├── lgbm_base.py              # 基底クラス LGBMModelBase（共通 train/predict/save/load）
+│   │   ├── lgbm_ranker.py            # LGBMRanker — 二値ラベル LambdaRank（後方互換）
+│   │   ├── lgbm_ranker_multi.py      # LGBMRankerMulti — JRA賞金ウェイト多値 LambdaRank
+│   │   ├── lgbm_regression.py        # LGBMRegression — 着差Zスコア回帰
+│   │   ├── lgbm_classifier.py        # LGBMClassifier — 複勝確率 二値分類
+│   │   ├── ensemble.py               # ensemble_rank_scores() — multi+regression アンサンブル
+│   │   ├── train.py                  # 学習パイプライン（3モデル対応）
+│   │   ├── predict.py                # 推論パイプライン（3モデルアンサンブル対応）
+│   │   └── tuning.py                 # Optuna ハイパーパラメータチューニング（4モデル対応）
 │   ├── backtest/                      # バックテストシミュレーター
 │   │   ├── __init__.py
 │   │   ├── simulator.py              # Kelly基準・BacktestSimulatorクラス
@@ -615,19 +681,28 @@ keiba_prediction/
 
 ### 4. `src/models/` - モデル学習・推論
 
-**目的**: LightGBM LambdaRankモデルの学習・推論パイプライン。
+**目的**: ハイブリッドアンサンブル方式による競馬着順予測モデルの学習・推論パイプライン。
+
+**アンサンブル構成**:
+```
+ranker_multi（重み0.7） + regression（重み0.3） → final_rank_score
+classifier                                      → win_place_prob（複勝確率）
+```
 
 **含まれるモジュール**:
-- `lgbm_ranker.py`: LightGBM LambdaRankモデルのラッパークラス（学習・予測・保存・読み込み）
-- `train.py`: 学習パイプライン（BigQueryデータ取得 → 時系列分割 → 学習 → 評価 → GCS保存）
-- `predict.py`: 推論パイプライン（モデル読み込み → 今週末レース予測 → 結果整形）
-- `tuning.py`: Optunaベイズ最適化によるハイパーパラメータチューニング
+- `lgbm_base.py`: 全モデル共通の基底クラス（train/predict/save/load）
+- `lgbm_ranker_multi.py`: JRA賞金ウェイト多値ラベル LambdaRank（メインモデル）
+- `lgbm_regression.py`: 着差Zスコア回帰（アンサンブルのサブスコア）
+- `lgbm_classifier.py`: 複勝確率 二値分類（期待値計算用）
+- `ensemble.py`: `ensemble_rank_scores()` — multi + regression の正規化アンサンブル
+- `train.py`: 学習パイプライン（3モデル対応 · `--model-type` で切り替え）
+- `predict.py`: 推論パイプライン（3モデルアンサンブル · GCS URI 直接指定対応）
+- `tuning.py`: Optuna ベイズ最適化（ranker/ranker_multi/regression/classifier 対応）
 
 **使用場面**:
-- モデルの学習と評価
-- ハイパーパラメータの自動最適化
-- 今週末のレース着順予測
-- モデルのGCS保存・読み込み
+- 3モデルの学習・Optuna チューニング・GCS 保存
+- 本番推論（アンサンブルスコア + 複勝確率の生成）
+- 過去日付を指定した手動推論・バックテスト用推論
 
 詳細は [src/models/README.md](./src/models/README.md) を参照してください。
 
