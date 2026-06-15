@@ -88,7 +88,7 @@ user-invocable: true
 | モデル | 指標 | スコア | 判定 |
 |---|---|---|---|
 | ranker_multi | NDCG@3 / AUC / Recall@3 | ... | ✅/❌ |
-| regression | RMSE | ... | （低いほど良い） |
+| regression | RMSE / NDCG@3 / Recall@3 / AUC | ... | RMSE低いほど良い、NDCG@3/Recall@3/AUCは高いほど良い |
 | classifier | NDCG@3 / AUC / Recall@3 | ... | ✅/❌ |
 
 ### 総合判定

@@ -379,7 +379,6 @@ def prepare_features_regression(
     DataFrameから特徴量・着差Zスコアラベルを準備する（回帰モデル用）
 
     finish_time が NULL のレースや std==0 のレースは学習から除外される（NaN行を除去）。
-    グループ（レースID）は回帰モデルでは不要なため返さない。
 
     Args:
         df: finish_time カラムを含む DataFrame
@@ -387,7 +386,8 @@ def prepare_features_regression(
         categorical_columns: カテゴリカル特徴量リスト
 
     Returns:
-        (X, y) のタプル（NaN行除去済み）
+        (X, y, df_filtered) のタプル（NaN行除去済み）
+        df_filtered: NaN除去後の DataFrame（finish_position / race_id を含む、ランキング評価に使用）
     """
     if "finish_time" not in df.columns:
         raise ValueError("DataFrameに 'finish_time' カラムがありません")
@@ -403,7 +403,7 @@ def prepare_features_regression(
         f"Regression features: {len(df_valid)}/{len(df)} rows after NaN removal "
         f"({len(df) - len(df_valid)} excluded)"
     )
-    return X, y
+    return X, y, df_valid
 
 
 def evaluate_predictions(
@@ -999,12 +999,12 @@ def train_pipeline_regression(
         raise ValueError("検証データがありません")
 
     # 3. 特徴量準備（NaN行は自動除外）
-    X_train, y_train = prepare_features_regression(
+    X_train, y_train, _ = prepare_features_regression(
         train_df,
         exclude_columns=data_config["exclude_columns"],
         categorical_columns=data_config.get("categorical_columns", []),
     )
-    X_valid, y_valid = prepare_features_regression(
+    X_valid, y_valid, valid_df_filtered = prepare_features_regression(
         valid_df,
         exclude_columns=data_config["exclude_columns"],
         categorical_columns=data_config.get("categorical_columns", []),
@@ -1062,10 +1062,23 @@ def train_pipeline_regression(
         categorical_feature=categorical_in_features or None,
     )
 
-    # 6. 検証データで RMSE 評価
+    # 6. 検証データで評価（RMSE + ランキング指標）
     valid_pred = regressor.predict(X_valid)
     rmse = float(np.sqrt(np.mean((y_valid - valid_pred) ** 2)))
-    logger.info(f"Regression validation RMSE: {rmse:.4f}")
+
+    # 予測Zスコアをランキングスコアとして NDCG@3 / Recall@3 / AUC を計算
+    groups_valid = valid_df_filtered.groupby("race_id", sort=False).size().tolist()
+    ranking_metrics = evaluate_predictions(
+        y_true_positions=valid_df_filtered["finish_position"].fillna(0).values.astype(int),
+        y_pred=valid_pred,
+        groups=groups_valid,
+    )
+    logger.info(
+        f"Regression validation RMSE: {rmse:.4f}, "
+        f"NDCG@3: {ranking_metrics['ndcg@3']:.4f}, "
+        f"Recall@3: {ranking_metrics['recall@3']:.4f}, "
+        f"AUC: {ranking_metrics['auc']:.4f}"
+    )
 
     # 6. モデル保存
     if output_dir is None:
@@ -1107,7 +1120,13 @@ def train_pipeline_regression(
         "execution_date": str(execution_date),
         "model_path": model_path,
         "gcs_uri": gcs_uri,
-        "metrics": {"rmse": rmse},
+        "metrics": {
+            "rmse": rmse,
+            "ndcg@3": ranking_metrics["ndcg@3"],
+            "recall@3": ranking_metrics["recall@3"],
+            "auc": ranking_metrics["auc"],
+            "num_races": ranking_metrics["num_races"],
+        },
         "best_iteration": regressor.model.best_iteration,
         "train_rows": len(X_train),
         "valid_rows": len(X_valid),
@@ -1491,6 +1510,8 @@ def main():
     print(f"推論対象: {result['predict_rows']} rows")
     print(f"特徴量数: {result['num_features']}")
     print(f"\n評価指標:")
+    if "rmse" in result["metrics"]:
+        print(f"  RMSE:     {result['metrics']['rmse']:.4f}")
     print(f"  NDCG@3:   {result['metrics']['ndcg@3']:.4f}")
     print(f"  Recall@3: {result['metrics']['recall@3']:.4f}")
     print(f"  AUC:      {result['metrics']['auc']:.4f}")

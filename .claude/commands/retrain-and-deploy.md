@@ -87,7 +87,7 @@ gcloud storage ls gs://keiba-prediction-1768734113-keiba-models/lgbm_classifier/
 - 特徴量パイプライン: 生成行数・カラム数
 - 学習結果（3モデル）:
   - ranker_multi: NDCG@3 / AUC / Recall@3
-  - regression: RMSE
+  - regression: RMSE / NDCG@3 / Recall@3 / AUC
   - classifier: NDCG@3 / AUC / Recall@3
 - GCS保存先:
   - `gs://keiba-prediction-1768734113-keiba-models/lgbm_ranker_multi/{YYYYMMDD}/`
