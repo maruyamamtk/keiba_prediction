@@ -137,8 +137,11 @@ def create_objective(
 
         if model_type == "classifier":
             binary_labels = y_valid.astype(int)
+        elif model_type == "ranker_multi":
+            # ranker_multi: JRA賞金ウェイト（0〜120）を3着以内（>=70）=1 に二値化
+            binary_labels = (y_valid >= 70).astype(int)
         else:
-            # ranker 系: y_valid は二値ラベル（3着以内=1）
+            # ranker: y_valid は二値ラベル（3着以内=1）
             binary_labels = y_valid.astype(int)
 
         if len(np.unique(binary_labels)) < 2:
