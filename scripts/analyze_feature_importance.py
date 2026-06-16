@@ -32,7 +32,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from src.models.lgbm_ranker import LGBMRanker
+from src.models.lgbm_ranker_multi import LGBMRankerMultiMulti
 
 logging.basicConfig(
     level=logging.INFO,
@@ -41,7 +41,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def _get_latest_model_gcs_uri(project_id: str, prefix: str = "lgbm_ranker/") -> str:
+def _get_latest_model_gcs_uri(project_id: str, prefix: str = "lgbm_ranker_multi/") -> str:
     """GCSから最新モデルのURIを取得する。"""
     from google.cloud import storage
 
@@ -65,14 +65,14 @@ def _get_latest_model_gcs_uri(project_id: str, prefix: str = "lgbm_ranker/") -> 
     return gcs_uri
 
 
-def load_ranker(project_id: str, model_path: str | None) -> LGBMRanker:
-    """モデルをロードして LGBMRanker を返す。"""
+def load_ranker(project_id: str, model_path: str | None) -> LGBMRankerMulti:
+    """モデルをロードして LGBMRankerMulti を返す。"""
     from google.cloud import storage
 
     if model_path is None:
         model_path = _get_latest_model_gcs_uri(project_id)
 
-    ranker = LGBMRanker()
+    ranker = LGBMRankerMulti()
 
     if model_path.startswith("gs://"):
         parts = model_path[len("gs://"):].split("/", 1)
@@ -98,7 +98,7 @@ def load_ranker(project_id: str, model_path: str | None) -> LGBMRanker:
     return ranker
 
 
-def build_importance_df(ranker: LGBMRanker) -> pd.DataFrame:
+def build_importance_df(ranker: LGBMRankerMulti) -> pd.DataFrame:
     """gain/split の両方の importance を含む DataFrame を返す。"""
     gain_df = ranker.feature_importance("gain").rename(columns={"importance": "gain"})
     split_df = ranker.feature_importance("split").rename(columns={"importance": "split"})

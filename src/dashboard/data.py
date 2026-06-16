@@ -297,9 +297,9 @@ def fetch_feature_importance(model_path: str | None = None) -> pd.DataFrame:
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
     try:
-        from src.models.lgbm_ranker import LGBMRanker
+        from src.models.lgbm_ranker_multi import LGBMRankerMulti
 
-        ranker = LGBMRanker()
+        ranker = LGBMRankerMulti()
         if model_path:
             ranker.load(model_path)
         else:
@@ -310,7 +310,7 @@ def fetch_feature_importance(model_path: str | None = None) -> pd.DataFrame:
             from google.cloud import storage
             gcs_client = storage.Client(project=project_id)
             bucket = gcs_client.bucket(f"{project_id}-keiba-models")
-            blobs = list(bucket.list_blobs(prefix="lgbm_ranker/"))
+            blobs = list(bucket.list_blobs(prefix="lgbm_ranker_multi/"))
             model_blobs = [b for b in blobs if b.name.endswith(".txt")]
             if not model_blobs:
                 return pd.DataFrame()
@@ -334,11 +334,11 @@ def fetch_feature_importance(model_path: str | None = None) -> pd.DataFrame:
 @st.cache_resource
 def load_lgbm_ranker_for_shap(model_path: str | None = None):
     """
-    GCS から最新 LGBMRanker を読み込み、モデルオブジェクトを返す。
+    GCS から最新 LGBMRankerMulti を読み込み、モデルオブジェクトを返す。
     @st.cache_resource でプロセスライフタイム中キャッシュする。
 
     Returns:
-        (LGBMRanker, list[str]) — ranker インスタンスと特徴量名リスト
+        (LGBMRankerMulti, list[str]) — ranker インスタンスと特徴量名リスト
         失敗時は (None, [])
     """
     import sys
@@ -347,9 +347,9 @@ def load_lgbm_ranker_for_shap(model_path: str | None = None):
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
     try:
-        from src.models.lgbm_ranker import LGBMRanker
+        from src.models.lgbm_ranker_multi import LGBMRankerMulti
 
-        ranker = LGBMRanker()
+        ranker = LGBMRankerMulti()
         if model_path:
             ranker.load(model_path)
         else:
@@ -359,7 +359,7 @@ def load_lgbm_ranker_for_shap(model_path: str | None = None):
             from google.cloud import storage
             gcs_client = storage.Client(project=project_id)
             bucket = gcs_client.bucket(f"{project_id}-keiba-models")
-            blobs = list(bucket.list_blobs(prefix="lgbm_ranker/"))
+            blobs = list(bucket.list_blobs(prefix="lgbm_ranker_multi/"))
             model_blobs = [b for b in blobs if b.name.endswith(".txt")]
             if not model_blobs:
                 return None, []

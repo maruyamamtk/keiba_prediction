@@ -10,7 +10,7 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from src.models.lgbm_ranker import LGBMRanker, LGBMRankerConfig
+from src.models.lgbm_base import LGBMRanker, LGBMRankerConfig
 
 # JRA賞金ウェイト（着順→ラベル値）。11着以下は辞書未登録 → 0 として扱う
 JRA_PRIZE_WEIGHTS: dict[int, int] = {

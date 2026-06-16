@@ -175,19 +175,7 @@ class PredictDailyRequest(BaseModel):
     model_path: str | None = Field(
         default=None,
         description="モデルファイルパス（ローカルパスまたは gs:// URI）。未指定時はGCSから最新モデルを自動取得。",
-        json_schema_extra={"example": "gs://my-project-keiba-models/lgbm_ranker/20260101/lgbm_ranker_20260101.txt"},
-    )
-    model_path_multi: str | None = Field(
-        default=None,
-        description="多値ランク学習モデルパス（LGBMRankerMulti、ローカルまたは GCS URI）",
-    )
-    model_path_regression: str | None = Field(
-        default=None,
-        description="着差回帰モデルパス（LGBMRegression、ローカルまたは GCS URI）",
-    )
-    model_path_classifier: str | None = Field(
-        default=None,
-        description="二値分類モデルパス（LGBMClassifier、ローカルまたは GCS URI）",
+        json_schema_extra={"example": "gs://my-project-keiba-models/lgbm_ranker_multi/20260101/lgbm_ranker_multi_20260101.txt"},
     )
     save_to_bq: bool = Field(
         default=True,
@@ -205,19 +193,7 @@ class PredictOnDemandRequest(BaseModel):
     model_path: str | None = Field(
         default=None,
         description="モデルファイルパス（ローカルパスまたは gs:// URI）。未指定時はGCSから最新モデルを自動取得。",
-        json_schema_extra={"example": "gs://my-project-keiba-models/lgbm_ranker/20260101/lgbm_ranker_20260101.txt"},
-    )
-    model_path_multi: str | None = Field(
-        default=None,
-        description="多値ランク学習モデルパス（LGBMRankerMulti、ローカルまたは GCS URI）",
-    )
-    model_path_regression: str | None = Field(
-        default=None,
-        description="着差回帰モデルパス（LGBMRegression、ローカルまたは GCS URI）",
-    )
-    model_path_classifier: str | None = Field(
-        default=None,
-        description="二値分類モデルパス（LGBMClassifier、ローカルまたは GCS URI）",
+        json_schema_extra={"example": "gs://my-project-keiba-models/lgbm_ranker_multi/20260101/lgbm_ranker_multi_20260101.txt"},
     )
     target_dates: list[str] = Field(
         description="予測対象日（YYYY-MM-DD形式、複数指定可）",
@@ -690,7 +666,7 @@ async def run_te_daily(request: TeDailyRequest):
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 
-def _get_latest_model_from_gcs(project_id: str, bucket_suffix: str = "keiba-models", prefix: str = "lgbm_ranker/") -> str:
+def _get_latest_model_from_gcs(project_id: str, bucket_suffix: str = "keiba-models", prefix: str = "lgbm_ranker_multi/") -> str:
     """
     GCSから最新のモデルファイルURIを取得する
 
@@ -698,12 +674,12 @@ def _get_latest_model_from_gcs(project_id: str, bucket_suffix: str = "keiba-mode
     最新の日付フォルダにある .txt ファイルの gs:// URIを返す。
 
     GCS上のパス形式: {prefix}{date}/{model_name}.txt
-    例: lgbm_ranker/20260217/lgbm_ranker_20260217.txt
+    例: lgbm_ranker_multi/20260217/lgbm_ranker_multi_20260217.txt
 
     Args:
         project_id: GCPプロジェクトID
         bucket_suffix: バケット名のサフィックス
-        prefix: GCS内のプレフィックス（例: "lgbm_ranker/"）
+        prefix: GCS内のプレフィックス（例: "lgbm_ranker_multi/"）
 
     Returns:
         最新モデルの gs:// URI
@@ -728,7 +704,7 @@ def _get_latest_model_from_gcs(project_id: str, bucket_suffix: str = "keiba-mode
         )
 
     # 日付フォルダ名（YYYYMMDD）を明示的に抽出して降順ソート
-    # パス形式: {prefix}{date}/{model_name}.txt 例: lgbm_ranker/20260217/lgbm_ranker_20260217.txt
+    # パス形式: {prefix}{date}/{model_name}.txt 例: lgbm_ranker_multi/20260217/lgbm_ranker_multi_20260217.txt
     latest_blob = max(model_blobs, key=lambda b: b.name.split("/")[-2])
     gcs_uri = f"gs://{bucket_name}/{latest_blob.name}"
     logger.info(f"最新モデルを取得: {gcs_uri}")
@@ -789,9 +765,6 @@ def _run_predict(
     save_to_bq: bool,
     project_id: str,
     save_to_gcs: bool = False,
-    model_path_multi: str | None = None,
-    model_path_regression: str | None = None,
-    model_path_classifier: str | None = None,
 ) -> dict:
     """
     予測パイプラインを実行して結果を返す内部関数
@@ -803,9 +776,6 @@ def _run_predict(
         save_to_bq: BigQueryに保存するか
         project_id: GCPプロジェクトID
         save_to_gcs: GCSに保存するか
-        model_path_multi: 多値ランク学習モデルパス（任意）
-        model_path_regression: 着差回帰モデルパス（任意）
-        model_path_classifier: 二値分類モデルパス（任意）
 
     Returns:
         予測結果の辞書（num_races, num_horses, saved_to_bq, saved_rows, saved_to_gcs, gcs_uri）
@@ -815,14 +785,7 @@ def _run_predict(
     from src.models.predict import predict_pipeline, save_predictions_to_bq, save_predictions_to_gcs
     from src.models.train import load_config
 
-    # ハイブリッドモデルが指定されていない場合のみ lambdarank を自動取得
-    hybrid_specified = any([model_path_multi, model_path_regression, model_path_classifier])
-    if model_path is None and not hybrid_specified:
-        local_model_path, tmpdir = _resolve_model_path(None, project_id)
-    elif model_path is not None:
-        local_model_path, tmpdir = _resolve_model_path(model_path, project_id)
-    else:
-        local_model_path, tmpdir = None, None
+    local_model_path, tmpdir = _resolve_model_path(model_path, project_id)
 
     try:
         config = load_config()
@@ -832,9 +795,6 @@ def _run_predict(
             config=config,
             model_path=local_model_path,
             target_dates=target_dates,
-            model_path_multi=model_path_multi,
-            model_path_regression=model_path_regression,
-            model_path_classifier=model_path_classifier,
         )
 
         num_races = int(result_df["race_id"].nunique()) if len(result_df) > 0 else 0
@@ -911,9 +871,6 @@ async def predict_daily(request: PredictDailyRequest):
             save_to_bq=request.save_to_bq,
             project_id=project_id,
             save_to_gcs=request.save_to_gcs,
-            model_path_multi=request.model_path_multi,
-            model_path_regression=request.model_path_regression,
-            model_path_classifier=request.model_path_classifier,
         )
 
         logger.info(
@@ -965,9 +922,6 @@ async def predict_on_demand(request: PredictOnDemandRequest):
             save_to_bq=request.save_to_bq,
             project_id=project_id,
             save_to_gcs=request.save_to_gcs,
-            model_path_multi=request.model_path_multi,
-            model_path_regression=request.model_path_regression,
-            model_path_classifier=request.model_path_classifier,
         )
 
         logger.info(
@@ -1854,7 +1808,7 @@ async def retrain_model(request: RetrainRequest):
     LightGBMモデルを再学習してGCSに保存する（同期実行）。
 
     Optunaによるハイパーパラメータチューニングを実施したうえでモデルを学習し、
-    GCS（gs://{project}-keiba-models/lgbm_ranker/{YYYYMMDD}/）へ保存する。
+    GCS（gs://{project}-keiba-models/lgbm_ranker_multi/{YYYYMMDD}/）へ保存する。
     次回の /api/v1/predict/daily 呼び出し時に自動的に最新モデルが使用される。
 
     実行時間の目安: 1〜2時間（チューニング込み）。

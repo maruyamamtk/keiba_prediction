@@ -44,7 +44,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src.backtest.metrics import compute_metrics
 from src.backtest.strategy_optimizer import StrategyOptimizer
-from src.models.lgbm_ranker import LGBMRanker
+from src.models.lgbm_ranker_multi import LGBMRankerMulti
 from src.models.predict import normalize_win_place_prob
 from src.models.train import (
     build_feature_matrix,
@@ -416,7 +416,7 @@ def generate_predictions(
     """
     data_config = config["data"]
 
-    ranker = LGBMRanker()
+    ranker = LGBMRankerMulti()
     ranker.load(model_path)
 
     X = build_feature_matrix(

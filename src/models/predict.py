@@ -1,19 +1,10 @@
 """
-LightGBM LambdaRank 推論スクリプト
-
-学習済みモデルを使用して、今週の土曜・日曜のレースに対する
-着順予測を行い、結果を出力する。
+LightGBM LambdaRank 推論スクリプト（LGBMRankerMulti 単一モデル構成）
 
 Usage:
     python src/models/predict.py --project-id <PROJECT_ID> --model-path <MODEL_PATH>
     python src/models/predict.py --project-id <PROJECT_ID> --model-path <MODEL_PATH> --execution-date 2026-02-15
     python src/models/predict.py --project-id <PROJECT_ID> --model-path <MODEL_PATH> --save-to-bq
-
-    # ハイブリッドアンサンブルモード（3モデル統合）
-    python src/models/predict.py --project-id <PROJECT_ID> \
-        --model-path-multi gs://...lgbm_ranker_multi.txt \
-        --model-path-regression gs://...lgbm_regression.txt \
-        --model-path-classifier gs://...lgbm_classifier.txt
 """
 
 
@@ -32,11 +23,7 @@ import yaml
 from google.cloud import bigquery, storage
 
 from src.ml.features.feature_pipeline import FeaturePipeline
-from src.models.ensemble import ensemble_rank_scores
-from src.models.lgbm_classifier import LGBMClassifier
-from src.models.lgbm_ranker import LGBMRanker
 from src.models.lgbm_ranker_multi import LGBMRankerMulti
-from src.models.lgbm_regression import LGBMRegression
 from src.models.train import (
     CONFIG_PATH,
     build_feature_matrix,
@@ -265,54 +252,6 @@ def _water_fill(p: np.ndarray, probs: np.ndarray) -> np.ndarray:
     return np.clip(probs, 0.0, 1.0)
 
 
-def calibrate_place_prob(df: pd.DataFrame, n_places: int = 3) -> pd.DataFrame:
-    """
-    二値分類モデルが出力する複勝率（0〜1）をレース内で比例補正し、
-    1レース内の合計が必ず min(n_places, 出走頭数) になるよう正規化する。
-
-    既存の normalize_win_place_prob()（水充填）と類似だが、
-    入力が「分類モデルの確率」である点が異なる。
-
-    Args:
-        df: race_id と classifier_prob カラムを持つ DataFrame
-        n_places: 複勝対象着順数（デフォルト3）
-
-    Returns:
-        win_place_prob カラムを上書きした DataFrame（元の DataFrame は変更しない）
-    """
-    def _scale_and_fill(group: pd.Series) -> pd.Series:
-        vals = group.values.astype(float)
-        n = len(vals)
-        k = float(min(n_places, n))
-        total = vals.sum()
-        if total < 1e-10:
-            return pd.Series(k / n, index=group.index)
-        p = vals / total
-        return pd.Series(_water_fill(p, p * k), index=group.index)
-
-    df = df.copy()
-    df["win_place_prob"] = df.groupby("race_id")["classifier_prob"].transform(_scale_and_fill)
-    return df
-
-
-def _scores_to_place_prob(scores: np.ndarray, n_places: int = 3) -> np.ndarray:
-    """スコアを複勝率に変換する（水充填アルゴリズム）。
-
-    Args:
-        scores: 各馬の予測スコア配列
-        n_places: 複勝対象着順数（デフォルト3）
-
-    Returns:
-        各馬の複勝率配列（各要素0~1、合計=min(n_places, len(scores))）
-    """
-    n = len(scores)
-    k = float(min(n_places, n))
-    shifted = scores - scores.max()
-    exp_s = np.exp(shifted)
-    p = exp_s / exp_s.sum()
-    return _water_fill(p, p * k)
-
-
 def normalize_win_place_prob(
     df: pd.DataFrame, temperature: float = 1.5, n_places: int = 3
 ) -> pd.DataFrame:
@@ -355,62 +294,29 @@ def predict_pipeline(
     model_path: str | None = None,
     target_dates: list[datetime.date] | None = None,
     force_sql: bool = False,
-    model_path_multi: str | None = None,
-    model_path_regression: str | None = None,
-    model_path_classifier: str | None = None,
 ) -> pd.DataFrame:
     """
-    推論パイプラインを実行する。
-
-    単一モデルモード（後方互換）:
-        model_path のみ指定時は従来の LambdaRank モデルで動作する。
-
-    ハイブリッドアンサンブルモード:
-        model_path_multi / model_path_regression / model_path_classifier を追加指定する。
-        - multi + regression が揃う場合は ensemble_rank_scores() で final_rank_score を生成し
-          pred_score を上書きする。
-        - classifier が指定される場合は calibrate_place_prob() で win_place_prob を生成する。
+    LGBMRankerMulti 単一モデルによる推論パイプラインを実行する。
 
     Args:
         project_id: GCPプロジェクトID
         execution_date: 実行日（target_dates未指定時に週の土日を算出する基準日）
         config: 設定辞書
-        model_path: 既存 LambdaRank モデルファイルパス（任意）
+        model_path: LGBMRankerMulti モデルファイルパス（ローカルまたは GCS URI）
         target_dates: 推論対象日のリスト。未指定の場合は execution_date の週の土日。
         force_sql: True の場合は training_data を参照せず full feature SQL を実行する
-        model_path_multi: 多値ランク学習モデルパス（任意）
-        model_path_regression: 着差回帰モデルパス（任意）
-        model_path_classifier: 二値分類モデルパス（任意）
 
     Returns:
         予測結果のDataFrame
     """
-    if not any([model_path, model_path_multi, model_path_regression]):
-        raise ValueError(
-            "model_path, model_path_multi, model_path_regression のいずれかを指定してください。"
-        )
+    if model_path is None:
+        raise ValueError("model_path を指定してください。")
 
     data_config = config["data"]
 
-    # 1. モデル読み込み（GCS または ローカル）
     with tempfile.TemporaryDirectory() as tmp_dir:
-        ranker: LGBMRanker | None = None
-        if model_path:
-            ranker = _load_model(LGBMRanker, project_id, model_path, tmp_dir)
+        ranker = _load_model(LGBMRankerMulti, project_id, model_path, tmp_dir)
 
-        ranker_multi: LGBMRankerMulti | None = None
-        if model_path_multi:
-            ranker_multi = _load_model(LGBMRankerMulti, project_id, model_path_multi, tmp_dir)
-
-        regressor: LGBMRegression | None = None
-        if model_path_regression:
-            regressor = _load_model(LGBMRegression, project_id, model_path_regression, tmp_dir)
-
-        classifier: LGBMClassifier | None = None
-        if model_path_classifier:
-            classifier = _load_model(LGBMClassifier, project_id, model_path_classifier, tmp_dir)
-
-        # 2. 推論対象日の決定
         if target_dates is None:
             saturday, sunday = compute_week_boundaries(execution_date)
             target_dates = [saturday, sunday]
@@ -425,14 +331,12 @@ def predict_pipeline(
             logger.warning("推論対象データがありません")
             return pd.DataFrame()
 
-        # 3. 特徴量準備（train.pyと共通ロジックを使用）
         X = build_feature_matrix(
             df,
             exclude_columns=data_config["exclude_columns"],
             categorical_columns=data_config.get("categorical_columns", []),
         )
 
-        # 4. 各モデルで推論
         result_df = df[
             ["race_id", "race_date", "horse_id", "horse_number", "horse_name"]
         ].copy()
@@ -441,49 +345,14 @@ def predict_pipeline(
         if "race_number" in df.columns:
             result_df["race_number"] = df["race_number"]
 
-        # 既存 LambdaRank スコア（後方互換用ベース）
-        if ranker is not None:
-            result_df["pred_score"] = ranker.predict(X)
-        else:
-            result_df["pred_score"] = np.nan
+        result_df["pred_score"] = ranker.predict(X)
 
-        # 多値ランク学習スコア
-        if ranker_multi is not None:
-            result_df["rank_score_multi"] = ranker_multi.predict(X)
+        result_df = normalize_win_place_prob(result_df)
 
-        # 着差回帰スコア
-        if regressor is not None:
-            result_df["rank_score_regression"] = regressor.predict(X)
-
-        # 二値分類スコア（生確率）
-        if classifier is not None:
-            result_df["classifier_prob"] = classifier.predict(X)
-
-        # 5. アンサンブルスコアで pred_score を上書き
-        has_multi = "rank_score_multi" in result_df.columns
-        has_regression = "rank_score_regression" in result_df.columns
-        if has_multi or has_regression:
-            result_df["final_rank_score"] = ensemble_rank_scores(
-                result_df,
-                score_col_multi="rank_score_multi",
-                score_col_regression="rank_score_regression",
-            )
-            result_df["pred_score"] = result_df["final_rank_score"]
-            logger.info("final_rank_score を pred_score に適用しました")
-
-        # 6. 複勝率の計算
-        if "classifier_prob" in result_df.columns:
-            result_df = calibrate_place_prob(result_df)
-            logger.info("calibrate_place_prob で win_place_prob を計算しました")
-        else:
-            result_df = normalize_win_place_prob(result_df)
-
-        # 7. レース内での予測順位を付与
         result_df["pred_rank"] = result_df.groupby("race_id")["pred_score"].rank(
             ascending=False, method="min"
         ).astype(int)
 
-        # 8. 着順情報: raw.race_resultsから直接取得する
         race_results_df = fetch_race_results(project_id=project_id, target_dates=target_dates)
         if len(race_results_df) > 0:
             result_df = result_df.merge(
@@ -494,12 +363,10 @@ def predict_pipeline(
         else:
             result_df["finish_position"] = np.nan
 
-        # オッズ情報がある場合
         for odds_col in ["odds_yesterday", "odds_today"]:
             if odds_col in df.columns:
                 result_df[odds_col] = df[odds_col]
 
-        # ソート
         result_df = result_df.sort_values(
             ["race_date", "race_id", "pred_rank"]
         ).reset_index(drop=True)
@@ -553,10 +420,6 @@ def save_predictions_to_bq(
         if col in result_df.columns:
             save_columns.append(col)
             break
-    # アンサンブル・分類スコアがあれば含める（デバッグ用）
-    for col in ["classifier_prob", "rank_score_multi", "rank_score_regression", "final_rank_score"]:
-        if col in result_df.columns:
-            save_columns.append(col)
 
     available_columns = [c for c in save_columns if c in result_df.columns]
     save_df = result_df[available_columns].copy()
@@ -729,7 +592,7 @@ def main():
     from dotenv import load_dotenv
     load_dotenv()
 
-    parser = argparse.ArgumentParser(description="LightGBM LambdaRank 推論スクリプト")
+    parser = argparse.ArgumentParser(description="LightGBM LambdaRank 推論スクリプト（LGBMRankerMulti）")
     parser.add_argument(
         "--project-id",
         default=os.environ.get("GCP_PROJECT_ID"),
@@ -738,22 +601,8 @@ def main():
     parser.add_argument(
         "--model-path",
         default=None,
-        help="既存 LambdaRank モデルファイルパス（ローカルまたは GCS URI）",
-    )
-    parser.add_argument(
-        "--model-path-multi",
-        default=None,
-        help="多値ランク学習モデルパス（LGBMRankerMulti、ローカルまたは GCS URI）",
-    )
-    parser.add_argument(
-        "--model-path-regression",
-        default=None,
-        help="着差回帰モデルパス（LGBMRegression、ローカルまたは GCS URI）",
-    )
-    parser.add_argument(
-        "--model-path-classifier",
-        default=None,
-        help="二値分類モデルパス（LGBMClassifier、ローカルまたは GCS URI）",
+        help="LGBMRankerMulti モデルファイルパス（ローカルまたは GCS URI）",
+        required=True,
     )
     parser.add_argument(
         "--execution-date",
@@ -835,12 +684,6 @@ def main():
             logger.error(f"--target-dates のフォーマットが不正です: {e}")
             return 1
 
-    if not any([args.model_path, args.model_path_multi, args.model_path_regression]):
-        logger.error(
-            "--model-path, --model-path-multi, --model-path-regression のいずれかを指定してください。"
-        )
-        return 1
-
     result_df = predict_pipeline(
         project_id=project_id,
         execution_date=execution_date,
@@ -848,9 +691,6 @@ def main():
         model_path=args.model_path,
         target_dates=parsed_target_dates,
         force_sql=args.force_sql,
-        model_path_multi=args.model_path_multi,
-        model_path_regression=args.model_path_regression,
-        model_path_classifier=args.model_path_classifier,
     )
 
     # 結果表示
