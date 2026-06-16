@@ -542,8 +542,17 @@ class StrategyOptimizer:
 
         Returns:
             OptimizationResult のリスト（全試行分）
+
+        Raises:
+            ValueError: metric が有効値でない場合
         """
         import optuna
+
+        _valid_metrics = {"recovery_rate", "hit_rate", "sharpe_ratio"}
+        if metric not in _valid_metrics:
+            raise ValueError(
+                f"metric='{metric}' は無効です。有効値: {_valid_metrics}"
+            )
 
         has_pred_score = "pred_score" in self.predictions_df.columns
         results: list[OptimizationResult] = []
@@ -609,7 +618,7 @@ class StrategyOptimizer:
             if rr < min_recovery_rate or dd > max_max_drawdown or tb < min_total_bets:
                 return 0.0
 
-            return metrics.get(metric, rr)
+            return metrics[metric]
 
         if sampler is None:
             sampler = optuna.samplers.TPESampler()
@@ -617,9 +626,13 @@ class StrategyOptimizer:
         study = optuna.create_study(direction="maximize", sampler=sampler)
         study.optimize(objective, n_trials=n_trials, timeout=timeout)
 
+        try:
+            best_val = study.best_value
+        except ValueError:
+            best_val = float("nan")
         logger.info(
             f"Optuna最適化完了: {len(results)} 試行, "
-            f"最良値={study.best_value:.4f} ({metric})"
+            f"最良値={best_val:.4f} ({metric})"
         )
         return results
 

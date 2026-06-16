@@ -554,3 +554,23 @@ class TestRunOptunaSearch:
             temperature=1.0,
         )
         assert isinstance(history_df, pd.DataFrame)
+
+    def test_run_optuna_search_raises_on_invalid_metric(self):
+        """無効な metric 名を渡すと ValueError が送出される"""
+        import pytest
+        pytest.importorskip("optuna")
+        df = _make_predictions_df(n_races=2, n_horses=5, win_place_prob=0.5, odds=3.0)
+        optimizer = StrategyOptimizer(df, None, combo_odds_df=None)
+        with pytest.raises(ValueError, match="metric="):
+            optimizer.run_optuna_search(n_trials=1, metric="invalid_metric")
+
+    def test_run_optuna_search_zero_trials_does_not_crash(self):
+        """n_trials=0 で試行なしでも study.best_value クラッシュが起きない"""
+        import pytest
+        pytest.importorskip("optuna")
+        df = _make_predictions_df(n_races=2, n_horses=5, win_place_prob=0.5, odds=3.0)
+        optimizer = StrategyOptimizer(df, None, combo_odds_df=None)
+        # n_trials=0 → 試行なし → study.best_trial=None → NaN でログ出力されること
+        results = optimizer.run_optuna_search(n_trials=0, timeout=1)
+        assert isinstance(results, list)
+        assert len(results) == 0
