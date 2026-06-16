@@ -2,17 +2,7 @@
 Optuna ハイパーパラメータ調整 CLI スクリプト
 
 使用例:
-  # LambdaRank（デフォルト）
-  .venv/bin/python scripts/run_tuning.py --project-id <PROJECT_ID> --model-type ranker
-
-  # 多値ランク学習
-  .venv/bin/python scripts/run_tuning.py --project-id <PROJECT_ID> --model-type ranker_multi
-
-  # 着差回帰
-  .venv/bin/python scripts/run_tuning.py --project-id <PROJECT_ID> --model-type regression
-
-  # 二値分類
-  .venv/bin/python scripts/run_tuning.py --project-id <PROJECT_ID> --model-type classifier --n-trials 50
+  .venv/bin/python scripts/run_tuning.py --project-id <PROJECT_ID> --n-trials 100
 """
 
 import argparse
@@ -29,14 +19,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src.models.train import (
     fetch_training_data,
-    prepare_features,
     prepare_features_multi_label,
-    prepare_features_regression,
     split_train_valid_predict,
 )
 from src.models.tuning import run_tuning, save_best_params
-from src.models.lgbm_classifier import LGBMClassifierConfig
-from src.models.lgbm_regression import LGBMRegressionConfig
 
 logging.basicConfig(
     level=logging.INFO,
@@ -44,26 +30,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-_RANKER_ONLY_KEYS = {"objective", "metric", "ndcg_eval_at", "label_gain", "lambdarank_truncation_level"}
-
 
 def _load_config(config_path: str) -> dict:
     with open(config_path) as f:
         return yaml.safe_load(f)
-
-
-def _build_base_params(model_config: dict, model_type: str) -> dict:
-    """モデル種別に応じた base_params を構築する"""
-    if model_type in ("ranker", "ranker_multi"):
-        return model_config["params"]
-
-    shared = {k: v for k, v in model_config.get("params", {}).items() if k not in _RANKER_ONLY_KEYS}
-    if model_type == "regression":
-        return {**LGBMRegressionConfig().params, **shared}
-    if model_type == "classifier":
-        return {**LGBMClassifierConfig().params, **shared}
-
-    raise ValueError(f"Unknown model_type: {model_type}")
 
 
 def main() -> None:
@@ -73,12 +43,6 @@ def main() -> None:
         epilog=__doc__,
     )
     parser.add_argument("--project-id", required=True, help="GCP プロジェクト ID")
-    parser.add_argument(
-        "--model-type",
-        choices=["ranker", "ranker_multi", "regression", "classifier"],
-        default="ranker",
-        help="チューニング対象のモデル種別（default: ranker）",
-    )
     parser.add_argument(
         "--config",
         default="config/model_config.yaml",
@@ -109,7 +73,7 @@ def main() -> None:
     data_config = config["data"]
     model_config = config["model"]
 
-    logger.info(f"model_type={args.model_type}, execution_date={execution_date}")
+    logger.info(f"execution_date={execution_date}")
 
     # 1. データ取得
     logger.info("データ取得中...")
@@ -134,41 +98,17 @@ def main() -> None:
         logger.error("検証データがありません")
         sys.exit(1)
 
-    # 3. 特徴量準備（model_type 別）
+    # 3. 特徴量準備（JRA賞金ウェイト多値ラベル）
     logger.info("特徴量準備中...")
     exclude_cols = data_config["exclude_columns"]
     cat_cols = data_config.get("categorical_columns", [])
 
-    if args.model_type in ("ranker", "ranker_multi"):
-        X_train, y_train, groups_train = prepare_features_multi_label(
-            train_df, exclude_columns=exclude_cols, categorical_columns=cat_cols,
-        ) if args.model_type == "ranker_multi" else prepare_features(
-            train_df, exclude_columns=exclude_cols, categorical_columns=cat_cols,
-        )
-        X_valid, y_valid, groups_valid = prepare_features_multi_label(
-            valid_df, exclude_columns=exclude_cols, categorical_columns=cat_cols,
-        ) if args.model_type == "ranker_multi" else prepare_features(
-            valid_df, exclude_columns=exclude_cols, categorical_columns=cat_cols,
-        )
-    elif args.model_type == "regression":
-        if "finish_time" not in df.columns:
-            logger.error("regression には finish_time カラムが必要です")
-            sys.exit(1)
-        X_train, y_train = prepare_features_regression(
-            train_df, exclude_columns=exclude_cols, categorical_columns=cat_cols,
-        )
-        X_valid, y_valid = prepare_features_regression(
-            valid_df, exclude_columns=exclude_cols, categorical_columns=cat_cols,
-        )
-        groups_train = groups_valid = None
-    else:  # classifier
-        X_train, y_train, _ = prepare_features(
-            train_df, exclude_columns=exclude_cols, categorical_columns=cat_cols,
-        )
-        X_valid, y_valid, _ = prepare_features(
-            valid_df, exclude_columns=exclude_cols, categorical_columns=cat_cols,
-        )
-        groups_train = groups_valid = None
+    X_train, y_train, groups_train = prepare_features_multi_label(
+        train_df, exclude_columns=exclude_cols, categorical_columns=cat_cols,
+    )
+    X_valid, y_valid, groups_valid = prepare_features_multi_label(
+        valid_df, exclude_columns=exclude_cols, categorical_columns=cat_cols,
+    )
 
     categorical_in_features = [c for c in cat_cols if c in X_train.columns]
 
@@ -183,7 +123,7 @@ def main() -> None:
     if args.timeout is not None:
         tuning_config["timeout"] = args.timeout
 
-    base_params = _build_base_params(model_config, args.model_type)
+    base_params = model_config["params"]
 
     # 5. チューニング実行
     logger.info(
@@ -196,15 +136,15 @@ def main() -> None:
         X_valid=X_valid,
         y_valid=y_valid,
         config={"model": {**model_config, "params": base_params}, "tuning": tuning_config},
-        model_type=args.model_type,
-        groups_train=groups_train if args.model_type in ("ranker", "ranker_multi") else None,
-        groups_valid=groups_valid if args.model_type in ("ranker", "ranker_multi") else None,
+        model_type="ranker_multi",
+        groups_train=groups_train,
+        groups_valid=groups_valid,
         categorical_feature=categorical_in_features or None,
     )
 
     # 6. 結果表示・保存
     print("\n" + "=" * 60)
-    print(f"チューニング完了: model_type={args.model_type}")
+    print("チューニング完了: model_type=ranker_multi")
     print(f"  best_value : {result['best_value']:.4f}")
     print(f"  best_trial : {result['best_trial_number']}")
     print(f"  n_trials   : {result['n_trials']}")
@@ -215,7 +155,7 @@ def main() -> None:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     date_str = execution_date.strftime("%Y%m%d")
-    params_path = str(output_dir / f"best_params_{args.model_type}_{date_str}.json")
+    params_path = str(output_dir / f"best_params_ranker_multi_{date_str}.json")
     save_best_params(result["best_params"], params_path)
     logger.info(f"最適パラメータを保存しました: {params_path}")
 

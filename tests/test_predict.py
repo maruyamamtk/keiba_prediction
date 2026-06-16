@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.models.lgbm_ranker import LGBMRanker, LGBMRankerConfig
+from src.models.lgbm_ranker_multi import JRA_PRIZE_WEIGHTS, LGBMRankerMulti, LGBMRankerMultiConfig
 from src.models.predict import (
     fetch_prediction_data,
     format_predictions,
@@ -26,7 +26,7 @@ class TestPredictPipeline:
 
     @pytest.fixture
     def trained_model_path(self, tmp_path):
-        """学習済みモデルを一時ファイルに作成"""
+        """学習済みLGBMRankerMultiモデルを一時ファイルに作成"""
         np.random.seed(42)
         n_races = 10
         n_horses = 8
@@ -48,16 +48,15 @@ class TestPredictPipeline:
             X_train[col] = X_train[col].astype("category")
 
         positions = np.tile(np.arange(1, n_horses + 1), n_races)
-        y_train = np.where((positions >= 1) & (positions <= 3), 1, 0)
+        y_train = np.array([JRA_PRIZE_WEIGHTS.get(int(p), 0) for p in positions])
         groups_train = [n_horses] * n_races
 
-        # 検証用
         X_valid = X_train.copy()
         y_valid = y_train.copy()
         groups_valid = groups_train.copy()
 
-        config = LGBMRankerConfig(num_boost_round=10, early_stopping_rounds=5, log_evaluation=0)
-        ranker = LGBMRanker(config=config)
+        config = LGBMRankerMultiConfig(num_boost_round=10, early_stopping_rounds=5, log_evaluation=0)
+        ranker = LGBMRankerMulti(config=config)
         ranker.train(X_train, y_train, groups_train, X_valid, y_valid, groups_valid,
                      categorical_feature=["course_type", "track_condition"])
 

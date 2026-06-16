@@ -62,7 +62,7 @@ data:
 # GCS設定
 gcs:
   bucket_suffix: "keiba-models"
-  model_prefix: "lgbm_ranker"
+  model_prefix: "lgbm_ranker_multi"
 
 # チューニング設定（Optuna）
 # 汎用設定（全モデル共通）。各モデル種別サブセクションで study_name 等を上書き可能。
@@ -72,19 +72,7 @@ tuning:
   study_name: "keiba_lgbm_ranker"
   storage: null  # null=in-memory, or "sqlite:///optuna.db"
 
-  # ranker_multi 専用上書き設定
-  ranker_multi:
-    study_name: "keiba_lgbm_ranker_multi"
-
-  # regression 専用上書き設定
-  regression:
-    study_name: "keiba_lgbm_regression"
-
-  # classifier 専用上書き設定
-  classifier:
-    study_name: "keiba_lgbm_classifier"
-
-  # 探索範囲（全モデル共通）
+  # 探索範囲
   search_space:
     num_leaves:
       type: int
@@ -129,6 +117,3 @@ evaluation:
     - "recall@3"
     - "auc"
 
-# アンサンブル設定
-ensemble:
-  weight_multi: 0.7  # 多値ランク学習の重み（着差回帰は 1 - weight_multi）

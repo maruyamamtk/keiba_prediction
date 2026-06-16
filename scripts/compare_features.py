@@ -58,11 +58,11 @@ from src.ml.features.feature_pipeline import FeaturePipeline, FeaturePipelineCon
 from src.models.train import (
     fetch_training_data,
     split_train_valid_predict,
-    prepare_features,
+    prepare_features_multi_label,
     evaluate_predictions,
     build_feature_matrix,
 )
-from src.models.lgbm_ranker import LGBMRanker
+from src.models.lgbm_ranker_multi import LGBMRankerMulti
 from src.models.tuning import run_tuning
 
 logger = logging.getLogger(__name__)
@@ -211,7 +211,7 @@ def evaluate_baseline(
         if col in X_valid.columns:
             X_valid[col] = X_valid[col].astype("category")
 
-    ranker = LGBMRanker()
+    ranker = LGBMRankerMulti()
     ranker.load(str(model_file))
 
     y_pred = ranker.predict(X_valid)
@@ -242,8 +242,8 @@ def train_and_evaluate_new_model(
     exclude_cols = data_config["exclude_columns"]
     cat_cols = data_config.get("categorical_columns", [])
 
-    X_train, y_train, groups_train = prepare_features(train_df, exclude_cols, cat_cols)
-    X_valid, y_valid, groups_valid = prepare_features(valid_df, exclude_cols, cat_cols)
+    X_train, y_train, groups_train = prepare_features_multi_label(train_df, exclude_cols, cat_cols)
+    X_valid, y_valid, groups_valid = prepare_features_multi_label(valid_df, exclude_cols, cat_cols)
 
     new_feature_count = len(X_train.columns)
     logger.info(f"新モデル特徴量数: {new_feature_count}")
@@ -462,7 +462,7 @@ def main() -> int:
     baseline_gcs_uri = args.baseline_model_gcs or get_latest_model_gcs(
         args.project_id,
         gcs_cfg.get("bucket_suffix", "keiba-models"),
-        gcs_cfg.get("model_prefix", "lgbm_ranker"),
+        gcs_cfg.get("model_prefix", "lgbm_ranker_multi"),
     )
 
     with tempfile.TemporaryDirectory() as tmpdir:

@@ -17,8 +17,6 @@ from src.models.train import (
     evaluate_predictions,
     fetch_training_data_from_sql,
     load_config,
-    prepare_features,
-    prepare_features_regression,
     split_train_valid_predict,
     train_pipeline,
 )
@@ -143,57 +141,6 @@ class TestSplitTrainValidPredict:
         assert len(predict_df) == 0
 
 
-class TestPrepareFeatures:
-    """prepare_featuresのテスト"""
-
-    def test_basic_preparation(self):
-        """特徴量準備が正しく動作すること"""
-        df = pd.DataFrame({
-            "race_id": ["r1", "r1", "r1", "r1", "r1"],
-            "horse_id": ["h1", "h2", "h3", "h4", "h5"],
-            "finish_position": [1, 2, 3, 4, 5],
-            "feature_a": [1.0, 2.0, 3.0, 4.0, 5.0],
-            "feature_b": [0.1, 0.2, 0.3, 0.4, 0.5],
-            "course_type": ["turf", "dirt", "turf", "dirt", "turf"],
-        })
-
-        X, y, groups = prepare_features(
-            df,
-            exclude_columns=["race_id", "horse_id", "finish_position"],
-            categorical_columns=["course_type"],
-        )
-
-        assert "race_id" not in X.columns
-        assert "horse_id" not in X.columns
-        assert "finish_position" not in X.columns
-        assert "feature_a" in X.columns
-        assert "feature_b" in X.columns
-        assert X["course_type"].dtype.name == "category"
-
-        # 二値ラベルの確認（3着以内=1, それ以外=0）
-        assert y[0] == 1  # 1着 → 1
-        assert y[1] == 1  # 2着 → 1
-        assert y[2] == 1  # 3着 → 1
-        assert y[3] == 0  # 4着 → 0
-        assert y[4] == 0  # 5着 → 0
-
-        # グループサイズ
-        assert groups == [5]
-
-    def test_zero_finish_position(self):
-        """着順が0の場合でもエラーにならないこと"""
-        df = pd.DataFrame({
-            "race_id": ["r1", "r1"],
-            "finish_position": [0, 1],
-            "feature_a": [1.0, 2.0],
-        })
-        X, y, groups = prepare_features(
-            df, exclude_columns=["race_id", "finish_position"], categorical_columns=[]
-        )
-        # 0着 → 0（3着以内でない）
-        assert y[0] == 0
-        # 1着 → 1（3着以内）
-        assert y[1] == 1
 
 
 class TestEvaluatePredictions:
@@ -282,7 +229,7 @@ class TestTrainPipeline:
             },
             "gcs": {
                 "bucket_suffix": "keiba-models",
-                "model_prefix": "lgbm_ranker",
+                "model_prefix": "lgbm_ranker_multi",
             },
         }
 
@@ -508,78 +455,7 @@ class TestTrainPipeline:
             assert Path(result["model_path"]).exists()
             # best_params JSONファイルも保存されていること
             date_str = datetime.date(2026, 2, 13).strftime("%Y%m%d")
-            params_path = Path(tmpdir) / f"best_params_{date_str}.json"
+            params_path = Path(tmpdir) / f"best_params_ranker_multi_{date_str}.json"
             assert params_path.exists()
 
 
-class TestPrepareFeatureRegression:
-    """prepare_features_regression のテスト（Issue #374）"""
-
-    def _make_df(self):
-        """1着馬との着差Zスコアが計算できるサンプル DataFrame を生成"""
-        return pd.DataFrame({
-            "race_id":        ["r1", "r1", "r1", "r1", "r1"],
-            "horse_id":       ["h1", "h2", "h3", "h4", "h5"],
-            "finish_position": [1, 2, 3, 4, 5],
-            "finish_time":    [70.0, 70.5, 71.0, 72.0, 73.0],
-            "feature_a":      [1.0, 2.0, 3.0, 4.0, 5.0],
-            "course_type":    ["turf"] * 5,
-        })
-
-    def test_returns_three_tuple(self):
-        """戻り値が (X, y, df_filtered) の3要素タプルであること"""
-        df = self._make_df()
-        result = prepare_features_regression(
-            df,
-            exclude_columns=["race_id", "horse_id", "finish_position", "finish_time"],
-            categorical_columns=["course_type"],
-        )
-        assert len(result) == 3
-        X, y, df_filtered = result
-        assert len(X) == len(y) == len(df_filtered)
-
-    def test_df_filtered_contains_race_id_and_finish_position(self):
-        """df_filtered に race_id と finish_position が含まれること"""
-        df = self._make_df()
-        _, _, df_filtered = prepare_features_regression(
-            df,
-            exclude_columns=["race_id", "horse_id", "finish_position", "finish_time"],
-            categorical_columns=[],
-        )
-        assert "race_id" in df_filtered.columns
-        assert "finish_position" in df_filtered.columns
-
-    def test_nan_rows_excluded(self):
-        """finish_time が NULL の行は除外されること"""
-        df = self._make_df()
-        df.loc[2, "finish_time"] = None  # 3着馬の finish_time を NULL に
-        X, y, df_filtered = prepare_features_regression(
-            df,
-            exclude_columns=["race_id", "horse_id", "finish_position", "finish_time"],
-            categorical_columns=[],
-        )
-        # std==0 でないレースで finish_time NULL の行が除外される
-        assert len(X) < 5
-
-    def test_ranking_metrics_computable(self):
-        """df_filtered と y_pred から evaluate_predictions が呼び出せること"""
-        df = self._make_df()
-        _, _, df_filtered = prepare_features_regression(
-            df,
-            exclude_columns=["race_id", "horse_id", "finish_position", "finish_time"],
-            categorical_columns=[],
-        )
-        # 完璧な予測スコア（着差小=強い馬に高スコア）
-        y_pred = np.array([1.0, 0.5, 0.0, -0.5, -1.0])
-        groups = df_filtered.groupby("race_id", sort=False).size().tolist()
-        metrics = evaluate_predictions(
-            y_true_positions=df_filtered["finish_position"].fillna(0).values.astype(int),
-            y_pred=y_pred,
-            groups=groups,
-        )
-        assert "ndcg@3" in metrics
-        assert "recall@3" in metrics
-        assert "auc" in metrics
-        assert "num_races" in metrics
-        assert metrics["ndcg@3"] == pytest.approx(1.0)
-        assert metrics["recall@3"] == pytest.approx(1.0)
