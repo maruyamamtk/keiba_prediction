@@ -1,12 +1,11 @@
-# LightGBM LambdaRank モデル設定
-# ラベル: 二値（3着以内=1, それ以外=0）でランク学習
+# LightGBM LambdaRank モデル設定（ranker_multi: JRA賞金ウェイト多値ラベル）
 model:
   # LightGBMパラメータ
   params:
     objective: "lambdarank"
     metric: "ndcg"
     ndcg_eval_at:
-      - 3
+      - 5
     boosting_type: "gbdt"
     num_leaves: 31
     learning_rate: 0.05
