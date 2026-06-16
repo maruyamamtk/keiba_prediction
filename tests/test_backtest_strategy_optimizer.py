@@ -444,3 +444,133 @@ class TestStrategyOptimizerSummaryByPattern:
         )
         assert len(results) == 1
         assert isinstance(results[0].recovery_rate, float)
+
+
+# ---------------------------------------------------------------------------
+# run_optuna_search のテスト
+# ---------------------------------------------------------------------------
+
+
+class TestRunOptunaSearch:
+    """Issue #382: run_optuna_search() の動作確認（小規模データ）"""
+
+    def test_run_optuna_search_returns_results(self):
+        """run_optuna_search() が OptimizationResult のリストを返す"""
+        import pytest
+        optuna = pytest.importorskip("optuna")
+        df = _make_predictions_df(n_races=3, n_horses=5, win_place_prob=0.5, odds=3.0)
+        optimizer = StrategyOptimizer(df, None, combo_odds_df=None)
+        results = optimizer.run_optuna_search(n_trials=5, timeout=30)
+        assert isinstance(results, list)
+        assert len(results) == 5
+        for r in results:
+            assert isinstance(r, OptimizationResult)
+
+    def test_run_optuna_search_results_have_required_params(self):
+        """各結果が必須パラメータを含む"""
+        import pytest
+        optuna = pytest.importorskip("optuna")
+        df = _make_predictions_df(n_races=3, n_horses=5, win_place_prob=0.5, odds=3.0)
+        optimizer = StrategyOptimizer(df, None, combo_odds_df=None)
+        results = optimizer.run_optuna_search(n_trials=3, timeout=30)
+        for r in results:
+            assert "expected_return_threshold" in r.params
+            assert "top_n" in r.params
+            assert "prob_weight_r" in r.params
+            assert "min_prob_threshold" in r.params
+            assert "max_wide_odds" in r.params
+
+    def test_run_optuna_search_temperature_explored_when_pred_score_exists(self):
+        """pred_score カラムがある場合は temperature が探索される"""
+        import pytest
+        optuna = pytest.importorskip("optuna")
+        df = _make_predictions_df(n_races=3, n_horses=5, win_place_prob=0.5, odds=3.0)
+        # pred_score を付与
+        df["pred_score"] = df["win_place_prob"] * 10.0
+        optimizer = StrategyOptimizer(df, None, combo_odds_df=None)
+        results = optimizer.run_optuna_search(n_trials=3, timeout=30)
+        for r in results:
+            assert "temperature" in r.params
+            assert r.params["temperature"] is not None
+
+    def test_run_optuna_search_no_temperature_when_no_pred_score(self):
+        """pred_score カラムがない場合は temperature が探索されない"""
+        import pytest
+        optuna = pytest.importorskip("optuna")
+        df = _make_predictions_df(n_races=3, n_horses=5, win_place_prob=0.5, odds=3.0)
+        # pred_score なし
+        assert "pred_score" not in df.columns
+        optimizer = StrategyOptimizer(df, None, combo_odds_df=None)
+        results = optimizer.run_optuna_search(n_trials=3, timeout=30)
+        for r in results:
+            assert "temperature" not in r.params
+
+    def test_run_optuna_search_metrics_are_valid(self):
+        """各結果の指標が有効な数値である"""
+        import pytest
+        optuna = pytest.importorskip("optuna")
+        df = _make_predictions_df(n_races=3, n_horses=5, win_place_prob=0.5, odds=3.0)
+        optimizer = StrategyOptimizer(df, None, combo_odds_df=None)
+        results = optimizer.run_optuna_search(n_trials=3, timeout=30)
+        for r in results:
+            assert isinstance(r.recovery_rate, float)
+            assert isinstance(r.hit_rate, float)
+            assert isinstance(r.max_drawdown, float)
+            assert isinstance(r.total_bets, int)
+
+    def test_run_optuna_search_custom_sampler(self):
+        """カスタムサンプラー（RandomSampler）を指定できる"""
+        import pytest
+        optuna = pytest.importorskip("optuna")
+        df = _make_predictions_df(n_races=3, n_horses=5, win_place_prob=0.5, odds=3.0)
+        optimizer = StrategyOptimizer(df, None, combo_odds_df=None)
+        sampler = optuna.samplers.RandomSampler(seed=42)
+        results = optimizer.run_optuna_search(n_trials=3, timeout=30, sampler=sampler)
+        assert len(results) == 3
+
+    def test_run_grid_search_emits_deprecation_warning(self):
+        """run_grid_search() は DeprecationWarning を発する"""
+        import warnings
+        df = _make_predictions_df(n_races=2, n_horses=5, win_place_prob=0.5, odds=3.0)
+        optimizer = StrategyOptimizer(df, None, combo_odds_df=None)
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            optimizer.run_grid_search(
+                threshold_range=[1.0],
+                top_n_range=[3],
+                r_range=[1.0],
+            )
+        assert any(issubclass(warning.category, DeprecationWarning) for warning in w)
+
+    def test_run_simulation_with_temperature_uses_normalized_probs(self):
+        """temperature 指定時に win_place_prob が再計算される"""
+        df = _make_predictions_df(n_races=2, n_horses=5, win_place_prob=0.5, odds=3.0)
+        # pred_score を付与
+        df["pred_score"] = [float(i % 5 + 1) for i in range(len(df))]
+        optimizer = StrategyOptimizer(df, None, combo_odds_df=None)
+        # temperature=1.0（再計算あり）で実行できること
+        history_df, _ = optimizer._run_simulation(
+            expected_return_threshold=1.0,
+            temperature=1.0,
+        )
+        assert isinstance(history_df, pd.DataFrame)
+
+    def test_run_optuna_search_raises_on_invalid_metric(self):
+        """無効な metric 名を渡すと ValueError が送出される"""
+        import pytest
+        pytest.importorskip("optuna")
+        df = _make_predictions_df(n_races=2, n_horses=5, win_place_prob=0.5, odds=3.0)
+        optimizer = StrategyOptimizer(df, None, combo_odds_df=None)
+        with pytest.raises(ValueError, match="metric="):
+            optimizer.run_optuna_search(n_trials=1, metric="invalid_metric")
+
+    def test_run_optuna_search_zero_trials_does_not_crash(self):
+        """n_trials=0 で試行なしでも study.best_value クラッシュが起きない"""
+        import pytest
+        pytest.importorskip("optuna")
+        df = _make_predictions_df(n_races=2, n_horses=5, win_place_prob=0.5, odds=3.0)
+        optimizer = StrategyOptimizer(df, None, combo_odds_df=None)
+        # n_trials=0 → 試行なし → study.best_trial=None → NaN でログ出力されること
+        results = optimizer.run_optuna_search(n_trials=0, timeout=1)
+        assert isinstance(results, list)
+        assert len(results) == 0

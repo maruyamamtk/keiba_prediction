@@ -1,25 +1,33 @@
 """
 投資戦略オプティマイザー
 
-グリッドサーチにより投資戦略のパラメータを最適化する。
+グリッドサーチまたはOptunaベイズ最適化により投資戦略のパラメータを最適化する。
 
 最適化対象パラメータ:
   - expected_return_threshold: 期待回収率フィルタ閾値
   - top_n: 候補馬数
   - prob_weight_r: 選定スコアの確率ウェイト係数
+  - min_prob_threshold: 最低複勝率
+  - max_wide_odds: ワイドオッズ上限
+  - temperature: win_place_prob ソフトマックス温度（Optuna探索時）
 """
 
 
 
 import logging
+import warnings
 from dataclasses import dataclass, field
 from itertools import product
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
 
 from .metrics import compute_metrics
 from .strategy import select_bets_for_race
+
+if TYPE_CHECKING:
+    import optuna
 
 logger = logging.getLogger(__name__)
 
@@ -145,6 +153,7 @@ class StrategyOptimizer:
         prob_weight_r: float = 1.0,
         top_n: int = 5,
         max_wide_odds: float | None = None,
+        temperature: float | None = None,
         # 後方互換性のための旧パラメータ（無視される）
         p1: float | None = None,
         prob_weight_r_dominant: float | None = None,
@@ -162,16 +171,24 @@ class StrategyOptimizer:
             prob_weight_r: 選定スコアの確率ウェイト係数
             top_n: 候補馬数
             max_wide_odds: ワイド購入の上限オッズ（None で無制限）
+            temperature: ソフトマックス温度（None の場合は win_place_prob を再計算しない）
+                pred_score カラムが存在する場合のみ有効
 
         Returns:
             (history_df, pattern_stats) のタプル:
               - history_df: 賭け記録 DataFrame
               - pattern_stats: 互換性のための空辞書
         """
-        # 日付・レースID でソート
-        df = self.predictions_df.sort_values(
-            ["race_date", "race_id", "horse_number"]
-        ).copy()
+        # temperature が指定され pred_score が存在する場合は win_place_prob を再計算
+        if temperature is not None and "pred_score" in self.predictions_df.columns:
+            from src.models.predict import normalize_win_place_prob
+            df = normalize_win_place_prob(self.predictions_df, temperature=temperature)
+            df = df.sort_values(["race_date", "race_id", "horse_number"]).copy()
+        else:
+            # 日付・レースID でソート
+            df = self.predictions_df.sort_values(
+                ["race_date", "race_id", "horse_number"]
+            ).copy()
 
         capital = float(self.initial_capital)
         records: list[dict] = []
@@ -396,6 +413,11 @@ class StrategyOptimizer:
             f"threshold×top_n×r×min_prob×max_wide_odds = "
             f"{len(threshold_range)}×{len(top_n_range)}×{len(r_range)}×{len(mpt_values)}×{len(mwo_values)}"
         )
+        warnings.warn(
+            "run_grid_search() は非推奨です。代わりに run_optuna_search() を使用してください。",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         logger.info(f"グリッドサーチ開始: {total} パラメータ組み合わせ ({dim_info})")
 
         results: list[OptimizationResult] = []
@@ -484,6 +506,135 @@ class StrategyOptimizer:
             f"最良パラメータ ({metric}={getattr(best, metric):.4f}): {best.params}"
         )
         return best
+
+    def run_optuna_search(
+        self,
+        n_trials: int = 200,
+        timeout: int = 600,
+        metric: str = "recovery_rate",
+        min_recovery_rate: float = 100.0,
+        max_max_drawdown: float = 30.0,
+        min_total_bets: int = 30,
+        sampler: "optuna.samplers.BaseSampler | None" = None,
+    ) -> list[OptimizationResult]:
+        """
+        Optunaベイズ最適化で投資戦略パラメータを探索する
+
+        探索パラメータ:
+          - expected_return_threshold: [1.0, 2.5]（連続）
+          - top_n: [1, 6]（整数）
+          - prob_weight_r: [0.3, 2.0]（連続）
+          - min_prob_threshold: [0.0, 0.3]（連続）
+          - max_wide_odds: [5.0, 50.0] または None（条件付き連続）
+          - temperature: [0.5, 3.0]（連続、pred_score カラムが存在する場合のみ）
+
+        制約違反（回収率 < min_recovery_rate、最大DD > max_max_drawdown、
+        賭け数 < min_total_bets）の場合はペナルティスコア（0.0）を返す。
+
+        Args:
+            n_trials: 試行回数（デフォルト: 200）
+            timeout: タイムアウト秒数（デフォルト: 600）
+            metric: 最大化する評価指標（デフォルト: "recovery_rate"）
+            min_recovery_rate: 制約: 最低回収率 (%) （デフォルト: 100.0）
+            max_max_drawdown: 制約: 最大ドローダウン上限 (%) （デフォルト: 30.0）
+            min_total_bets: 制約: 最低賭け数（過学習防止、デフォルト: 30）
+            sampler: Optunaサンプラー（None の場合は TPESampler）
+
+        Returns:
+            OptimizationResult のリスト（全試行分）
+
+        Raises:
+            ValueError: metric が有効値でない場合
+        """
+        import optuna
+
+        _valid_metrics = {"recovery_rate", "hit_rate", "sharpe_ratio"}
+        if metric not in _valid_metrics:
+            raise ValueError(
+                f"metric='{metric}' は無効です。有効値: {_valid_metrics}"
+            )
+
+        has_pred_score = "pred_score" in self.predictions_df.columns
+        results: list[OptimizationResult] = []
+
+        def objective(trial: optuna.Trial) -> float:
+            expected_return_threshold = trial.suggest_float(
+                "expected_return_threshold", 1.0, 2.5
+            )
+            top_n = trial.suggest_int("top_n", 1, 6)
+            prob_weight_r = trial.suggest_float("prob_weight_r", 0.3, 2.0)
+            min_prob_threshold = trial.suggest_float("min_prob_threshold", 0.0, 0.3)
+            use_max_wide_odds = trial.suggest_categorical(
+                "use_max_wide_odds", [True, False]
+            )
+            if use_max_wide_odds:
+                max_wide_odds: float | None = trial.suggest_float(
+                    "max_wide_odds", 5.0, 50.0
+                )
+            else:
+                max_wide_odds = None
+            temperature: float | None = (
+                trial.suggest_float("temperature", 0.5, 3.0)
+                if has_pred_score
+                else None
+            )
+
+            history_df, _ = self._run_simulation(
+                expected_return_threshold=expected_return_threshold,
+                top_n=top_n,
+                prob_weight_r=prob_weight_r,
+                min_prob_threshold=min_prob_threshold,
+                max_wide_odds=max_wide_odds,
+                temperature=temperature,
+            )
+            metrics = compute_metrics(history_df, self.initial_capital)
+
+            rr = metrics["recovery_rate"]
+            dd = metrics["max_drawdown"]
+            tb = metrics["total_bets"]
+
+            params = {
+                "expected_return_threshold": expected_return_threshold,
+                "top_n": top_n,
+                "prob_weight_r": prob_weight_r,
+                "min_prob_threshold": min_prob_threshold,
+                "max_wide_odds": max_wide_odds,
+            }
+            if has_pred_score:
+                params["temperature"] = temperature
+
+            results.append(
+                OptimizationResult(
+                    params=params,
+                    recovery_rate=rr,
+                    hit_rate=metrics["hit_rate"],
+                    max_drawdown=dd,
+                    sharpe_ratio=metrics["sharpe_ratio"],
+                    total_bets=tb,
+                )
+            )
+
+            # 制約違反時はペナルティ（回収率0%相当）
+            if rr < min_recovery_rate or dd > max_max_drawdown or tb < min_total_bets:
+                return 0.0
+
+            return metrics[metric]
+
+        if sampler is None:
+            sampler = optuna.samplers.TPESampler()
+
+        study = optuna.create_study(direction="maximize", sampler=sampler)
+        study.optimize(objective, n_trials=n_trials, timeout=timeout)
+
+        try:
+            best_val = study.best_value
+        except ValueError:
+            best_val = float("nan")
+        logger.info(
+            f"Optuna最適化完了: {len(results)} 試行, "
+            f"最良値={best_val:.4f} ({metric})"
+        )
+        return results
 
     def filter_by_goals(
         self,
