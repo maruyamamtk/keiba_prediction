@@ -94,7 +94,14 @@ def create_objective(
         categorical_feature=cat, reference=train_data, free_raw_data=False,
     )
 
+    # JRA賞金ウェイト（0〜120）を3着以内（>=70）=1 に二値化（全トライアル共通・1回だけ計算）
+    binary_labels = (y_valid >= 70).astype(int)
+    _has_both_classes = len(np.unique(binary_labels)) >= 2
+
     def objective(trial: optuna.Trial) -> float:
+        if not _has_both_classes:
+            return 0.0
+
         params = dict(base_params)
         for param_name, spec in search_space.items():
             params[param_name] = _suggest_param(trial, param_name, spec)
@@ -115,12 +122,6 @@ def create_objective(
         )
 
         y_pred = model.predict(X_valid)
-        # JRA賞金ウェイト（0〜120）を3着以内（>=70）=1 に二値化してAUC評価
-        binary_labels = (y_valid >= 70).astype(int)
-
-        if len(np.unique(binary_labels)) < 2:
-            return 0.0
-
         return roc_auc_score(binary_labels, y_pred)
 
     return objective
