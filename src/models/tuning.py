@@ -1,13 +1,8 @@
 """
 Optuna によるハイパーパラメータ調整モジュール
 
-LightGBM 各モデルのハイパーパラメータを Optuna のベイズ最適化で探索する。
-model_type 引数で対象モデルを切り替える。
-
-  model_type="ranker"       : LGBMRanker（lambdarank、グループあり）
-  model_type="ranker_multi" : LGBMRankerMulti（lambdarank、グループあり）
-  model_type="regression"   : LGBMRegression（regression、グループなし、-RMSE最大化）
-  model_type="classifier"   : LGBMClassifier（binary、グループなし、AUC最大化）
+LightGBM ranker_multi（LambdaRank + JRA賞金ウェイト多値ラベル）の
+ハイパーパラメータを Optuna のベイズ最適化で探索する。
 """
 
 import json
@@ -24,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
-# 共通探索範囲（全モデル型で使用）
+# 共通探索範囲
 DEFAULT_SEARCH_SPACE = {
     "num_leaves": {"type": "int", "low": 15, "high": 127},
     "learning_rate": {"type": "float", "low": 0.01, "high": 0.3, "log": True},
@@ -35,8 +30,6 @@ DEFAULT_SEARCH_SPACE = {
     "reg_alpha": {"type": "float", "low": 1e-8, "high": 10.0, "log": True},
     "reg_lambda": {"type": "float", "low": 1e-8, "high": 10.0, "log": True},
 }
-
-_RANKER_TYPES = {"ranker", "ranker_multi"}
 
 
 def _suggest_param(trial: optuna.Trial, name: str, spec: dict):
@@ -59,7 +52,7 @@ def create_objective(
     base_params: dict,
     training_config: dict,
     search_space: dict,
-    model_type: str = "ranker",
+    model_type: str = "ranker_multi",
     groups_train: list[int] | None = None,
     groups_valid: list[int] | None = None,
     categorical_feature: list[str] | None = None,
@@ -69,45 +62,46 @@ def create_objective(
 
     Args:
         X_train: 学習用特徴量
-        y_train: 学習用ラベル
+        y_train: 学習用ラベル（JRA賞金ウェイト 0〜120）
         X_valid: 検証用特徴量
-        y_valid: 検証用ラベル
+        y_valid: 検証用ラベル（JRA賞金ウェイト 0〜120）
         base_params: LightGBM の固定パラメータ
         training_config: 学習設定（num_boost_round, early_stopping_rounds）
         search_space: Optuna 探索範囲の辞書
-        model_type: "ranker" | "ranker_multi" | "regression" | "classifier"
-        groups_train: 学習用グループサイズ（ranker 系のみ必須）
-        groups_valid: 検証用グループサイズ（ranker 系のみ必須）
+        model_type: "ranker_multi" のみサポート
+        groups_train: 学習用グループサイズ（必須）
+        groups_valid: 検証用グループサイズ（必須）
         categorical_feature: カテゴリカル特徴量リスト
 
     Returns:
         objective 関数
     """
-    if model_type in _RANKER_TYPES and (groups_train is None or groups_valid is None):
-        raise ValueError(f"model_type='{model_type}' には groups_train / groups_valid が必要です")
+    if model_type != "ranker_multi":
+        raise ValueError(
+            f"model_type='{model_type}' はサポートされていません。'ranker_multi' のみ使用可能です。"
+        )
+    if groups_train is None or groups_valid is None:
+        raise ValueError("groups_train / groups_valid が必要です")
 
     cat = categorical_feature or "auto"
 
-    if model_type in _RANKER_TYPES:
-        train_data = lgb.Dataset(
-            X_train, label=y_train, group=groups_train,
-            categorical_feature=cat, free_raw_data=False,
-        )
-        valid_data = lgb.Dataset(
-            X_valid, label=y_valid, group=groups_valid,
-            categorical_feature=cat, reference=train_data, free_raw_data=False,
-        )
-    else:
-        train_data = lgb.Dataset(
-            X_train, label=y_train,
-            categorical_feature=cat, free_raw_data=False,
-        )
-        valid_data = lgb.Dataset(
-            X_valid, label=y_valid,
-            categorical_feature=cat, reference=train_data, free_raw_data=False,
-        )
+    train_data = lgb.Dataset(
+        X_train, label=y_train, group=groups_train,
+        categorical_feature=cat, free_raw_data=False,
+    )
+    valid_data = lgb.Dataset(
+        X_valid, label=y_valid, group=groups_valid,
+        categorical_feature=cat, reference=train_data, free_raw_data=False,
+    )
+
+    # JRA賞金ウェイト（0〜120）を3着以内（>=70）=1 に二値化（全トライアル共通・1回だけ計算）
+    binary_labels = (y_valid >= 70).astype(int)
+    _has_both_classes = len(np.unique(binary_labels)) >= 2
 
     def objective(trial: optuna.Trial) -> float:
+        if not _has_both_classes:
+            return 0.0
+
         params = dict(base_params)
         for param_name, spec in search_space.items():
             params[param_name] = _suggest_param(trial, param_name, spec)
@@ -127,26 +121,7 @@ def create_objective(
             ],
         )
 
-        if model_type == "regression":
-            y_pred = model.predict(X_valid)
-            rmse = float(np.sqrt(np.mean((y_valid - y_pred) ** 2)))
-            return -rmse  # 最大化 = RMSE 最小化
-
-        # ranker / ranker_multi / classifier: AUC で評価
         y_pred = model.predict(X_valid)
-
-        if model_type == "classifier":
-            binary_labels = y_valid.astype(int)
-        elif model_type == "ranker_multi":
-            # ranker_multi: JRA賞金ウェイト（0〜120）を3着以内（>=70）=1 に二値化
-            binary_labels = (y_valid >= 70).astype(int)
-        else:
-            # ranker: y_valid は二値ラベル（3着以内=1）
-            binary_labels = y_valid.astype(int)
-
-        if len(np.unique(binary_labels)) < 2:
-            return 0.0
-
         return roc_auc_score(binary_labels, y_pred)
 
     return objective
@@ -158,7 +133,7 @@ def run_tuning(
     X_valid: pd.DataFrame,
     y_valid: np.ndarray,
     config: dict,
-    model_type: str = "ranker",
+    model_type: str = "ranker_multi",
     groups_train: list[int] | None = None,
     groups_valid: list[int] | None = None,
     categorical_feature: list[str] | None = None,
@@ -168,13 +143,13 @@ def run_tuning(
 
     Args:
         X_train: 学習用特徴量
-        y_train: 学習用ラベル
+        y_train: 学習用ラベル（JRA賞金ウェイト 0〜120）
         X_valid: 検証用特徴量
-        y_valid: 検証用ラベル
+        y_valid: 検証用ラベル（JRA賞金ウェイト 0〜120）
         config: 設定辞書（model / tuning セクションを含む）
-        model_type: "ranker" | "ranker_multi" | "regression" | "classifier"
-        groups_train: 学習用グループサイズ（ranker 系のみ）
-        groups_valid: 検証用グループサイズ（ranker 系のみ）
+        model_type: "ranker_multi" のみサポート
+        groups_train: 学習用グループサイズ（必須）
+        groups_valid: 検証用グループサイズ（必須）
         categorical_feature: カテゴリカル特徴量リスト
 
     Returns:

@@ -38,7 +38,7 @@ class LGBMRankerMultiConfig(LGBMRankerConfig):
     params: dict = field(default_factory=lambda: {
         "objective": "lambdarank",
         "metric": "ndcg",
-        "ndcg_eval_at": [3],
+        "ndcg_eval_at": [5],
         "label_gain": LABEL_GAIN_MULTI,
         "boosting_type": "gbdt",
         "num_leaves": 31,
