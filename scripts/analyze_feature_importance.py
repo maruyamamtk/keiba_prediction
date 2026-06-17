@@ -13,7 +13,7 @@ Usage:
   # モデルパスを直接指定（GCS URI or ローカルパス）
   .venv/bin/python scripts/analyze_feature_importance.py \\
       --project-id keiba-prediction-1768734113 \\
-      --model-path gs://keiba-prediction-1768734113-keiba-models/lgbm_ranker/20260516/lgbm_ranker_20260516.txt
+      --model-path gs://keiba-prediction-1768734113-keiba-models/lgbm_ranker_multi/20260516/lgbm_ranker_multi_20260516.txt
 
   # 出力先・閾値を指定
   .venv/bin/python scripts/analyze_feature_importance.py \\
@@ -32,7 +32,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from src.models.lgbm_ranker_multi import LGBMRankerMultiMulti
+from src.models.lgbm_ranker_multi import LGBMRankerMulti
 
 logging.basicConfig(
     level=logging.INFO,

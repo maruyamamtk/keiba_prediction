@@ -11,7 +11,7 @@ OOS（アウトオブサンプル）評価の原則:
 Usage:
     .venv/bin/python scripts/optimize_strategy.py \\
         --project-id <PROJECT_ID> \\
-        --model-path gs://<PROJECT_ID>-keiba-models/lgbm_ranker/20250106/lgbm_ranker_20250106.txt \\
+        --model-path gs://<PROJECT_ID>-keiba-models/lgbm_ranker_multi/20250106/lgbm_ranker_multi_20250106.txt \\
         --start-date 2025-01-11 \\
         --end-date 2025-12-31 \\
         --n-trials 200 \\
