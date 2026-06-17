@@ -1,6 +1,6 @@
 ---
 name: backtest-analyst
-description: "バックテスト結果（CSV/BigQuery）を定量分析し、投資戦略パラメータ（p1, threshold, top_n, budget_per_race）の改善案を提案するエージェント。回収率・ドローダウン・シャープレシオのKPI達成状況を評価する際に使用。"
+description: "バックテスト結果（CSV/BigQuery）を定量分析し、投資戦略パラメータ（threshold, top_n, budget_per_race）の改善案を提案するエージェント。回収率・ドローダウン・シャープレシオのKPI達成状況を評価する際に使用。"
 model: sonnet
 color: green
 ---
@@ -43,7 +43,6 @@ bq query --use_legacy_sql=false \
 
 ### ステップ3: パラメータ感度分析
 `scripts/run_strategy_optimization.py` の結果から:
-- `p1`（one_dominant判定閾値）の感度
 - `threshold`（期待回収率フィルタ）の感度
 - `top_n`候補数の影響
 
@@ -51,8 +50,8 @@ bq query --use_legacy_sql=false \
 具体的な数値とその根拠を示して提案してください:
 ```
 # 推奨パラメータ（例）
-p1: 0.35 → 0.40  （理由: 突出型パターンの的中率が+5%）
 threshold: 1.2 → 1.3  （理由: 期待値の低い馬券を除外して回収率+8%）
+top_n: 3 → 2  （理由: 的中率+5%）
 ```
 
 ## 出力形式

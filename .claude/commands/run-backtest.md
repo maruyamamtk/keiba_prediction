@@ -8,9 +8,9 @@
 
 1. 引数から開始日・終了日をパース（省略時は自動計算）
 
-2. GCS から最新の lgbm_ranker モデルパスを取得:
+2. GCS から最新の lgbm_ranker_multi モデルパスを取得:
 ```bash
-gcloud storage ls gs://keiba-prediction-1768734113-keiba-models/lgbm_ranker/ \
+gcloud storage ls gs://keiba-prediction-1768734113-keiba-models/lgbm_ranker_multi/ \
   | sort | tail -1
 ```
 上記で得られた日付フォルダ内のパスを `--model-path` に指定する。
@@ -21,7 +21,7 @@ gcloud storage ls gs://keiba-prediction-1768734113-keiba-models/lgbm_ranker/ \
 cd /Users/michika_maruyama/Desktop/keiba_prediction
 .venv/bin/python scripts/run_backtest.py \
   --project-id keiba-prediction-1768734113 \
-  --model-path gs://keiba-prediction-1768734113-keiba-models/lgbm_ranker/{YYYYMMDD}/lgbm_ranker_{YYYYMMDD}.txt \
+  --model-path gs://keiba-prediction-1768734113-keiba-models/lgbm_ranker_multi/{YYYYMMDD}/lgbm_ranker_multi_{YYYYMMDD}.txt \
   --start-date {開始日} \
   --end-date {終了日} \
   --budget-per-race 3000 \
@@ -35,10 +35,3 @@ cd /Users/michika_maruyama/Desktop/keiba_prediction
    - **シャープレシオ**
    - KPI達成・未達成の判定
    - 未達成の場合は `backtest-analyst` エージェントへのエスカレーション提案
-
-## 注意事項
-
-- `run_backtest.py` は現在 LGBMRanker（`lgbm_ranker/`）を使用します
-- 多段階ハイブリッドアンサンブルの予測スコア（`final_rank_score`）を使ったバックテストには、
-  `predict.py` の `--model-path-multi` / `--model-path-regression` / `--model-path-classifier`
-  オプションを使って推論結果を先に生成し、その結果でシミュレーションする方式が別途必要です
