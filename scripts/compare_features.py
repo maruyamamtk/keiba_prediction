@@ -21,7 +21,7 @@ Usage:
   .venv/bin/python scripts/compare_features.py \\
       --project-id keiba-prediction-1768734113 \\
       --skip-feature-pipeline \\
-      --baseline-model-gcs gs://keiba-prediction-1768734113-keiba-models/lgbm_ranker/20260510/lgbm_ranker_20260510.txt
+      --baseline-model-gcs gs://keiba-prediction-1768734113-keiba-models/lgbm_ranker_multi/20260510/lgbm_ranker_multi_20260510.txt
 
   # 全オプション
   .venv/bin/python scripts/compare_features.py \\

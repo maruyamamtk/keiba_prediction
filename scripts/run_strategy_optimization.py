@@ -23,7 +23,7 @@ Usage:
     # 推奨: r 値を固定して高速実行（約30分）
     python scripts/run_strategy_optimization.py \\
         --project-id <PROJECT_ID> \\
-        --model-path gs://<PROJECT_ID>-keiba-models/lgbm_ranker/20250106/lgbm_ranker_20250106.txt \\
+        --model-path gs://<PROJECT_ID>-keiba-models/lgbm_ranker_multi/20250106/lgbm_ranker_multi_20250106.txt \\
         --start-date 2025-01-11 \\
         --end-date 2025-12-31 \\
         --r-dominant-range 1.0 \\
@@ -32,7 +32,7 @@ Usage:
     # フルグリッドサーチ（約8時間）
     python scripts/run_strategy_optimization.py \\
         --project-id <PROJECT_ID> \\
-        --model-path gs://<PROJECT_ID>-keiba-models/lgbm_ranker/20250106/lgbm_ranker_20250106.txt \\
+        --model-path gs://<PROJECT_ID>-keiba-models/lgbm_ranker_multi/20250106/lgbm_ranker_multi_20250106.txt \\
         --start-date 2025-01-11 \\
         --end-date 2025-12-31
 

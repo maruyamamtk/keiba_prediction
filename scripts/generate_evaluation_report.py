@@ -11,7 +11,7 @@ Usage:
 
     # GCS上のモデルを使う場合
     python scripts/generate_evaluation_report.py \\
-        --gcs-model-path gs://<PROJECT_ID>-keiba-models/lgbm_ranker/20260217/lgbm_ranker_20260217.txt \\
+        --gcs-model-path gs://<PROJECT_ID>-keiba-models/lgbm_ranker_multi/20260217/lgbm_ranker_multi_20260217.txt \\
         --project-id <PROJECT_ID>
 
     # BigQueryへの接続なしでローカルCSVを使う場合
