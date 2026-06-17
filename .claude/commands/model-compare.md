@@ -26,43 +26,7 @@ user-invocable: true
     --timeout 1800
 ```
 
-> `compare_features.py` は LGBMRanker（二値ラベル）ベースの比較を行います。
-> 多段階モデル（ranker_multi / regression / classifier）の精度確認は下記の追加評価を実施してください。
-
-## 多段階モデルの追加評価（特徴量・SQL変更時）
-
-### ranker_multi（JRA賞金多値ラベル）
-```bash
-.venv/bin/python -m src.models.train \
-    --model-type multi \
-    --tune \
-    --n-trials 20 \
-    --tune-timeout 900 \
-    --skip-gcs-upload \
-    --project-id keiba-prediction-1768734113
-```
-
-### regression（着差Zスコア回帰）
-```bash
-.venv/bin/python -m src.models.train \
-    --model-type regression \
-    --tune \
-    --n-trials 20 \
-    --tune-timeout 900 \
-    --skip-gcs-upload \
-    --project-id keiba-prediction-1768734113
-```
-
-### classifier（複勝率直接推定）
-```bash
-.venv/bin/python -m src.models.train \
-    --model-type classifier \
-    --tune \
-    --n-trials 20 \
-    --tune-timeout 900 \
-    --skip-gcs-upload \
-    --project-id keiba-prediction-1768734113
-```
+> `compare_features.py` は LGBMRankerMulti（多値ランクラベル）ベースの比較を行います。
 
 ## 結果の提示
 
@@ -75,21 +39,13 @@ user-invocable: true
 | **学習期間** | （meta.jsonから取得、なければ「不明」） | 比較実行時の分割結果 |
 | **検証期間** | （同上） | 比較実行時の分割結果 |
 
-### 精度比較（LGBMRanker ベースライン）
+### 精度比較（LGBMRankerMulti）
 
 | 指標 | 既存モデル | 新モデル | 差分 | 判定（±0.005） |
 |---|---|---|---|---|
-| NDCG@3 | ... | ... | ... | ✅/❌ |
+| NDCG@5 | ... | ... | ... | ✅/❌ |
 | AUC | ... | ... | ... | ✅/❌ |
 | Recall@3 | ... | ... | ... | ✅/❌ |
-
-### 多段階モデル評価（追加実施した場合）
-
-| モデル | 指標 | スコア | 判定 |
-|---|---|---|---|
-| ranker_multi | NDCG@3 / AUC / Recall@3 | ... | ✅/❌ |
-| regression | RMSE / NDCG@3 / Recall@3 / AUC | ... | RMSE低いほど良い、NDCG@3/Recall@3/AUCは高いほど良い |
-| classifier | NDCG@3 / AUC / Recall@3 | ... | ✅/❌ |
 
 ### 総合判定
 
@@ -101,4 +57,3 @@ user-invocable: true
 - `reports/comparison_YYYYMMDD.md` にレポートが保存される
 - 特徴量パイプライン再実行が必要な場合は `--skip-feature-pipeline` を外して実行
 - Optuna 試行数を増やす場合は `--n-trials 100 --timeout 3600` を指定
-- 多段階モデルの追加評価は `--skip-gcs-upload` を付けてGCSアップロードを省略する

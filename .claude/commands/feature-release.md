@@ -25,19 +25,17 @@ git checkout -b feature/issue-$ARGUMENTS
 
 ### 4. モデル精度比較（特徴量・SQLを変更した場合は必須）
 
-`/model-compare` を実行してLGBMRankerのベースライン比較を確認・提示:
+`/model-compare` を実行して LGBMRankerMulti のベースライン比較を確認・提示:
 - 既存モデルと新モデルの学習期間・検証期間
-- NDCG@3 / AUC / Recall@3 の比較と差分
+- NDCG@5 / AUC / Recall@3 の比較と差分
 - 総合判定（マージ可 / 要修正）
-
-**多段階モデルの追加評価（任意）**: 全指標に大きな変化がある場合は ranker_multi / regression / classifier を `--skip-gcs-upload` で個別に確認する。
 
 総合判定が ❌ の場合はユーザーに確認を求めてから続行するか判断する。
 
 ### 5. コミット & PR 作成
 コミット後、PR 本文には以下を必ず含める:
 - モデル比較の学習・検証期間表
-- 精度比較表（NDCG@3 / AUC / Recall@3）
+- 精度比較表（NDCG@5 / AUC / Recall@3）
 - 総合判定
 - テスト計画（`/check-leak` 実施済み・pytest 通過を明記）
 
