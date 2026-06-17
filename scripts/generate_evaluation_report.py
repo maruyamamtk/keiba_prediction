@@ -6,7 +6,7 @@ Markdownレポートとして出力する。
 
 Usage:
     python scripts/generate_evaluation_report.py \\
-        --model-path src/models/lgbm_ranker_20260217.txt \\
+        --model-path src/models/lgbm_ranker_multi_20260217.txt \\
         --project-id <PROJECT_ID>
 
     # GCS上のモデルを使う場合
@@ -16,7 +16,7 @@ Usage:
 
     # BigQueryへの接続なしでローカルCSVを使う場合
     python scripts/generate_evaluation_report.py \\
-        --model-path src/models/lgbm_ranker_20260217.txt \\
+        --model-path src/models/lgbm_ranker_multi_20260217.txt \\
         --local-data-path /path/to/training_data.csv
 """
 

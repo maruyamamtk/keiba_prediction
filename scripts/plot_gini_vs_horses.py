@@ -7,7 +7,7 @@
 Usage:
     python3 scripts/plot_gini_vs_horses.py \
         --project-id keiba-prediction-1768734113 \
-        --model-path ./src/models/lgbm_ranker_20260217.txt \
+        --model-path ./src/models/lgbm_ranker_multi_20260217.txt \
         [--output gini_vs_horses.png]
 """
 
