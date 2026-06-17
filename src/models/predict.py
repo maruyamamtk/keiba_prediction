@@ -253,18 +253,17 @@ def _water_fill(p: np.ndarray, probs: np.ndarray) -> np.ndarray:
 
 
 def normalize_win_place_prob(
-    df: pd.DataFrame, temperature: float = 1.5, n_places: int = 3
+    df: pd.DataFrame, temperature: float = 1.0, n_places: int = 3
 ) -> pd.DataFrame:
     """温度付きソフトマックス＋水充填でwin_place_probを計算する
 
-    旧実装（_scores_to_place_prob, temperature=1.0）は高スコア馬がprob=1.0に
-    ハードクリップされやすく、スコア差が投資判断に反映されない問題があった。
-    temperature > 1.0 でスコア差を緩やかにしてクリップ頻度を抑えつつ、
-    水充填により各レース内の合計を min(n_places, 出走頭数) に保持する。
+    水充填アルゴリズム（_water_fill）により prob=1.0 クリップ問題は解消済みのため、
+    temperature=1.0 でスコア差をそのまま確率差に反映させる。
+    temperature > 1.0 は不要な均一化を起こし投資判断の優劣がつきにくくなる。
 
     Args:
         df: race_id と pred_score カラムを持つ DataFrame
-        temperature: ソフトマックス温度（大きいほど均一化、デフォルト1.5）
+        temperature: ソフトマックス温度（大きいほど均一化、デフォルト1.0）
         n_places: 複勝対象着順数（デフォルト3）
 
     Returns:
