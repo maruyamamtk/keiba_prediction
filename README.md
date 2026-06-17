@@ -173,13 +173,13 @@ python3 -m src.ml.features.feature_pipeline --start-date 2024-01-01 --end-date 2
 .venv/bin/python -m src.models.predict \
     --project-id <PROJECT_ID> \
     --model-path gs://<PROJECT_ID>-keiba-models/lgbm_ranker_multi/<YYYYMMDD>/lgbm_ranker_multi_<YYYYMMDD>.txt \
-    --target-dates 2026-06-14 2026-06-15
+    --target-date 2026-06-14
 
 # CSV 出力 + BigQuery 保存
 .venv/bin/python -m src.models.predict \
     --project-id <PROJECT_ID> \
     --model-path gs://<PROJECT_ID>-keiba-models/lgbm_ranker_multi/<YYYYMMDD>/lgbm_ranker_multi_<YYYYMMDD>.txt \
-    --target-dates 2026-06-14 \
+    --target-date 2026-06-14 \
     --output-csv predictions.csv \
     --save-to-bq
 ```
@@ -189,7 +189,7 @@ python3 -m src.ml.features.feature_pipeline --start-date 2024-01-01 --end-date 2
 | オプション | 説明 |
 |---|---|
 | `--model-path` | ranker_multi モデルパス（GCS URI またはローカル）。未指定時はGCSから最新を自動取得。 |
-| `--target-dates` | 推論対象日（YYYY-MM-DD、複数指定可） |
+| `--target-date` | 推論対象日（YYYY-MM-DD） |
 | `--output-csv` | CSV 出力先パス |
 | `--save-to-bq` | BigQuery（predictions.daily_predictions）に保存 |
 
