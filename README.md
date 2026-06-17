@@ -125,28 +125,15 @@ python3 -m src.ml.features.feature_pipeline --start-date 2024-01-01 --end-date 2
 
 **モデル学習はローカルで実行します。** Cloud Run Jobs（`keiba-model-retrain`）はメモリ不足になるため使用しません。
 
-3つのモデル（ranker_multi / regression / classifier）をアンサンブルする**ハイブリッドアンサンブル方式**を採用しています。
+**LGBMRankerMulti**（JRA賞金ウェイト多値ラベル LambdaRank）単一モデルを採用しています。
 
 #### 学習（ローカル推奨）
 
-3モデルを順番に学習します。各学習完了後、モデルは自動的に GCS へアップロードされます。
+学習完了後、モデルは自動的に GCS へアップロードされます。
 
 ```bash
-# ① 多値ランク学習モデル（メイン・Optunaチューニングあり）
 .venv/bin/python -m src.models.train \
     --model-type multi \
-    --tune \
-    --project-id <PROJECT_ID>
-
-# ② 着差回帰モデル
-.venv/bin/python -m src.models.train \
-    --model-type regression \
-    --tune \
-    --project-id <PROJECT_ID>
-
-# ③ 二値分類モデル（複勝確率推定）
-.venv/bin/python -m src.models.train \
-    --model-type classifier \
     --tune \
     --project-id <PROJECT_ID>
 ```
@@ -156,24 +143,20 @@ python3 -m src.ml.features.feature_pipeline --start-date 2024-01-01 --end-date 2
 | モデル | パス |
 |--------|------|
 | ranker_multi | `gs://{PROJECT_ID}-keiba-models/lgbm_ranker_multi/{YYYYMMDD}/` |
-| regression | `gs://{PROJECT_ID}-keiba-models/lgbm_regression/{YYYYMMDD}/` |
-| classifier | `gs://{PROJECT_ID}-keiba-models/lgbm_classifier/{YYYYMMDD}/` |
 
-翌朝の `race-day-predict`（AM 8:00）が GCS から最新の3モデルを自動選択してアンサンブル推論を実行します。
+翌朝の `race-day-predict`（AM 8:00）が GCS から最新モデルを自動選択して推論を実行します。
 
 **評価指標:**
 
-| モデル | NDCG@3 | Recall@3 | AUC | RMSE |
-|--------|:---:|:---:|:---:|:---:|
-| ranker_multi | ✅ | ✅ | ✅ | — |
-| regression | ✅ | ✅ | ✅ | ✅ |
-| classifier | ✅ | ✅ | ✅ | — |
+| モデル | NDCG@5 | Recall@3 | AUC |
+|--------|:---:|:---:|:---:|
+| ranker_multi | ✅ | ✅ | ✅ |
 
 **主なオプション:**
 
 | オプション | 説明 | デフォルト |
 |---|---|---|
-| `--model-type` | `multi` / `regression` / `classifier` / `ranker` | `ranker` |
+| `--model-type` | `multi` / `ranker` | `multi` |
 | `--project-id` | GCPプロジェクトID | `$GCP_PROJECT_ID` |
 | `--tune` | Optuna チューニングを有効化 | なし |
 | `--n-trials` | Optuna の trial 数 | 100 |
@@ -186,23 +169,16 @@ python3 -m src.ml.features.feature_pipeline --start-date 2024-01-01 --end-date 2
 #### 推論実行（手動・確認用）
 
 ```bash
-# 3モデルアンサンブル推論（特定日付を指定）
+# LGBMRankerMulti 推論（特定日付を指定）
 .venv/bin/python -m src.models.predict \
     --project-id <PROJECT_ID> \
-    --model-path-multi \
-        gs://<PROJECT_ID>-keiba-models/lgbm_ranker_multi/<YYYYMMDD>/lgbm_ranker_multi_<YYYYMMDD>.txt \
-    --model-path-regression \
-        gs://<PROJECT_ID>-keiba-models/lgbm_regression/<YYYYMMDD>/lgbm_regression_<YYYYMMDD>.txt \
-    --model-path-classifier \
-        gs://<PROJECT_ID>-keiba-models/lgbm_classifier/<YYYYMMDD>/lgbm_classifier_<YYYYMMDD>.txt \
+    --model-path gs://<PROJECT_ID>-keiba-models/lgbm_ranker_multi/<YYYYMMDD>/lgbm_ranker_multi_<YYYYMMDD>.txt \
     --target-dates 2026-06-14 2026-06-15
 
 # CSV 出力 + BigQuery 保存
 .venv/bin/python -m src.models.predict \
     --project-id <PROJECT_ID> \
-    --model-path-multi  gs://.../lgbm_ranker_multi_<YYYYMMDD>.txt \
-    --model-path-regression  gs://.../lgbm_regression_<YYYYMMDD>.txt \
-    --model-path-classifier  gs://.../lgbm_classifier_<YYYYMMDD>.txt \
+    --model-path gs://<PROJECT_ID>-keiba-models/lgbm_ranker_multi/<YYYYMMDD>/lgbm_ranker_multi_<YYYYMMDD>.txt \
     --target-dates 2026-06-14 \
     --output-csv predictions.csv \
     --save-to-bq
@@ -212,9 +188,7 @@ python3 -m src.ml.features.feature_pipeline --start-date 2024-01-01 --end-date 2
 
 | オプション | 説明 |
 |---|---|
-| `--model-path-multi` | ranker_multi モデルパス（GCS URI またはローカル） |
-| `--model-path-regression` | regression モデルパス |
-| `--model-path-classifier` | classifier モデルパス |
+| `--model-path` | ranker_multi モデルパス（GCS URI またはローカル）。未指定時はGCSから最新を自動取得。 |
 | `--target-dates` | 推論対象日（YYYY-MM-DD、複数指定可） |
 | `--output-csv` | CSV 出力先パス |
 | `--save-to-bq` | BigQuery（predictions.daily_predictions）に保存 |
@@ -232,7 +206,7 @@ python scripts/run_backtest.py \
     --end-date 2025-12-31
 ```
 
-> **注意**: バックテストは現在 `lgbm_ranker_multi` モデルのスコアを使用します。アンサンブル（3モデル合算）でのバックテストは未対応です。
+> バックテストは `lgbm_ranker_multi` モデルのスコアを使用します。
 
 詳細なオプションは [src/backtest/README.md](./src/backtest/README.md) を参照してください。
 
@@ -340,9 +314,9 @@ source .env && .venv/bin/streamlit run src/dashboard/app.py
 ./infrastructure/scripts/verify_deployment.sh
 
 # ② ローカルでモデルを学習（Cloud Run Jobs はメモリ不足のためローカルで実行）
-.venv/bin/python -m src.models.train --tune --project-id <PROJECT_ID>
+.venv/bin/python -m src.models.train --model-type multi --tune --project-id <PROJECT_ID>
 # → 完了後、自動的に GCS へアップロードされる
-#    gs://{PROJECT_ID}-keiba-models/lgbm_ranker/{YYYYMMDD}/lgbm_ranker_{YYYYMMDD}.txt
+#    gs://{PROJECT_ID}-keiba-models/lgbm_ranker_multi/{YYYYMMDD}/lgbm_ranker_multi_{YYYYMMDD}.txt
 
 # ③ 翌日の race-day-predict（AM 8:00）が自動的に最新モデルで予測
 ```
@@ -371,7 +345,7 @@ Kelly基準による賭け金計算・期待回収率フィルタを適用し、
 
 ### `scripts/generate_evaluation_report.py` — モデル評価レポート生成
 
-学習済みモデルを読み込み、NDCG@3・Recall@3・AUC などの評価指標と特徴量重要度グラフを含む
+学習済みモデルを読み込み、NDCG@5・Recall@3・AUC などの評価指標と特徴量重要度グラフを含む
 Markdownレポートを `docs/model_evaluation_report.md` に出力します。
 
 ```bash
@@ -562,17 +536,14 @@ keiba_prediction/
 │   │       ├── __init__.py
 │   │       ├── feature_pipeline.py    # 特徴量パイプライン
 │   │       └── feature_query_raw.sql. # 特徴量集計用クエリ
-│   ├── models/                        # モデル学習・推論（ハイブリッドアンサンブル）
+│   ├── models/                        # モデル学習・推論（LGBMRankerMulti 単一モデル）
 │   │   ├── __init__.py
 │   │   ├── lgbm_base.py              # 基底クラス LGBMModelBase（共通 train/predict/save/load）
-│   │   ├── lgbm_ranker.py            # LGBMRanker — 二値ラベル LambdaRank（後方互換）
-│   │   ├── lgbm_ranker_multi.py      # LGBMRankerMulti — JRA賞金ウェイト多値 LambdaRank
-│   │   ├── lgbm_regression.py        # LGBMRegression — 着差Zスコア回帰
-│   │   ├── lgbm_classifier.py        # LGBMClassifier — 複勝確率 二値分類
-│   │   ├── ensemble.py               # ensemble_rank_scores() — multi+regression アンサンブル
-│   │   ├── train.py                  # 学習パイプライン（3モデル対応）
-│   │   ├── predict.py                # 推論パイプライン（3モデルアンサンブル対応）
-│   │   └── tuning.py                 # Optuna ハイパーパラメータチューニング（4モデル対応）
+│   │   ├── lgbm_ranker.py            # LGBMRanker — 二値ラベル LambdaRank（後方互換用）
+│   │   ├── lgbm_ranker_multi.py      # LGBMRankerMulti — JRA賞金ウェイト多値 LambdaRank（メイン）
+│   │   ├── train.py                  # 学習パイプライン（LGBMRankerMulti）
+│   │   ├── predict.py                # 推論パイプライン（LGBMRankerMulti）
+│   │   └── tuning.py                 # Optuna ハイパーパラメータチューニング（ranker_multi 対応）
 │   ├── backtest/                      # バックテストシミュレーター
 │   │   ├── __init__.py
 │   │   ├── simulator.py              # Kelly基準・BacktestSimulatorクラス
@@ -681,27 +652,19 @@ keiba_prediction/
 
 ### 4. `src/models/` - モデル学習・推論
 
-**目的**: ハイブリッドアンサンブル方式による競馬着順予測モデルの学習・推論パイプライン。
-
-**アンサンブル構成**:
-```
-ranker_multi（重み0.7） + regression（重み0.3） → final_rank_score
-classifier                                      → win_place_prob（複勝確率）
-```
+**目的**: LGBMRankerMulti（JRA賞金ウェイト多値ラベル LambdaRank）単一モデルによる競馬着順予測の学習・推論パイプライン。
 
 **含まれるモジュール**:
 - `lgbm_base.py`: 全モデル共通の基底クラス（train/predict/save/load）
 - `lgbm_ranker_multi.py`: JRA賞金ウェイト多値ラベル LambdaRank（メインモデル）
-- `lgbm_regression.py`: 着差Zスコア回帰（アンサンブルのサブスコア）
-- `lgbm_classifier.py`: 複勝確率 二値分類（期待値計算用）
-- `ensemble.py`: `ensemble_rank_scores()` — multi + regression の正規化アンサンブル
-- `train.py`: 学習パイプライン（3モデル対応 · `--model-type` で切り替え）
-- `predict.py`: 推論パイプライン（3モデルアンサンブル · GCS URI 直接指定対応）
-- `tuning.py`: Optuna ベイズ最適化（ranker/ranker_multi/regression/classifier 対応）
+- `lgbm_ranker.py`: 二値ラベル LambdaRank（後方互換用）
+- `train.py`: 学習パイプライン（`--model-type multi` で LGBMRankerMulti を学習）
+- `predict.py`: 推論パイプライン（GCS URI 直接指定または最新モデル自動取得）
+- `tuning.py`: Optuna ベイズ最適化（ranker_multi 対応）
 
 **使用場面**:
-- 3モデルの学習・Optuna チューニング・GCS 保存
-- 本番推論（アンサンブルスコア + 複勝確率の生成）
+- LGBMRankerMulti の学習・Optuna チューニング・GCS 保存
+- 本番推論（予測スコア・複勝確率の生成）
 - 過去日付を指定した手動推論・バックテスト用推論
 
 詳細は [src/models/README.md](./src/models/README.md) を参照してください。
@@ -760,11 +723,11 @@ docker build --platform linux/amd64 -f Dockerfile.dashboard -t dashboard-service
 
 **投資ロジック（Issue #139 改修後）**:
 - **基本馬券**: 複勝・ワイド・三連複をベースに期待回収率フィルタで選定
-- **パターンA（突出型）**: `top1_prob - top2_prob > p1` の場合、単勝・馬連を追加購入
+- **パターンA（突出型）**: 馬連を追加購入
 - 賭け金配分: **オッズ逆数比率**方式（1レース合計 = `budget_per_race` 固定 3000円）
 - コンボオッズ参照: `predictions.daily_odds_combo` → `raw.combo_odds` → `raw.payouts` の順にフォールバック
-- パラメータ管理: `config/strategy_config.yaml`（`run_strategy_optimization.py` でグリッドサーチ100通り最適化: p1 × threshold × r の3次元探索）
-- **`min_prob_threshold`**: 軸馬の最低複勝率（これ未満は複勝単体買いの軸馬から除外）
+- パラメータ管理: `config/strategy_config.yaml`（`run_strategy_optimization.py` で最適化: threshold × top_n × r の探索）
+- **`min_prob_threshold`**: 軸馬の最低複勝率（これ未満は全馬券種の候補馬から除外）
 - **`prob_weight_r`**: 馬選定スコア係数（スコア = `odds × prob^r`。r>1 で高確率馬を優先）
 
 ---
