@@ -396,6 +396,33 @@ class TestStrategyOptimizerFilterByGoals:
         rates = [r.recovery_rate for r in filtered]
         assert rates == sorted(rates, reverse=True)
 
+    def test_min_total_bets_excludes_low_volume_results(self):
+        """min_total_bets を指定すると賭け数が下限未満の結果を除外する（少数サンプルのまぐれ解対策）"""
+        optimizer = StrategyOptimizer(_make_predictions_df(), None, combo_odds_df=None)
+        results = [
+            # 回収率・DDは合格だが賭け数が少ない（まぐれ解）
+            OptimizationResult(
+                params={"expected_return_threshold": 2.5}, recovery_rate=300.0, hit_rate=80.0,
+                max_drawdown=1.0, sharpe_ratio=2.0, total_bets=20,
+            ),
+            # 回収率・DD・賭け数すべて合格
+            OptimizationResult(
+                params={"expected_return_threshold": 1.8}, recovery_rate=150.0, hit_rate=12.0,
+                max_drawdown=22.0, sharpe_ratio=1.5, total_bets=700,
+            ),
+        ]
+        filtered = optimizer.filter_by_goals(results, min_total_bets=600)
+        assert len(filtered) == 1
+        assert filtered[0].total_bets == 700
+        assert all(r.total_bets >= 600 for r in filtered)
+
+    def test_min_total_bets_defaults_to_no_constraint(self):
+        """min_total_bets 未指定時（デフォルト0）は賭け数で除外しない（後方互換）"""
+        optimizer = StrategyOptimizer(_make_predictions_df(), None, combo_odds_df=None)
+        filtered = optimizer.filter_by_goals(self._make_results())
+        # 回収率≥100かつDD≤30の合格解（105.0/DD25・103.0/DD28）が賭け数に関わらず残る
+        assert len(filtered) == 2
+
 
 # ---------------------------------------------------------------------------
 # pattern_breakdown のテスト（Issue #260: 統一型）

@@ -136,19 +136,22 @@ JRDB → GCS → BigQuery → features.training_data の流れでデータを取
 
 ### 5.1 LightGBM ランク学習 ✅ 実装済み
 
-#### 5.1.1 モデル概要
-- **アルゴリズム**: LightGBM LambdaRank
+#### 5.1.1 モデル概要（現行: LGBMRankerMulti 単一構成）
+- **アルゴリズム**: LightGBM LambdaRank（**多値ラベル**）
 - **目的関数**: `lambdarank`
-- **評価指標**: `ndcg@3`, `auc`
+- **評価指標**: `ndcg@5`
 - **グループ単位**: レースID
-- **ラベル形式**: 二値ラベル（3着以内=1, それ以下=0）
+- **ラベル形式**: **JRA賞金ウェイトによる多値ラベル**（着順別に重み付け。`jra_prize_weights` で 1着=120, 2着=90, ... と段階設定）
 
-**重要な設計変更（Issue #85）:**
-**二値ラベル（3着以内=1, それ以外=0）**を採用。これにより、複勝券予測に特化したモデルとなり、評価にAUC指標を追加しています。
+**重要な設計変更:**
+旧構成（Issue #85 の二値ラベル `LGBMRanker`）から **`LGBMRankerMulti`（多値ラベル LambdaRank）単一構成** に移行済み。
+GCSモデルは `lgbm_ranker_multi/` プレフィックス配下に保存される（旧 `lgbm_ranker/` は不使用）。
+- 本番GCSパス: `gs://{PROJECT_ID}-keiba-models/lgbm_ranker_multi/{YYYYMMDD}/lgbm_ranker_multi_{YYYYMMDD}.txt`
 
 #### 5.1.2 実装済みの内容
-- `src/models/lgbm_ranker.py`: モデルクラス（学習・予測・保存・読み込み）
-- `src/models/train.py`: 学習パイプライン（時系列分割、評価、GCS保存）
+- `src/models/lgbm_ranker_multi.py`: **現行モデルクラス** `LGBMRankerMulti`（学習・予測・保存・読み込み）
+- `src/models/lgbm_ranker.py`: 旧モデルクラス `LGBMRanker`（二値ラベル・後方互換のみ・本番未使用）
+- `src/models/train.py`: 学習パイプライン（時系列分割、評価、GCS保存。model_prefix=`lgbm_ranker_multi`）
 - `src/models/predict.py`: 推論パイプライン（今週末レース予測）
 - `src/models/tuning.py`: Optunaハイパーパラメータチューニング（Issue #86）
 - `config/model_config.yaml`: 設定ファイル（パラメータ、チューニング範囲）

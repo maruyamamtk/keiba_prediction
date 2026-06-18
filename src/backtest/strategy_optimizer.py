@@ -641,14 +641,17 @@ class StrategyOptimizer:
         results: list[OptimizationResult],
         min_recovery_rate: float = 100.0,
         max_max_drawdown: float = 30.0,
+        min_total_bets: int = 0,
     ) -> list[OptimizationResult]:
         """
-        回収率・最大ドローダウンの目標を達成するパラメータ設定のみを返す
+        回収率・最大ドローダウン・賭け数の目標を達成するパラメータ設定のみを返す
 
         Args:
             results: run_grid_search の戻り値
             min_recovery_rate: 回収率の下限 (%) デフォルト: 100.0
             max_max_drawdown: 最大ドローダウンの上限 (%) デフォルト: 30.0
+            min_total_bets: 賭け数の下限。デフォルト: 0（制約なし）。
+                少数サンプルのまぐれ解を最終選定から除外するために使用する。
 
         Returns:
             条件を満たす OptimizationResult のリスト（回収率降順）
@@ -657,5 +660,6 @@ class StrategyOptimizer:
             r for r in results
             if r.recovery_rate >= min_recovery_rate
             and r.max_drawdown <= max_max_drawdown
+            and r.total_bets >= min_total_bets
         ]
         return sorted(filtered, key=lambda r: r.recovery_rate, reverse=True)
