@@ -695,3 +695,34 @@ class TestNormalizeWinPlaceProb:
         min_low = result_low.sort_values("pred_score")["win_place_prob"].iloc[0]
         min_high = result_high.sort_values("pred_score")["win_place_prob"].iloc[0]
         assert min_low < min_high
+
+    def test_scale_invariance(self):
+        """raw scoreスケール（分散）が変わっても複勝率が一定になること（z-score標準化の核心・Issue #397）"""
+        # 同一の順位・相対関係だがスケールが2倍異なる2レース
+        base = [2.0, 1.0, 0.5, 0.0, -0.5]
+        df_small = self._make_df({"R1": base})
+        df_large = self._make_df({"R1": [s * 3.0 for s in base]})
+        probs_small = (
+            normalize_win_place_prob(df_small)
+            .sort_values("pred_score", ascending=False)["win_place_prob"].values
+        )
+        probs_large = (
+            normalize_win_place_prob(df_large)
+            .sort_values("pred_score", ascending=False)["win_place_prob"].values
+        )
+        # z-score標準化により、スコアスケールに不変な複勝率が得られる
+        assert np.allclose(probs_small, probs_large, atol=1e-9)
+
+    def test_shifted_scores_invariant(self):
+        """スコアに定数を加算しても複勝率が一定になること（平均不変性）"""
+        df_a = self._make_df({"R1": [-4.4, -4.5, -4.6, -4.8, -5.7]})
+        df_b = self._make_df({"R1": [0.4, 0.3, 0.2, 0.0, -0.9]})  # +4.8 シフト
+        probs_a = (
+            normalize_win_place_prob(df_a)
+            .sort_values("pred_score", ascending=False)["win_place_prob"].values
+        )
+        probs_b = (
+            normalize_win_place_prob(df_b)
+            .sort_values("pred_score", ascending=False)["win_place_prob"].values
+        )
+        assert np.allclose(probs_a, probs_b, atol=1e-9)

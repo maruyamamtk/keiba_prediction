@@ -255,15 +255,22 @@ def _water_fill(p: np.ndarray, probs: np.ndarray) -> np.ndarray:
 def normalize_win_place_prob(
     df: pd.DataFrame, temperature: float = 1.0, n_places: int = 3
 ) -> pd.DataFrame:
-    """温度付きソフトマックス＋水充填でwin_place_probを計算する
+    """レース内z-score標準化＋温度付きソフトマックス＋水充填でwin_place_probを計算する
 
-    水充填アルゴリズム（_water_fill）により prob=1.0 クリップ問題は解消済みのため、
-    temperature=1.0 でスコア差をそのまま確率差に反映させる。
-    temperature > 1.0 は不要な均一化を起こし投資判断の優劣がつきにくくなる。
+    LambdaRank は順位の正しさ（AUC/NDCG）のみを最適化し、raw score の絶対スケール
+    （分散・キャリブレーション）は制御しない。そのため再学習でハイパーパラメータが
+    変わるたびにスコア分散が変動し、固定値の temperature が機能しなくなる（Issue #390）。
+
+    本実装ではソフトマックス前にレース内でスコアを z-score 標準化する。
+    z = (score - mean) / std とすることで softmax の実効温度が `std × temperature` に
+    依存しなくなり、モデルの raw score スケールに不変な複勝率が得られる。これにより
+    再学習でスケールが変わっても複勝率の分散が安定する（Issue #397）。
+
+    水充填アルゴリズム（_water_fill）により prob=1.0 クリップ問題は解消済み。
 
     Args:
         df: race_id と pred_score カラムを持つ DataFrame
-        temperature: ソフトマックス温度（大きいほど均一化、デフォルト1.0）
+        temperature: 標準化後スコアに対するソフトマックス温度（大きいほど均一化、デフォルト1.0）
         n_places: 複勝対象着順数（デフォルト3）
 
     Returns:
@@ -271,17 +278,24 @@ def normalize_win_place_prob(
     """
     df = df.copy()
 
-    def _tempered_water_fill(scores: pd.Series) -> pd.Series:
-        vals = scores.values
+    def _zscore_water_fill(scores: pd.Series) -> pd.Series:
+        vals = scores.values.astype(float)
         n = len(vals)
         k = float(min(n_places, n))
-        shifted = vals - vals.max()
-        exp_s = np.exp(shifted / temperature)
-        p = exp_s / exp_s.sum()
+        std = vals.std()  # 母標準偏差（ddof=0）
+        if std < 1e-12:
+            # 全馬同一スコア（std=0）→ 均等配分にフォールバック
+            p = np.full(n, 1.0 / n)
+        else:
+            # レース内 z-score 標準化（mean は softmax 正規化で相殺されるが明示する）
+            z = (vals - vals.mean()) / std
+            shifted = z - z.max()  # 数値安定化
+            exp_s = np.exp(shifted / temperature)
+            p = exp_s / exp_s.sum()
         return pd.Series(_water_fill(p, p * k), index=scores.index)
 
     df["win_place_prob"] = df.groupby("race_id")["pred_score"].transform(
-        _tempered_water_fill
+        _zscore_water_fill
     )
     return df
 
