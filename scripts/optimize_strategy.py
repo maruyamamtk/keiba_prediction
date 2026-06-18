@@ -106,6 +106,10 @@ def save_best_params_to_yaml(
     config["max_wide_odds"] = best.params.get("max_wide_odds", None)
     if "temperature" in best.params and best.params["temperature"] is not None:
         config["temperature"] = best.params["temperature"]
+    else:
+        # temperature を探索しなかった場合（--no-temperature）は古い値を残さず削除する。
+        # 本番予測パス（predict.py）は temperature を適用しないため、保存しても無効。
+        config.pop("temperature", None)
     # 廃止済みパラメータを削除（存在する場合）
     for key in ["p1", "top_n_dominant", "top_n_standard", "prob_weight_r_dominant",
                 "prob_weight_r_standard", "threshold_dominant", "threshold_standard"]:
@@ -194,6 +198,12 @@ def main() -> None:
     )
     parser.add_argument("--output-csv", help="全試行結果のCSV保存先")
     parser.add_argument("--top-n", type=int, default=10, help="上位N件の結果を表示")
+    parser.add_argument(
+        "--no-temperature",
+        action="store_true",
+        help="temperature探索を無効化し本番と同じ temp=1.0 で評価する（pred_scoreを除外）。"
+             "本番予測パスは temperature を適用しないため、本番一致の最適化にはこのフラグを推奨",
+    )
     args = parser.parse_args()
 
     if not args.project_id:
@@ -267,6 +277,10 @@ def main() -> None:
         float(_strategy_cfg.get("budget_per_race", 3000.0))
     logger.info(f"budget_per_race={budget_per_race}")
 
+    if args.no_temperature and "pred_score" in predictions_df.columns:
+        predictions_df = predictions_df.drop(columns=["pred_score"])
+        logger.info("--no-temperature: pred_score を除外し temperature 探索を無効化（本番一致の temp=1.0 で評価）")
+
     has_pred_score = "pred_score" in predictions_df.columns
     logger.info(f"pred_scoreカラム: {'あり（temperature探索有効）' if has_pred_score else 'なし（temperature探索なし）'}")
 
@@ -326,13 +340,29 @@ def main() -> None:
         results,
         min_recovery_rate=args.min_recovery_rate,
         max_max_drawdown=args.max_drawdown,
+        min_total_bets=args.min_total_bets,
     )
     if valid_results:
         best = optimizer.best_params(valid_results, metric=args.metric)
-        logger.info(f"\n制約を満たす試行数: {len(valid_results)}")
+        logger.info(
+            f"\n制約を満たす試行数: {len(valid_results)} "
+            f"(回収率>={args.min_recovery_rate}%, DD<={args.max_drawdown}%, 賭け数>={args.min_total_bets})"
+        )
     else:
-        logger.warning("制約を満たすパラメータが見つかりません。全試行から最良を選定します。")
-        best = optimizer.best_params(results, metric=args.metric)
+        logger.warning(
+            "制約（賭け数下限含む）を満たすパラメータが見つかりません。"
+            "最終選定でも賭け数下限を強制し、これを満たす中での最良を再探索します。"
+        )
+        # 賭け数下限のみは必ず守り、回収率・DDを緩めて最良を選ぶ
+        bets_ok = [r for r in results if r.total_bets >= args.min_total_bets]
+        if bets_ok:
+            best = optimizer.best_params(bets_ok, metric=args.metric)
+        else:
+            logger.warning(
+                f"賭け数>={args.min_total_bets} を満たす試行が皆無です。"
+                "全試行から最良を選定します（下限未達のため要再最適化）。"
+            )
+            best = optimizer.best_params(results, metric=args.metric)
 
     save_best_params_to_yaml(best, start_date, end_date, args.metric, args.n_trials)
 
