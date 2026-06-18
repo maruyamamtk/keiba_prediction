@@ -9,7 +9,9 @@
   - prob_weight_r: 選定スコアの確率ウェイト係数
   - min_prob_threshold: 最低複勝率
   - max_wide_odds: ワイドオッズ上限
-  - temperature: win_place_prob ソフトマックス温度（Optuna探索時）
+
+注: temperature（win_place_prob ソフトマックス温度）は本番予測パス
+（predict.py）で適用されないため最適化対象から除外している（Issue #399）。
 """
 
 
@@ -153,7 +155,6 @@ class StrategyOptimizer:
         prob_weight_r: float = 1.0,
         top_n: int = 5,
         max_wide_odds: float | None = None,
-        temperature: float | None = None,
         # 後方互換性のための旧パラメータ（無視される）
         p1: float | None = None,
         prob_weight_r_dominant: float | None = None,
@@ -171,24 +172,16 @@ class StrategyOptimizer:
             prob_weight_r: 選定スコアの確率ウェイト係数
             top_n: 候補馬数
             max_wide_odds: ワイド購入の上限オッズ（None で無制限）
-            temperature: ソフトマックス温度（None の場合は win_place_prob を再計算しない）
-                pred_score カラムが存在する場合のみ有効
 
         Returns:
             (history_df, pattern_stats) のタプル:
               - history_df: 賭け記録 DataFrame
               - pattern_stats: 互換性のための空辞書
         """
-        # temperature が指定され pred_score が存在する場合は win_place_prob を再計算
-        if temperature is not None and "pred_score" in self.predictions_df.columns:
-            from src.models.predict import normalize_win_place_prob
-            df = normalize_win_place_prob(self.predictions_df, temperature=temperature)
-            df = df.sort_values(["race_date", "race_id", "horse_number"]).copy()
-        else:
-            # 日付・レースID でソート
-            df = self.predictions_df.sort_values(
-                ["race_date", "race_id", "horse_number"]
-            ).copy()
+        # 日付・レースID でソート
+        df = self.predictions_df.sort_values(
+            ["race_date", "race_id", "horse_number"]
+        ).copy()
 
         capital = float(self.initial_capital)
         records: list[dict] = []
@@ -526,7 +519,8 @@ class StrategyOptimizer:
           - prob_weight_r: [0.3, 2.0]（連続）
           - min_prob_threshold: [0.0, 0.3]（連続）
           - max_wide_odds: [5.0, 50.0] または None（条件付き連続）
-          - temperature: [0.5, 3.0]（連続、pred_score カラムが存在する場合のみ）
+
+        temperature は本番予測パスで適用されないため探索しない（Issue #399）。
 
         制約違反（回収率 < min_recovery_rate、最大DD > max_max_drawdown、
         賭け数 < min_total_bets）の場合はペナルティスコア（0.0）を返す。
@@ -554,7 +548,6 @@ class StrategyOptimizer:
                 f"metric='{metric}' は無効です。有効値: {_valid_metrics}"
             )
 
-        has_pred_score = "pred_score" in self.predictions_df.columns
         results: list[OptimizationResult] = []
 
         def objective(trial: optuna.Trial) -> float:
@@ -573,11 +566,6 @@ class StrategyOptimizer:
                 )
             else:
                 max_wide_odds = None
-            temperature: float | None = (
-                trial.suggest_float("temperature", 0.5, 3.0)
-                if has_pred_score
-                else None
-            )
 
             history_df, _ = self._run_simulation(
                 expected_return_threshold=expected_return_threshold,
@@ -585,7 +573,6 @@ class StrategyOptimizer:
                 prob_weight_r=prob_weight_r,
                 min_prob_threshold=min_prob_threshold,
                 max_wide_odds=max_wide_odds,
-                temperature=temperature,
             )
             metrics = compute_metrics(history_df, self.initial_capital)
 
@@ -600,8 +587,6 @@ class StrategyOptimizer:
                 "min_prob_threshold": min_prob_threshold,
                 "max_wide_odds": max_wide_odds,
             }
-            if has_pred_score:
-                params["temperature"] = temperature
 
             results.append(
                 OptimizationResult(

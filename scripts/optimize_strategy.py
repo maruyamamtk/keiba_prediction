@@ -3,7 +3,9 @@
 投資戦略パラメータ最適化スクリプト（Optunaベイズ最適化）
 
 グリッドサーチの代わりにOptunaベイズ最適化を使い、より効率的に最適パラメータを探索する。
-最終的に最良パラメータを config/strategy_config.yaml に書き出す（temperature を含む）。
+最終的に最良パラメータを config/strategy_config.yaml に書き出す。
+
+注: temperature は本番予測パス（predict.py）で適用されないため最適化対象外（Issue #399）。
 
 OOS（アウトオブサンプル）評価の原則:
   --start-date / --end-date にはモデルの学習期間・検証期間に含まれない日付を指定すること。
@@ -95,7 +97,7 @@ def save_best_params_to_yaml(
     metric: str,
     n_trials: int,
 ) -> None:
-    """最良パラメータを config/strategy_config.yaml に上書き保存する（temperature を含む）"""
+    """最良パラメータを config/strategy_config.yaml に上書き保存する"""
     with open(STRATEGY_CONFIG_PATH) as f:
         config = yaml.safe_load(f)
 
@@ -104,14 +106,9 @@ def save_best_params_to_yaml(
     config["prob_weight_r"] = best.params["prob_weight_r"]
     config["min_prob_threshold"] = best.params["min_prob_threshold"]
     config["max_wide_odds"] = best.params.get("max_wide_odds", None)
-    if "temperature" in best.params and best.params["temperature"] is not None:
-        config["temperature"] = best.params["temperature"]
-    else:
-        # temperature を探索しなかった場合（--no-temperature）は古い値を残さず削除する。
-        # 本番予測パス（predict.py）は temperature を適用しないため、保存しても無効。
-        config.pop("temperature", None)
-    # 廃止済みパラメータを削除（存在する場合）
-    for key in ["p1", "top_n_dominant", "top_n_standard", "prob_weight_r_dominant",
+    # 廃止済みパラメータを削除（存在する場合）。temperature は本番予測パスで未適用のため
+    # 最適化対象外であり、過去の最適化で残った値があれば削除する（Issue #399）。
+    for key in ["temperature", "p1", "top_n_dominant", "top_n_standard", "prob_weight_r_dominant",
                 "prob_weight_r_standard", "threshold_dominant", "threshold_standard"]:
         config.pop(key, None)
     config["optimization"] = {
@@ -136,8 +133,7 @@ def save_best_params_to_yaml(
         f"top_n={best.params['top_n']}, "
         f"prob_weight_r={best.params['prob_weight_r']:.3f}, "
         f"min_prob_threshold={best.params['min_prob_threshold']:.3f}, "
-        f"max_wide_odds={best.params.get('max_wide_odds')}, "
-        f"temperature={best.params.get('temperature')}"
+        f"max_wide_odds={best.params.get('max_wide_odds')}"
     )
     logger.info(
         f"  回収率={best.recovery_rate:.2f}%, 的中率={best.hit_rate:.2f}%, "
@@ -186,8 +182,9 @@ def main() -> None:
     parser.add_argument(
         "--min-total-bets",
         type=int,
-        default=30,
-        help="制約: 最低賭け数（デフォルト: 30）",
+        default=600,
+        help="制約: 最低賭け数（デフォルト: 600）。約6ヶ月のバックテスト期間では600を標準とし、"
+             "少数サンプルのまぐれ高回収率解を排除する（Issue #399）。",
     )
     parser.add_argument("--initial-capital", type=float, default=100_000.0)
     parser.add_argument(
@@ -198,12 +195,6 @@ def main() -> None:
     )
     parser.add_argument("--output-csv", help="全試行結果のCSV保存先")
     parser.add_argument("--top-n", type=int, default=10, help="上位N件の結果を表示")
-    parser.add_argument(
-        "--no-temperature",
-        action="store_true",
-        help="temperature探索を無効化し本番と同じ temp=1.0 で評価する（pred_scoreを除外）。"
-             "本番予測パスは temperature を適用しないため、本番一致の最適化にはこのフラグを推奨",
-    )
     args = parser.parse_args()
 
     if not args.project_id:
@@ -277,13 +268,6 @@ def main() -> None:
         float(_strategy_cfg.get("budget_per_race", 3000.0))
     logger.info(f"budget_per_race={budget_per_race}")
 
-    if args.no_temperature and "pred_score" in predictions_df.columns:
-        predictions_df = predictions_df.drop(columns=["pred_score"])
-        logger.info("--no-temperature: pred_score を除外し temperature 探索を無効化（本番一致の temp=1.0 で評価）")
-
-    has_pred_score = "pred_score" in predictions_df.columns
-    logger.info(f"pred_scoreカラム: {'あり（temperature探索有効）' if has_pred_score else 'なし（temperature探索なし）'}")
-
     optimizer = StrategyOptimizer(
         predictions_df=predictions_df,
         payouts_df=payouts_df,
@@ -311,11 +295,10 @@ def main() -> None:
     )
     logger.info(f"\n=== 上位{args.top_n}パラメータ（{args.metric} 順）===")
     for i, res in enumerate(sorted_results[: args.top_n]):
-        temp_str = f" temp={res.params.get('temperature', 'N/A'):.2f}" if "temperature" in res.params else ""
         logger.info(
             f"  #{i + 1}: th={res.params.get('expected_return_threshold', '?'):.3f} "
             f"top_n={res.params.get('top_n', '?')} "
-            f"r={res.params.get('prob_weight_r', 1.0):.3f}{temp_str} "
+            f"r={res.params.get('prob_weight_r', 1.0):.3f} "
             f"→ 回収率={res.recovery_rate:.1f}% 的中率={res.hit_rate:.1f}% "
             f"ドローダウン={res.max_drawdown:.1f}% 賭け数={res.total_bets}"
         )

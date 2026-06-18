@@ -507,28 +507,19 @@ class TestRunOptunaSearch:
             assert "min_prob_threshold" in r.params
             assert "max_wide_odds" in r.params
 
-    def test_run_optuna_search_temperature_explored_when_pred_score_exists(self):
-        """pred_score カラムがある場合は temperature が探索される"""
+    def test_run_optuna_search_never_explores_temperature(self):
+        """temperature は本番予測パスで未適用のため最適化対象外（Issue #399）。
+
+        pred_score カラムの有無にかかわらず temperature を探索しないこと。
+        """
         import pytest
         optuna = pytest.importorskip("optuna")
         df = _make_predictions_df(n_races=3, n_horses=5, win_place_prob=0.5, odds=3.0)
-        # pred_score を付与
+        # pred_score が存在しても temperature は探索されない
         df["pred_score"] = df["win_place_prob"] * 10.0
         optimizer = StrategyOptimizer(df, None, combo_odds_df=None)
         results = optimizer.run_optuna_search(n_trials=3, timeout=30)
-        for r in results:
-            assert "temperature" in r.params
-            assert r.params["temperature"] is not None
-
-    def test_run_optuna_search_no_temperature_when_no_pred_score(self):
-        """pred_score カラムがない場合は temperature が探索されない"""
-        import pytest
-        optuna = pytest.importorskip("optuna")
-        df = _make_predictions_df(n_races=3, n_horses=5, win_place_prob=0.5, odds=3.0)
-        # pred_score なし
-        assert "pred_score" not in df.columns
-        optimizer = StrategyOptimizer(df, None, combo_odds_df=None)
-        results = optimizer.run_optuna_search(n_trials=3, timeout=30)
+        assert results
         for r in results:
             assert "temperature" not in r.params
 
@@ -568,19 +559,6 @@ class TestRunOptunaSearch:
                 r_range=[1.0],
             )
         assert any(issubclass(warning.category, DeprecationWarning) for warning in w)
-
-    def test_run_simulation_with_temperature_uses_normalized_probs(self):
-        """temperature 指定時に win_place_prob が再計算される"""
-        df = _make_predictions_df(n_races=2, n_horses=5, win_place_prob=0.5, odds=3.0)
-        # pred_score を付与
-        df["pred_score"] = [float(i % 5 + 1) for i in range(len(df))]
-        optimizer = StrategyOptimizer(df, None, combo_odds_df=None)
-        # temperature=1.0（再計算あり）で実行できること
-        history_df, _ = optimizer._run_simulation(
-            expected_return_threshold=1.0,
-            temperature=1.0,
-        )
-        assert isinstance(history_df, pd.DataFrame)
 
     def test_run_optuna_search_raises_on_invalid_metric(self):
         """無効な metric 名を渡すと ValueError が送出される"""
