@@ -13,6 +13,8 @@ import pytest
 import yaml
 
 from src.models.train import (
+    CONFIG_PATH,
+    build_feature_matrix,
     compute_week_boundaries,
     evaluate_predictions,
     fetch_training_data_from_sql,
@@ -457,5 +459,47 @@ class TestTrainPipeline:
             date_str = datetime.date(2026, 2, 13).strftime("%Y%m%d")
             params_path = Path(tmpdir) / f"best_params_ranker_multi_{date_str}.json"
             assert params_path.exists()
+
+
+class TestFinishTimeLeakExcluded:
+    """finish_time（当該レース走破タイム）の学習リーク除外テスト（Issue #402）
+
+    finish_time はレース後にのみ確定する情報であり、説明変数に含めると
+    リーク（学習時に効くが推論時は全馬NaN）となる。本番設定および
+    build_feature_matrix の両方で説明変数から除外されることを保証する。
+    """
+
+    def test_finish_time_in_production_exclude_columns(self):
+        """本番 model_config.yaml の exclude_columns に finish_time が含まれる"""
+        config = load_config(str(CONFIG_PATH))
+        exclude = config["data"]["exclude_columns"]
+        assert "finish_time" in exclude, (
+            "finish_time が exclude_columns に無い。リーク特徴量として混入する（Issue #402）"
+        )
+        # ラベルも引き続き除外されていること
+        assert "finish_position" in exclude
+
+    def test_build_feature_matrix_drops_finish_time(self):
+        """build_feature_matrix が finish_time を特徴量行列から除外する"""
+        df = pd.DataFrame(
+            {
+                "race_id": ["r1", "r1"],
+                "horse_number": [1, 2],
+                "finish_position": [1, 2],
+                "finish_time": [70.5, 71.2],
+                "idm": [50.0, 48.0],
+                "course_type": ["turf", "turf"],
+            }
+        )
+        exclude_columns = ["race_id", "finish_position", "finish_time"]
+        categorical_columns = ["course_type"]
+
+        X = build_feature_matrix(df, exclude_columns, categorical_columns)
+
+        assert "finish_time" not in X.columns
+        assert "finish_position" not in X.columns
+        # 正当な特徴量は残る
+        assert "idm" in X.columns
+        assert "course_type" in X.columns
 
 

@@ -48,6 +48,9 @@ data:
     - "race_date"
     - "target_place"
     - "finish_position"
+    # finish_time は当該レースの走破タイム（レース後にのみ確定するリーク特徴量）。
+    # train.py が回帰モデル用に race_results から JOIN するが、ランカーの説明変数からは除外する（Issue #402）。
+    - "finish_time"
     - "venue_code"
     - "jockey_id"
     - "trainer_id"

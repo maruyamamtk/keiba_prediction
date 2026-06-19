@@ -94,7 +94,9 @@ def fetch_training_data(
     """
     client = bigquery.Client(project=project_id)
     # training_data に finish_position 列が存在しない場合を考慮し、
-    # raw.race_results から finish_position を直接 JOIN する
+    # raw.race_results から finish_position を直接 JOIN する。
+    # finish_time（当該レース走破タイム）は回帰モデルの目的変数用に取得するが、
+    # レース後にのみ確定するリーク特徴量のため exclude_columns で説明変数から除外する（Issue #402）。
     query = f"""
     SELECT
         t.*,
