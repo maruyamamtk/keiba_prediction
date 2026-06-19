@@ -211,11 +211,16 @@ fi
 log_info ""
 log_info "6. 日次予測エンドポイント (POST /api/v1/predict/daily) のスキーマ確認..."
 
+# 注意: PredictDailyRequest は全フィールド Optional のため、空ボディ {} を送ると
+# バリデーションを通過して実予測（未来日は full SQL フォールバックで約70〜90秒）が
+# 走り、--max-time でタイムアウトして 000 になる（誤検知）。
+# ここではエンドポイント存在＋スキーマ検証のみを確認したいので、bool フィールドに
+# 不正な型を送って 422 を即座に返させる（実予測は起動しない）。
 HTTP_CODE=$(curl -s -o "${TMPDIR}/predict_daily_schema.json" -w "%{http_code}" \
     -X POST \
     -H "Authorization: Bearer ${TOKEN}" \
     -H "Content-Type: application/json" \
-    -d '{}' \
+    -d '{"save_to_bq": [1, 2, 3]}' \
     --max-time 30 \
     "${SERVICE_URL}/api/v1/predict/daily" 2>/dev/null) || HTTP_CODE="000"
 
@@ -226,7 +231,9 @@ elif [ "${HTTP_CODE}" = "200" ] || [ "${HTTP_CODE}" = "500" ]; then
     log_success "POST /api/v1/predict/daily -> ${HTTP_CODE} (エンドポイント到達確認)"
     PASSED=$((PASSED + 1))
 else
-    log_fail "POST /api/v1/predict/daily -> ${HTTP_CODE} (エンドポイントが見つかりません)"
+    log_fail "POST /api/v1/predict/daily -> ${HTTP_CODE} (到達不可/タイムアウト)"
+    log_info "    ※ 000 の場合でも Cloud Run ログで 200 完了していればデプロイは正常（誤検知）:"
+    log_info "      gcloud run services logs read keiba-pipeline --region=asia-northeast1 --limit=30 | grep predict/daily"
     cat "${TMPDIR}/predict_daily_schema.json" 2>/dev/null
     FAILED=$((FAILED + 1))
 fi
