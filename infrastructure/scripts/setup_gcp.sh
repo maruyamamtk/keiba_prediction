@@ -199,7 +199,60 @@ else
 fi
 
 # ========================================
-# 6. 設定の出力
+# 6. Cloud Storageバケットの作成
+# ========================================
+log_info "Cloud Storageバケットを作成しています..."
+
+# ${GCP_PROJECT_ID}-<bucket> 形式で作成（コードのデフォルト名と一致）
+GCS_BUCKETS=(
+    "${GCS_BUCKET_RAW:-keiba-raw-data}"
+    "${GCS_BUCKET_MODELS:-keiba-models}"
+    "${GCS_BUCKET_PREDICTIONS:-keiba-predictions}"
+)
+
+for bucket in "${GCS_BUCKETS[@]}"; do
+    full_bucket_name="${GCP_PROJECT_ID}-${bucket}"
+
+    if gsutil ls -b "gs://${full_bucket_name}" >/dev/null 2>&1; then
+        log_info "  バケット gs://${full_bucket_name} は既に存在します"
+    else
+        log_info "  バケットを作成中: gs://${full_bucket_name}"
+        gsutil mb -p "${GCP_PROJECT_ID}" -l "${GCP_REGION}" "gs://${full_bucket_name}"
+
+        # モデル・予測結果はバージョニングを有効化
+        if [[ "${bucket}" == *"models"* ]] || [[ "${bucket}" == *"predictions"* ]]; then
+            log_info "  バージョニングを有効化: gs://${full_bucket_name}"
+            gsutil versioning set on "gs://${full_bucket_name}"
+        fi
+
+        # rawデータは90日でライフサイクル削除
+        if [[ "${bucket}" == *"raw-data"* ]]; then
+            log_info "  ライフサイクルポリシーを設定（90日）: gs://${full_bucket_name}"
+            lifecycle_file="$(mktemp)"
+            cat > "${lifecycle_file}" <<EOF
+{
+  "lifecycle": {
+    "rule": [
+      {
+        "action": {"type": "Delete"},
+        "condition": {"age": 90}
+      }
+    ]
+  }
+}
+EOF
+            gsutil lifecycle set "${lifecycle_file}" "gs://${full_bucket_name}"
+            rm -f "${lifecycle_file}"
+        fi
+
+        log_info "  バケットを作成しました: gs://${full_bucket_name}"
+    fi
+done
+
+log_info "すべてのバケットの作成が完了しました"
+
+# ========================================
+# 7. 設定の出力
 # ========================================
 log_info "=========================================="
 log_info "セットアップが完了しました"
@@ -211,6 +264,11 @@ log_info "  メール: ${PIPELINE_SA_EMAIL}"
 log_info ""
 log_info "Artifact Registry:"
 log_info "  リポジトリ: ${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${REPO_NAME}"
+log_info ""
+log_info "Cloud Storageバケット:"
+for bucket in "${GCS_BUCKETS[@]}"; do
+    log_info "  - gs://${GCP_PROJECT_ID}-${bucket}"
+done
 log_info ""
 log_info "次のステップ:"
 log_info "  1. ./infrastructure/scripts/verify_setup.sh で設定を確認"

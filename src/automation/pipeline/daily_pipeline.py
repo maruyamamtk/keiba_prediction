@@ -313,7 +313,7 @@ class DailyPipeline:
             if missing_tables:
                 logger.error(
                     f"BQテーブルが未作成のため、以下のデータはロードされません: {missing_tables}。"
-                    f"scripts/setup_bigquery.sh を実行してテーブルを作成してください。"
+                    f"src/manual/create_tables.py を実行してテーブルを作成してください。"
                 )
 
             # GCS上のサポート対象データタイプのファイルを一括取得

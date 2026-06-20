@@ -300,7 +300,7 @@ def main():
         )
     else:
         print("\n⚠️  load_historyテーブルが存在しません。")
-        print("  scripts/setup_bigquery.sh を実行してテーブルを作成してください。")
+        print("  src/manual/create_tables.py を実行してテーブルを作成してください。")
 
     print("\n" + "=" * 60)
     print("診断完了")

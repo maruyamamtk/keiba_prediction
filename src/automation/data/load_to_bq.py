@@ -416,7 +416,7 @@ class BigQueryLoader:
             except NotFound:
                 raise GoogleCloudError(
                     f"テーブルが存在しません: {table_ref}。"
-                    f"scripts/setup_bigquery.sh を実行してテーブルを作成してください。"
+                    f"src/manual/create_tables.py を実行してテーブルを作成してください。"
                 )
             schema = target_table.schema
 
@@ -800,14 +800,14 @@ class BigQueryLoader:
                 results[table_name] = False
                 logger.warning(
                     f"テーブルが存在しません: {table_ref}。"
-                    f"scripts/setup_bigquery.sh を実行してテーブルを作成してください。"
+                    f"src/manual/create_tables.py を実行してテーブルを作成してください。"
                 )
 
         missing = [t for t, exists in results.items() if not exists]
         if missing:
             logger.error(
                 f"以下のテーブルが未作成です: {missing}。"
-                f"scripts/setup_bigquery.sh を実行してください。"
+                f"src/manual/create_tables.py を実行してください。"
             )
         else:
             logger.info("全テーブルの存在を確認しました")
