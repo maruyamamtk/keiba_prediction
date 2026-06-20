@@ -50,4 +50,3 @@ notebooks/
 *.json
 !config/*.json
 infrastructure/
-cloud_functions/
