@@ -81,7 +81,7 @@ gcloud billing projects link $PROJECT_ID --billing-account=BILLING_ACCOUNT_ID
 自動セットアップスクリプトを実行します：
 
 ```bash
-./scripts/setup_gcp.sh
+./infrastructure/scripts/setup_gcp.sh
 ```
 
 このスクリプトは以下の処理を実行します：
@@ -90,17 +90,18 @@ gcloud billing projects link $PROJECT_ID --billing-account=BILLING_ACCOUNT_ID
 2. ✅ 必要なAPIの有効化
    - Cloud Storage API
    - BigQuery API
-   - Cloud Functions API
    - Cloud Run API
    - Cloud Scheduler API
    - Cloud Build API
-   - Cloud Logging API
-   - Cloud Monitoring API
-3. ✅ サービスアカウントの作成と権限設定
+   - Artifact Registry API
+   - Secret Manager API
+   - Cloud Logging / Monitoring API
+3. ✅ Artifact Registryリポジトリの作成
+4. ✅ サービスアカウントの作成と権限設定
    - ⚠️ 開発環境用の管理者権限を付与（本番環境では最小権限に変更推奨）
-4. ✅ Cloud Storageバケットの作成
+5. ✅ Secret ManagerへのJRDB認証情報の登録
+6. ✅ Cloud Storageバケットの作成
    - `${PROJECT_ID}-keiba-raw-data`: JRDBダウンロード生データ（90日後自動削除）
-   - `${PROJECT_ID}-keiba-processed-data`: 加工済みデータ
    - `${PROJECT_ID}-keiba-models`: 学習済みモデル（バージョニング有効）
    - `${PROJECT_ID}-keiba-predictions`: 予測結果（バージョニング有効）
 

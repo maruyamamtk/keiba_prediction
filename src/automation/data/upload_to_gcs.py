@@ -545,7 +545,7 @@ def main():
     # バケットの存在確認
     if not uploader.verify_bucket_exists():
         logger.error(f"バケット {bucket_name} が見つかりません。")
-        logger.error("scripts/setup_gcp.sh を実行してバケットを作成してください。")
+        logger.error("infrastructure/scripts/setup_gcp.sh を実行してバケットを作成してください。")
         sys.exit(1)
 
     # アップロード実行

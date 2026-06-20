@@ -25,31 +25,24 @@ cat .env | grep GCP_PROJECT_ID
 GCP_PROJECT_ID=your-actual-project-id
 ```
 
-### 2. セットアップスクリプトの実行
+### 2. テーブル作成スクリプトの実行
 
-自動セットアップスクリプトを実行します:
+データセットとテーブルを一括作成します（事前に `.venv` のセットアップと `pip install -r requirements.txt` を済ませてください）:
 
 ```bash
-./scripts/setup_bigquery.sh
+.venv/bin/python src/manual/create_tables.py
 ```
 
-このスクリプトは以下の処理を実行します:
+個別のテーブルのみ作成・再作成したい場合は、対応する `scripts/create_*_table.py` を実行します:
 
-1. **仮想環境の作成と有効化**
-   - 初回実行時に `venv` ディレクトリを作成
-   - 以降の実行では既存の仮想環境を使用
+```bash
+# 例: predictions.daily_predictions を作成
+.venv/bin/python scripts/create_predictions_table.py --project-id "$GCP_PROJECT_ID"
+```
 
-2. **Pythonパッケージのインストール**
-   - `pip`, `setuptools`, `wheel` を最新版にアップグレード
-   - `requirements.txt` に指定されたパッケージをインストール
-   - ⚠️ **注意**: LightGBMはmacOSビルド環境の問題のため `requirements.txt` から除外されています
-     - LightGBMが必要な場合は、後で以下のコマンドで個別にインストール:
-       ```bash
-       source venv/bin/activate
-       python -m pip install lightgbm
-       ```
+`src/manual/create_tables.py` は以下の処理を実行します:
 
-3. ✅ BigQueryデータセットの作成
+1. ✅ BigQueryデータセットの作成
    - `raw`: 生データテーブル
    - `features`: 特徴量テーブル
    - `predictions`: 予測結果テーブル
@@ -166,30 +159,21 @@ gcloud projects get-iam-policy $GCP_PROJECT_ID \
 テーブルが既に存在する場合、スクリプトはスキップします。テーブルを再作成したい場合は、まず削除してください:
 
 ```bash
-source venv/bin/activate
-
 # テーブルを削除
 bq rm -f -t $GCP_PROJECT_ID:raw.race_info
 
 # スクリプトを再実行
-./scripts/setup_bigquery.sh
+.venv/bin/python src/manual/create_tables.py
 ```
 
 ### エラー: "ModuleNotFoundError: No module named 'google.cloud'"
 
-Pythonパッケージがインストールされていません。スクリプトを再実行してください:
+Pythonパッケージがインストールされていません。仮想環境をセットアップしてください:
 
 ```bash
-./scripts/setup_bigquery.sh
-```
-
-または、仮想環境を手動でセットアップ:
-
-```bash
-python3 -m venv venv
-source venv/bin/activate
-python -m pip install --upgrade pip setuptools wheel
-python -m pip install -r requirements.txt
+python3 -m venv .venv
+.venv/bin/python -m pip install --upgrade pip setuptools wheel
+.venv/bin/python -m pip install -r requirements.txt
 ```
 
 ### エラー: "LightGBMのビルド失敗" (macOS)

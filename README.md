@@ -539,8 +539,6 @@ keiba_prediction/
 │   ├── run_strategy_optimization.py  # 投資パラメータ最適化スクリプト（手動実行）
 │   ├── scrape_historical_odds.py       # 過去レース一括オッズ取得（netkeibaスクレイプ）
 │   ├── test_ipat_e2e.py              # IPAT自動購入E2Eテストスクリプト（ローカル動作確認用）
-│   ├── setup_bigquery.sh
-│   ├── setup_gcp.sh
 │   ├── sync_to_gcs.sh
 │   └── validate_odds_consistency.py    # JRDBとnetkeibaオッズの整合性検証
 ├── tests/                             # テストコード
