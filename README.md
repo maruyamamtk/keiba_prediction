@@ -403,19 +403,6 @@ python3 scripts/diagnose_bq_load.py --show-errors
 
 ---
 
-### `scripts/reload_gcs_to_bq.py` — GCSから BigQuery へ再ロード
-
-GCS上の既存ファイルを指定データタイプでフィルタしてBigQueryに再ロードします。
-Cloud Functionはオブジェクト作成時にのみトリガーされるため、既存ファイルの手動ロードに使います。
-
-```bash
-python scripts/reload_gcs_to_bq.py --data-type SEC --prefix Sec/
-```
-
-詳細オプション: `python scripts/reload_gcs_to_bq.py --help`
-
----
-
 ### `scripts/create_predictions_table.py` — 予測テーブル作成
 
 `predictions` データセットと `daily_predictions` テーブルを BigQuery に作成します。
@@ -431,25 +418,6 @@ python scripts/create_predictions_table.py --project-id <PROJECT_ID>
 | オプション | デフォルト | 説明 |
 |-----------|-----------|------|
 | `--project-id` | 環境変数 | GCPプロジェクトID |
-
----
-
-### `scripts/alter_odds_horse_id_nullable.py` — oddsテーブルスキーマ修正
-
-`raw.odds` テーブルの `horse_id` カラムを `REQUIRED` から `NULLABLE` に変更します。
-OZ（基準オッズ）ファイルには `horse_id` が含まれないため、初回セットアップ時に一度だけ実行します。
-
-```bash
-python3 scripts/alter_odds_horse_id_nullable.py
-
-# プロジェクトIDを明示する場合
-python3 scripts/alter_odds_horse_id_nullable.py --project-id <PROJECT_ID>
-```
-
-| オプション | デフォルト | 説明 |
-|-----------|-----------|------|
-| `--project-id` | 環境変数 | GCPプロジェクトID |
-| `--dataset` | `raw` | 対象データセット名 |
 
 ---
 
@@ -560,14 +528,12 @@ keiba_prediction/
 │           ├── backtest.py           # バックテスト（累積損益推移グラフ・月次集計テーブル）
 │           └── model_info.py         # モデル情報（GCS最新モデルから特徴量重要度を可視化）
 ├── scripts/                           # ユーティリティスクリプト
-│   ├── add_start_time_to_race_info.py    # raw.race_infoにstart_timeカラム追加（Issue #214）
 │   ├── create_daily_odds_combo_table.py  # predictions.daily_odds_comboテーブル作成
 │   ├── create_daily_odds_table.py    # predictions.daily_oddsテーブル作成
 │   ├── create_predictions_table.py   # predictions.daily_predictionsテーブル作成
 │   ├── create_purchase_history_table.py  # predictions.purchase_historyテーブル作成（Issue #213）
 │   ├── create_raw_combo_odds_table.py  # raw.combo_oddsテーブル作成（Issue #140）
 │   ├── generate_features.py
-│   ├── reload_gcs_to_bq.py
 │   ├── run_backtest.py               # CLIバックテスト実行スクリプト
 │   ├── run_strategy.py               # 日次投資戦略策定スクリプト（手動確認用）
 │   ├── run_strategy_optimization.py  # 投資パラメータ最適化スクリプト（手動実行）
@@ -909,12 +875,6 @@ gcloud scheduler jobs run daily-data-pipeline --location=asia-northeast1
 
 ```bash
 python3 scripts/create_raw_combo_odds_table.py --project-id <PROJECT_ID>
-```
-
-`raw.race_info` への `start_time` カラム追加（Issue #214。初回のみ実行）:
-
-```bash
-python3 scripts/add_start_time_to_race_info.py --project-id <PROJECT_ID>
 ```
 
 ### featuresデータセット
