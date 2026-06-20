@@ -18,8 +18,8 @@ client = TestClient(app)
 # train_pipeline() が返すモック結果
 MOCK_TRAIN_RESULT = {
     "execution_date": "2026-04-07",
-    "model_path": "/tmp/lgbm_ranker_20260407.txt",
-    "gcs_uri": "gs://test-project-keiba-models/lgbm_ranker/20260407/lgbm_ranker_20260407.txt",
+    "model_path": "/tmp/lgbm_ranker_multi_20260407.txt",
+    "gcs_uri": "gs://test-project-keiba-models/lgbm_ranker_multi/20260407/lgbm_ranker_multi_20260407.txt",
     "metrics": {
         "ndcg@3": 0.72,
         "recall@3": 0.81,

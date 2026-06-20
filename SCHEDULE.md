@@ -55,7 +55,7 @@
 **概要**: GCSから最新の学習済みモデルを自動取得し、当日レースの着順予測スコアを計算してBigQueryとGCSに保存します。
 
 **処理フロー**:
-1. GCSバケット `{project}-keiba-models/lgbm_ranker/` から最新モデルを自動選択
+1. GCSバケット `{project}-keiba-models/lgbm_ranker_multi/` から最新モデルを自動選択
 2. `features.training_data` から当日レースデータを取得
 3. LightGBM LambdaRankで予測スコアを計算
 4. `predictions.daily_predictions` にUPSERT保存
@@ -129,7 +129,7 @@
 学習完了後、モデルは**自動的にGCSへアップロード**されます。
 
 ```
-保存先: gs://{PROJECT_ID}-keiba-models/lgbm_ranker/{YYYYMMDD}/lgbm_ranker_{YYYYMMDD}.txt
+保存先: gs://{PROJECT_ID}-keiba-models/lgbm_ranker_multi/{YYYYMMDD}/lgbm_ranker_multi_{YYYYMMDD}.txt
 ```
 
 翌日の `race-day-predict`（AM 8:00）が GCS から自動的に最新モデルを選択して予測に使います。
@@ -148,10 +148,10 @@
 
 ```bash
 # GCSに新モデルが保存されているか確認
-gcloud storage ls gs://<PROJECT_ID>-keiba-models/lgbm_ranker/
+gcloud storage ls gs://<PROJECT_ID>-keiba-models/lgbm_ranker_multi/
 
 # 最新モデルの詳細
-gcloud storage ls gs://<PROJECT_ID>-keiba-models/lgbm_ranker/<YYYYMMDD>/
+gcloud storage ls gs://<PROJECT_ID>-keiba-models/lgbm_ranker_multi/<YYYYMMDD>/
 ```
 
 #### Cloud Run Jobsによる学習（参考：ローカル実行が困難な場合）
@@ -176,7 +176,7 @@ gcloud run jobs executions list --job=keiba-model-retrain --region=asia-northeas
 2. 時系列分割（学習/検証/推論）
 3. Optuna ベイズ最適化でハイパーパラメータチューニング
 4. NDCG@3・Recall@3・AUCを評価
-5. GCS `gs://{PROJECT_ID}-keiba-models/lgbm_ranker/{YYYYMMDD}/` に保存
+5. GCS `gs://{PROJECT_ID}-keiba-models/lgbm_ranker_multi/{YYYYMMDD}/` に保存
 
 ---
 
@@ -352,14 +352,14 @@ python3 scripts/diagnose_bq_load.py --show-errors
 1. モデルがGCSに存在するか確認:
 
 ```bash
-gcloud storage ls gs://<PROJECT_ID>-keiba-models/lgbm_ranker/
+gcloud storage ls gs://<PROJECT_ID>-keiba-models/lgbm_ranker_multi/
 ```
 
 2. 手動でCLI実行（デバッグ用）:
 
 ```bash
 python3 -m src.models.predict --project-id <PROJECT_ID> \
-  --model-path gs://<PROJECT_ID>-keiba-models/lgbm_ranker/<YYYYMMDD>/model.txt
+  --model-path gs://<PROJECT_ID>-keiba-models/lgbm_ranker_multi/<YYYYMMDD>/model.txt
 ```
 
 ### オッズ取得が失敗した場合

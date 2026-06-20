@@ -36,7 +36,7 @@
 ```bash
 python3 scripts/run_strategy_optimization.py \
     --project-id <PROJECT_ID> \
-    --model-path gs://<PROJECT_ID>-keiba-models/lgbm_ranker/20260301/model.txt \
+    --model-path gs://<PROJECT_ID>-keiba-models/lgbm_ranker_multi/20260301/model.txt \
     --start-date 2024-01-01 \
     --end-date 2024-12-31
 ```
