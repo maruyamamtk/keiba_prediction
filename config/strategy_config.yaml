@@ -1,30 +1,31 @@
-expected_return_threshold: 1.8254956863655947
-prob_weight_r: 1.3151360920112185
+expected_return_threshold: 1.8310035763725387
+prob_weight_r: 1.7388183018526977
 budget_per_race: 1000
 min_bet_amount: 100
-min_prob_threshold: 0.2630408255601187
+min_prob_threshold: 0.2723809271257994
 top_n: 6
-max_wide_odds: 18.16032989967493
+max_wide_odds: null
 optimization:
-  last_run: '2026-06-18T23:34:33'
+  last_run: '2026-06-20T10:05:09'
   method: optuna
   metric: recovery_rate
   n_trials: 500
   start_date: '2025-12-20'
   end_date: '2026-06-14'
-  model: lgbm_ranker_multi/20260618
+  model: lgbm_ranker_multi/20260620
   min_total_bets: 600
-  recovery_rate: 175.91
-  hit_rate: 11.37
-  max_drawdown: 20.3
-  total_bets: 765
-  bet_races: 336
+  recovery_rate: 199.9
+  hit_rate: 13.81
+  max_drawdown: 15.66
+  total_bets: 775
   verified:
     note: >-
       run_backtest.py（全馬券種の実払戻 raw.payouts を使用・temperature=1.0=本番一致）
       による検証値。optuna は複勝のみ払戻取得＋組合せはオッズ近似のため値が異なる。
-    recovery_rate: 164.6
-    hit_rate: 11.4
-    max_drawdown: 20.0
-    sharpe_ratio: 3.59
-    total_bets: 765
+      finish_timeリーク修正後の新モデル20260620で再最適化（Issue #402）。
+    recovery_rate: 174.9
+    hit_rate: 13.8
+    max_drawdown: 15.3
+    sharpe_ratio: 3.857
+    total_bets: 775
+    baseline_old_params: 154.9
