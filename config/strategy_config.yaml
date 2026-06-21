@@ -34,3 +34,13 @@ optimization:
     max_drawdown: 6.1
     sharpe_ratio: 4.551
     total_bets: 304
+  holdout_validation:
+    note: >-
+      過学習検証。チューニング期間(2025-12-20〜2026-04-19)のみで最適化したパラメータを
+      最適化が見ていないホールドアウト期間(2026-04-20〜2026-06-14)で評価。OOS回収率が
+      199.5%と高水準を維持し、最適化プロセスが過学習していないことを確認。これにより
+      全6ヶ月データを使う本パラメータ(全期間最適化=セットA)の採用が妥当と判断。
+    tune_period_in_sample_recovery_rate: 285.6
+    holdout_period_oos_recovery_rate: 199.5
+    holdout_period_oos_hit_rate: 25.7
+    holdout_period_oos_total_bets: 140
