@@ -5,6 +5,11 @@ min_bet_amount: 100
 min_prob_threshold: 0.2723809271257994
 top_n: 6
 max_wide_odds: null
+# 購入対象とする券種。三連複(sanrenpuku)は的中率・回収率が低く全体を希釈するため除外（Issue #411）
+enabled_bet_types:
+  - place
+  - wide
+  - umaren
 optimization:
   last_run: '2026-06-20T10:05:09'
   method: optuna

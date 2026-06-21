@@ -531,6 +531,7 @@ def run_daily_strategy(
     prob_weight_r = float(config.get("prob_weight_r", 1.0))
     _mwo = config.get("max_wide_odds", None)
     max_wide_odds = float(_mwo) if _mwo is not None else None
+    enabled_bet_types = config.get("enabled_bet_types")
 
     opt = config.get("optimization", {})
     logger.info(f"=== 日次投資戦略策定 ({target_date}) ===")
@@ -587,6 +588,7 @@ def run_daily_strategy(
                 prob_weight_r=prob_weight_r,
                 top_n=top_n,
                 max_wide_odds=max_wide_odds,
+                enabled_bet_types=enabled_bet_types,
             )
         except ValueError as e:
             logger.debug(f"レース {race_id} スキップ: {e}")

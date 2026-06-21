@@ -268,12 +268,16 @@ def main() -> None:
         float(_strategy_cfg.get("budget_per_race", 3000.0))
     logger.info(f"budget_per_race={budget_per_race}")
 
+    enabled_bet_types = _strategy_cfg.get("enabled_bet_types")
+    logger.info(f"enabled_bet_types={enabled_bet_types}")
+
     optimizer = StrategyOptimizer(
         predictions_df=predictions_df,
         payouts_df=payouts_df,
         initial_capital=args.initial_capital,
         combo_odds_df=combo_odds_df,
         budget_per_race=budget_per_race,
+        enabled_bet_types=enabled_bet_types,
     )
     results = optimizer.run_optuna_search(
         n_trials=args.n_trials,
