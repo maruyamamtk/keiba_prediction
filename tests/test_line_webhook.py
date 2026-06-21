@@ -243,19 +243,25 @@ class TestFormatBetRecommendations:
 
 class TestHandleRaceQuery:
     def _make_pred_df(self):
+        # 10頭立て: 軸馬条件 prob × N/18 >= min_prob_threshold（本番config）を満たすよう
+        # 上位馬に十分な複勝率を持たせる。少頭数(5頭)だと N/18 補正で条件が過大になり
+        # 本番config（min_prob_threshold≈0.27）で複勝が成立しないため（Issue #405後の調整）。
         return pd.DataFrame({
-            "horse_number": [12, 13, 11, 1, 10],
-            "horse_name": ["ニューオーリンズ", "チュウワチーフ", "ペイドラロワール", "ストーンズ", "リメンバーヒム"],
-            "win_place_prob": [0.520, 0.512, 0.400, 0.360, 0.327],
-            "pred_score": [0.6762, 0.6613, 0.4155, 0.3089, 0.2145],
-            "rank_in_race": [1, 2, 3, 4, 5],
+            "horse_number": [12, 13, 11, 1, 10, 2, 3, 4, 5, 6],
+            "horse_name": [
+                "ニューオーリンズ", "チュウワチーフ", "ペイドラロワール", "ストーンズ",
+                "リメンバーヒム", "ホースF", "ホースG", "ホースH", "ホースI", "ホースJ",
+            ],
+            "win_place_prob": [0.620, 0.560, 0.400, 0.360, 0.327, 0.20, 0.15, 0.10, 0.08, 0.05],
+            "pred_score": [0.80, 0.70, 0.4155, 0.3089, 0.2145, 0.10, 0.05, 0.02, 0.01, 0.0],
+            "rank_in_race": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
         })
 
     def _make_odds_df(self):
         return pd.DataFrame({
-            "horse_number": [12, 13, 11, 1, 10],
-            "win_odds": [7.0, 8.0, 14.0, 18.0, 24.0],
-            "place_odds": [3.5, 4.0, 5.5, 7.0, 9.0],
+            "horse_number": [12, 13, 11, 1, 10, 2, 3, 4, 5, 6],
+            "win_odds": [7.0, 8.0, 14.0, 18.0, 24.0, 30.0, 40.0, 50.0, 60.0, 80.0],
+            "place_odds": [4.0, 4.5, 5.5, 7.0, 9.0, 12.0, 15.0, 20.0, 25.0, 30.0],
         })
 
     @patch("src.automation.api.line_webhook._fetch_race_predictions")

@@ -475,12 +475,14 @@ def _run_strategy_for_race(
         min_prob_threshold = float(cfg.get("min_prob_threshold", 0.10))
         prob_weight_r = float(cfg.get("prob_weight_r", 1.0))
         top_n = int(cfg.get("top_n", 5))
+        enabled_bet_types = cfg.get("enabled_bet_types")
     else:
         budget_per_race, min_bet_amount = 3000.0, 100.0
         min_prob_threshold = 0.10
         expected_return_threshold = 1.2
         prob_weight_r = 1.0
         top_n = 5
+        enabled_bet_types = None
 
     try:
         bets = select_bets_for_race(
@@ -492,6 +494,7 @@ def _run_strategy_for_race(
             min_prob_threshold=min_prob_threshold,
             prob_weight_r=prob_weight_r,
             top_n=top_n,
+            enabled_bet_types=enabled_bet_types,
         )
         return bets, "unified"
     except ValueError as e:

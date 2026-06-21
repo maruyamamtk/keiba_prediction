@@ -297,6 +297,67 @@ class TestSelectBaseBets:
         assert (1, 5) not in wide_pairs
 
 
+class TestEnabledBetTypes:
+    """enabled_bet_types による券種フィルタのテスト（Issue #411: 三連複除外）"""
+
+    def _full_combo_df(self):
+        return _make_combo_odds_df([
+            {"bet_type": "wide", "horse_number_1": 1, "horse_number_2": 2, "odds_value": 10.0},
+            {"bet_type": "umaren", "horse_number_1": 1, "horse_number_2": 2, "odds_value": 20.0},
+            {"bet_type": "sanrenpuku", "horse_number_1": 1, "horse_number_2": 2, "horse_number_3": 3, "odds_value": 50.0},
+        ])
+
+    def _race_df(self):
+        return _make_race_df(n_horses=5, probs=[0.4, 0.35, 0.3, 0.1, 0.05], odds=[3.0] * 5)
+
+    def test_default_none_includes_all_types(self):
+        """enabled_bet_types=None（デフォルト）は全券種を含む（後方互換）"""
+        bets = select_base_bets(
+            self._race_df(), self._full_combo_df(),
+            expected_return_threshold=1.0, top_n=5,
+        )
+        types = {b["bet_type"] for b in bets}
+        assert "sanrenpuku" in types
+
+    def test_exclude_sanrenpuku(self):
+        """enabled_bet_types から三連複を外すと三連複が選定されない"""
+        bets = select_base_bets(
+            self._race_df(), self._full_combo_df(),
+            expected_return_threshold=1.0, top_n=5,
+            enabled_bet_types=["place", "wide", "umaren"],
+        )
+        types = {b["bet_type"] for b in bets}
+        assert "sanrenpuku" not in types
+        # ワイド・馬連は残る
+        assert "wide" in types
+        assert "umaren" in types
+
+    def test_umaren_kept_when_wide_disabled(self):
+        """ワイドを外しても馬連は選定される（ペア選定ロジックは維持）"""
+        bets = select_base_bets(
+            self._race_df(), self._full_combo_df(),
+            expected_return_threshold=1.0, top_n=5,
+            enabled_bet_types=["place", "umaren"],
+        )
+        types = {b["bet_type"] for b in bets}
+        assert "wide" not in types
+        assert "umaren" in types
+
+    def test_select_bets_for_race_threads_enabled_types(self):
+        """select_bets_for_race 経由でも券種フィルタが効く"""
+        bets = select_bets_for_race(
+            race_df=self._race_df(),
+            combo_odds_df=self._full_combo_df(),
+            budget_per_race=1000.0,
+            expected_return_threshold=1.0,
+            min_bet_amount=100.0,
+            top_n=5,
+            enabled_bet_types=["place", "wide", "umaren"],
+        )
+        types = {b["bet_type"] for b in bets}
+        assert "sanrenpuku" not in types
+
+
 # ---------------------------------------------------------------------------
 # select_bets_for_race のテスト（統合テスト）
 # ---------------------------------------------------------------------------

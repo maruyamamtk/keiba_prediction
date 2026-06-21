@@ -62,6 +62,10 @@ def _allocate_bets(
     return []
 
 
+# 購入対象とする券種（enabled_bet_types 未指定時のデフォルト）
+ALL_BET_TYPES: tuple[str, ...] = ("place", "wide", "umaren", "sanrenpuku")
+
+
 def select_base_bets(
     race_df: pd.DataFrame,
     combo_odds_df: pd.DataFrame | None,
@@ -70,6 +74,7 @@ def select_base_bets(
     min_prob_threshold: float = 0.0,
     prob_weight_r: float = 1.0,
     max_wide_odds: float | None = None,
+    enabled_bet_types: list[str] | None = None,
 ) -> list[dict]:
     """
     複勝/ワイド/三連複/馬連の候補を選定する（配分前）
@@ -92,12 +97,16 @@ def select_base_bets(
             r=1 で通常の期待値と同等。r>1 で高確率馬が有利になる
         max_wide_odds: ワイド購入の上限オッズ。これを超えるワイドはスキップ（馬連も連動スキップ）。
             None の場合は上限なし
+        enabled_bet_types: 購入対象とする券種のリスト（place/wide/umaren/sanrenpuku）。
+            None の場合は全券種。三連複を除外したい場合は ["place", "wide", "umaren"] を指定。
 
     Returns:
         bet dict のリスト（bet_amount は未設定）
     """
     if len(race_df) == 0:
         return []
+
+    enabled = set(enabled_bet_types) if enabled_bet_types is not None else set(ALL_BET_TYPES)
 
     # 選定スコア (odds * prob^r) 降順でソート
     df_sorted = race_df.copy()
@@ -113,6 +122,8 @@ def select_base_bets(
     N = len(race_df)
     place_bets = []
     for _, row in sorted_df.iterrows():
+        if "place" not in enabled:
+            break
         prob = float(row["win_place_prob"])
         place_odds = float(row["odds"])
         if prob * N / 18 < min_prob_threshold:
@@ -164,16 +175,19 @@ def select_base_bets(
                 continue
             if prob_i * prob_j * wide_odds > expected_return_threshold:
                 pair = tuple(sorted([h1, h2]))
-                combo_bets.append({
-                    "bet_type": "wide",
-                    "horse_numbers": list(pair),
-                    "horse_id": None,
-                    "odds": wide_odds,
-                })
+                # ワイド券の購入は "wide" 有効時のみ。ただしペア自体は馬連選定に使うため
+                # selected_wide_pairs には常に追加する。
+                if "wide" in enabled:
+                    combo_bets.append({
+                        "bet_type": "wide",
+                        "horse_numbers": list(pair),
+                        "horse_id": None,
+                        "odds": wide_odds,
+                    })
                 selected_wide_pairs.append(pair)
 
         # 馬連: ワイドで選定した組み合わせに必ず追加
-        if selected_wide_pairs:
+        if "umaren" in enabled and selected_wide_pairs:
             umaren_df = combo_odds_df[combo_odds_df["bet_type"] == "umaren"]
             for h1, h2 in selected_wide_pairs:
                 match = umaren_df[
@@ -192,8 +206,12 @@ def select_base_bets(
                         "odds": umaren_odds,
                     })
 
-        # 三連複
-        san_df = combo_odds_df[combo_odds_df["bet_type"] == "sanrenpuku"]
+        # 三連複（"sanrenpuku" 有効時のみ生成）
+        san_df = (
+            combo_odds_df[combo_odds_df["bet_type"] == "sanrenpuku"]
+            if "sanrenpuku" in enabled
+            else combo_odds_df.iloc[0:0]
+        )
         for _, row in san_df.iterrows():
             h1 = int(row["horse_number_1"])
             h2 = int(row["horse_number_2"])
@@ -228,6 +246,7 @@ def select_bets_for_race(
     min_prob_threshold: float = 0.0,
     prob_weight_r: float = 1.0,
     max_wide_odds: float | None = None,
+    enabled_bet_types: list[str] | None = None,
     # 後方互換性のための旧パラメータ（無視される）
     p1: float | None = None,
     top_n_dominant: int | None = None,
@@ -254,6 +273,8 @@ def select_bets_for_race(
         min_prob_threshold: 軸馬の最低複勝率（複勝単体買いの最低条件）
         prob_weight_r: 選定スコアの確率ウェイト係数（odds * prob^r）
         max_wide_odds: ワイド購入の上限オッズ（None で無制限）。馬連も連動してスキップ
+        enabled_bet_types: 購入対象の券種リスト（place/wide/umaren/sanrenpuku）。
+            None で全券種。三連複除外時は ["place", "wide", "umaren"] を指定。
         p1: 廃止済み（無視される）
         top_n_dominant: 廃止済み（無視される）
         top_n_standard: 廃止済み（無視される）
@@ -295,6 +316,7 @@ def select_bets_for_race(
         min_prob_threshold=min_prob_threshold,
         prob_weight_r=prob_weight_r,
         max_wide_odds=max_wide_odds,
+        enabled_bet_types=enabled_bet_types,
     )
 
     # 同一 (bet_type, horse_numbers) の重複排除（先着優先）

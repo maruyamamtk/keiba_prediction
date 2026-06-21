@@ -1449,6 +1449,7 @@ def _refresh_investment_decisions_for_race(
         prob_weight_r = float(config.get("prob_weight_r", 1.0))
         _mwo = config.get("max_wide_odds", None)
         max_wide_odds = float(_mwo) if _mwo is not None else None
+        enabled_bet_types = config.get("enabled_bet_types")
 
         # 推奨馬券を再計算
         bets = select_bets_for_race(
@@ -1461,6 +1462,7 @@ def _refresh_investment_decisions_for_race(
             prob_weight_r=prob_weight_r,
             top_n=top_n,
             max_wide_odds=max_wide_odds,
+            enabled_bet_types=enabled_bet_types,
         )
 
         # 投資判断 dict を構築して MERGE UPSERT 保存

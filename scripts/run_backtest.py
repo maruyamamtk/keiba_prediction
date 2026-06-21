@@ -658,6 +658,7 @@ def run_full_strategy_backtest_pipeline(
     prob_weight_r: float = 1.0,
     top_n: int = 5,
     max_wide_odds: float | None = None,
+    enabled_bet_types: list[str] | None = None,
     initial_capital: float = 100_000.0,
     output_csv: str | None = None,
     save_bq: bool = False,
@@ -775,6 +776,7 @@ def run_full_strategy_backtest_pipeline(
         initial_capital=initial_capital,
         combo_odds_df=combo_odds_df if len(combo_odds_df) > 0 else None,
         budget_per_race=budget_per_race,
+        enabled_bet_types=enabled_bet_types,
     )
 
     history_df, _ = optimizer._run_simulation(
@@ -955,6 +957,7 @@ def main() -> int:
     _yaml_mwo = strategy_cfg.get("max_wide_odds", None)
     max_wide_odds = args.max_wide_odds if args.max_wide_odds is not None else \
         (float(_yaml_mwo) if _yaml_mwo is not None else None)
+    enabled_bet_types = strategy_cfg.get("enabled_bet_types")
 
     print(f"\nバックテスト設定:")
     print(f"  期間:                          {start_date} ~ {end_date}")
@@ -966,6 +969,7 @@ def main() -> int:
     print(f"  min_prob_threshold:            {min_prob}")
     print(f"  prob_weight_r:                 {prob_weight_r}")
     print(f"  max_wide_odds:                 {max_wide_odds if max_wide_odds is not None else '無制限'}")
+    print(f"  enabled_bet_types:             {enabled_bet_types if enabled_bet_types else '全券種'}")
 
     history_df, metrics = run_full_strategy_backtest_pipeline(
         project_id=args.project_id,
@@ -979,6 +983,7 @@ def main() -> int:
         prob_weight_r=prob_weight_r,
         top_n=top_n,
         max_wide_odds=max_wide_odds,
+        enabled_bet_types=enabled_bet_types,
         initial_capital=args.initial_capital,
         output_csv=args.output_csv,
         save_bq=args.save_to_bq,

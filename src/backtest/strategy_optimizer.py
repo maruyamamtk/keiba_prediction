@@ -80,6 +80,7 @@ class StrategyOptimizer:
         initial_capital: float = 100_000.0,
         combo_odds_df: pd.DataFrame | None = None,
         budget_per_race: float = 3000.0,
+        enabled_bet_types: list[str] | None = None,
         # 後方互換性のための旧パラメータ（無視される）
         max_bet_ratio: float | None = None,
     ):
@@ -106,6 +107,7 @@ class StrategyOptimizer:
         self.initial_capital = initial_capital
         self.combo_odds_df = combo_odds_df if combo_odds_df is not None else pd.DataFrame()
         self.budget_per_race = budget_per_race
+        self.enabled_bet_types = enabled_bet_types
 
         # 払戻マップを事前構築: (race_id, bet_type, horse_numbers_tuple) -> payout_amount
         self._payout_map: dict[tuple, int] = {}
@@ -234,6 +236,7 @@ class StrategyOptimizer:
                     prob_weight_r=prob_weight_r,
                     top_n=top_n,
                     max_wide_odds=max_wide_odds,
+                    enabled_bet_types=self.enabled_bet_types,
                 )
             except ValueError:
                 continue
