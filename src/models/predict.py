@@ -23,6 +23,12 @@ import yaml
 from google.cloud import bigquery, storage
 
 from src.ml.features.feature_pipeline import FeaturePipeline
+# normalize_win_place_prob / _water_fill は calibration.py に移管（Issue #414）。
+# 後方互換のため src.models.predict からも参照できるよう re-export する。
+from src.models.calibration import (  # noqa: F401
+    _water_fill,
+    normalize_win_place_prob,
+)
 from src.models.lgbm_ranker_multi import LGBMRankerMulti
 from src.models.train import (
     CONFIG_PATH,
@@ -224,82 +230,6 @@ def _load_model(model_cls: type, project_id: str, path: str, tmp_dir: str):
     return model
 
 
-def _water_fill(p: np.ndarray, probs: np.ndarray) -> np.ndarray:
-    """水充填アルゴリズム: 1.0 を超えた分を未達馬に softmax 確率比で再配分する。
-
-    Args:
-        p: ベース重み（合計 ≈ 1.0、softmax 確率または比例配分）
-        probs: 初期配分 (p * k)。インプレース修正して返す。
-
-    Returns:
-        clip 済みの配分ベクトル（sum ≈ min(k, n)）
-    """
-    n = len(probs)
-    for _ in range(n):
-        mask_over = probs > 1.0
-        if not mask_over.any():
-            break
-        excess = (probs[mask_over] - 1.0).sum()
-        probs[mask_over] = 1.0
-        mask_under = probs < 1.0
-        if not mask_under.any():
-            break
-        p_under_sum = p[mask_under].sum()
-        if p_under_sum < 1e-12:
-            probs[mask_under] += excess / mask_under.sum()
-        else:
-            probs[mask_under] += excess * p[mask_under] / p_under_sum
-    return np.clip(probs, 0.0, 1.0)
-
-
-def normalize_win_place_prob(
-    df: pd.DataFrame, temperature: float = 1.0, n_places: int = 3
-) -> pd.DataFrame:
-    """レース内z-score標準化＋温度付きソフトマックス＋水充填でwin_place_probを計算する
-
-    LambdaRank は順位の正しさ（AUC/NDCG）のみを最適化し、raw score の絶対スケール
-    （分散・キャリブレーション）は制御しない。そのため再学習でハイパーパラメータが
-    変わるたびにスコア分散が変動し、固定値の temperature が機能しなくなる（Issue #390）。
-
-    本実装ではソフトマックス前にレース内でスコアを z-score 標準化する。
-    z = (score - mean) / std とすることで softmax の実効温度が `std × temperature` に
-    依存しなくなり、モデルの raw score スケールに不変な複勝率が得られる。これにより
-    再学習でスケールが変わっても複勝率の分散が安定する（Issue #397）。
-
-    水充填アルゴリズム（_water_fill）により prob=1.0 クリップ問題は解消済み。
-
-    Args:
-        df: race_id と pred_score カラムを持つ DataFrame
-        temperature: 標準化後スコアに対するソフトマックス温度（大きいほど均一化、デフォルト1.0）
-        n_places: 複勝対象着順数（デフォルト3）
-
-    Returns:
-        win_place_prob カラムを上書きした DataFrame（元の DataFrame は変更しない）
-    """
-    df = df.copy()
-
-    def _zscore_water_fill(scores: pd.Series) -> pd.Series:
-        vals = scores.values.astype(float)
-        n = len(vals)
-        k = float(min(n_places, n))
-        std = vals.std()  # 母標準偏差（ddof=0）
-        if std < 1e-12:
-            # 全馬同一スコア（std=0）→ 均等配分にフォールバック
-            p = np.full(n, 1.0 / n)
-        else:
-            # レース内 z-score 標準化（mean は softmax 正規化で相殺されるが明示する）
-            z = (vals - vals.mean()) / std
-            shifted = z - z.max()  # 数値安定化
-            exp_s = np.exp(shifted / temperature)
-            p = exp_s / exp_s.sum()
-        return pd.Series(_water_fill(p, p * k), index=scores.index)
-
-    df["win_place_prob"] = df.groupby("race_id")["pred_score"].transform(
-        _zscore_water_fill
-    )
-    return df
-
-
 def predict_pipeline(
     project_id: str,
     execution_date: datetime.date,
@@ -360,7 +290,11 @@ def predict_pipeline(
 
         result_df["pred_score"] = ranker.predict(X)
 
-        result_df = normalize_win_place_prob(result_df)
+        # キャリブレーション温度を適用（Issue #414）。
+        # meta.json に保存された温度を使用し、未保存の旧モデルは 1.0 にフォールバック。
+        calib_temp = getattr(ranker, "calibration_temperature", None) or 1.0
+        logger.info(f"win_place_prob 算出: calibration_temperature={calib_temp:.4f}")
+        result_df = normalize_win_place_prob(result_df, temperature=calib_temp)
 
         result_df["pred_rank"] = result_df.groupby("race_id")["pred_score"].rank(
             ascending=False, method="min"
