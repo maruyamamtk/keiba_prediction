@@ -26,6 +26,9 @@ class LGBMModelBase:
         self.feature_names: list[str] | None = None
         self._categorical_feature_names: list[str] = []
         self._categorical_dtypes: dict[str, pd.CategoricalDtype] = {}
+        # win_place_prob キャリブレーション温度（Issue #414）。
+        # None の場合、推論時は 1.0（未校正）にフォールバックする。
+        self.calibration_temperature: float | None = None
 
     def _prepare_prediction_data(self, X: pd.DataFrame) -> pd.DataFrame:
         """予測用にDataFrameをモデルの期待に合わせて整形する。
@@ -218,6 +221,8 @@ class LGBMRanker(LGBMModelBase):
         }
         if training_period:
             meta["training_period"] = training_period
+        if self.calibration_temperature is not None:
+            meta["calibration_temperature"] = self.calibration_temperature
         meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2))
 
         logger.info(f"Model saved to {model_path}")
@@ -233,9 +238,11 @@ class LGBMRanker(LGBMModelBase):
         if meta_path.exists():
             meta = json.loads(meta_path.read_text())
             self.feature_names = meta.get("feature_names")
+            self.calibration_temperature = meta.get("calibration_temperature")
             logger.info(
                 f"Model loaded from {model_path} "
-                f"(best_iteration={meta.get('best_iteration')})"
+                f"(best_iteration={meta.get('best_iteration')}, "
+                f"calibration_temperature={self.calibration_temperature})"
             )
         else:
             self.feature_names = self.model.feature_name()

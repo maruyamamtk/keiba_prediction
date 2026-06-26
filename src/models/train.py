@@ -26,6 +26,7 @@ from google.cloud import bigquery, storage
 from sklearn.metrics import roc_auc_score
 
 from src.ml.features.feature_pipeline import FeaturePipeline
+from src.models.calibration import fit_calibration_temperature
 from src.models.lgbm_ranker_multi import JRA_PRIZE_WEIGHTS, LGBMRankerMulti, LGBMRankerMultiConfig
 from src.models.tuning import run_tuning, save_best_params
 
@@ -548,6 +549,24 @@ def train_pipeline(
     )
     logger.info(f"Validation metrics (multi-label): {metrics}")
 
+    # 5b. キャリブレーション温度のフィット（Issue #414）
+    # 検証データ（out-of-sample）上で、win_place_prob の Brier スコアを最小化する温度を求める。
+    # 単調変換のためランク指標（NDCG@3/Recall@3）は不変。再学習のたびに再フィットされる。
+    # 出走取消・結果なし馬（finish_position<=0）は実績が無いため除外し、
+    # scripts/evaluate_calibration.py の評価方法（raced horses のみ）と一致させる。
+    valid_positions = valid_df["finish_position"].fillna(0).values.astype(int)
+    calib_df = pd.DataFrame(
+        {
+            "race_id": valid_df[data_config["group_column"]].values,
+            "pred_score": valid_pred,
+            "finish_position": valid_positions,
+        }
+    )
+    calib_df = calib_df[calib_df["finish_position"] > 0].copy()
+    calib_df["is_place"] = (calib_df["finish_position"] <= 3).astype(int)
+    calibration_temperature = fit_calibration_temperature(calib_df)
+    logger.info(f"Calibration temperature: {calibration_temperature:.4f}")
+
     # 6. モデル保存
     if output_dir is None:
         output_dir = tempfile.mkdtemp(prefix="keiba_model_multi_")
@@ -564,6 +583,7 @@ def train_pipeline(
         "valid_rows": len(valid_df),
         "valid_races": valid_df[data_config["group_column"]].nunique(),
     }
+    ranker.calibration_temperature = calibration_temperature
     ranker.save(model_path, training_period=training_period)
 
     if tuning_result is not None:
@@ -591,6 +611,7 @@ def train_pipeline(
         "model_path": model_path,
         "gcs_uri": gcs_uri,
         "metrics": metrics,
+        "calibration_temperature": calibration_temperature,
         "best_iteration": ranker.model.best_iteration,
         "train_rows": len(train_df),
         "valid_rows": len(valid_df),
@@ -716,6 +737,7 @@ def main():
     print(f"検証データ: {result['valid_rows']} rows")
     print(f"推論対象: {result['predict_rows']} rows")
     print(f"特徴量数: {result['num_features']}")
+    print(f"校正温度: {result['calibration_temperature']:.4f}")
     print(f"\n評価指標:")
     print(f"  NDCG@3:   {result['metrics']['ndcg@3']:.4f}")
     print(f"  Recall@3: {result['metrics']['recall@3']:.4f}")

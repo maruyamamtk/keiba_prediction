@@ -270,3 +270,48 @@ class TestLGBMRankerMulti:
             meta = json.loads(Path(model_path).with_suffix(".meta.json").read_text())
             assert meta["training_period"]["train_from"] == "2024-01-01"
             assert meta["training_period"]["valid_rows"] == len(X_valid)
+
+    def test_calibration_temperature_roundtrip(self, sample_data):
+        """calibration_temperature が meta.json に保存・読込されること（Issue #414）"""
+        X, y, groups = sample_data
+        split = 8 * 10
+        X_train, X_valid = X.iloc[:split], X.iloc[split:]
+        y_train, y_valid = y[:split], y[split:]
+
+        config = LGBMRankerMultiConfig(num_boost_round=10, early_stopping_rounds=5, log_evaluation=0)
+        ranker = LGBMRankerMulti(config=config)
+        ranker.train(X_train, y_train, groups[:8], X_valid, y_valid, groups[8:])
+        ranker.calibration_temperature = 1.73
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            model_path = str(Path(tmpdir) / "model_multi.txt")
+            ranker.save(model_path)
+
+            meta = json.loads(Path(model_path).with_suffix(".meta.json").read_text())
+            assert meta["calibration_temperature"] == 1.73
+
+            loaded = LGBMRankerMulti()
+            loaded.load(model_path)
+            assert loaded.calibration_temperature == 1.73
+
+    def test_calibration_temperature_backward_compat(self, sample_data):
+        """温度未設定の旧モデルは calibration_temperature=None で読み込まれること"""
+        X, y, groups = sample_data
+        split = 8 * 10
+        X_train, X_valid = X.iloc[:split], X.iloc[split:]
+        y_train, y_valid = y[:split], y[split:]
+
+        config = LGBMRankerMultiConfig(num_boost_round=10, early_stopping_rounds=5, log_evaluation=0)
+        ranker = LGBMRankerMulti(config=config)
+        ranker.train(X_train, y_train, groups[:8], X_valid, y_valid, groups[8:])
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            model_path = str(Path(tmpdir) / "model_multi.txt")
+            ranker.save(model_path)  # calibration_temperature 未設定
+
+            meta = json.loads(Path(model_path).with_suffix(".meta.json").read_text())
+            assert "calibration_temperature" not in meta
+
+            loaded = LGBMRankerMulti()
+            loaded.load(model_path)
+            assert loaded.calibration_temperature is None
