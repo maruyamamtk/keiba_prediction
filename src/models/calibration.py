@@ -8,8 +8,8 @@ LambdaRank は順位の正しさ（NDCG/AUC）のみを最適化し、raw score 
 主な公開関数:
 - normalize_win_place_prob: レース内 z-score 標準化 + 温度付き softmax + water-fill
   で win_place_prob を算出する（本番予測パスが使用）。
-- fit_calibration_temperature: 検証データ（out-of-sample）上で log-loss を最小化する
-  温度を求める（温度スケーリング / Guo et al. 2017）。
+- fit_calibration_temperature: 検証データ（out-of-sample）上で Brier スコア（既定）を
+  最小化する温度を求める（温度スケーリング / Guo et al. 2017）。
 - compute_calibration_metrics: 信頼性曲線・ECE・Brier・log-loss を算出する（診断用）。
 """
 

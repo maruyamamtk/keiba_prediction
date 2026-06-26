@@ -550,16 +550,20 @@ def train_pipeline(
     logger.info(f"Validation metrics (multi-label): {metrics}")
 
     # 5b. キャリブレーション温度のフィット（Issue #414）
-    # 検証データ（out-of-sample）上で、win_place_prob の log-loss を最小化する温度を求める。
+    # 検証データ（out-of-sample）上で、win_place_prob の Brier スコアを最小化する温度を求める。
     # 単調変換のためランク指標（NDCG@3/Recall@3）は不変。再学習のたびに再フィットされる。
+    # 出走取消・結果なし馬（finish_position<=0）は実績が無いため除外し、
+    # scripts/evaluate_calibration.py の評価方法（raced horses のみ）と一致させる。
     valid_positions = valid_df["finish_position"].fillna(0).values.astype(int)
     calib_df = pd.DataFrame(
         {
             "race_id": valid_df[data_config["group_column"]].values,
             "pred_score": valid_pred,
-            "is_place": ((valid_positions >= 1) & (valid_positions <= 3)).astype(int),
+            "finish_position": valid_positions,
         }
     )
+    calib_df = calib_df[calib_df["finish_position"] > 0].copy()
+    calib_df["is_place"] = (calib_df["finish_position"] <= 3).astype(int)
     calibration_temperature = fit_calibration_temperature(calib_df)
     logger.info(f"Calibration temperature: {calibration_temperature:.4f}")
 
