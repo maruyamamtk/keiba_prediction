@@ -519,11 +519,12 @@ class StrategyOptimizer:
         探索パラメータ:
           - expected_return_threshold: [1.0, 2.5]（連続）
           - top_n: [1, 6]（整数）
-          - prob_weight_r: [0.3, 2.0]（連続）
           - min_prob_threshold: [0.0, 0.3]（連続）
           - max_wide_odds: [5.0, 50.0] または None（条件付き連続）
 
         temperature は本番予測パスで適用されないため探索しない（Issue #399）。
+        prob_weight_r はアイソトニック校正（Issue #416）後は不要なため 1.0 に固定し
+        探索しない（Issue #417）。結果の params には固定値 1.0 を含める。
 
         制約違反（回収率 < min_recovery_rate、最大DD > max_max_drawdown、
         賭け数 < min_total_bets）の場合はペナルティスコア（0.0）を返す。
@@ -558,7 +559,10 @@ class StrategyOptimizer:
                 "expected_return_threshold", 1.0, 2.5
             )
             top_n = trial.suggest_int("top_n", 1, 6)
-            prob_weight_r = trial.suggest_float("prob_weight_r", 0.3, 2.0)
+            # prob_weight_r はアイソトニック校正（Issue #416）後は不要なため 1.0 に固定し
+            # 探索空間から除外する（Issue #417）。校正後は odds × prob がそのまま真の期待
+            # 回収率（EV）であり、選定スコア（odds × prob^r）は r=1（純EV順）が原理的に正解。
+            prob_weight_r = 1.0
             min_prob_threshold = trial.suggest_float("min_prob_threshold", 0.0, 0.3)
             use_max_wide_odds = trial.suggest_categorical(
                 "use_max_wide_odds", [True, False]

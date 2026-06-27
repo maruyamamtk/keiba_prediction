@@ -45,7 +45,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from src.backtest.metrics import compute_metrics
 from src.backtest.strategy_optimizer import StrategyOptimizer
 from src.models.lgbm_ranker_multi import LGBMRankerMulti
-from src.models.predict import normalize_win_place_prob
+from src.models.predict import apply_model_calibration
 from src.models.train import (
     build_feature_matrix,
     load_config,
@@ -437,8 +437,10 @@ def generate_predictions(
 
     result_df["pred_score"] = scores
 
-    # レースごとにソフトマックス正規化でwin_place_probを計算
-    result_df = normalize_win_place_prob(result_df)
+    # モデル保存済みの校正器（meta.json）を適用して win_place_prob を算出する。
+    # 本番予測パス（predict.py）と同一の校正器を使うことで、最適化したパラメータが
+    # 本番の確率分布と一致することを保証する（Issue #417）。
+    result_df = apply_model_calibration(result_df, ranker)
 
     # 着順の付与
     if len(results_df) > 0:

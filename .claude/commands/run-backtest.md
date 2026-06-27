@@ -28,6 +28,11 @@ cd /Users/michika_maruyama/Desktop/keiba_prediction
   --save-bq
 ```
 
+   - **校正器の適用（Issue #417）**: `run_backtest.py` は指定モデルの保存済み校正器（meta.json の
+     アイソトニック→温度→T=1.0）を `apply_model_calibration` で適用し、`win_place_prob` を算出します。
+     これは本番予測パス（`predict.py`）と**同一の共通関数**であり、バックテストの確率が本番と一致します。
+     最適化したパラメータと本番の確率分布を食い違わせないため、戦略最適化も同じ校正済み確率で行うこと。
+
 4. 実行結果から以下を日本語でサマリーしてください:
    - **回収率** (目標: 100%以上)
    - **的中率**

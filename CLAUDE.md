@@ -359,6 +359,11 @@ GitHub Issueの実装時は以下の手順を遵守してください:
 - パーサーフィールド位置を変更した後は、サンプルデータでテスト解析を実行し、固定長TXTスキーマとの整合性を確認すること
 
 ### 投資戦略の重要な設計メモ
+- **prob_weight_r**: アイソトニック校正（Issue #416）後は **1.0 固定・最適化探索対象外**（Issue #417）。
+  - 選定スコア = `odds × win_place_prob^r`。校正後は `odds × prob` がそのまま真の期待回収率（EV）であり、r=1（純EV順）が原理的に正解。期待値フィルタ（`prob × odds > threshold`）と指数が一致し戦略が解釈しやすくなる。
+  - `strategy_optimizer.run_optuna_search` は `prob_weight_r` を suggest せず 1.0 固定（params には後方互換で 1.0 を格納）。`optimize_strategy.py` も `config["prob_weight_r"]=1.0` を書き込む。
+  - `expected_return_threshold` は校正後も残す**リスクマージン**であり r とは別物（引き続き最適化対象）。
+- **校正のバックテスト/deploy前適用（Issue #417）**: `run_backtest.py`・`predict.py` は共通関数 `apply_model_calibration(df, ranker)`（calibration.py・アイソトニック→温度→T=1.0）でモデル保存済み校正器を適用。バックテストの `win_place_prob` が本番予測パスと一致する。運用順序は **retrain（校正器フィット）→ 校正済み確率でバックテスト → 戦略再最適化（r=1）→ deploy**（retrain-and-deploy ステップ3.5）。校正を本番反映する際は戦略再最適化を deploy 前に必ず実施。
 - **min_prob_threshold**: 複勝単体買いだけでなく、ワイド・三連複の top_n 候補馬にも適用（PR #245）
   - `select_base_bets` 内で `sorted_df[prob * N/18 >= min_prob_threshold].head(top_n)` で候補馬を絞る
   - これにより低人気馬（低確率馬）がいかなる馬券にも混入しない

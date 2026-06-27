@@ -28,6 +28,7 @@ from src.ml.features.feature_pipeline import FeaturePipeline
 from src.models.calibration import (  # noqa: F401
     _water_fill,
     apply_isotonic_calibration,
+    apply_model_calibration,
     normalize_win_place_prob,
 )
 from src.models.lgbm_ranker_multi import LGBMRankerMulti
@@ -291,16 +292,9 @@ def predict_pipeline(
 
         result_df["pred_score"] = ranker.predict(X)
 
-        # キャリブレーションを適用。優先順位は アイソトニック（Issue #416）
-        # → 温度（Issue #414）→ 未校正 T=1.0（旧モデル）。
-        calib_isotonic = getattr(ranker, "calibration_isotonic", None)
-        if calib_isotonic:
-            logger.info("win_place_prob 算出: アイソトニック校正を適用")
-            result_df = apply_isotonic_calibration(result_df, calib_isotonic)
-        else:
-            calib_temp = getattr(ranker, "calibration_temperature", None) or 1.0
-            logger.info(f"win_place_prob 算出: calibration_temperature={calib_temp:.4f}")
-            result_df = normalize_win_place_prob(result_df, temperature=calib_temp)
+        # キャリブレーションを適用（アイソトニック→温度→T=1.0）。バックテスト
+        # （run_backtest.py）と同一の共通関数を使い win_place_prob を一致させる（Issue #417）。
+        result_df = apply_model_calibration(result_df, ranker)
 
         result_df["pred_rank"] = result_df.groupby("race_id")["pred_score"].rank(
             ascending=False, method="min"

@@ -6,11 +6,20 @@ import pytest
 
 from src.models.calibration import (
     apply_isotonic_calibration,
+    apply_model_calibration,
     compute_calibration_metrics,
     fit_calibration_isotonic,
     fit_calibration_temperature,
     normalize_win_place_prob,
 )
+
+
+class _FakeRanker:
+    """apply_model_calibration の duck-typing 用ダミーモデル。"""
+
+    def __init__(self, isotonic=None, temperature=None):
+        self.calibration_isotonic = isotonic
+        self.calibration_temperature = temperature
 
 
 def _make_race(scores, race_id="R1"):
@@ -180,6 +189,50 @@ class TestFitCalibrationIsotonic:
         ece_before = compute_calibration_metrics(p_before, labels)["ece"]
         ece_after = compute_calibration_metrics(p_after, labels)["ece"]
         assert ece_after <= ece_before + 1e-9
+
+
+class TestApplyModelCalibration:
+    """apply_model_calibration（共通校正適用・Issue #417）のテスト"""
+
+    def test_isotonic_takes_precedence(self):
+        """アイソトニック校正器があればそれを使い、温度より優先されること"""
+        df = _make_race([3.0, 2.0, 1.0, 0.5, 0.0])
+        calib = {
+            "method": "isotonic",
+            "x_thresholds": [0.0, 0.5, 1.0],
+            "y_thresholds": [0.0, 0.3, 1.0],
+        }
+        ranker = _FakeRanker(isotonic=calib, temperature=2.0)
+        expected = apply_isotonic_calibration(df, calib)["win_place_prob"].values
+        actual = apply_model_calibration(df, ranker)["win_place_prob"].values
+        assert np.allclose(actual, expected)
+
+    def test_temperature_used_when_no_isotonic(self):
+        """アイソトニックが無く温度があれば温度を適用すること"""
+        df = _make_race([3.0, 2.0, 1.0, 0.5, 0.0])
+        ranker = _FakeRanker(isotonic=None, temperature=1.5)
+        expected = normalize_win_place_prob(df, temperature=1.5)["win_place_prob"].values
+        actual = apply_model_calibration(df, ranker)["win_place_prob"].values
+        assert np.allclose(actual, expected)
+
+    def test_fallback_to_uncalibrated(self):
+        """校正器が一切無い旧モデルは T=1.0（未校正）にフォールバックすること"""
+        df = _make_race([3.0, 2.0, 1.0, 0.5, 0.0])
+        ranker = _FakeRanker(isotonic=None, temperature=None)
+        expected = normalize_win_place_prob(df, temperature=1.0)["win_place_prob"].values
+        actual = apply_model_calibration(df, ranker)["win_place_prob"].values
+        assert np.allclose(actual, expected)
+
+    def test_missing_attributes_fallback(self):
+        """校正属性を持たないオブジェクトでも T=1.0 にフォールバックすること"""
+        df = _make_race([3.0, 2.0, 1.0])
+
+        class _Bare:
+            pass
+
+        expected = normalize_win_place_prob(df, temperature=1.0)["win_place_prob"].values
+        actual = apply_model_calibration(df, _Bare())["win_place_prob"].values
+        assert np.allclose(actual, expected)
 
 
 class TestComputeCalibrationMetrics:

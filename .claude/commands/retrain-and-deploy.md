@@ -40,6 +40,29 @@ gcloud storage ls gs://keiba-prediction-1768734113-keiba-models/lgbm_ranker_mult
 
 本日日付のフォルダが作成されていることを確認してください。
 
+## ステップ3.5: 校正済み確率で戦略パラメータを再最適化（校正本番反映時は必須・Issue #417）
+
+学習（ステップ2）で保存された **アイソトニック校正器（meta.json）** を適用した校正済み確率で
+戦略パラメータを再最適化します。**校正を本番反映する場合、戦略再最適化を deploy 前に必ず実施**
+してください（最適化したパラメータが本番の確率分布と食い違うのを防ぐため）。
+
+```bash
+# 校正済み確率（optimize_strategy.py は内部で run_backtest.generate_predictions を呼び、
+# meta.json の校正器を自動適用）で再最適化。prob_weight_r は校正後 1.0 固定・探索対象外（Issue #417）。
+.venv/bin/python scripts/optimize_strategy.py \
+    --project-id keiba-prediction-1768734113 \
+    --model-path gs://keiba-prediction-1768734113-keiba-models/lgbm_ranker_multi/$(date +%Y%m%d)/lgbm_ranker_multi_$(date +%Y%m%d).txt \
+    --start-date 2025-12-20 \
+    --end-date $(date +%Y-%m-%d) \
+    --n-trials 500
+```
+
+- 最適化対象は `expected_return_threshold` / `top_n` / `min_prob_threshold` / `max_wide_odds`。
+  `prob_weight_r` は 1.0 固定（校正後は odds × prob がそのまま真の EV のため純 EV 順が正解）。
+- 結果は `config/strategy_config.yaml` に自動反映されます。`prob_weight_r: 1.0` であることを確認。
+- 反映後、ホールドアウト（OOS）で回収率が維持されていることを `scripts/run_backtest.py` で検証してから
+  デプロイに進んでください（バックテストの win_place_prob は本番予測パスと同一校正器で一致します）。
+
 ## ステップ4: Cloud Runへデプロイ
 
 ```bash
