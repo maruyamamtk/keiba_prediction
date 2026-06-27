@@ -315,3 +315,53 @@ class TestLGBMRankerMulti:
             loaded = LGBMRankerMulti()
             loaded.load(model_path)
             assert loaded.calibration_temperature is None
+
+    def test_calibration_isotonic_roundtrip(self, sample_data):
+        """calibration_isotonic が meta.json に保存・読込されること（Issue #416）"""
+        X, y, groups = sample_data
+        split = 8 * 10
+        X_train, X_valid = X.iloc[:split], X.iloc[split:]
+        y_train, y_valid = y[:split], y[split:]
+
+        config = LGBMRankerMultiConfig(num_boost_round=10, early_stopping_rounds=5, log_evaluation=0)
+        ranker = LGBMRankerMulti(config=config)
+        ranker.train(X_train, y_train, groups[:8], X_valid, y_valid, groups[8:])
+        calibrator = {
+            "method": "isotonic",
+            "x_thresholds": [0.0, 0.3, 0.7, 1.0],
+            "y_thresholds": [0.0, 0.2, 0.85, 1.0],
+        }
+        ranker.calibration_isotonic = calibrator
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            model_path = str(Path(tmpdir) / "model_multi.txt")
+            ranker.save(model_path)
+
+            meta = json.loads(Path(model_path).with_suffix(".meta.json").read_text())
+            assert meta["calibration_isotonic"] == calibrator
+
+            loaded = LGBMRankerMulti()
+            loaded.load(model_path)
+            assert loaded.calibration_isotonic == calibrator
+
+    def test_calibration_isotonic_backward_compat(self, sample_data):
+        """校正器未設定の旧モデルは calibration_isotonic=None で読み込まれること"""
+        X, y, groups = sample_data
+        split = 8 * 10
+        X_train, X_valid = X.iloc[:split], X.iloc[split:]
+        y_train, y_valid = y[:split], y[split:]
+
+        config = LGBMRankerMultiConfig(num_boost_round=10, early_stopping_rounds=5, log_evaluation=0)
+        ranker = LGBMRankerMulti(config=config)
+        ranker.train(X_train, y_train, groups[:8], X_valid, y_valid, groups[8:])
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            model_path = str(Path(tmpdir) / "model_multi.txt")
+            ranker.save(model_path)  # calibration_isotonic 未設定
+
+            meta = json.loads(Path(model_path).with_suffix(".meta.json").read_text())
+            assert "calibration_isotonic" not in meta
+
+            loaded = LGBMRankerMulti()
+            loaded.load(model_path)
+            assert loaded.calibration_isotonic is None

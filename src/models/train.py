@@ -26,7 +26,7 @@ from google.cloud import bigquery, storage
 from sklearn.metrics import roc_auc_score
 
 from src.ml.features.feature_pipeline import FeaturePipeline
-from src.models.calibration import fit_calibration_temperature
+from src.models.calibration import fit_calibration_isotonic, fit_calibration_temperature
 from src.models.lgbm_ranker_multi import JRA_PRIZE_WEIGHTS, LGBMRankerMulti, LGBMRankerMultiConfig
 from src.models.tuning import run_tuning, save_best_params
 
@@ -564,8 +564,14 @@ def train_pipeline(
     )
     calib_df = calib_df[calib_df["finish_position"] > 0].copy()
     calib_df["is_place"] = (calib_df["finish_position"] <= 3).astype(int)
+    # アイソトニック校正器（Issue #416・本番の既定手法）を検証データでフィット。
+    calibration_isotonic = fit_calibration_isotonic(calib_df)
+    # 温度も後方互換のためフィットして保存する（推論時はアイソトニックを優先）。
     calibration_temperature = fit_calibration_temperature(calib_df)
-    logger.info(f"Calibration temperature: {calibration_temperature:.4f}")
+    logger.info(
+        f"Calibration temperature: {calibration_temperature:.4f}, "
+        f"isotonic thresholds: {len(calibration_isotonic['x_thresholds'])}"
+    )
 
     # 6. モデル保存
     if output_dir is None:
@@ -584,6 +590,7 @@ def train_pipeline(
         "valid_races": valid_df[data_config["group_column"]].nunique(),
     }
     ranker.calibration_temperature = calibration_temperature
+    ranker.calibration_isotonic = calibration_isotonic
     ranker.save(model_path, training_period=training_period)
 
     if tuning_result is not None:
@@ -612,6 +619,7 @@ def train_pipeline(
         "gcs_uri": gcs_uri,
         "metrics": metrics,
         "calibration_temperature": calibration_temperature,
+        "calibration_isotonic_points": len(calibration_isotonic["x_thresholds"]),
         "best_iteration": ranker.model.best_iteration,
         "train_rows": len(train_df),
         "valid_rows": len(valid_df),
@@ -738,6 +746,7 @@ def main():
     print(f"推論対象: {result['predict_rows']} rows")
     print(f"特徴量数: {result['num_features']}")
     print(f"校正温度: {result['calibration_temperature']:.4f}")
+    print(f"アイソトニック校正: {result['calibration_isotonic_points']}点")
     print(f"\n評価指標:")
     print(f"  NDCG@3:   {result['metrics']['ndcg@3']:.4f}")
     print(f"  Recall@3: {result['metrics']['recall@3']:.4f}")
