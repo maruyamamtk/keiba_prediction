@@ -214,41 +214,26 @@ python scripts/run_backtest.py \
 
 #### A. パラメータ最適化（手動、初回および月次実行）
 
-グリッドサーチで最適な投資パラメータを探索し、`config/strategy_config.yaml` に保存する。
+Optuna のベイズ最適化で最適な投資パラメータ（`expected_return_threshold` / `top_n` / `min_prob_threshold` / `max_wide_odds`）を探索し、`config/strategy_config.yaml` に保存する。`prob_weight_r` はアイソトニック校正後 **1.0 固定・探索対象外**（Issue #417）。
 **この手順を一度実行するだけで、以降の日次自動実行（手順B）が正しいパラメータで動作する。**
+最適化は内部で `meta.json` の校正器を自動適用するため、本番予測パスと同一の校正済み確率で探索される。
 
 > **⚠️ OOS（アウトオブサンプル）評価の原則**
 > `--start-date` / `--end-date` には、モデルの学習期間・検証期間に**含まれない**日付を指定すること。
 > モデルの学習/検証期間を最適化データに使うと、パラメータが過去の学習データに過適合する（データリーク）。
 > 例: `--execution-date 2025-01-06` で学習した場合 → 検証期間は〜2025-01-06 → `--start-date 2025-01-11` 以降を指定する。
 
-> **⏱️ 実行時間の目安**（データ期間: 約1年、レース数: 約3,200）
->
-> | グリッドサイズ | 組み合わせ数 | 推定時間 |
-> |---|---|---|
-> デフォルト（`--r-dominant-range` 未指定） | 1,296 | 約8時間 |
-> `--r-dominant-range 1.0 1.2 --r-standard-range 1.0 1.2` | 324 | 約2時間 |
-> `--r-dominant-range 1.0 --r-standard-range 1.0` | 81 | 約30分 |
->
-> 初回は r 値を固定して p1 × threshold × top_n のみ探索することを推奨。
-
 ```bash
-# 推奨: r 値を固定して高速実行（約30分）
-python3 scripts/run_strategy_optimization.py \
+# Optuna 最適化（n-trials は試行回数。500 程度を推奨）
+python3 scripts/optimize_strategy.py \
     --project-id <PROJECT_ID> \
     --model-path gs://<PROJECT_ID>-keiba-models/lgbm_ranker_multi/<YYYYMMDD>/lgbm_ranker_multi_<YYYYMMDD>.txt \
     --start-date 2025-01-11 \
     --end-date 2025-12-31 \
-    --r-dominant-range 1.0 \
-    --r-standard-range 1.0
-
-# フルグリッドサーチ（約8時間）
-python3 scripts/run_strategy_optimization.py \
-    --project-id <PROJECT_ID> \
-    --model-path gs://<PROJECT_ID>-keiba-models/lgbm_ranker_multi/<YYYYMMDD>/lgbm_ranker_multi_<YYYYMMDD>.txt \
-    --start-date 2025-01-11 \
-    --end-date 2025-12-31
+    --n-trials 500
 ```
+
+> 旧 `scripts/run_strategy_optimization.py`（パターン分類前提のグリッドサーチ。`p1` / `r-dominant-range` 等）は後方互換のため残るが、本番では使用しない。
 
 #### B. 日次投資戦略策定（手動確認用 / Cloud Schedulerで自動実行）
 
@@ -685,14 +670,15 @@ docker build --platform linux/amd64 -f Dockerfile.dashboard -t dashboard-service
 - 投資戦略パラメータ（Kelly係数・期待回収率閾値）の調整
 - `scripts/run_backtest.py` からCLI実行
 
-**投資ロジック（Issue #139 改修後）**:
-- **基本馬券**: 複勝・ワイド・三連複をベースに期待回収率フィルタで選定
-- **パターンA（突出型）**: 馬連を追加購入
-- 賭け金配分: **オッズ逆数比率**方式（1レース合計 = `budget_per_race` 固定 3000円）
+**投資ロジック（全レース統一ロジック）**:
+- **基本馬券**: 複勝・ワイドを期待回収率フィルタで選定し、ワイド選定組には馬連を一律自動追加
+- **三連複**: 本番は除外（`enabled_bet_types=["place", "wide", "umaren"]`、Issue #411）。コードは生成可能だが本番設定で無効
+- レースパターン分類（突出型/標準型）は廃止し、全レースを同一ロジックで処理
+- 賭け金配分: **オッズ逆数比率**方式（1レース合計 = `budget_per_race` 固定 1000円）
 - コンボオッズ参照: `predictions.daily_odds_combo` → `raw.combo_odds` → `raw.payouts` の順にフォールバック
-- パラメータ管理: `config/strategy_config.yaml`（`run_strategy_optimization.py` で最適化: threshold × top_n × r の探索）
+- パラメータ管理: `config/strategy_config.yaml`（`scripts/optimize_strategy.py` で Optuna 最適化: threshold × top_n × min_prob_threshold × max_wide_odds の探索）
 - **`min_prob_threshold`**: 軸馬の最低複勝率（これ未満は全馬券種の候補馬から除外）
-- **`prob_weight_r`**: 馬選定スコア係数（スコア = `odds × prob^r`。r>1 で高確率馬を優先）
+- **`prob_weight_r`**: 馬選定スコア係数（スコア = `odds × prob^r`）。アイソトニック校正後は **1.0 固定・探索対象外**（校正後は `odds × prob` がそのまま真の期待回収率のため純EV順が正解。Issue #417）
 
 ---
 
@@ -879,7 +865,7 @@ python3 scripts/create_raw_combo_odds_table.py --project-id <PROJECT_ID>
 
 | テーブル | 説明 | カラム数 | 行数 |
 |---------|------|---------|------|
-| `training_data` | 学習用特徴量 | 257 | 466,265 |
+| `training_data` | 学習用特徴量 | 664 | 約444,000 |
 
 特徴量の詳細は [ML_FEATURE.md](./ML_FEATURE.md) を参照してください。
 

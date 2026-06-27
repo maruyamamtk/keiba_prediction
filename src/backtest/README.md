@@ -12,14 +12,14 @@
 
 ### フェーズ1: パラメータ最適化
 
-`scripts/run_strategy_optimization.py` を使い、グリッドサーチで最適なハイパーパラメータを探索して `config/strategy_config.yaml` に保存します。
+`scripts/optimize_strategy.py` を使い、Optuna のベイズ最適化で最適なハイパーパラメータを探索して `config/strategy_config.yaml` に保存します。
 
 | ステップ | 処理内容 | 参照テーブル |
 |---------|---------|------------|
-| 1 | 指定期間の特徴量を取得し、MLモデルで複勝率 (`win_place_prob`) を予測 | `features.training_data` |
+| 1 | 指定期間の特徴量を取得し、MLモデルで複勝率 (`win_place_prob`) を予測（`meta.json` の校正器を自動適用） | `features.training_data` |
 | 2a | 単複オッズ取得（2段フォールバック） | ① `predictions.daily_odds` → ② `raw.odds` |
 | 2b | コンボオッズ取得（3段フォールバック） | ① `predictions.daily_odds_combo` → ② `raw.combo_odds` → ③ `raw.payouts` |
-| 3 | グリッドサーチで各パラメータ組み合わせの回収率を集計 | — |
+| 3 | Optuna で各パラメータ組み合わせの回収率を集計（賭け数下限などの制約あり） | — |
 | 4 | 払い戻し金額の算出 | `raw.payouts` |
 | 5 | 回収率が最大となるパラメータを `config/strategy_config.yaml` に保存 | — |
 
@@ -27,18 +27,22 @@
 
 | パラメータ | 説明 |
 |-----------|------|
-| `p1` | トップ1馬の突出度閾値（one_dominant パターン判定） |
 | `expected_return_threshold` | 期待回収率フィルタ閾値（`win_place_prob × odds > threshold` で馬券選定） |
-| `prob_weight_r` | 馬選定スコア係数（スコア = `odds × prob^r`） |
+| `top_n` | ワイド/馬連/三連複の候補馬数 |
+| `min_prob_threshold` | 全馬券種の最低複勝率（18頭換算基準） |
+| `max_wide_odds` | ワイド購入の上限オッズ |
+
+> `prob_weight_r` はアイソトニック校正後 **1.0 固定・探索対象外**（Issue #417）。旧 `run_strategy_optimization.py`（`p1`・パターン別 `r` を含むグリッドサーチ）は本番では使用しない。
 
 **実行コマンド:**
 
 ```bash
-python3 scripts/run_strategy_optimization.py \
+python3 scripts/optimize_strategy.py \
     --project-id <PROJECT_ID> \
     --model-path gs://<PROJECT_ID>-keiba-models/lgbm_ranker_multi/20260301/model.txt \
     --start-date 2024-01-01 \
-    --end-date 2024-12-31
+    --end-date 2024-12-31 \
+    --n-trials 500
 ```
 
 ---
@@ -116,7 +120,7 @@ python3 scripts/run_strategy.py --project-id <PROJECT_ID> --dry-run
 
 ## 投資戦略の概要
 
-現在の投資戦略はレースパターン分類（突出型 / 標準型）に基づき、複勝・ワイド・三連複・馬連を組み合わせて購入します。1レースあたりの予算は `budget_per_race`（固定3,000円）で、オッズ逆数比率方式で配分します。
+現在の投資戦略は全レースを統一ロジックで処理し、複勝・ワイドを期待回収率フィルタで選定、ワイド選定組には馬連を一律自動追加して購入します（三連複は `enabled_bet_types` で本番除外）。1レースあたりの予算は `budget_per_race`（固定1,000円）で、オッズ逆数比率方式で配分します。レースパターン分類（突出型 / 標準型）は廃止されました。
 
 詳細な設計仕様は [STRATEGY.md](../../STRATEGY.md) を参照してください。
 
@@ -149,12 +153,16 @@ python3 scripts/run_strategy.py --project-id <PROJECT_ID> --dry-run
 
 `config/strategy_config.yaml` の主要パラメータ:
 
-| パラメータ | デフォルト | 説明 |
+| パラメータ | 例 | 説明 |
 |-----------|----------|------|
-| `budget_per_race` | 3,000 | 1レースあたり固定予算（円） |
-| `expected_return_threshold` | 1.2 | 期待回収率フィルタ（`prob × odds > 閾値` の馬のみ選定） |
-| `p1` | 0.5 | 突出型判定の補正ジニ係数閾値 |
+| `budget_per_race` | 1,000 | 1レースあたり固定予算（円） |
+| `expected_return_threshold` | 1.94 | 期待回収率フィルタ（`prob × odds > 閾値` の馬のみ選定） |
+| `top_n` | 5 | ワイド/馬連/三連複の候補馬数 |
+| `min_prob_threshold` | 0.24 | 全馬券種の最低複勝率（18頭換算基準） |
+| `max_wide_odds` | 44.0 | ワイド購入の上限オッズ（null で無制限） |
+| `prob_weight_r` | 1.0 | 選定スコア係数（`odds × prob^r`）。校正後は **1.0 固定**（Issue #417） |
 | `min_bet_amount` | 100 | 最低賭け金（円） |
+| `enabled_bet_types` | [place, wide, umaren] | 購入対象券種（三連複除外、Issue #411） |
 
 ---
 
@@ -162,10 +170,12 @@ python3 scripts/run_strategy.py --project-id <PROJECT_ID> --dry-run
 
 ```
 src/backtest/
-├── __init__.py        # パッケージ初期化・公開API
-├── simulator.py       # BacktestSimulator, kelly_criterion, fractional_kelly
-├── metrics.py         # recovery_rate, hit_rate, max_drawdown, sharpe_ratio
-└── README.md          # このファイル
+├── __init__.py            # パッケージ初期化・公開API
+├── strategy.py            # 戦略コアロジック（馬券選定・賭け金配分。全レース統一ロジック）
+├── strategy_optimizer.py  # Optuna最適化（run_optuna_search）・最良パラメータ選定
+├── simulator.py           # BacktestSimulator, kelly_criterion, fractional_kelly
+├── metrics.py             # recovery_rate, hit_rate, max_drawdown, sharpe_ratio
+└── README.md              # このファイル
 ```
 
 ---
@@ -185,9 +195,10 @@ python scripts/run_backtest.py \
 投資戦略のパラメータ最適化:
 
 ```bash
-python3 scripts/run_strategy_optimization.py \
+python3 scripts/optimize_strategy.py \
     --project-id <PROJECT_ID> \
     --model-path <MODEL_PATH> \
     --start-date 2024-01-01 \
-    --end-date 2024-12-31
+    --end-date 2024-12-31 \
+    --n-trials 500
 ```
