@@ -29,6 +29,9 @@ class LGBMModelBase:
         # win_place_prob キャリブレーション温度（Issue #414）。
         # None の場合、推論時は 1.0（未校正）にフォールバックする。
         self.calibration_temperature: float | None = None
+        # win_place_prob アイソトニック校正器（Issue #416・本番の既定手法）。
+        # {"method", "x_thresholds", "y_thresholds"} の dict。存在する場合は温度より優先。
+        self.calibration_isotonic: dict | None = None
 
     def _prepare_prediction_data(self, X: pd.DataFrame) -> pd.DataFrame:
         """予測用にDataFrameをモデルの期待に合わせて整形する。
@@ -223,6 +226,8 @@ class LGBMRanker(LGBMModelBase):
             meta["training_period"] = training_period
         if self.calibration_temperature is not None:
             meta["calibration_temperature"] = self.calibration_temperature
+        if self.calibration_isotonic is not None:
+            meta["calibration_isotonic"] = self.calibration_isotonic
         meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2))
 
         logger.info(f"Model saved to {model_path}")
@@ -239,10 +244,12 @@ class LGBMRanker(LGBMModelBase):
             meta = json.loads(meta_path.read_text())
             self.feature_names = meta.get("feature_names")
             self.calibration_temperature = meta.get("calibration_temperature")
+            self.calibration_isotonic = meta.get("calibration_isotonic")
             logger.info(
                 f"Model loaded from {model_path} "
                 f"(best_iteration={meta.get('best_iteration')}, "
-                f"calibration_temperature={self.calibration_temperature})"
+                f"calibration_temperature={self.calibration_temperature}, "
+                f"calibration_isotonic={'有' if self.calibration_isotonic else '無'})"
             )
         else:
             self.feature_names = self.model.feature_name()

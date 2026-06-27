@@ -30,7 +30,9 @@ import pandas as pd
 from google.cloud import bigquery
 
 from src.models.calibration import (
+    apply_isotonic_calibration,
     compute_calibration_metrics,
+    fit_calibration_isotonic,
     fit_calibration_temperature,
     normalize_win_place_prob,
 )
@@ -80,6 +82,12 @@ def main() -> int:
         type=float,
         default=None,
         help="校正温度（未指定時は meta.json 保存値、それも無ければ out-of-sample でフィット）",
+    )
+    parser.add_argument(
+        "--method",
+        choices=["isotonic", "temperature", "both"],
+        default="both",
+        help="校正手法。isotonic（Issue #416・既定推奨）/ temperature（Issue #414）/ both（両方比較）",
     )
     args = parser.parse_args()
 
@@ -138,33 +146,48 @@ def main() -> int:
     df["is_place"] = (df["finish_position"] <= 3).astype(int)
     logger.info(f"実績結合後: {len(df)} 行")
 
-    # 4. 校正温度の決定
-    if args.temperature is not None:
-        temperature = args.temperature
-        src = "CLI指定"
-    elif ranker.calibration_temperature is not None:
-        temperature = ranker.calibration_temperature
-        src = "meta.json"
-    else:
-        temperature = fit_calibration_temperature(df)
-        src = "out-of-sampleフィット"
-    logger.info(f"校正温度={temperature:.4f}（{src}）")
-
-    # 5. 校正前後の指標を算出
-    probs_before = normalize_win_place_prob(df, temperature=1.0)["win_place_prob"].values
-    probs_after = normalize_win_place_prob(df, temperature=temperature)["win_place_prob"].values
     labels = df["is_place"].values
 
+    # 4. 校正前（temperature=1.0・未校正）の指標
+    probs_before = normalize_win_place_prob(df, temperature=1.0)["win_place_prob"].values
     m_before = compute_calibration_metrics(probs_before, labels)
-    m_after = compute_calibration_metrics(probs_after, labels)
-
     _print_reliability(f"校正前（temperature=1.0）モデル={Path(args.model).stem}", m_before)
-    _print_reliability(f"校正後（temperature={temperature:.4f}・{src}）", m_after)
 
-    print("\n=== 改善サマリ ===")
-    print(f"ECE     : {m_before['ece']:.4f} → {m_after['ece']:.4f} ({m_after['ece'] - m_before['ece']:+.4f})")
-    print(f"Brier   : {m_before['brier']:.4f} → {m_after['brier']:.4f} ({m_after['brier'] - m_before['brier']:+.4f})")
-    print(f"LogLoss : {m_before['log_loss']:.4f} → {m_after['log_loss']:.4f} ({m_after['log_loss'] - m_before['log_loss']:+.4f})")
+    # 5. 各手法の校正後指標を算出
+    results: dict[str, dict] = {}
+
+    if args.method in ("temperature", "both"):
+        # 校正温度の決定
+        if args.temperature is not None:
+            temperature, t_src = args.temperature, "CLI指定"
+        elif ranker.calibration_temperature is not None:
+            temperature, t_src = ranker.calibration_temperature, "meta.json"
+        else:
+            temperature, t_src = fit_calibration_temperature(df), "out-of-sampleフィット"
+        logger.info(f"校正温度={temperature:.4f}（{t_src}）")
+        probs_t = normalize_win_place_prob(df, temperature=temperature)["win_place_prob"].values
+        m_t = compute_calibration_metrics(probs_t, labels)
+        results["温度"] = m_t
+        _print_reliability(f"校正後（temperature={temperature:.4f}・{t_src}）", m_t)
+
+    if args.method in ("isotonic", "both"):
+        # meta.json に保存済みの校正器があれば使用、無ければ out-of-sample でフィット
+        if getattr(ranker, "calibration_isotonic", None):
+            calibrator, i_src = ranker.calibration_isotonic, "meta.json"
+        else:
+            calibrator, i_src = fit_calibration_isotonic(df), "out-of-sampleフィット"
+        logger.info(f"アイソトニック校正（{i_src}・閾値{len(calibrator['x_thresholds'])}点）")
+        probs_i = apply_isotonic_calibration(df, calibrator)["win_place_prob"].values
+        m_i = compute_calibration_metrics(probs_i, labels)
+        results["アイソトニック"] = m_i
+        _print_reliability(f"校正後（アイソトニック・{i_src}）", m_i)
+
+    print("\n=== 改善サマリ（校正前 → 校正後） ===")
+    for name, m in results.items():
+        print(f"[{name}]")
+        print(f"  ECE     : {m_before['ece']:.4f} → {m['ece']:.4f} ({m['ece'] - m_before['ece']:+.4f})")
+        print(f"  Brier   : {m_before['brier']:.4f} → {m['brier']:.4f} ({m['brier'] - m_before['brier']:+.4f})")
+        print(f"  LogLoss : {m_before['log_loss']:.4f} → {m['log_loss']:.4f} ({m['log_loss'] - m_before['log_loss']:+.4f})")
     return 0
 
 
