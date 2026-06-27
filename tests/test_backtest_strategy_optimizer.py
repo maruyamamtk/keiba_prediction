@@ -523,6 +523,21 @@ class TestRunOptunaSearch:
         for r in results:
             assert "temperature" not in r.params
 
+    def test_run_optuna_search_never_explores_prob_weight_r(self):
+        """prob_weight_r はアイソトニック校正後は 1.0 固定・探索対象外（Issue #417）。
+
+        trial パラメータとして探索されず、結果 params には常に固定値 1.0 が入ること。
+        """
+        import pytest
+        optuna = pytest.importorskip("optuna")
+        df = _make_predictions_df(n_races=3, n_horses=5, win_place_prob=0.5, odds=3.0)
+        optimizer = StrategyOptimizer(df, None, combo_odds_df=None)
+        results = optimizer.run_optuna_search(n_trials=5, timeout=30)
+        assert results
+        for r in results:
+            # params には後方互換のため残るが、常に固定値 1.0
+            assert r.params["prob_weight_r"] == 1.0
+
     def test_run_optuna_search_metrics_are_valid(self):
         """各結果の指標が有効な数値である"""
         import pytest

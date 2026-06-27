@@ -1,5 +1,10 @@
 expected_return_threshold: 1.9583661302048996
-prob_weight_r: 1.3641836501308657
+# prob_weight_r はアイソトニック校正（Issue #416）後は 1.0 固定・探索対象外（Issue #417）。
+# 校正後は odds × prob がそのまま真の期待回収率（EV）であり、選定スコアは r=1（純EV順）が正解。
+# 注: 下記 expected_return_threshold/top_n/min_prob_threshold/max_wide_odds は校正本番反映前
+# （r 自由・未校正確率）の最適化値。校正済みモデルを deploy する前に r=1 固定・校正済み確率で
+# 必ず再最適化すること（scripts/optimize_strategy.py、retrain-and-deploy 手順参照）。
+prob_weight_r: 1.0
 budget_per_race: 1000
 min_bet_amount: 100
 min_prob_threshold: 0.13052265471119168

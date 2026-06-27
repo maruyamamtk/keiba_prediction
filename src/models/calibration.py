@@ -285,6 +285,33 @@ def apply_isotonic_calibration(
     return df
 
 
+def apply_model_calibration(df: pd.DataFrame, ranker, n_places: int = 3) -> pd.DataFrame:
+    """モデルに保存された校正器を優先順位順に適用して win_place_prob を算出する。
+
+    優先順位は アイソトニック（Issue #416）→ 温度（Issue #414）→ 未校正 T=1.0（旧モデル）。
+    本番予測パス（predict.py）とバックテスト/戦略最適化パス（run_backtest.py）の双方が
+    この共通関数を使うことで、両者の win_place_prob を必ず一致させる（Issue #417）。
+    校正器はいずれも単調写像のためレース内順位は保存される（NDCG@3 / Recall@3 不変）。
+
+    Args:
+        df: race_id と pred_score カラムを持つ DataFrame
+        ranker: calibration_isotonic / calibration_temperature 属性を持つモデル
+                （未保持の場合は duck-typing で None 扱い → T=1.0 フォールバック）
+        n_places: 複勝対象着順数
+
+    Returns:
+        win_place_prob カラムを上書きした DataFrame
+    """
+    calib_isotonic = getattr(ranker, "calibration_isotonic", None)
+    if calib_isotonic:
+        logger.info("win_place_prob 算出: アイソトニック校正を適用")
+        return apply_isotonic_calibration(df, calib_isotonic, n_places=n_places)
+
+    calib_temp = getattr(ranker, "calibration_temperature", None) or 1.0
+    logger.info("win_place_prob 算出: calibration_temperature=%.4f", calib_temp)
+    return normalize_win_place_prob(df, temperature=calib_temp, n_places=n_places)
+
+
 def compute_calibration_metrics(
     probs: np.ndarray,
     labels: np.ndarray,

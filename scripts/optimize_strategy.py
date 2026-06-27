@@ -103,7 +103,8 @@ def save_best_params_to_yaml(
 
     config["expected_return_threshold"] = best.params["expected_return_threshold"]
     config["top_n"] = best.params["top_n"]
-    config["prob_weight_r"] = best.params["prob_weight_r"]
+    # prob_weight_r はアイソトニック校正（Issue #416）後は 1.0 固定・探索対象外（Issue #417）。
+    config["prob_weight_r"] = 1.0
     config["min_prob_threshold"] = best.params["min_prob_threshold"]
     config["max_wide_odds"] = best.params.get("max_wide_odds", None)
     # 廃止済みパラメータを削除（存在する場合）。temperature は本番予測パスで未適用のため
