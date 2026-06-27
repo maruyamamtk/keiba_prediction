@@ -1,51 +1,22 @@
-expected_return_threshold: 1.9583661302048996
-# prob_weight_r はアイソトニック校正（Issue #416）後は 1.0 固定・探索対象外（Issue #417）。
-# 校正後は odds × prob がそのまま真の期待回収率（EV）であり、選定スコアは r=1（純EV順）が正解。
-# 注: 下記 expected_return_threshold/top_n/min_prob_threshold/max_wide_odds は校正本番反映前
-# （r 自由・未校正確率）の最適化値。校正済みモデルを deploy する前に r=1 固定・校正済み確率で
-# 必ず再最適化すること（scripts/optimize_strategy.py、retrain-and-deploy 手順参照）。
+expected_return_threshold: 1.938823538783936
 prob_weight_r: 1.0
 budget_per_race: 1000
 min_bet_amount: 100
-min_prob_threshold: 0.13052265471119168
-top_n: 6
-max_wide_odds: 13.729557291781004
-# 購入対象とする券種。三連複(sanrenpuku)は的中率・回収率が低く全体を希釈するため除外（Issue #411）
+min_prob_threshold: 0.24342928840836991
+top_n: 5
+max_wide_odds: 44.020508484687106
 enabled_bet_types:
 - place
 - wide
 - umaren
 optimization:
-  last_run: '2026-06-21T12:58:49'
+  last_run: '2026-06-27T16:51:26'
   method: optuna
   metric: recovery_rate
   n_trials: 500
   start_date: '2025-12-20'
-  end_date: '2026-06-14'
-  model: lgbm_ranker_multi/20260620
-  enabled_bet_types: [place, wide, umaren]
-  min_total_bets: 300
-  recovery_rate: 238.13
-  hit_rate: 27.96
-  max_drawdown: 6.1
-  total_bets: 304
-  verified:
-    note: >-
-      run_backtest.py（全馬券種の実払戻 raw.payouts・temperature=1.0=本番一致）による
-      確定値。三連複除外（enabled_bet_types=[place,wide,umaren]）前提で再最適化（Issue #411）。
-      賭け数下限は三連複除外で自然水準が約半減するため 300 に設定。
-    recovery_rate: 225.9
-    hit_rate: 28.0
-    max_drawdown: 6.1
-    sharpe_ratio: 4.551
-    total_bets: 304
-  holdout_validation:
-    note: >-
-      過学習検証。チューニング期間(2025-12-20〜2026-04-19)のみで最適化したパラメータを
-      最適化が見ていないホールドアウト期間(2026-04-20〜2026-06-14)で評価。OOS回収率が
-      199.5%と高水準を維持し、最適化プロセスが過学習していないことを確認。これにより
-      全6ヶ月データを使う本パラメータ(全期間最適化=セットA)の採用が妥当と判断。
-    tune_period_in_sample_recovery_rate: 285.6
-    holdout_period_oos_recovery_rate: 199.5
-    holdout_period_oos_hit_rate: 25.7
-    holdout_period_oos_total_bets: 140
+  end_date: '2026-06-27'
+  recovery_rate: 216.58
+  hit_rate: 16.2
+  max_drawdown: 9.17
+  total_bets: 605

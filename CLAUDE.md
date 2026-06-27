@@ -36,7 +36,7 @@
 #### Feature Engineering Layer ✅ 実装済み
 - BigQuery SQL駆動方式（feature_query_raw.sql）
 - 5段階CTE: ベース → 過去走 → 集計 → 馬マスター → 差分指標
-- 出力: features.training_data（257カラム、466,265行）
+- 出力: features.training_data（664カラム、約444,000行）
 - Cloud Run APIエンドポイント（同期/非同期）
 
 #### Model Training Layer ✅ 実装済み
@@ -52,7 +52,7 @@
 - 評価指標: 回収率・的中率・最大ドローダウン・シャープレシオ
 - BigQuery（features.training_data, raw.race_results, raw.payouts）からの期間指定データ取得
 - 結果のCSV保存・BigQuery保存・グラフ出力
-- `select_bets_for_race()` を使用（`budget_per_race` 固定・オッズ逆数比率配分・複勝/ワイド/三連複/馬連）← **本番と同じロジック**
+- `select_bets_for_race()` を使用（`budget_per_race` 固定・オッズ逆数比率配分・複勝/ワイド/馬連。三連複は `enabled_bet_types` で本番除外）← **本番と同じロジック**
 
 #### Prediction & Operation Layer 🔧 一部実装済み
 - 日次予測パイプライン（Cloud Schedulerからの自動推論・BQ/GCS保存） ✅ Issue #117
@@ -120,7 +120,7 @@ JRDB → GCS → BigQuery → features.training_data の流れでデータを取
 特徴量生成はBigQuery SQL駆動方式を採用しています。
 - SQL（`src/ml/features/feature_query_raw.sql`）で一括処理
 - 5段階CTE: ベース → 過去走 → 集計 → 馬マスター → 差分指標
-- 出力: features.training_data（257カラム、466,265行）
+- 出力: features.training_data（664カラム、約444,000行）
 
 **実装済みの詳細は [README.md](./README.md) および [ML_FEATURE.md](./ML_FEATURE.md) を参照してください。**
 
@@ -191,7 +191,7 @@ GCSモデルは `lgbm_ranker_multi/` プレフィックス配下に保存され�
 1. **閾値設定**: 予測確率 > 閾値 の馬のみ購入
 2. **期待値フィルタ**: 期待回収率 = 予測確率 × オッズ > 1.2 の馬のみ
 3. **賭け金配分**: オッズ逆数比率方式（1レース合計 = `budget_per_race` 固定）
-4. **1レースあたり固定予算**: 3000円（`budget_per_race`）
+4. **1レースあたり固定予算**: 1000円（`budget_per_race`）
 
 ---
 
