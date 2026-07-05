@@ -12,15 +12,6 @@ gcloud run services describe keiba-pipeline \
     status.latestReadyRevisionName
   )" && \
 echo "" && \
-echo "=== Cloud Run Jobs ===" && \
-gcloud run jobs describe keiba-model-retrain \
-  --region=asia-northeast1 \
-  --format="yaml(
-    spec.template.spec.template.spec.containers[0].resources,
-    spec.template.spec.taskCount,
-    spec.template.spec.maxRetries
-  )" && \
-echo "" && \
 echo "=== Cloud Scheduler Jobs ===" && \
 gcloud scheduler jobs list \
   --location=asia-northeast1 \
@@ -37,16 +28,16 @@ gcloud scheduler jobs list \
 | memory | `4Gi` | 8Gi だとメモリ課金が増加 |
 | cpu | `2` | 変更不要 |
 
-### Cloud Run Jobs（keiba-model-retrain）
+### モデル再学習について
 
-| 項目 | 期待値 | 備考 |
-|---|---|---|
-| memory | `8Gi` | 学習時のみ起動するため許容範囲 |
-| maxRetries | `0` | 再学習の重複実行を防ぐ |
+- モデル再学習は **ローカル月次自動フロー**（`scripts/monthly_retrain.py`・launchd
+  `com.keiba.monthly-retrain`・毎月第1月曜 AM1:00）に移行済み。
+- 旧 `weekly-model-retrain`（Cloud Scheduler）と `keiba-model-retrain`（Cloud Run Job）は
+  **廃止済み**。これらが再び存在していたら削除対象（OOM でサイレント失敗するため）。
 
 ### Cloud Scheduler
 
-- `weekly-model-retrain` が ENABLED でも問題なし（Cloud Run Jobs を起動するが、ローカル学習が主フローのため実害は小さい）
+- `weekly-model-retrain` が存在していたら**異常**（削除済みのはず）。見つかったら削除する。
 - 不明なジョブが ENABLED になっていないか確認
 
 ## 問題があった場合の対処

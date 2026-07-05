@@ -117,7 +117,8 @@ gsutil iam ch \
     log_warn "GCSバケット権限の設定をスキップしました（バケットが存在しない可能性があります）"
 
 # モデルバケットへのアクセス権限を付与
-# objectAdmin: 月次再学習(POST /api/v1/model/retrain/async)でモデルをGCSに書き込むため書き込み権限が必要
+# objectAdmin: 日次予測がモデルを読み込み、予測結果をGCSに書き込むため（モデル再学習の
+# GCS書き込みはローカル月次フロー scripts/monthly_retrain.py がユーザー権限で行う）
 gsutil iam ch \
     "serviceAccount:${PIPELINE_SA_EMAIL}:roles/storage.objectAdmin" \
     "gs://${GCS_BUCKET_MODELS_FULL}" 2>/dev/null && \
@@ -149,7 +150,6 @@ log_warn "Cloud Schedulerジョブを作成・更新するため setup_scheduler
 log_warn "  ./infrastructure/scripts/setup_scheduler.sh"
 log_warn ""
 log_warn "これを実行しないと以下のジョブが本番環境に存在しません:"
-log_warn "  - weekly-model-retrain（毎週月曜 AM 8:00）"
 log_warn "  - race-day-predict、race-day-strategy 等の日次ジョブ"
 log_warn "=========================================="
 log_info ""

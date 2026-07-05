@@ -19,14 +19,13 @@ gcloud run services describe keiba-pipeline \
 
 ## 2. Cloud Run Jobs の設定確認
 
+> モデル再学習は**ローカル月次フロー**（`scripts/monthly_retrain.py`）に移行済みで、
+> 課金対象の Cloud Run Job（旧 `keiba-model-retrain`）は**廃止済み**。
+> `gcloud run jobs list --region=asia-northeast1` に再学習用 Job が残っていないことを確認する
+> （残っていたらコスト・サイレント失敗のリスクがあるため削除する）。
+
 ```bash
-gcloud run jobs describe keiba-model-retrain \
-  --region=asia-northeast1 \
-  --format="table(
-    metadata.name,
-    spec.template.spec.template.spec.containers[0].resources.limits.memory,
-    spec.template.spec.template.spec.containers[0].resources.limits.cpu
-  )"
+gcloud run jobs list --region=asia-northeast1 --format="table(name,region)"
 ```
 
 ## 3. Cloud Scheduler ジョブの状態確認

@@ -13,7 +13,7 @@ region: asia-northeast1
 
 # リソース設定
 # 予測処理（LightGBM + BigQuery取得）を考慮して 4Gi を確保
-# モデル再学習は Cloud Run Jobs（keiba-model-retrain）で実行するため Service は 4Gi で十分
+# モデル再学習はローカル月次フロー（scripts/monthly_retrain.py）で実行するため Service は 4Gi で十分
 memory: 4Gi
 cpu: 2
 timeout: 900  # 15分（予測処理の長時間実行に対応）

@@ -123,7 +123,10 @@ python3 -m src.ml.features.feature_pipeline --start-date 2024-01-01 --end-date 2
 
 ### 5. モデル学習・推論
 
-**モデル学習はローカルで実行します。** Cloud Run Jobs（`keiba-model-retrain`）はメモリ不足になるため使用しません。
+**モデル学習・本番反映はローカル月次自動フローで実行します。** 毎月第1月曜 AM1:00 に launchd
+（`com.keiba.monthly-retrain`）が `scripts/monthly_retrain.py` を品質ゲート付きで自動実行します
+（特徴量再生成→学習→戦略再最適化→デプロイ）。旧 Cloud Run Job（`keiba-model-retrain`）は
+OOM でサイレント失敗していたため廃止しました。手動実行や設定は [SCHEDULE.md](./SCHEDULE.md#モデル再学習ローカル月次自動フロー) を参照。
 
 **LGBMRankerMulti**（JRA賞金ウェイト多値ラベル LambdaRank）単一モデルを採用しています。
 
@@ -292,21 +295,17 @@ source .env && .venv/bin/streamlit run src/dashboard/app.py
 特徴量・モデルコードを変更して本番に反映するときの手順です。
 
 ```bash
-# ① コードをGCPイメージ化・デプロイ
-./infrastructure/scripts/build_and_push.sh
-./infrastructure/scripts/setup_cloud_run_jobs.sh   # Cloud Run Jobs のイメージも更新
-./infrastructure/scripts/deploy_cloud_run.sh
-./infrastructure/scripts/verify_deployment.sh
+# 特徴量再生成→学習→戦略再最適化→デプロイを品質ゲート付きで一括実行
+.venv/bin/python scripts/monthly_retrain.py --project-id <PROJECT_ID>
 
-# ② ローカルでモデルを学習（Cloud Run Jobs はメモリ不足のためローカルで実行）
-.venv/bin/python -m src.models.train --model-type multi --tune --project-id <PROJECT_ID>
-# → 完了後、自動的に GCS へアップロードされる
-#    gs://{PROJECT_ID}-keiba-models/lgbm_ranker_multi/{YYYYMMDD}/lgbm_ranker_multi_{YYYYMMDD}.txt
-
-# ③ 翌日の race-day-predict（AM 8:00）が自動的に最新モデルで予測
+# 動作確認だけしたい場合（副作用なし / デプロイしない）
+.venv/bin/python scripts/monthly_retrain.py --dry-run
+.venv/bin/python scripts/monthly_retrain.py --skip-deploy
 ```
 
-> **`setup_cloud_run_jobs.sh` について**: Cloud Run Jobs のイメージは Service とは独立して管理されます。省略すると週次 Job が古いコードのままになりますが、現在はローカル学習を主フローとしているため `weekly-model-retrain` Job は実質使用しません。それでも省略しないことを推奨します（コードの整合性維持のため）。
+このフローは毎月第1月曜 AM1:00 に launchd で自動実行されます。臨時に手動反映したいときや、
+個別ステップ（特徴量のみ・学習のみ等）を実行したいときは [SCHEDULE.md](./SCHEDULE.md#モデル再学習ローカル月次自動フロー) と
+`/retrain-and-deploy` を参照してください。
 
 詳細な手順は [infrastructure/README.md](./infrastructure/README.md) を参照してください。
 
@@ -801,12 +800,11 @@ curl http://localhost:8080/health
 # 1. Dockerイメージのビルド・プッシュ
 ./infrastructure/scripts/build_and_push.sh
 
-# 2. Cloud Run Jobs（keiba-model-retrain）のイメージを更新
-#    ★ 特徴量・モデルコードを変更した場合は必ず実行すること
-./infrastructure/scripts/setup_cloud_run_jobs.sh
-
-# 3. Cloud Run Service（keiba-pipeline）にデプロイ
+# 2. Cloud Run Service（keiba-pipeline）にデプロイ
 ./infrastructure/scripts/deploy_cloud_run.sh
+
+# 3. Cloud Scheduler ジョブの作成・更新（URL変更を反映）
+./infrastructure/scripts/setup_scheduler.sh
 
 # 4. デプロイ後の動作確認
 ./infrastructure/scripts/verify_deployment.sh
@@ -830,8 +828,10 @@ gcloud scheduler jobs run daily-data-pipeline --location=asia-northeast1
 | `race-day-predict` | 毎日 AM 8:00 | レース予測 |
 | `race-day-odds-scrape` | 毎日 AM 8:15 | netkeibaオッズ取得 |
 | `race-day-strategy` | 毎日 AM 8:30 | 投資戦略策定（dry_run=true） |
-| `weekly-model-retrain` | 毎週月曜 AM 8:00 | モデル週次再学習（※ローカル学習を推奨。Cloud Run Jobsはメモリ不足のため実質未使用） |
 | `race-day-purchase` | 土日 8:00〜17:55 の5分おき | 発走直前IPAT自動馬券購入 |
+
+> モデル再学習は Cloud Scheduler ではなく**ローカル月次自動フロー**（`scripts/monthly_retrain.py`・
+> launchd・毎月第1月曜 AM1:00）で実行します。
 
 詳細な設定内容・操作コマンド・障害対応は [SCHEDULE.md](./SCHEDULE.md) を参照してください。
 
