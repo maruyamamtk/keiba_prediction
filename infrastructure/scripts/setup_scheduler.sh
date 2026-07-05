@@ -10,8 +10,10 @@
 #   2. race-day-predict       AM 8:00 JST  翌日レース予測
 #   3. race-day-odds-scrape   AM 8:15 JST  netkeibaオッズ取得（単複＋組み合わせ）
 #   4. race-day-strategy      AM 8:30 JST  投資戦略策定・investment_decisions保存
-#   5. weekly-model-retrain   毎週月曜 AM 8:00 JST  Cloud Run Jobs keiba-model-retrain を起動
-#   6. race-day-purchase      土日 8:00〜17:00 5分おき  IPAT自動馬券購入
+#   5. race-day-purchase      土日 8:00〜17:00 5分おき  IPAT自動馬券購入
+#
+# ※ モデル再学習はローカル月次自動フロー（scripts/monthly_retrain.py・毎月第1月曜 AM1:00）
+#    に移行済み。Cloud Scheduler / Cloud Run Jobs では実行しない。
 #
 # 使用方法:
 #   ./infrastructure/scripts/setup_scheduler.sh
@@ -21,13 +23,10 @@
 #   2. 適切な権限を持つユーザーでログイン済み (gcloud auth login)
 #   3. .envファイルにGCP_PROJECT_IDが設定済み
 #   4. Cloud Runサービス keiba-pipeline がデプロイ済み
-#   5. Cloud Run Jobs keiba-model-retrain が作成済み
-#      （未作成の場合: ./infrastructure/scripts/setup_cloud_run_jobs.sh を先に実行）
 #
 # 【重要】deploy_cloud_run.sh 実行後は必ずこのスクリプトを再実行してください。
 # Cloud Runのサービスを新たにデプロイするとURLが変わる場合があり、
-# また新規ジョブ（weekly-model-retrain 等）はこのスクリプトを実行しないと
-# Cloud Scheduler上に作成されません。
+# また新規ジョブはこのスクリプトを実行しないと Cloud Scheduler上に作成されません。
 #
 
 set -e
@@ -87,11 +86,6 @@ ODDS_SCRAPE_SCHEDULE="15 8 * * *"
 # 投資戦略ジョブ
 STRATEGY_JOB_NAME="race-day-strategy"
 STRATEGY_SCHEDULE="30 8 * * *"
-# 週次モデル再学習ジョブ（毎週月曜日 AM 8:00）
-# Cloud Run Jobs keiba-model-retrain を起動する（Service のバックグラウンドタスクではなく Jobs で実行）
-RETRAIN_JOB_NAME="weekly-model-retrain"
-RETRAIN_SCHEDULE="0 8 * * 1"
-RETRAIN_CLOUD_RUN_JOB_NAME="keiba-model-retrain"
 # entity_te_daily 事前計算ジョブ（毎日 AM 7:45）
 # race-day-predict(AM 8:00) の前に TE 値を計算・保存して予測を高速化する
 TE_DAILY_JOB_NAME="te-daily-batch"
@@ -115,7 +109,6 @@ log_info "予測ジョブ: ${PREDICT_JOB_NAME} (${PREDICT_SCHEDULE})"
 log_info "オッズ取得ジョブ: ${ODDS_SCRAPE_JOB_NAME} (${ODDS_SCRAPE_SCHEDULE})"
 log_info "投資戦略ジョブ: ${STRATEGY_JOB_NAME} (${STRATEGY_SCHEDULE})"
 log_info "LINE通知ジョブ: ${NOTIFY_JOB_NAME} (${NOTIFY_SCHEDULE}) ※土日のみ"
-log_info "週次再学習ジョブ: ${RETRAIN_JOB_NAME} (${RETRAIN_SCHEDULE}) ※毎週月曜日"
 log_info "IPAT自動購入ジョブ: ${PURCHASE_JOB_NAME} (${PURCHASE_SCHEDULE}) ※土日のみ"
 log_info "タイムゾーン: ${TIME_ZONE}"
 log_info "サービスアカウント: ${PIPELINE_SA_EMAIL}"
@@ -154,10 +147,6 @@ log_info "オッズ取得URI: ${ODDS_SCRAPE_TARGET_URI}"
 # ターゲットURL（投資戦略: 日次投資戦略エンドポイント）
 STRATEGY_TARGET_URI="${SERVICE_URL}/api/v1/strategy/daily"
 log_info "投資戦略URI: ${STRATEGY_TARGET_URI}"
-# ターゲットURL（週次モデル再学習: Cloud Run Jobs keiba-model-retrain を起動）
-# Cloud Run Jobs を Cloud Run API 経由で実行する（OAuth2 スコープが必要）
-RETRAIN_JOBS_URI="https://${GCP_REGION}-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/${GCP_PROJECT_ID}/jobs/${RETRAIN_CLOUD_RUN_JOB_NAME}:run"
-log_info "週次再学習Jobs起動URI: ${RETRAIN_JOBS_URI}"
 # ターゲットURL（entity_te_daily 事前計算: 予測高速化のため TE 値を事前計算）
 TE_DAILY_TARGET_URI="${SERVICE_URL}/api/v1/features/te-daily"
 log_info "TE_Daily URI: ${TE_DAILY_TARGET_URI}"
@@ -301,51 +290,8 @@ create_or_update_job \
     "${STRATEGY_TARGET_URI}" \
     "800s"
 
-# 4-5. 週次モデル再学習ジョブ（weekly-model-retrain）
-# 毎週月曜日 AM 8:00 JST に Cloud Run Jobs keiba-model-retrain を起動する
-# Cloud Run Jobs は OAuth2 スコープが必要なため create_or_update_job とは別実装
-# attempt-deadline=180s: Cloud Run API の呼び出し完了まで待機（Job 実行は非同期）
-log_info "--- 週次モデル再学習ジョブの設定（Cloud Run Jobs起動）---"
-
-# Cloud Run Jobs が存在するか確認
-if ! gcloud run jobs describe "${RETRAIN_CLOUD_RUN_JOB_NAME}" \
-    --region="${GCP_REGION}" > /dev/null 2>&1; then
-    log_error "Cloud Run Jobs '${RETRAIN_CLOUD_RUN_JOB_NAME}' が見つかりません"
-    log_error "先に以下を実行してください:"
-    log_error "  ./infrastructure/scripts/setup_cloud_run_jobs.sh"
-    exit 1
-fi
-
-if gcloud scheduler jobs describe "${RETRAIN_JOB_NAME}" \
-    --location="${GCP_REGION}" > /dev/null 2>&1; then
-    log_info "既存のジョブ ${RETRAIN_JOB_NAME} を更新します..."
-    gcloud scheduler jobs update http "${RETRAIN_JOB_NAME}" \
-        --location="${GCP_REGION}" \
-        --schedule="${RETRAIN_SCHEDULE}" \
-        --time-zone="${TIME_ZONE}" \
-        --uri="${RETRAIN_JOBS_URI}" \
-        --http-method=POST \
-        --oauth-service-account-email="${PIPELINE_SA_EMAIL}" \
-        --oauth-token-scope="https://www.googleapis.com/auth/cloud-platform" \
-        --attempt-deadline="180s" \
-        --max-retry-attempts=0 \
-        --quiet
-    log_info "ジョブを更新しました: ${RETRAIN_JOB_NAME}"
-else
-    log_info "新しいジョブ ${RETRAIN_JOB_NAME} を作成します..."
-    gcloud scheduler jobs create http "${RETRAIN_JOB_NAME}" \
-        --location="${GCP_REGION}" \
-        --schedule="${RETRAIN_SCHEDULE}" \
-        --time-zone="${TIME_ZONE}" \
-        --uri="${RETRAIN_JOBS_URI}" \
-        --http-method=POST \
-        --oauth-service-account-email="${PIPELINE_SA_EMAIL}" \
-        --oauth-token-scope="https://www.googleapis.com/auth/cloud-platform" \
-        --attempt-deadline="180s" \
-        --max-retry-attempts=0 \
-        --quiet
-    log_info "ジョブを作成しました: ${RETRAIN_JOB_NAME}"
-fi
+# ※ 週次モデル再学習ジョブ（weekly-model-retrain）は廃止。
+#   モデル再学習はローカル月次自動フロー（scripts/monthly_retrain.py・毎月第1月曜 AM1:00）へ移行。
 
 # 4-7. IPAT自動購入ジョブ（race-day-purchase）
 # 土日 8:00〜17:00 の5分おきに /api/v1/purchase/daily を呼び出す
@@ -408,12 +354,6 @@ log_info "  手動実行:    gcloud scheduler jobs run ${STRATEGY_JOB_NAME} --lo
 log_info "  一時停止:    gcloud scheduler jobs pause ${STRATEGY_JOB_NAME} --location=${GCP_REGION}"
 log_info "  再開:        gcloud scheduler jobs resume ${STRATEGY_JOB_NAME} --location=${GCP_REGION}"
 log_info "  実行履歴:    gcloud logging read 'resource.type=\"cloud_scheduler_job\" AND resource.labels.job_id=\"${STRATEGY_JOB_NAME}\"' --limit=10"
-log_info ""
-log_info "【週次モデル再学習ジョブ (${RETRAIN_JOB_NAME})】 ※毎週月曜日 AM 8:00"
-log_info "  手動実行:    gcloud scheduler jobs run ${RETRAIN_JOB_NAME} --location=${GCP_REGION}"
-log_info "  一時停止:    gcloud scheduler jobs pause ${RETRAIN_JOB_NAME} --location=${GCP_REGION}"
-log_info "  再開:        gcloud scheduler jobs resume ${RETRAIN_JOB_NAME} --location=${GCP_REGION}"
-log_info "  実行履歴:    gcloud logging read 'resource.type=\"cloud_scheduler_job\" AND resource.labels.job_id=\"${RETRAIN_JOB_NAME}\"' --limit=10"
 log_info ""
 log_info "【IPAT自動購入ジョブ (${PURCHASE_JOB_NAME})】 ※土日 8:00〜17:00 の5分おき"
 log_info "  手動実行:    gcloud scheduler jobs run ${PURCHASE_JOB_NAME} --location=${GCP_REGION}"

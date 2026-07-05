@@ -13,20 +13,18 @@
 | `race-day-predict` | 毎日 AM 8:00 | `0 8 * * *` | `POST /api/v1/predict/daily` | レース予測・BQ/GCS保存 |
 | `race-day-odds-scrape` | 毎日 AM 8:15 | `15 8 * * *` | `POST /api/v1/odds/scrape` | netkeibaオッズ取得 |
 | `race-day-strategy` | 毎日 AM 8:30 | `30 8 * * *` | `POST /api/v1/strategy/daily` | 投資戦略策定（dry_run=true） |
-| `weekly-model-retrain` | 毎週月曜 AM 8:00 | `0 8 * * 1` | Cloud Run Jobs API（`keiba-model-retrain` 起動） | モデル週次再学習（⚠️ メモリ不足のため実質未使用。**ローカル学習を推奨**） |
 | `race-day-purchase` | 土日 8:00〜17:00 5分おき | `*/5 8-17 * * 6,0` | `POST /api/v1/purchase/daily` | 発走直前IPAT自動馬券購入 |
 
-**全ジョブ共通設定（`weekly-model-retrain` を除く）:**
+> **モデル再学習は Cloud Scheduler から外れました。** 旧 `weekly-model-retrain`（Cloud Run Job
+> `keiba-model-retrain` 起動）は毎週 OOM でサイレント失敗していたため**廃止**し、**ローカル月次
+> 自動フロー**（`scripts/monthly_retrain.py`・launchd・毎月第1月曜 AM1:00）へ移行しました。
+> 詳細は下記「モデル再学習（ローカル月次自動フロー）」を参照。
+
+**全ジョブ共通設定:**
 - 認証: OIDCトークン（`keiba-pipeline-sa` サービスアカウント）
 - タイムアウト: 900秒（15分）
 - リトライ: 最大3回、バックオフ 5秒〜300秒
 - タイムゾーン: Asia/Tokyo
-
-**`weekly-model-retrain` ジョブの設定:**
-- 認証: OAuth2（`keiba-pipeline-sa`、スコープ: `https://www.googleapis.com/auth/cloud-platform`）
-- タイムアウト: 180秒（Cloud Run Jobs API 呼び出し完了まで。Job本体の実行は非同期）
-- リトライ: 0回（再学習の重複実行を防ぐため）
-- ターゲット: Cloud Run Jobs API（`keiba-model-retrain` Job を起動）
 
 ---
 
@@ -107,76 +105,55 @@
 
 ---
 
-### weekly-model-retrain — モデル週次再学習
+### モデル再学習（ローカル月次自動フロー）
 
-**スケジュール**: 毎週月曜日 AM 8:00 JST（Cloud Schedulerに登録済み）
+**スケジュール**: 毎月第1月曜 AM1:00 JST（お使いの Mac の launchd `com.keiba.monthly-retrain`）
 
-> **⚠️ 現在の運用方針: ローカル学習を使用**
->
-> Cloud Run Jobs（`keiba-model-retrain`）は学習時にメモリ不足が発生するため、**モデル学習はローカルで実行してください**。
-> Cloud Schedulerジョブ（`weekly-model-retrain`）は登録されていますが、実質的には使用しません。
+> **Cloud Scheduler / Cloud Run Jobs では実行しません。** 旧 `weekly-model-retrain` は毎週 OOM で
+> サイレント失敗していたため廃止しました。再学習〜本番反映は **ローカルの `scripts/monthly_retrain.py`**
+> が品質ゲート付きで自動実行します（無人で本番デプロイまで到達）。
 
-#### ローカルでのモデル学習手順（推奨）
+#### 実行内容（`scripts/monthly_retrain.py`）
 
-```bash
-# Optunaハイパーパラメータチューニングあり（本番推奨・所要時間: 数時間）
-.venv/bin/python -m src.models.train --tune --project-id <PROJECT_ID>
+1. 特徴量再生成（`generate_features.py --truncate`・全期間）
+2. 学習（`train_pipeline(tune=True)`）→ **品質ゲート①**: NDCG@3≥0.54 / Recall@3≥0.47 / AUC≥0.78
+3. 戦略再最適化（`optimize_strategy.py`・校正済み確率・`prob_weight_r=1.0` 固定）
+4. ホールドアウト（OOS）検証 → **品質ゲート②**: 回収率≥95%
+5. デプロイ（`build_and_push.sh` → `deploy_cloud_run.sh`）
 
-# チューニングなし（動作確認・高速確認用）
-.venv/bin/python -m src.models.train --project-id <PROJECT_ID>
-```
+いずれかのステップ失敗・ゲート不合格で**即停止しデプロイしない**。結果は LINE（`LINE_NOTIFY_TO`
+設定時）と macOS 通知で報告し、ログは `logs/monthly_retrain_YYYYMM.log` に残る。
+保存先: `gs://{PROJECT_ID}-keiba-models/lgbm_ranker_multi/{YYYYMMDD}/…txt`。
+翌 `race-day-predict`（AM 8:00）が GCS 最新モデルを自動選択して予測に使う。
 
-学習完了後、モデルは**自動的にGCSへアップロード**されます。
-
-```
-保存先: gs://{PROJECT_ID}-keiba-models/lgbm_ranker_multi/{YYYYMMDD}/lgbm_ranker_multi_{YYYYMMDD}.txt
-```
-
-翌日の `race-day-predict`（AM 8:00）が GCS から自動的に最新モデルを選択して予測に使います。
-
-**主なオプション:**
-
-| オプション | 説明 |
-|---|---|
-| `--tune` | Optunaチューニングを有効化（本番推奨） |
-| `--n-trials N` | Optunaのtrial数を指定 |
-| `--tune-timeout N` | チューニングタイムアウト（秒） |
-| `--skip-gcs-upload` | GCSへのアップロードをスキップ（テスト用） |
-| `--output-dir DIR` | ローカルの出力先ディレクトリを指定 |
-
-#### 学習後の確認
+#### 手動実行・検証
 
 ```bash
-# GCSに新モデルが保存されているか確認
-gcloud storage ls gs://<PROJECT_ID>-keiba-models/lgbm_ranker_multi/
+# フル実行（デプロイまで）
+.venv/bin/python scripts/monthly_retrain.py --project-id <PROJECT_ID>
 
-# 最新モデルの詳細
-gcloud storage ls gs://<PROJECT_ID>-keiba-models/lgbm_ranker_multi/<YYYYMMDD>/
+# 実行順とコマンドを表示のみ（副作用なし）
+.venv/bin/python scripts/monthly_retrain.py --dry-run
+
+# ゲート②まで検証してデプロイしない
+.venv/bin/python scripts/monthly_retrain.py --skip-deploy
+
+# launchd 経由と同じ入口（第1月曜ガードを無視して即実行）
+FORCE_RUN=1 ./scripts/monthly_retrain_local.sh
 ```
 
-#### Cloud Run Jobsによる学習（参考：ローカル実行が困難な場合）
+閾値は CLI で調整可（`--auc-min` / `--ndcg-min` / `--recall-min` / `--recovery-min`）。
 
-メモリ不足になる可能性があります。使用する場合は事前に確認してください。
+#### launchd の導入・確認
 
 ```bash
-# Cloud Run Jobs を直接実行
-gcloud run jobs execute keiba-model-retrain --region=asia-northeast1
-
-# 実行状況の確認
-gcloud run jobs executions list --job=keiba-model-retrain --region=asia-northeast1
+# plist の __PROJECT_ROOT__ を実パスに置換して LaunchAgents へ配置
+sed "s#__PROJECT_ROOT__#$(pwd)#g" infrastructure/launchd/com.keiba.monthly-retrain.plist \
+  > ~/Library/LaunchAgents/com.keiba.monthly-retrain.plist
+launchctl load ~/Library/LaunchAgents/com.keiba.monthly-retrain.plist
+launchctl list | grep com.keiba.monthly-retrain      # 登録確認
+# 解除: launchctl unload ~/Library/LaunchAgents/com.keiba.monthly-retrain.plist
 ```
-
-**Cloud Run Jobs 設定**（`keiba-model-retrain`）:
-- メモリ: 8Gi、CPU: 4、タスクタイムアウト: 7200秒（2時間）
-- コマンド: `python -m src.models.train --tune --project-id {PROJECT_ID}`
-- 認証: Cloud Scheduler → Cloud Run Jobs API は OAuth2（`cloud-platform` スコープ）
-
-**処理フロー**:
-1. `features.training_data` から学習データを取得
-2. 時系列分割（学習/検証/推論）
-3. Optuna ベイズ最適化でハイパーパラメータチューニング
-4. NDCG@3・Recall@3・AUCを評価
-5. GCS `gs://{PROJECT_ID}-keiba-models/lgbm_ranker_multi/{YYYYMMDD}/` に保存
 
 ---
 
@@ -248,8 +225,7 @@ gcloud scheduler jobs run race-day-odds-scrape --location=asia-northeast1
 # 投資戦略策定
 gcloud scheduler jobs run race-day-strategy --location=asia-northeast1
 
-# モデル再学習
-gcloud scheduler jobs run weekly-model-retrain --location=asia-northeast1
+# ※ モデル再学習は Cloud Scheduler ではなくローカル月次フロー（scripts/monthly_retrain.py）で実行
 
 # 発走前購入（dry_run=falseの本番モード）
 gcloud scheduler jobs run race-day-purchase --location=asia-northeast1
@@ -271,12 +247,13 @@ gcloud scheduler jobs resume race-day-purchase --location=asia-northeast1
 gcloud scheduler jobs list --location=asia-northeast1
 ```
 
-### 移行時の旧ジョブ削除
+### 旧再学習ジョブの削除（廃止済み）
 
-`monthly-model-retrain` から `weekly-model-retrain` へ移行する際は、旧ジョブを手動削除してください:
+モデル再学習用の旧ジョブは廃止済み。もし環境に残っていたら削除してください:
 
 ```bash
-gcloud scheduler jobs delete monthly-model-retrain --location=asia-northeast1
+gcloud scheduler jobs delete weekly-model-retrain --location=asia-northeast1
+gcloud run jobs delete keiba-model-retrain --region=asia-northeast1
 ```
 
 ### dry_runの本番切り替え
@@ -433,20 +410,13 @@ curl -X POST <CLOUD_RUN_URL>/api/v1/purchase/daily \
 
 ## ジョブ設定スクリプト
 
-### Cloud Run Jobs のセットアップ（初回のみ）
-
-`weekly-model-retrain` Cloud Scheduler ジョブが依存する Cloud Run Job を作成します:
-
-```bash
-./infrastructure/scripts/setup_cloud_run_jobs.sh
-```
-
 ### Cloud Scheduler ジョブの作成・更新
 
 ```bash
 ./infrastructure/scripts/setup_scheduler.sh
 ```
 
-**注意**: `setup_scheduler.sh` は `keiba-model-retrain` Cloud Run Job が存在することを確認してから実行します。未作成の場合はエラーになるため、先に `setup_cloud_run_jobs.sh` を実行してください。
+日次パイプライン・予測・オッズ・戦略・IPAT購入の Cloud Scheduler ジョブを作成／更新します。
+モデル再学習ジョブは含みません（ローカル月次フローへ移行済み）。
 
 詳細なインフラセットアップ手順は [infrastructure/README.md](./infrastructure/README.md) を参照してください。

@@ -10,9 +10,8 @@
       校正済み確率と本番の確率分布を一致させるため、再最適化していない戦略パラメータはデプロイしない。
 
 1. `./infrastructure/scripts/build_and_push.sh`
-2. `./infrastructure/scripts/setup_cloud_run_jobs.sh`
-3. `./infrastructure/scripts/deploy_cloud_run.sh`
-4. `./infrastructure/scripts/setup_scheduler.sh`
+2. `./infrastructure/scripts/deploy_cloud_run.sh`
+3. `./infrastructure/scripts/setup_scheduler.sh`
 
 各スクリプトが正常に完了したことを確認してから次のステップに進んでください。
 エラーが発生した場合は直ちに停止し、原因を報告してください。

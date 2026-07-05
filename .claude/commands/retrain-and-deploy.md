@@ -2,6 +2,10 @@
 以下のステップを順番に実施し、各ステップの完了を確認してから次へ進んでください。
 エラーが発生した場合は直ちに停止し、原因を報告してください。
 
+> **注記**: この一連のフローは通常、毎月第1月曜 AM1:00 に `scripts/monthly_retrain.py`
+> （launchd `com.keiba.monthly-retrain`）が品質ゲート付きで**自動実行**します。
+> 本コマンドは、特徴量・モデルコードを変更して**臨時に手動で本番反映したい場合**に使います。
+
 ---
 
 ## ステップ1: pedigree 再構築 → 特徴量パイプラインを実行（features.training_data を全件再生成）
@@ -67,7 +71,6 @@ gcloud storage ls gs://keiba-prediction-1768734113-keiba-models/lgbm_ranker_mult
 
 ```bash
 ./infrastructure/scripts/build_and_push.sh
-./infrastructure/scripts/setup_cloud_run_jobs.sh
 ./infrastructure/scripts/deploy_cloud_run.sh
 ./infrastructure/scripts/setup_scheduler.sh
 ```

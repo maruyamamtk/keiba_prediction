@@ -104,21 +104,12 @@ GCP_PROJECT_ID=your-project-id
 
 > **注意（Apple Silicon Mac使用時）**: M1/M2/M3/M4 Macでは`--platform linux/amd64`オプションが必須です。スクリプトは自動的にこのオプションを付与します。
 
-### 5. Cloud Run Jobs（keiba-model-retrain）の作成・更新
+### 5. モデル再学習について（Cloud Run Jobs は廃止）
 
-週次モデル再学習を実行する Cloud Run Job を作成または更新します。
-**コードを変更してイメージをプッシュした後は、Service と同様に Job のイメージも更新してください。**
-
-```bash
-./infrastructure/scripts/setup_cloud_run_jobs.sh [image-tag]
-```
-
-このスクリプトは以下を実行します：
-- `keiba-model-retrain` Cloud Run Job の作成または更新
-- メモリ: 8Gi、CPU: 4、タスクタイムアウト: 7200秒（2時間）
-- 実行コマンド: `python -m src.models.train --tune --project-id {PROJECT_ID}`
-
-> **なぜ必要か**: Cloud Run Service（`keiba-pipeline`）と Cloud Run Job（`keiba-model-retrain`）はイメージ参照を独立して管理しています。`deploy_cloud_run.sh` を実行しても Job のイメージは更新されません。省略すると週次再学習が古いコードで実行されます。
+モデル再学習は **ローカル月次自動フロー**（`scripts/monthly_retrain.py`・launchd
+`com.keiba.monthly-retrain`・毎月第1月曜 AM1:00）に移行済みです。旧 Cloud Run Job
+（`keiba-model-retrain`）と Cloud Scheduler ジョブ（`weekly-model-retrain`）は OOM で
+サイレント失敗していたため**削除しました**。導入・手動実行は [SCHEDULE.md](../SCHEDULE.md#モデル再学習ローカル月次自動フロー) を参照。
 
 ### 6. Cloud Runへデプロイ
 
@@ -170,19 +161,16 @@ GCP_PROJECT_ID=your-project-id
 | `race-day-predict` | `0 8 * * *`（AM 8:00） | `POST /api/v1/predict/daily` | レース予測・BQ/GCS保存 |
 | `race-day-odds-scrape` | `15 8 * * *`（AM 8:15） | `POST /api/v1/odds/scrape` | netkeibaオッズ取得 |
 | `race-day-strategy` | `30 8 * * *`（AM 8:30） | `POST /api/v1/strategy/daily` | 投資戦略策定（dry_run=true） |
-| `weekly-model-retrain` | `0 8 * * 1`（毎週月曜AM 8:00） | Cloud Run Jobs API（`keiba-model-retrain` 起動） | モデル週次再学習 |
 | `race-day-purchase` | `*/5 8-17 * * 6,0`（土日5分おき） | `POST /api/v1/purchase/daily` | 発走直前IPAT自動馬券購入 |
 
-**全ジョブ共通設定（`weekly-model-retrain` を除く）:**
+**全ジョブ共通設定:**
 - 認証: OIDCトークン（`keiba-pipeline-sa`）
 - タイムアウト: 900秒（15分）
 - リトライ: 最大3回、バックオフ5秒〜300秒
 - タイムゾーン: Asia/Tokyo
 
-**`weekly-model-retrain` のみ:**
-- 認証: OAuth2（`cloud-platform` スコープ）— Cloud Run Jobs API の要件
-- タイムアウト: 180秒（Job 起動 API 呼び出しまで。Job 本体は非同期で最大2時間実行）
-- リトライ: 0回（再学習の重複実行を防ぐため）
+> モデル再学習は Cloud Scheduler ではなく**ローカル月次自動フロー**（`scripts/monthly_retrain.py`）で
+> 実行します（毎月第1月曜 AM1:00・launchd）。
 
 ジョブの詳細説明・操作コマンド・障害対応手順は **[SCHEDULE.md](../SCHEDULE.md)** を参照してください。
 
@@ -202,7 +190,6 @@ GCPコンソール > Monitoring > Alerting > 「Cloud Scheduler ジョブ失敗�
 | `setup_gcp.sh` | GCP初期セットアップ（API有効化、SA作成、権限付与） | 初回のみ |
 | `verify_setup.sh` | セットアップ状態の確認 | 初回のみ |
 | `build_and_push.sh` | Dockerイメージのビルド・プッシュ | コード変更のたびに |
-| `setup_cloud_run_jobs.sh` | Cloud Run Jobs（`keiba-model-retrain`）の作成・更新 | コード変更のたびに ★ |
 | `deploy_cloud_run.sh` | Cloud Run Service（`keiba-pipeline`）のデプロイ | コード変更のたびに |
 | `verify_deployment.sh` | デプロイ後の動作確認 | デプロイ後に |
 | `setup_scheduler.sh` | Cloud Schedulerジョブの作成・更新 | 初回・スケジュール変更時 |
