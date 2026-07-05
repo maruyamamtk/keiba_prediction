@@ -711,54 +711,6 @@ def _get_latest_model_from_gcs(project_id: str, bucket_suffix: str = "keiba-mode
     return gcs_uri
 
 
-def _resolve_model_path(model_path: str | None, project_id: str) -> tuple[str, str | None]:
-    """
-    モデルファイルパスを解決する
-
-    - model_path が None の場合はGCSから最新モデルを自動取得する
-    - GCS URI（gs://...）の場合はローカルの一時ディレクトリにダウンロードし、
-      ローカルパスを返す
-    - ローカルパスの場合はそのまま返す
-
-    Args:
-        model_path: モデルファイルパス（ローカルパスまたは gs:// URI）。
-                    None の場合はGCSから最新モデルを自動取得。
-        project_id: GCPプロジェクトID
-
-    Returns:
-        (ローカルパス, 一時ディレクトリパス) のタプル。
-        ローカルパスの場合は一時ディレクトリは None。
-    """
-    if model_path is None:
-        model_path = _get_latest_model_from_gcs(project_id)
-
-    if not model_path.startswith("gs://"):
-        return model_path, None
-
-    import tempfile
-    from google.cloud import storage as gcs
-
-    # gs://bucket-name/path/to/model.txt を解析
-    gcs_path = model_path[len("gs://"):]
-    if "/" not in gcs_path:
-        raise ValueError(
-            f"不正なGCS URIです（バケット名またはオブジェクトパスが不足しています）: {model_path}"
-        )
-    bucket_name, blob_name = gcs_path.split("/", 1)
-
-    tmpdir = tempfile.mkdtemp(prefix="keiba_model_")
-    local_file = os.path.join(tmpdir, os.path.basename(blob_name))
-
-    logger.info(f"GCSからモデルをダウンロード: {model_path} -> {local_file}")
-    client = gcs.Client(project=project_id)
-    bucket = client.bucket(bucket_name)
-    blob = bucket.blob(blob_name)
-    blob.download_to_filename(local_file)
-    logger.info("モデルのダウンロード完了")
-
-    return local_file, tmpdir
-
-
 def _run_predict(
     model_path: str | None,
     target_dates: list[datetime.date],
@@ -780,58 +732,58 @@ def _run_predict(
     Returns:
         予測結果の辞書（num_races, num_horses, saved_to_bq, saved_rows, saved_to_gcs, gcs_uri）
     """
-    import shutil
-
     from src.models.predict import predict_pipeline, save_predictions_to_bq, save_predictions_to_gcs
     from src.models.train import load_config
 
-    local_model_path, tmpdir = _resolve_model_path(model_path, project_id)
+    # model_path が None の場合のみ GCS から最新モデルの gs:// URI を解決する。
+    # gs:// URI / ローカルパスはそのまま predict_pipeline に渡す。
+    # GCS からのダウンロード（キャリブレーション meta.json の取得を含む）は
+    # predict_pipeline 側（_download_model_from_gcs）に一元化する。ここで先に
+    # ローカル .txt へ解決してしまうと meta.json が落とされず校正器が適用されない
+    # （no metadata）不具合になるため、URI のまま委譲する。
+    resolved_model_path = (
+        model_path if model_path is not None else _get_latest_model_from_gcs(project_id)
+    )
 
-    try:
-        config = load_config()
-        result_df = predict_pipeline(
+    config = load_config()
+    result_df = predict_pipeline(
+        project_id=project_id,
+        execution_date=_today_jst(),
+        config=config,
+        model_path=resolved_model_path,
+        target_dates=target_dates,
+    )
+
+    num_races = int(result_df["race_id"].nunique()) if len(result_df) > 0 else 0
+    num_horses = len(result_df)
+    bq_saved = False
+    saved_rows = 0
+    gcs_saved = False
+    gcs_uri = None
+
+    if save_to_bq and len(result_df) > 0:
+        saved_rows = save_predictions_to_bq(
+            result_df=result_df,
             project_id=project_id,
-            execution_date=_today_jst(),
-            config=config,
-            model_path=local_model_path,
-            target_dates=target_dates,
         )
+        bq_saved = True
 
-        num_races = int(result_df["race_id"].nunique()) if len(result_df) > 0 else 0
-        num_horses = len(result_df)
-        bq_saved = False
-        saved_rows = 0
-        gcs_saved = False
-        gcs_uri = None
+    if save_to_gcs and len(result_df) > 0:
+        gcs_uri = save_predictions_to_gcs(
+            result_df=result_df,
+            project_id=project_id,
+            race_date=target_dates[0] if target_dates else None,
+        )
+        gcs_saved = True
 
-        if save_to_bq and len(result_df) > 0:
-            saved_rows = save_predictions_to_bq(
-                result_df=result_df,
-                project_id=project_id,
-            )
-            bq_saved = True
-
-        if save_to_gcs and len(result_df) > 0:
-            gcs_uri = save_predictions_to_gcs(
-                result_df=result_df,
-                project_id=project_id,
-                race_date=target_dates[0] if target_dates else None,
-            )
-            gcs_saved = True
-
-        return {
-            "num_races": num_races,
-            "num_horses": num_horses,
-            "saved_to_bq": bq_saved,
-            "saved_rows": saved_rows,
-            "saved_to_gcs": gcs_saved,
-            "gcs_uri": gcs_uri,
-        }
-    finally:
-        # GCS からダウンロードした一時ファイルを削除
-        if tmpdir is not None:
-            shutil.rmtree(tmpdir, ignore_errors=True)
-            logger.info(f"一時ディレクトリを削除しました: {tmpdir}")
+    return {
+        "num_races": num_races,
+        "num_horses": num_horses,
+        "saved_to_bq": bq_saved,
+        "saved_rows": saved_rows,
+        "saved_to_gcs": gcs_saved,
+        "gcs_uri": gcs_uri,
+    }
 
 
 @app.post("/api/v1/predict/daily", response_model=PredictResponse)

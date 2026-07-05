@@ -1,18 +1,18 @@
 """
 app.py の予測エンドポイント補助関数のテスト (Issue #117)
 
-_get_latest_model_from_gcs と _resolve_model_path のテスト。
+_get_latest_model_from_gcs と _run_predict のモデルパス委譲のテスト。
 """
 
 import datetime
-import os
 from unittest.mock import MagicMock, patch
 
+import pandas as pd
 import pytest
 
 from src.automation.api.app import (
     _get_latest_model_from_gcs,
-    _resolve_model_path,
+    _run_predict,
 )
 
 
@@ -73,50 +73,43 @@ class TestGetLatestModelFromGCS:
         assert "lgbm.txt" in gcs_uri
 
 
-class TestResolveModelPath:
-    """_resolve_model_pathのテスト"""
+class TestRunPredictModelPathDelegation:
+    """_run_predict がモデルパスを predict_pipeline へ委譲することのテスト
 
-    def test_local_path_returned_as_is(self):
-        """ローカルパスはそのまま返されること"""
-        local_path, tmpdir = _resolve_model_path("/tmp/model.txt", "test-project")
-        assert local_path == "/tmp/model.txt"
-        assert tmpdir is None
+    校正器 meta.json のダウンロードは predict_pipeline 側（_download_model_from_gcs）
+    に一元化されているため、_run_predict は gs:// URI を先にローカル解決せず
+    そのまま渡さなければならない（校正バイパス不具合の回帰防止）。
+    """
 
-    def test_gcs_uri_is_downloaded(self):
-        """GCS URIの場合、ローカルにダウンロードされること"""
-        with patch("google.cloud.storage.Client") as mock_client_cls:
-            mock_blob = mock_client_cls.return_value.bucket.return_value.blob.return_value
+    @patch("src.models.train.load_config", return_value={})
+    @patch("src.models.predict.predict_pipeline", return_value=pd.DataFrame())
+    def test_gcs_uri_passed_through_unchanged(self, mock_pipeline, _mock_config):
+        """gs:// URI はローカル解決されず、そのまま predict_pipeline に渡ること"""
+        gcs_uri = "gs://my-project-keiba-models/lgbm_ranker_multi/20260627/lgbm_ranker_multi_20260627.txt"
 
-            def fake_download(path):
-                open(path, "w").write("dummy")
+        _run_predict(
+            model_path=gcs_uri,
+            target_dates=[datetime.date(2026, 6, 28)],
+            save_to_bq=False,
+            project_id="my-project",
+        )
 
-            mock_blob.download_to_filename.side_effect = fake_download
+        assert mock_pipeline.call_args.kwargs["model_path"] == gcs_uri
 
-            local_path, tmpdir = _resolve_model_path(
-                "gs://my-project-keiba-models/models/20260201/lgbm_ranker.txt",
-                "my-project",
-            )
+    @patch("src.models.train.load_config", return_value={})
+    @patch("src.models.predict.predict_pipeline", return_value=pd.DataFrame())
+    @patch("src.automation.api.app._get_latest_model_from_gcs")
+    def test_none_resolves_to_latest_gcs_uri(self, mock_latest, mock_pipeline, _mock_config):
+        """model_path=None のとき最新モデルの gs:// URI を解決してそのまま渡すこと"""
+        latest_uri = "gs://my-project-keiba-models/lgbm_ranker_multi/20260627/lgbm_ranker_multi_20260627.txt"
+        mock_latest.return_value = latest_uri
 
-        assert local_path.endswith("lgbm_ranker.txt")
-        assert tmpdir is not None
-        assert os.path.exists(local_path)
+        _run_predict(
+            model_path=None,
+            target_dates=[datetime.date(2026, 6, 28)],
+            save_to_bq=False,
+            project_id="my-project",
+        )
 
-        # クリーンアップ
-        import shutil
-        shutil.rmtree(tmpdir, ignore_errors=True)
-
-    def test_none_triggers_auto_fetch(self):
-        """model_path=Noneの場合、_get_latest_model_from_gcsが呼ばれること"""
-        with patch("src.automation.api.app._get_latest_model_from_gcs") as mock_get_latest:
-            mock_get_latest.return_value = "/tmp/auto_fetched_model.txt"
-
-            local_path, tmpdir = _resolve_model_path(None, "test-project")
-
-        mock_get_latest.assert_called_once_with("test-project")
-        assert local_path == "/tmp/auto_fetched_model.txt"
-        assert tmpdir is None
-
-    def test_invalid_gcs_uri_raises_value_error(self):
-        """バケット名だけでパスがないGCS URIはValueErrorが発生すること"""
-        with pytest.raises(ValueError, match="不正なGCS URI"):
-            _resolve_model_path("gs://bucket-only", "test-project")
+        mock_latest.assert_called_once_with("my-project")
+        assert mock_pipeline.call_args.kwargs["model_path"] == latest_uri
