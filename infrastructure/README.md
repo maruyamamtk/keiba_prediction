@@ -161,7 +161,8 @@ GCP_PROJECT_ID=your-project-id
 | `race-day-predict` | `0 8 * * *`（AM 8:00） | `POST /api/v1/predict/daily` | レース予測・BQ/GCS保存 |
 | `race-day-odds-scrape` | `15 8 * * *`（AM 8:15） | `POST /api/v1/odds/scrape` | netkeibaオッズ取得 |
 | `race-day-strategy` | `30 8 * * *`（AM 8:30） | `POST /api/v1/strategy/daily` | 投資戦略策定（dry_run=true） |
-| `race-day-purchase` | `*/5 8-17 * * 6,0`（土日5分おき） | `POST /api/v1/purchase/daily` | 発走直前IPAT自動馬券購入 |
+| `race-day-purchase` | `*/5 8-17 * 1-6,10-12 6,0`（土日5分おき・10〜6月） | `POST /api/v1/purchase/daily` | 発走直前IPAT自動馬券購入 |
+| `race-day-purchase-summer` | `*/5 8-19 * 7-9 6,0`（土日5分おき・7〜9月・夏競馬ナイター対応） | `POST /api/v1/purchase/daily` | 発走直前IPAT自動馬券購入（夏場延長） |
 
 **全ジョブ共通設定:**
 - 認証: OIDCトークン（`keiba-pipeline-sa`）
