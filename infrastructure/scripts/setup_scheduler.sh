@@ -10,7 +10,8 @@
 #   2. race-day-predict       AM 8:00 JST  翌日レース予測
 #   3. race-day-odds-scrape   AM 8:15 JST  netkeibaオッズ取得（単複＋組み合わせ）
 #   4. race-day-strategy      AM 8:30 JST  投資戦略策定・investment_decisions保存
-#   5. race-day-purchase      土日 8:00〜17:00 5分おき  IPAT自動馬券購入
+#   5. race-day-purchase          土日 8:00〜17:00 5分おき（10〜6月）  IPAT自動馬券購入
+#   6. race-day-purchase-summer   土日 8:00〜19:00 5分おき（7〜9月・ナイター対応）  IPAT自動馬券購入
 #
 # ※ モデル再学習はローカル月次自動フロー（scripts/monthly_retrain.py・毎月第1月曜 AM1:00）
 #    に移行済み。Cloud Scheduler / Cloud Run Jobs では実行しない。
@@ -90,10 +91,15 @@ STRATEGY_SCHEDULE="30 8 * * *"
 # race-day-predict(AM 8:00) の前に TE 値を計算・保存して予測を高速化する
 TE_DAILY_JOB_NAME="te-daily-batch"
 TE_DAILY_SCHEDULE="45 7 * * *"
-# IPAT自動購入ジョブ（土日 8:00〜17:00 の5分おき）
+# IPAT自動購入ジョブ（土日 8:00〜17:00 の5分おき、10〜6月）
 # race-day-strategy(AM 8:30) 完了後に稼働し、発走5分前のレースを自動購入する
+# 夏競馬（7〜9月）はナイター開催があり19:00頃まで発走するため race-day-purchase-summer で別途カバーする
 PURCHASE_JOB_NAME="race-day-purchase"
-PURCHASE_SCHEDULE="*/5 8-17 * * 6,0"
+PURCHASE_SCHEDULE="*/5 8-17 * 1-6,10-12 6,0"
+# IPAT自動購入ジョブ（夏競馬用・土日 8:00〜19:00 の5分おき、7〜9月）
+# 夏場は暑さを避けるためナイター競走が組まれ19:00頃まで発走が続くため、通常より2時間長く稼働する
+PURCHASE_SUMMER_JOB_NAME="race-day-purchase-summer"
+PURCHASE_SUMMER_SCHEDULE="*/5 8-19 * 7-9 6,0"
 TIME_ZONE="Asia/Tokyo"
 
 # サービスアカウントのメールアドレス
@@ -109,7 +115,8 @@ log_info "予測ジョブ: ${PREDICT_JOB_NAME} (${PREDICT_SCHEDULE})"
 log_info "オッズ取得ジョブ: ${ODDS_SCRAPE_JOB_NAME} (${ODDS_SCRAPE_SCHEDULE})"
 log_info "投資戦略ジョブ: ${STRATEGY_JOB_NAME} (${STRATEGY_SCHEDULE})"
 log_info "LINE通知ジョブ: ${NOTIFY_JOB_NAME} (${NOTIFY_SCHEDULE}) ※土日のみ"
-log_info "IPAT自動購入ジョブ: ${PURCHASE_JOB_NAME} (${PURCHASE_SCHEDULE}) ※土日のみ"
+log_info "IPAT自動購入ジョブ: ${PURCHASE_JOB_NAME} (${PURCHASE_SCHEDULE}) ※土日10〜6月のみ"
+log_info "IPAT自動購入ジョブ（夏競馬）: ${PURCHASE_SUMMER_JOB_NAME} (${PURCHASE_SUMMER_SCHEDULE}) ※土日7〜9月のみ"
 log_info "タイムゾーン: ${TIME_ZONE}"
 log_info "サービスアカウント: ${PIPELINE_SA_EMAIL}"
 log_info "=========================================="
@@ -294,13 +301,23 @@ create_or_update_job \
 #   モデル再学習はローカル月次自動フロー（scripts/monthly_retrain.py・毎月第1月曜 AM1:00）へ移行。
 
 # 4-7. IPAT自動購入ジョブ（race-day-purchase）
-# 土日 8:00〜17:00 の5分おきに /api/v1/purchase/daily を呼び出す
+# 土日 8:00〜17:00 の5分おきに /api/v1/purchase/daily を呼び出す（10〜6月）
 # race-day-strategy(AM 8:30) 完了後に稼働し、発走5〜10分前のレースを investment_decisions から取得して自動購入する
 # attempt-deadline=180s: IPAT ログイン + 購入処理の余裕を確保
 log_info "--- IPAT自動購入ジョブの設定 ---"
 create_or_update_job \
     "${PURCHASE_JOB_NAME}" \
     "${PURCHASE_SCHEDULE}" \
+    "${PURCHASE_TARGET_URI}" \
+    "180s"
+
+# 4-7b. IPAT自動購入ジョブ（夏競馬・race-day-purchase-summer）
+# 土日 8:00〜19:00 の5分おきに /api/v1/purchase/daily を呼び出す（7〜9月）
+# 夏場はナイター開催のため通常より発走が遅い時間（19:00頃）まで続く。他は race-day-purchase と同一ロジック
+log_info "--- IPAT自動購入ジョブ（夏競馬）の設定 ---"
+create_or_update_job \
+    "${PURCHASE_SUMMER_JOB_NAME}" \
+    "${PURCHASE_SUMMER_SCHEDULE}" \
     "${PURCHASE_TARGET_URI}" \
     "180s"
 
@@ -355,11 +372,17 @@ log_info "  一時停止:    gcloud scheduler jobs pause ${STRATEGY_JOB_NAME} --
 log_info "  再開:        gcloud scheduler jobs resume ${STRATEGY_JOB_NAME} --location=${GCP_REGION}"
 log_info "  実行履歴:    gcloud logging read 'resource.type=\"cloud_scheduler_job\" AND resource.labels.job_id=\"${STRATEGY_JOB_NAME}\"' --limit=10"
 log_info ""
-log_info "【IPAT自動購入ジョブ (${PURCHASE_JOB_NAME})】 ※土日 8:00〜17:00 の5分おき"
+log_info "【IPAT自動購入ジョブ (${PURCHASE_JOB_NAME})】 ※土日 8:00〜17:00 の5分おき（10〜6月）"
 log_info "  手動実行:    gcloud scheduler jobs run ${PURCHASE_JOB_NAME} --location=${GCP_REGION}"
 log_info "  一時停止:    gcloud scheduler jobs pause ${PURCHASE_JOB_NAME} --location=${GCP_REGION}"
 log_info "  再開:        gcloud scheduler jobs resume ${PURCHASE_JOB_NAME} --location=${GCP_REGION}"
 log_info "  実行履歴:    gcloud logging read 'resource.type=\"cloud_scheduler_job\" AND resource.labels.job_id=\"${PURCHASE_JOB_NAME}\"' --limit=10"
+log_info ""
+log_info "【IPAT自動購入ジョブ・夏競馬 (${PURCHASE_SUMMER_JOB_NAME})】 ※土日 8:00〜19:00 の5分おき（7〜9月）"
+log_info "  手動実行:    gcloud scheduler jobs run ${PURCHASE_SUMMER_JOB_NAME} --location=${GCP_REGION}"
+log_info "  一時停止:    gcloud scheduler jobs pause ${PURCHASE_SUMMER_JOB_NAME} --location=${GCP_REGION}"
+log_info "  再開:        gcloud scheduler jobs resume ${PURCHASE_SUMMER_JOB_NAME} --location=${GCP_REGION}"
+log_info "  実行履歴:    gcloud logging read 'resource.type=\"cloud_scheduler_job\" AND resource.labels.job_id=\"${PURCHASE_SUMMER_JOB_NAME}\"' --limit=10"
 log_info ""
 
 # ========================================

@@ -13,7 +13,8 @@
 | `race-day-predict` | 毎日 AM 8:00 | `0 8 * * *` | `POST /api/v1/predict/daily` | レース予測・BQ/GCS保存 |
 | `race-day-odds-scrape` | 毎日 AM 8:15 | `15 8 * * *` | `POST /api/v1/odds/scrape` | netkeibaオッズ取得 |
 | `race-day-strategy` | 毎日 AM 8:30 | `30 8 * * *` | `POST /api/v1/strategy/daily` | 投資戦略策定（dry_run=true） |
-| `race-day-purchase` | 土日 8:00〜17:00 5分おき | `*/5 8-17 * * 6,0` | `POST /api/v1/purchase/daily` | 発走直前IPAT自動馬券購入 |
+| `race-day-purchase` | 土日 8:00〜17:00 5分おき（10〜6月） | `*/5 8-17 * 1-6,10-12 6,0` | `POST /api/v1/purchase/daily` | 発走直前IPAT自動馬券購入 |
+| `race-day-purchase-summer` | 土日 8:00〜19:00 5分おき（7〜9月・夏競馬ナイター対応） | `*/5 8-19 * 7-9 6,0` | `POST /api/v1/purchase/daily` | 発走直前IPAT自動馬券購入（夏場延長） |
 
 > **モデル再学習は Cloud Scheduler から外れました。** 旧 `weekly-model-retrain`（Cloud Run Job
 > `keiba-model-retrain` 起動）は毎週 OOM でサイレント失敗していたため**廃止**し、**ローカル月次
@@ -157,9 +158,13 @@ launchctl list | grep com.keiba.monthly-retrain      # 登録確認
 
 ---
 
-### race-day-purchase — 発走直前IPAT自動馬券購入
+### race-day-purchase / race-day-purchase-summer — 発走直前IPAT自動馬券購入
 
-**スケジュール**: 土日 AM 8:00〜PM 5:55 の5分おき
+**スケジュール**:
+- `race-day-purchase`: 土日 AM 8:00〜PM 5:55 の5分おき（10〜6月）
+- `race-day-purchase-summer`: 土日 AM 8:00〜PM 7:55 の5分おき（7〜9月）
+
+**夏競馬対応（2026-07-25追加）**: 夏場（7〜9月）は暑さを避けるためナイター開催が組まれ、最終レースの発走が19:00頃まで続く。通常スケジュール（〜17:55）のままでは19:00頃発走のレースを取りこぼすため、7〜9月のみ稼働する `race-day-purchase-summer`（〜19:55）を別ジョブとして追加した。処理ロジック・エンドポイントは `race-day-purchase` と完全に同一で、cron式の月フィールド（`1-6,10-12` と `7-9`）のみが異なる。
 
 **概要**: 5分おきに起動し、現在時刻の5〜10分後に発走するレースが存在する場合に以下を実行します。netkeibaで最新オッズをスクレイピングして `daily_odds` を上書きし、投資戦略を再計算して `investment_decisions` を更新した上で、JRA IPAT SP版（`https://www.ipat.jra.go.jp/sp/`）で馬券を自動購入します。
 
@@ -227,18 +232,21 @@ gcloud scheduler jobs run race-day-strategy --location=asia-northeast1
 
 # ※ モデル再学習は Cloud Scheduler ではなくローカル月次フロー（scripts/monthly_retrain.py）で実行
 
-# 発走前購入（dry_run=falseの本番モード）
+# 発走前購入（dry_run=falseの本番モード。10〜6月はrace-day-purchase、7〜9月はrace-day-purchase-summer）
 gcloud scheduler jobs run race-day-purchase --location=asia-northeast1
+gcloud scheduler jobs run race-day-purchase-summer --location=asia-northeast1
 ```
 
 ### 一時停止・再開
 
 ```bash
-# 一時停止（例: race-day-purchase）
+# 一時停止（例: race-day-purchase。夏場は race-day-purchase-summer も対象に）
 gcloud scheduler jobs pause race-day-purchase --location=asia-northeast1
+gcloud scheduler jobs pause race-day-purchase-summer --location=asia-northeast1
 
 # 再開
 gcloud scheduler jobs resume race-day-purchase --location=asia-northeast1
+gcloud scheduler jobs resume race-day-purchase-summer --location=asia-northeast1
 ```
 
 ### ジョブ一覧確認
@@ -258,10 +266,15 @@ gcloud run jobs delete keiba-model-retrain --region=asia-northeast1
 
 ### dry_runの本番切り替え
 
-`race-day-purchase` を本番購入モード（dry_run=false）に切り替える:
+`race-day-purchase`（および夏場は `race-day-purchase-summer`）を本番購入モード（dry_run=false）に切り替える:
 
 ```bash
 gcloud scheduler jobs update http race-day-purchase \
+  --location=asia-northeast1 \
+  --message-body='{"dry_run": false}' \
+  --project=<PROJECT_ID>
+
+gcloud scheduler jobs update http race-day-purchase-summer \
   --location=asia-northeast1 \
   --message-body='{"dry_run": false}' \
   --project=<PROJECT_ID>
@@ -271,6 +284,11 @@ dry_runモードに戻す:
 
 ```bash
 gcloud scheduler jobs update http race-day-purchase \
+  --location=asia-northeast1 \
+  --message-body='{}' \
+  --project=<PROJECT_ID>
+
+gcloud scheduler jobs update http race-day-purchase-summer \
   --location=asia-northeast1 \
   --message-body='{}' \
   --project=<PROJECT_ID>

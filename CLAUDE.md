@@ -207,7 +207,7 @@ GCSモデルは `lgbm_ranker_multi/` プレフィックス配下に保存され�
 - **当日AM 8:00**: 推論実行 → `predictions.daily_predictions` 保存
 - **当日AM 8:15**: netkeibaオッズ取得 → `predictions.daily_odds` 保存
 - **当日AM 8:30**: 投資戦略策定（dry_run=true、BQ保存なし）
-- **土日 8:00〜17:55 の5分おき**: 発走5分前レースの投資判断を最新オッズで上書き → IPAT購入
+- **土日 8:00〜17:55 の5分おき（10〜6月）/ 8:00〜19:55 の5分おき（7〜9月・夏競馬ナイター対応）**: 発走5分前レースの投資判断を最新オッズで上書き → IPAT購入
 
 #### 7.2.2 実装方針
 - Cloud Schedulerから Cloud Run HTTPエンドポイントをトリガー

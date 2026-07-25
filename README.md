@@ -828,7 +828,8 @@ gcloud scheduler jobs run daily-data-pipeline --location=asia-northeast1
 | `race-day-predict` | 毎日 AM 8:00 | レース予測 |
 | `race-day-odds-scrape` | 毎日 AM 8:15 | netkeibaオッズ取得 |
 | `race-day-strategy` | 毎日 AM 8:30 | 投資戦略策定（dry_run=true） |
-| `race-day-purchase` | 土日 8:00〜17:55 の5分おき | 発走直前IPAT自動馬券購入 |
+| `race-day-purchase` | 土日 8:00〜17:55 の5分おき（10〜6月） | 発走直前IPAT自動馬券購入 |
+| `race-day-purchase-summer` | 土日 8:00〜19:55 の5分おき（7〜9月・夏競馬ナイター対応） | 発走直前IPAT自動馬券購入（夏場延長） |
 
 > モデル再学習は Cloud Scheduler ではなく**ローカル月次自動フロー**（`scripts/monthly_retrain.py`・
 > launchd・毎月第1月曜 AM1:00）で実行します。
