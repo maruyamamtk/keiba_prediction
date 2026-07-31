@@ -1,6 +1,6 @@
 expected_return_threshold: 1.938823538783936
 prob_weight_r: 1.0
-budget_per_race: 1000
+budget_per_race: 2000
 min_bet_amount: 100
 min_prob_threshold: 0.24342928840836991
 top_n: 5
