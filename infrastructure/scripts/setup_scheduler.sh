@@ -203,7 +203,13 @@ create_or_update_job() {
     local schedule="$2"
     local uri="$3"
     local deadline="${4:-900s}"
-    local message_body="${5:-{\}}"
+    local message_body="$5"
+    if [ -z "${message_body}" ]; then
+        # bash 3.2 (macOSデフォルトの/bin/bash) と 5.x で ${5:-{}} 系の展開結果が
+        # 異なる（3.2は"{\}"のように余分なバックスラッシュが残る）ため、
+        # バージョン非依存にするためif文で明示的にデフォルト値を設定する。
+        message_body="{}"
+    fi
 
     # 一時ファイルにリクエストボディを書き出す（シェル引用符問題を回避）
     local tmp_body_file
