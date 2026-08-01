@@ -514,6 +514,7 @@ keiba_prediction/
 ├── scripts/                           # ユーティリティスクリプト
 │   ├── create_daily_odds_combo_table.py  # predictions.daily_odds_comboテーブル作成
 │   ├── create_daily_odds_table.py    # predictions.daily_oddsテーブル作成
+│   ├── create_entity_te_daily_table.py  # features.entity_te_dailyテーブル作成（Issue #352・te-daily-batch実行前提。存在しない場合は run_te_daily() が自動作成する）
 │   ├── create_predictions_table.py   # predictions.daily_predictionsテーブル作成
 │   ├── create_purchase_history_table.py  # predictions.purchase_historyテーブル作成（Issue #213）
 │   ├── create_raw_combo_odds_table.py  # raw.combo_oddsテーブル作成（Issue #140）

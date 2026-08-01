@@ -175,7 +175,7 @@ from history_window where sire_name is not null group by sire_name, course_type,
 
 /* 種牡馬 年齢帯別 TE */
 union all select 'sire', sire_name
-  ,case when horse_age = 2 then 'age_band' else 'age_band' end as condition_type
+  ,'age_band'
   ,case
     when horse_age = 2 then '2yo'
     when horse_age = 3 then '3yo'
