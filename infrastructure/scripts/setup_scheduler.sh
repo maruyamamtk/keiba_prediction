@@ -203,7 +203,7 @@ create_or_update_job() {
     local schedule="$2"
     local uri="$3"
     local deadline="${4:-900s}"
-    local message_body="${5:-{}}"
+    local message_body="${5:-{\}}"
 
     # 一時ファイルにリクエストボディを書き出す（シェル引用符問題を回避）
     local tmp_body_file
