@@ -674,7 +674,7 @@ docker build --platform linux/amd64 -f Dockerfile.dashboard -t dashboard-service
 - **基本馬券**: 複勝・ワイドを期待回収率フィルタで選定し、ワイド選定組には馬連を一律自動追加
 - **三連複**: 本番は除外（`enabled_bet_types=["place", "wide", "umaren"]`、Issue #411）。コードは生成可能だが本番設定で無効
 - レースパターン分類（突出型/標準型）は廃止し、全レースを同一ロジックで処理
-- 賭け金配分: **オッズ逆数比率**方式（1レース合計 = `budget_per_race` 固定 1000円）
+- 賭け金配分: **オッズ逆数比率**方式（1レース合計 = `budget_per_race` 固定 2000円）
 - コンボオッズ参照: `predictions.daily_odds_combo` → `raw.combo_odds` → `raw.payouts` の順にフォールバック
 - パラメータ管理: `config/strategy_config.yaml`（`scripts/optimize_strategy.py` で Optuna 最適化: threshold × top_n × min_prob_threshold × max_wide_odds の探索）
 - **`min_prob_threshold`**: 軸馬の最低複勝率（これ未満は全馬券種の候補馬から除外）

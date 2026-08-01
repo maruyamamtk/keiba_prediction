@@ -326,7 +326,7 @@ profit = return_amount - bet_amount
 | パラメータ | 値 | 説明 |
 |---|---|---|
 | `prob_weight_r` | `1.0` | 選定スコア係数。校正後は純EV順が正解のため固定（Issue #416 / #417） |
-| `budget_per_race` | `1000` | 1レースあたりの固定予算（円） |
+| `budget_per_race` | `2000` | 1レースあたりの固定予算（円） |
 | `min_bet_amount` | `100` | 最低賭け金（円） |
 | `enabled_bet_types` | `[place, wide, umaren]` | 購入対象券種（三連複除外、Issue #411） |
 
@@ -357,7 +357,7 @@ profit = return_amount - bet_amount
 | `min_prob_threshold` | `0.24` | float | ✅ | 全馬券種の最低複勝率（18頭換算基準）|
 | `max_wide_odds` | `44.0` | float \| null | ✅ | ワイド購入の上限オッズ（null で無制限）|
 | `prob_weight_r` | `1.0` | float | — | 選定スコア係数（`odds × prob^r`）。**1.0 固定**（Issue #417）|
-| `budget_per_race` | `1000` | int | — | 1レースあたりの固定予算（円）|
+| `budget_per_race` | `2000` | int | — | 1レースあたりの固定予算（円）|
 | `min_bet_amount` | `100` | int | — | 最低賭け金（円）。これ未満は除外 |
 | `enabled_bet_types` | `[place, wide, umaren]` | list | — | 購入対象券種。三連複は除外（Issue #411）|
 
