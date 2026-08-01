@@ -91,31 +91,31 @@ with history_all as (
 -- base
 select 'jockey' as entity_type, jockey_code as entity_id, 'base' as condition_type, '' as condition_key
   ,date('{target_date}') as as_of_date, count(*) as cnt, sum(is_top3) as sum_top3, null as sum_top1
-from history_window group by jockey_code
+from history_window where jockey_code is not null group by jockey_code
 
 union all select 'jockey', jockey_code, 'course_type', course_type, date('{target_date}'), count(*), sum(is_top3), null
-from history_window group by jockey_code, course_type
+from history_window where jockey_code is not null group by jockey_code, course_type
 
 union all select 'jockey', jockey_code, 'venue', venue_code, date('{target_date}'), count(*), sum(is_top3), null
-from history_window group by jockey_code, venue_code
+from history_window where jockey_code is not null group by jockey_code, venue_code
 
 union all select 'jockey', jockey_code, 'distance_band', distance_band, date('{target_date}'), count(*), sum(is_top3), null
-from history_window group by jockey_code, distance_band
+from history_window where jockey_code is not null group by jockey_code, distance_band
 
 union all select 'jockey', jockey_code, 'distance', cast(distance as string), date('{target_date}'), count(*), sum(is_top3), null
-from history_window group by jockey_code, distance
+from history_window where jockey_code is not null group by jockey_code, distance
 
 union all select 'jockey', jockey_code, 'direction', direction, date('{target_date}'), count(*), sum(is_top3), null
-from history_window where direction is not null group by jockey_code, direction
+from history_window where jockey_code is not null and direction is not null group by jockey_code, direction
 
 union all select 'jockey', jockey_code, 'cv', concat(course_type, '_', venue_code), date('{target_date}'), count(*), sum(is_top3), null
-from history_window group by jockey_code, course_type, venue_code
+from history_window where jockey_code is not null group by jockey_code, course_type, venue_code
 
 union all select 'jockey', jockey_code, 'cd', concat(course_type, '_', cast(distance as string)), date('{target_date}'), count(*), sum(is_top3), null
-from history_window group by jockey_code, course_type, distance
+from history_window where jockey_code is not null group by jockey_code, course_type, distance
 
 union all select 'jockey', jockey_code, 'cdv', concat(course_type, '_', cast(distance as string), '_', venue_code), date('{target_date}'), count(*), sum(is_top3), null
-from history_window group by jockey_code, course_type, distance, venue_code
+from history_window where jockey_code is not null group by jockey_code, course_type, distance, venue_code
 
 /* ========= 調教師 Target Encoding（直近 1826 日） ========= */
 union all select 'trainer', trainer_code, 'base', '', date('{target_date}'), count(*), sum(is_top3), null
@@ -257,7 +257,7 @@ from history_window group by horse_id, course_type, distance, venue_code
 
 /* 馬自身 × 騎手 TE */
 union all select 'horse', horse_id, 'jockey', jockey_code, date('{target_date}'), count(*), sum(is_top3), null
-from history_window group by horse_id, jockey_code
+from history_window where jockey_code is not null group by horse_id, jockey_code
 
 /* 馬自身 × シーズン TE */
 union all select 'horse', horse_id, 'season', season, date('{target_date}'), count(*), sum(is_top3), null
