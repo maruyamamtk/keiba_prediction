@@ -2962,6 +2962,48 @@ class TestRunTeDaily:
         assert "2026-06-14" in captured_sql[0]
         assert "test-project" in captured_sql[0]
 
+    @patch("scripts.create_entity_te_daily_table.create_table")
+    @patch("src.ml.features.feature_pipeline.bigquery.Client")
+    def test_run_te_daily_creates_table_when_missing(self, mock_bq_class, mock_create_table):
+        """entity_te_daily 未作成時は自動作成してから同じクエリを再実行する"""
+        from google.api_core import exceptions as google_exceptions
+
+        mock_client = MagicMock()
+        mock_bq_class.return_value = mock_client
+
+        mock_job = MagicMock()
+        mock_result = MagicMock()
+        mock_result.total_rows = 42
+        mock_job.result.return_value = mock_result
+
+        mock_client.query.side_effect = [
+            google_exceptions.BadRequest(
+                "Partitioning specification must be provided in order to "
+                "create partitioned table"
+            ),
+            mock_job,
+        ]
+
+        pipeline = FeaturePipeline("test-project")
+        result = pipeline.run_te_daily("2026-06-14")
+
+        assert result["inserted_rows"] == 42
+        mock_create_table.assert_called_once_with("test-project")
+        assert mock_client.query.call_count == 2
+
+    @patch("src.ml.features.feature_pipeline.bigquery.Client")
+    def test_run_te_daily_reraises_other_bad_request(self, mock_bq_class):
+        """パーティション未指定以外のBadRequestはテーブル作成せず再送出する"""
+        from google.api_core import exceptions as google_exceptions
+
+        mock_client = MagicMock()
+        mock_bq_class.return_value = mock_client
+        mock_client.query.side_effect = google_exceptions.BadRequest("some other error")
+
+        pipeline = FeaturePipeline("test-project")
+        with pytest.raises(google_exceptions.BadRequest):
+            pipeline.run_te_daily("2026-06-14")
+
 
 class TestHasEntityTeForDate:
     """has_entity_te_for_date() のモックテスト"""

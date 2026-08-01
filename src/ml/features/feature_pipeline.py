@@ -367,8 +367,22 @@ class FeaturePipeline:
                 destination=partition_ref,
                 write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
             )
-            job = self.client.query(sql, job_config=job_config)
-            result = job.result()
+            try:
+                job = self.client.query(sql, job_config=job_config)
+                result = job.result()
+            except google_exceptions.BadRequest as e:
+                if "Partitioning specification must be provided" not in str(e):
+                    raise
+                # entity_te_daily が存在しないと、パーティション宛先を伴うクエリジョブは
+                # テーブルを暗黙作成しようとしてパーティション未指定エラーになる。
+                # 正しいパーティション/クラスタリング定義で明示的に作成してから再実行する。
+                logger.warning(
+                    "features.entity_te_daily が存在しないため作成します"
+                )
+                from scripts.create_entity_te_daily_table import create_table
+                create_table(self.project_id)
+                job = self.client.query(sql, job_config=job_config)
+                result = job.result()
             return result.total_rows
 
         inserted_rows = retry_with_backoff(
