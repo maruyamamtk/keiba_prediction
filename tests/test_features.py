@@ -1012,6 +1012,70 @@ class TestRetryWithBackoff:
 
         assert call_count == 3  # 初回 + 2回リトライ
 
+    def test_timeout_error_is_retried(self):
+        """job.result()がハングしタイムアウトした場合にリトライされること"""
+        call_count = 0
+
+        def hang_then_success():
+            nonlocal call_count
+            call_count += 1
+            if call_count < 2:
+                raise TimeoutError("job.result() timed out")
+            return "success"
+
+        result = retry_with_backoff(
+            hang_then_success,
+            max_retries=3,
+            base_delay=0.01,
+        )
+
+        assert result == "success"
+        assert call_count == 2
+
+
+class TestQueryTimeoutAppliedToJobResult:
+    """job.result()呼び出しにquery_timeout_secondsが渡されることのテスト
+
+    ネットワーク切断等でBigQueryクエリ自体は完了済みなのに job.result() が
+    応答なく無限待機し続けた事象を受けて追加。timeout未指定のままだと
+    ハング時に例外が発生せずリトライも効かないため、必ず timeout を渡す。
+    """
+
+    @pytest.fixture
+    def mock_bq_client(self):
+        with patch("src.ml.features.feature_pipeline.bigquery.Client") as mock:
+            yield mock
+
+    def test_execute_query_to_table_passes_timeout(self, mock_bq_client):
+        mock_instance = MagicMock()
+        mock_bq_client.return_value = mock_instance
+
+        mock_result = MagicMock()
+        mock_result.total_rows = 100
+        mock_job = MagicMock()
+        mock_job.result.return_value = mock_result
+        mock_instance.query.return_value = mock_job
+
+        config = FeaturePipelineConfig(query_timeout_seconds=42.0)
+        pipeline = FeaturePipeline("test-project", config)
+        pipeline._execute_query_to_table("SELECT 1", "test-project.features.training_data")
+
+        mock_job.result.assert_called_once_with(timeout=42.0)
+
+    def test_execute_dml_with_retry_passes_timeout(self, mock_bq_client):
+        mock_instance = MagicMock()
+        mock_bq_client.return_value = mock_instance
+
+        mock_job = MagicMock()
+        mock_job.num_dml_affected_rows = 5
+        mock_instance.query.return_value = mock_job
+
+        config = FeaturePipelineConfig(query_timeout_seconds=42.0)
+        pipeline = FeaturePipeline("test-project", config)
+        pipeline._execute_dml_with_retry("TRUNCATE TABLE test-project.features.training_data")
+
+        mock_job.result.assert_called_once_with(timeout=42.0)
+
     def test_non_retryable_exception(self):
         """リトライ対象外例外のテスト"""
         call_count = 0

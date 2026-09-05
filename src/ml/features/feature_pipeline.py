@@ -95,6 +95,12 @@ class FeaturePipelineConfig:
     retry_base_delay: float = 1.0
     retry_max_delay: float = 60.0
 
+    # BigQueryジョブ完了待ちのタイムアウト（秒）。
+    # ネットワーク切断等でクエリ自体は完了済みなのにクライアント側の job.result() が
+    # 応答なく無限待機するケースがあるため上限を設ける。タイムアウト時は TimeoutError が
+    # 送出され RETRYABLE_EXCEPTIONS に含まれるため retry_with_backoff が再試行する。
+    query_timeout_seconds: float = 1200.0
+
 
 class FeaturePipeline:
     """SQL駆動の特徴量パイプラインを実行するクラス"""
@@ -292,7 +298,7 @@ class FeaturePipeline:
                 ),
             )
             job = self.client.query(query, job_config=job_config)
-            result = job.result()
+            result = job.result(timeout=self.config.query_timeout_seconds)
             # WRITE_TRUNCATE の場合、result.total_rows は挿入行数と一致する
             # WRITE_APPEND の場合、result.total_rows はテーブル合計行数になるため注意
             return result.total_rows
@@ -308,7 +314,7 @@ class FeaturePipeline:
         """リトライ付きでDMLクエリを実行し、影響行数を返す"""
         def execute():
             job = self.client.query(query)
-            job.result()
+            job.result(timeout=self.config.query_timeout_seconds)
             return job.num_dml_affected_rows or 0
 
         return retry_with_backoff(
@@ -369,7 +375,7 @@ class FeaturePipeline:
             )
             try:
                 job = self.client.query(sql, job_config=job_config)
-                result = job.result()
+                result = job.result(timeout=self.config.query_timeout_seconds)
             except google_exceptions.BadRequest as e:
                 if "Partitioning specification must be provided" not in str(e):
                     raise
@@ -382,7 +388,7 @@ class FeaturePipeline:
                 from scripts.create_entity_te_daily_table import create_table
                 create_table(self.project_id)
                 job = self.client.query(sql, job_config=job_config)
-                result = job.result()
+                result = job.result(timeout=self.config.query_timeout_seconds)
             return result.total_rows
 
         inserted_rows = retry_with_backoff(
@@ -463,7 +469,7 @@ class FeaturePipeline:
             WHERE as_of_date = DATE('{target_date}')
             LIMIT 1
             """
-            result = self.client.query(query).result()
+            result = self.client.query(query).result(timeout=self.config.query_timeout_seconds)
             return result.total_rows > 0
         except Exception as e:
             logger.warning(f"entity_te_daily の存在確認に失敗: {e}")
