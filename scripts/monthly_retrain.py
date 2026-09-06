@@ -186,18 +186,24 @@ def main() -> int:
             fail("GCSアップロード未検出", "train_pipeline が gcs_uri を返しませんでした")
 
     # --- ステップ3: 戦略再最適化（校正済み確率・prob_weight_r=1.0 固定） ---
-    logger.info("[3/5] 戦略パラメータ再最適化 optimize_strategy.py")
-    run_cmd(
-        [
-            py, "scripts/optimize_strategy.py",
-            "--project-id", args.project_id,
-            "--model-path", gcs_uri,
-            "--start-date", optimize_start,
-            "--end-date", optimize_end,
-            "--n-trials", str(args.n_trials),
-        ],
-        args.dry_run,
-    )
+    # 既存configのuse_harvilleを引き継ぐ: optimize_strategy.pyは実行時の
+    # フラグでconfig/strategy_config.yamlのuse_harville/gammaを上書き保存するため、
+    # ここで--use-harvilleを付けずに実行すると、運用者が手動でHarvilleモデルに
+    # 切り替えていた場合でも毎月の再学習で独立積へ無言で戻ってしまう。
+    prev_strat = _load_strategy_config()
+    prev_use_harville = bool(prev_strat.get("use_harville", False))
+    logger.info(f"[3/5] 戦略パラメータ再最適化 optimize_strategy.py (use_harville={prev_use_harville}引き継ぎ)")
+    optimize_cmd = [
+        py, "scripts/optimize_strategy.py",
+        "--project-id", args.project_id,
+        "--model-path", gcs_uri,
+        "--start-date", optimize_start,
+        "--end-date", optimize_end,
+        "--n-trials", str(args.n_trials),
+    ]
+    if prev_use_harville:
+        optimize_cmd.append("--use-harville")
+    run_cmd(optimize_cmd, args.dry_run)
 
     # --- ステップ4: ホールドアウト検証（OOS 回収率で品質ゲート②） ---
     logger.info(f"[4/5] ホールドアウト検証 {holdout_start}〜{holdout_end}")
@@ -219,6 +225,8 @@ def main() -> int:
             top_n=int(strat.get("top_n", 5)),
             max_wide_odds=strat.get("max_wide_odds"),
             enabled_bet_types=strat.get("enabled_bet_types"),
+            gamma=float(strat.get("gamma", 1.0)),
+            use_harville=bool(strat.get("use_harville", False)),
         )
         recovery = float(bt_metrics.get("recovery_rate", 0.0)) if bt_metrics else 0.0
         total_bets = int(bt_metrics.get("total_bets", 0)) if bt_metrics else 0

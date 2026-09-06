@@ -12,6 +12,9 @@ Harvilleモデル（着順を1着→2着→3着と逐次的に決める確率モ
 
 from __future__ import annotations
 
+from functools import lru_cache
+from itertools import permutations
+
 import numpy as np
 
 
@@ -57,8 +60,13 @@ def pair_joint_probability(q: np.ndarray, i: int, j: int, gamma: float = 1.0) ->
     3着目の枠は i, j 以外の任意の馬が占めうるため、他の全馬それぞれについて
     {i, j, 他馬} の3頭の着順6通りを足し上げる（{i, j}だけの2頭の項を別途
     足すと3着目の確率質量を二重計上するので加えない）。
+
+    n=2（i, jの2頭しかいない）の場合は3着目が存在しないため特別扱いする。
+    この場合は2頭しかいないレースなので両馬とも必ず3着以内となり、確率は1.0。
     """
     n = len(q)
+    if n == 2:
+        return 1.0
     qg = q ** gamma
     total = qg.sum()
     prob = 0.0
@@ -82,7 +90,7 @@ def triple_joint_probability(
 def _triple_perm_sum(qg: np.ndarray, total: float, i: int, j: int, k: int) -> float:
     """3頭 (i, j, k) が1〜3着を占める全6通りの確率を足し上げる"""
     prob = 0.0
-    for perm in _permutations_3(i, j, k):
+    for perm in permutations((i, j, k)):
         remaining = total
         pr = 1.0
         for pos in perm:
@@ -90,15 +98,6 @@ def _triple_perm_sum(qg: np.ndarray, total: float, i: int, j: int, k: int) -> fl
             remaining -= qg[pos]
         prob += pr
     return prob
-
-
-def _permutations_3(i: int, j: int, k: int):
-    yield (i, j, k)
-    yield (i, k, j)
-    yield (j, i, k)
-    yield (j, k, i)
-    yield (k, i, j)
-    yield (k, j, i)
 
 
 def invert_win_probabilities(
@@ -138,3 +137,16 @@ def invert_win_probabilities(
         if diff < tol:
             break
     return q
+
+
+@lru_cache(maxsize=8192)
+def _invert_win_probabilities_cached(place_probs_key: tuple[float, ...], gamma: float) -> tuple[float, ...]:
+    """invert_win_probabilities のメモ化版（内部用）
+
+    同一レースの複勝率ベクトルは、Optunaのハイパーパラメータ探索中は何度も
+    同じ内容で呼ばれる（探索対象のパラメータはEVフィルタの閾値等であり、
+    複勝率やgammaはトライアル間で変わらない）。逆算は O(n^2)×反復回数の
+    計算コストがかかるため、内容（複勝率ベクトル+gamma）をキーにキャッシュする。
+    """
+    q = invert_win_probabilities(np.asarray(place_probs_key), gamma=gamma)
+    return tuple(q.tolist())

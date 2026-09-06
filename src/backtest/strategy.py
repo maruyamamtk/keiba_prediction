@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 
 from .combo_probability import (
-    invert_win_probabilities,
+    _invert_win_probabilities_cached,
     pair_joint_probability,
     triple_joint_probability,
 )
@@ -70,6 +70,43 @@ def _allocate_bets(
 
 # 購入対象とする券種（enabled_bet_types 未指定時のデフォルト）
 ALL_BET_TYPES: tuple[str, ...] = ("place", "wide", "umaren", "sanrenpuku")
+
+
+def _pair_probability(
+    use_harville: bool,
+    top_prob_map: dict,
+    q: np.ndarray | None,
+    horse_idx: dict | None,
+    h1: int,
+    h2: int,
+    gamma: float,
+) -> float:
+    """ワイドの同時確率を計算する（use_harvilleで独立積/Harvilleを切り替え）"""
+    if use_harville:
+        return pair_joint_probability(q, horse_idx[h1], horse_idx[h2], gamma=gamma)
+    return float(top_prob_map.get(h1, 0)) * float(top_prob_map.get(h2, 0))
+
+
+def _triple_probability(
+    use_harville: bool,
+    top_prob_map: dict,
+    q: np.ndarray | None,
+    horse_idx: dict | None,
+    h1: int,
+    h2: int,
+    h3: int,
+    gamma: float,
+) -> float:
+    """三連複の同時確率を計算する（use_harvilleで独立積/Harvilleを切り替え）"""
+    if use_harville:
+        return triple_joint_probability(
+            q, horse_idx[h1], horse_idx[h2], horse_idx[h3], gamma=gamma
+        )
+    return (
+        float(top_prob_map.get(h1, 0))
+        * float(top_prob_map.get(h2, 0))
+        * float(top_prob_map.get(h3, 0))
+    )
 
 
 def select_base_bets(
@@ -172,13 +209,25 @@ def select_base_bets(
     )
 
     if has_combo:
+        q: np.ndarray | None = None
+        horse_idx: dict | None = None
+        top_prob_map: dict = {}
         if use_harville:
             # ワイド・三連複の同時確率はレース全馬（top_n絞り込み前）の複勝率から
             # Harvilleモデルで計算する。独立積（prob_i * prob_j）は「複勝圏の椅子は
             # 3つしかない」という排他性を無視するため、理論値からズレる。
             race_horse_numbers = sorted_df["horse_number"].tolist()
             race_place_probs = np.asarray(sorted_df["win_place_prob"].tolist(), dtype=float)
-            q = invert_win_probabilities(race_place_probs, gamma=gamma)
+            # sorted_df は上流の dropna（オッズ欠損等）で一部の馬が除外されている
+            # ことがあり、その場合 sum(race_place_probs) が 3 から乖離する
+            # （Harvilleモデルはsum=3の前提で成立するため、欠損馬の分を除いた
+            # 残り馬の中でsum=3になるよう再正規化する近似を行う）。
+            probs_sum = race_place_probs.sum()
+            if len(race_place_probs) >= 3 and probs_sum > 0:
+                race_place_probs = np.clip(race_place_probs * (3.0 / probs_sum), None, 0.99)
+            q = np.asarray(
+                _invert_win_probabilities_cached(tuple(race_place_probs.tolist()), gamma)
+            )
             horse_idx = {hn: i for i, hn in enumerate(race_horse_numbers)}
         else:
             top_prob_map = dict(zip(
@@ -197,10 +246,7 @@ def select_base_bets(
             wide_odds = float(row["odds_value"])
             if max_wide_odds is not None and wide_odds > max_wide_odds:
                 continue
-            if use_harville:
-                pair_prob = pair_joint_probability(q, horse_idx[h1], horse_idx[h2], gamma=gamma)
-            else:
-                pair_prob = float(top_prob_map.get(h1, 0)) * float(top_prob_map.get(h2, 0))
+            pair_prob = _pair_probability(use_harville, top_prob_map, q, horse_idx, h1, h2, gamma)
             if pair_prob * wide_odds > expected_return_threshold:
                 pair = tuple(sorted([h1, h2]))
                 # ワイド券の購入は "wide" 有効時のみ。ただしペア自体は馬連選定に使うため
@@ -250,16 +296,9 @@ def select_base_bets(
             if h1 not in top_horse_numbers or h2 not in top_horse_numbers or h3 not in top_horse_numbers:
                 continue
             san_odds = float(row["odds_value"])
-            if use_harville:
-                triple_prob = triple_joint_probability(
-                    q, horse_idx[h1], horse_idx[h2], horse_idx[h3], gamma=gamma
-                )
-            else:
-                triple_prob = (
-                    float(top_prob_map.get(h1, 0))
-                    * float(top_prob_map.get(h2, 0))
-                    * float(top_prob_map.get(h3, 0))
-                )
+            triple_prob = _triple_probability(
+                use_harville, top_prob_map, q, horse_idx, h1, h2, h3, gamma
+            )
             if triple_prob * san_odds > expected_return_threshold:
                 combo_bets.append({
                     "bet_type": "sanrenpuku",

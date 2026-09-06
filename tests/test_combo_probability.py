@@ -99,6 +99,11 @@ class TestPairJointProbability:
             joint = pair_joint_probability(q, i, j)
             assert joint <= min(place[i], place[j]) + 1e-9
 
+    def test_two_horse_race_both_always_place(self):
+        """2頭立て（3着目が存在しない）では両馬とも必ず3着以内となり確率は1.0"""
+        q = np.array([0.7, 0.3])
+        assert pair_joint_probability(q, 0, 1) == pytest.approx(1.0)
+
     def test_dominant_pair_not_overestimated_by_independence(self):
         """強い2頭の同時確率は、独立積よりも実際は低くなる（椅子の取り合いのため）"""
         q = np.array([0.40, 0.25, 0.15, 0.08, 0.06, 0.03, 0.02, 0.01])
@@ -192,3 +197,23 @@ class TestHeneryGamma:
         assert place_08[0] < place_1[0]
         assert place_08[-1] > place_1[-1]
         assert place_08.sum() == pytest.approx(3.0, abs=1e-9)
+
+
+class TestInvertWinProbabilitiesCached:
+    def test_matches_uncached_result(self):
+        from src.backtest.combo_probability import _invert_win_probabilities_cached
+
+        probs = (0.868, 0.739, 0.552, 0.327, 0.252, 0.130, 0.088, 0.044)
+        q_direct = invert_win_probabilities(np.array(probs))
+        q_cached = np.asarray(_invert_win_probabilities_cached(probs, 1.0))
+        assert np.allclose(q_direct, q_cached)
+
+    def test_repeated_calls_hit_cache(self):
+        from src.backtest.combo_probability import _invert_win_probabilities_cached
+
+        _invert_win_probabilities_cached.cache_clear()
+        probs = (0.868, 0.739, 0.552, 0.327, 0.252, 0.130, 0.088, 0.044)
+        _invert_win_probabilities_cached(probs, 1.0)
+        _invert_win_probabilities_cached(probs, 1.0)
+        info = _invert_win_probabilities_cached.cache_info()
+        assert info.hits >= 1

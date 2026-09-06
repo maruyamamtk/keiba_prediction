@@ -1069,3 +1069,24 @@ class TestUseHarvilleFlag:
             race_df, combo_df, expected_return_threshold=1.2, gamma=0.6
         )
         assert len(bets_gamma1) == len(bets_gamma_low)
+
+    def test_harville_handles_excluded_horses_without_crashing(self):
+        """回帰テスト: オッズ欠損等で一部の馬が除外され複勝率の合計が3を大きく
+        下回る場合でも、Harville計算が例外や不正な確率（>1やNaN）を出さないこと。
+        （8頭立てのうち5頭がオッズ欠損で除外され、残り3頭の合計が1.0まで
+        下がるという極端なケース）"""
+        race_df = _make_race_df(
+            n_horses=8,
+            probs=[0.868, None, None, None, None, None, 0.088, 0.044],
+            odds=[3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0],
+        )
+        combo_df = _make_combo_odds_df([
+            {"bet_type": "wide", "horse_number_1": 1, "horse_number_2": 7, "odds_value": 5.0},
+        ])
+        bets = select_bets_for_race(
+            race_df, combo_df, expected_return_threshold=1.0, use_harville=True, top_n=5,
+        )
+        # 例外なく完了し、複勝・ワイドとも妥当な範囲の結果が得られること
+        assert isinstance(bets, list)
+        for b in bets:
+            assert b["odds"] > 0
