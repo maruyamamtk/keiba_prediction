@@ -81,6 +81,7 @@ class StrategyOptimizer:
         combo_odds_df: pd.DataFrame | None = None,
         budget_per_race: float = 3000.0,
         enabled_bet_types: list[str] | None = None,
+        use_harville: bool = False,
         # 後方互換性のための旧パラメータ（無視される）
         max_bet_ratio: float | None = None,
     ):
@@ -101,7 +102,10 @@ class StrategyOptimizer:
                 資金曲線・最大ドローダウン計算に使用。賭け金には影響しない
             combo_odds_df: コンボオッズ DataFrame（None の場合は空 DataFrame）
             budget_per_race: 1レースあたりの固定予算 (円)
+            use_harville: True でワイド・三連複の同時確率をHarvilleモデルで計算する
+                （デフォルトFalse=従来の独立積。詳細は strategy.select_base_bets を参照）
         """
+        self.use_harville = use_harville
         self.predictions_df = predictions_df.copy()
         self.payouts_df = payouts_df if payouts_df is not None else pd.DataFrame()
         self.initial_capital = initial_capital
@@ -157,6 +161,7 @@ class StrategyOptimizer:
         prob_weight_r: float = 1.0,
         top_n: int = 5,
         max_wide_odds: float | None = None,
+        gamma: float = 1.0,
         # 後方互換性のための旧パラメータ（無視される）
         p1: float | None = None,
         prob_weight_r_dominant: float | None = None,
@@ -237,6 +242,8 @@ class StrategyOptimizer:
                     top_n=top_n,
                     max_wide_odds=max_wide_odds,
                     enabled_bet_types=self.enabled_bet_types,
+                    gamma=gamma,
+                    use_harville=self.use_harville,
                 )
             except ValueError:
                 continue
@@ -512,6 +519,7 @@ class StrategyOptimizer:
         max_max_drawdown: float = 30.0,
         min_total_bets: int = 30,
         sampler: "optuna.samplers.BaseSampler | None" = None,
+        search_gamma: bool = False,
     ) -> list[OptimizationResult]:
         """
         Optunaベイズ最適化で投資戦略パラメータを探索する
@@ -521,6 +529,8 @@ class StrategyOptimizer:
           - top_n: [1, 6]（整数）
           - min_prob_threshold: [0.0, 0.3]（連続）
           - max_wide_odds: [5.0, 50.0] または None（条件付き連続）
+          - gamma: [0.5, 1.5]（連続、search_gamma=True の場合のみ。Henery補正の指数。
+            1.0未満で本命優位を割り引き下位人気の同時確率を引き上げる）
 
         temperature は本番予測パスで適用されないため探索しない（Issue #399）。
         prob_weight_r はアイソトニック校正（Issue #416）後は不要なため 1.0 に固定し
@@ -537,6 +547,8 @@ class StrategyOptimizer:
             max_max_drawdown: 制約: 最大ドローダウン上限 (%) （デフォルト: 30.0）
             min_total_bets: 制約: 最低賭け数（過学習防止、デフォルト: 30）
             sampler: Optunaサンプラー（None の場合は TPESampler）
+            search_gamma: True でHarvilleモデルのHenery補正指数gammaも探索対象に加える
+                （デフォルト: False = gamma=1.0固定、独立積からの移行時の挙動を維持）
 
         Returns:
             OptimizationResult のリスト（全試行分）
@@ -550,6 +562,11 @@ class StrategyOptimizer:
         if metric not in _valid_metrics:
             raise ValueError(
                 f"metric='{metric}' は無効です。有効値: {_valid_metrics}"
+            )
+        if search_gamma and not self.use_harville:
+            raise ValueError(
+                "search_gamma=True には use_harville=True が必要です"
+                "（gammaはHarvilleモデル専用のパラメータのため、独立積では無効）"
             )
 
         results: list[OptimizationResult] = []
@@ -574,12 +591,15 @@ class StrategyOptimizer:
             else:
                 max_wide_odds = None
 
+            gamma = trial.suggest_float("gamma", 0.5, 1.5) if search_gamma else 1.0
+
             history_df, _ = self._run_simulation(
                 expected_return_threshold=expected_return_threshold,
                 top_n=top_n,
                 prob_weight_r=prob_weight_r,
                 min_prob_threshold=min_prob_threshold,
                 max_wide_odds=max_wide_odds,
+                gamma=gamma,
             )
             metrics = compute_metrics(history_df, self.initial_capital)
 
@@ -593,6 +613,7 @@ class StrategyOptimizer:
                 "prob_weight_r": prob_weight_r,
                 "min_prob_threshold": min_prob_threshold,
                 "max_wide_odds": max_wide_odds,
+                "gamma": gamma,
             }
 
             results.append(

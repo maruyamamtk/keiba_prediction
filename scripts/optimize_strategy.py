@@ -96,6 +96,7 @@ def save_best_params_to_yaml(
     end_date: datetime.date,
     metric: str,
     n_trials: int,
+    use_harville: bool = False,
 ) -> None:
     """最良パラメータを config/strategy_config.yaml に上書き保存する"""
     with open(STRATEGY_CONFIG_PATH) as f:
@@ -107,6 +108,11 @@ def save_best_params_to_yaml(
     config["prob_weight_r"] = 1.0
     config["min_prob_threshold"] = best.params["min_prob_threshold"]
     config["max_wide_odds"] = best.params.get("max_wide_odds", None)
+    # use_harville: この最適化実行で実際に使ったモデルを記録する。本番のデフォルトは
+    # 独立積（False）であり、Harvilleモデルへの切り替えは意図的に --use-harville を
+    # 指定した場合のみ（実バックテストで独立積を上回る結果が未確認のため。詳細はPR参照）。
+    config["use_harville"] = use_harville
+    config["gamma"] = best.params.get("gamma", 1.0)
     # 廃止済みパラメータを削除（存在する場合）。temperature は本番予測パスで未適用のため
     # 最適化対象外であり、過去の最適化で残った値があれば削除する（Issue #399）。
     for key in ["temperature", "p1", "top_n_dominant", "top_n_standard", "prob_weight_r_dominant",
@@ -134,7 +140,8 @@ def save_best_params_to_yaml(
         f"top_n={best.params['top_n']}, "
         f"prob_weight_r={best.params['prob_weight_r']:.3f}, "
         f"min_prob_threshold={best.params['min_prob_threshold']:.3f}, "
-        f"max_wide_odds={best.params.get('max_wide_odds')}"
+        f"max_wide_odds={best.params.get('max_wide_odds')}, "
+        f"gamma={best.params.get('gamma', 1.0):.3f}"
     )
     logger.info(
         f"  回収率={best.recovery_rate:.2f}%, 的中率={best.hit_rate:.2f}%, "
@@ -196,10 +203,23 @@ def main() -> None:
     )
     parser.add_argument("--output-csv", help="全試行結果のCSV保存先")
     parser.add_argument("--top-n", type=int, default=10, help="上位N件の結果を表示")
+    parser.add_argument(
+        "--use-harville",
+        action="store_true",
+        help="ワイド・三連複の同時確率をHarvilleモデルで計算する（デフォルト: 従来の独立積）",
+    )
+    parser.add_argument(
+        "--search-gamma",
+        action="store_true",
+        help="Harvilleモデルのgamma（Henery補正指数、範囲[0.5, 1.5]）も探索対象に加える"
+             "（--use-harville を暗黙に有効化する）",
+    )
     args = parser.parse_args()
 
     if not args.project_id:
         parser.error("--project-id または GCP_PROJECT_ID 環境変数を設定してください")
+
+    use_harville = args.use_harville or args.search_gamma
 
     start_date = datetime.date.fromisoformat(args.start_date)
     end_date = datetime.date.fromisoformat(args.end_date)
@@ -279,6 +299,7 @@ def main() -> None:
         combo_odds_df=combo_odds_df,
         budget_per_race=budget_per_race,
         enabled_bet_types=enabled_bet_types,
+        use_harville=use_harville,
     )
     results = optimizer.run_optuna_search(
         n_trials=args.n_trials,
@@ -287,6 +308,7 @@ def main() -> None:
         min_recovery_rate=args.min_recovery_rate,
         max_max_drawdown=args.max_drawdown,
         min_total_bets=args.min_total_bets,
+        search_gamma=args.search_gamma,
     )
 
     if not results:
@@ -304,6 +326,7 @@ def main() -> None:
             f"  #{i + 1}: th={res.params.get('expected_return_threshold', '?'):.3f} "
             f"top_n={res.params.get('top_n', '?')} "
             f"r={res.params.get('prob_weight_r', 1.0):.3f} "
+            f"gamma={res.params.get('gamma', 1.0):.3f} "
             f"→ 回収率={res.recovery_rate:.1f}% 的中率={res.hit_rate:.1f}% "
             f"ドローダウン={res.max_drawdown:.1f}% 賭け数={res.total_bets}"
         )
@@ -352,7 +375,7 @@ def main() -> None:
             )
             best = optimizer.best_params(results, metric=args.metric)
 
-    save_best_params_to_yaml(best, start_date, end_date, args.metric, args.n_trials)
+    save_best_params_to_yaml(best, start_date, end_date, args.metric, args.n_trials, use_harville=use_harville)
 
     logger.info("\n=== 完了 ===")
     logger.info("次回の POST /api/v1/strategy/daily から新しいパラメータが適用されます。")

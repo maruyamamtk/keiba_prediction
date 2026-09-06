@@ -532,6 +532,8 @@ def run_daily_strategy(
     _mwo = config.get("max_wide_odds", None)
     max_wide_odds = float(_mwo) if _mwo is not None else None
     enabled_bet_types = config.get("enabled_bet_types")
+    gamma = float(config.get("gamma", 1.0))
+    use_harville = bool(config.get("use_harville", False))
 
     opt = config.get("optimization", {})
     logger.info(f"=== 日次投資戦略策定 ({target_date}) ===")
@@ -539,7 +541,8 @@ def run_daily_strategy(
         f"パラメータ: expected_return_threshold={expected_return_threshold}, "
         f"top_n={top_n}, budget_per_race={budget_per_race}, "
         f"min_bet_amount={min_bet_amount}, min_prob_threshold={min_prob_threshold}, "
-        f"prob_weight_r={prob_weight_r}, max_wide_odds={max_wide_odds}"
+        f"prob_weight_r={prob_weight_r}, max_wide_odds={max_wide_odds}, "
+        f"use_harville={use_harville}, gamma={gamma}"
     )
     if opt.get("last_run"):
         logger.info(f"最終最適化: {opt['last_run']} "
@@ -589,6 +592,8 @@ def run_daily_strategy(
                 top_n=top_n,
                 max_wide_odds=max_wide_odds,
                 enabled_bet_types=enabled_bet_types,
+                gamma=gamma,
+                use_harville=use_harville,
             )
         except ValueError as e:
             logger.debug(f"レース {race_id} スキップ: {e}")
