@@ -10,6 +10,12 @@ from itertools import combinations
 import numpy as np
 import pandas as pd
 
+from .combo_probability import (
+    invert_win_probabilities,
+    pair_joint_probability,
+    triple_joint_probability,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -75,6 +81,8 @@ def select_base_bets(
     prob_weight_r: float = 1.0,
     max_wide_odds: float | None = None,
     enabled_bet_types: list[str] | None = None,
+    gamma: float = 1.0,
+    use_harville: bool = False,
 ) -> list[dict]:
     """
     複勝/ワイド/三連複/馬連の候補を選定する（配分前）
@@ -99,6 +107,14 @@ def select_base_bets(
             None の場合は上限なし
         enabled_bet_types: 購入対象とする券種のリスト（place/wide/umaren/sanrenpuku）。
             None の場合は全券種。三連複を除外したい場合は ["place", "wide", "umaren"] を指定。
+        gamma: ワイド・三連複の同時確率計算（Harvilleモデル）に使うHenery補正の指数。
+            1.0で素のHarville。1未満で本命の優位性を割り引き、下位人気の同時確率を引き上げる。
+            use_harville=False の場合は無視される
+        use_harville: True でワイド・三連複の同時確率をHarvilleモデルで計算する。
+            False（デフォルト）では従来の独立積（prob_i * prob_j 等）を使う。
+            独立積は複勝圏の椅子が3つしかないという排他性を無視するため理論値からズレるが、
+            実バックテストでは的中率・ドローダウンとのトレードオフがあり、本番のデフォルトは
+            引き続き独立積（False）としている
 
     Returns:
         bet dict のリスト（bet_amount は未設定）
@@ -145,10 +161,6 @@ def select_base_bets(
         candidates_df = sorted_df
     top_candidates = candidates_df.head(top_n)
     top_horse_numbers = top_candidates["horse_number"].tolist()
-    top_prob_map = dict(zip(
-        top_candidates["horse_number"].tolist(),
-        top_candidates["win_place_prob"].tolist(),
-    ))
 
     combo_bets = []
 
@@ -160,6 +172,20 @@ def select_base_bets(
     )
 
     if has_combo:
+        if use_harville:
+            # ワイド・三連複の同時確率はレース全馬（top_n絞り込み前）の複勝率から
+            # Harvilleモデルで計算する。独立積（prob_i * prob_j）は「複勝圏の椅子は
+            # 3つしかない」という排他性を無視するため、理論値からズレる。
+            race_horse_numbers = sorted_df["horse_number"].tolist()
+            race_place_probs = np.asarray(sorted_df["win_place_prob"].tolist(), dtype=float)
+            q = invert_win_probabilities(race_place_probs, gamma=gamma)
+            horse_idx = {hn: i for i, hn in enumerate(race_horse_numbers)}
+        else:
+            top_prob_map = dict(zip(
+                top_candidates["horse_number"].tolist(),
+                top_candidates["win_place_prob"].tolist(),
+            ))
+
         # ワイド
         wide_df = combo_odds_df[combo_odds_df["bet_type"] == "wide"]
         selected_wide_pairs: list[tuple[int, int]] = []
@@ -168,12 +194,14 @@ def select_base_bets(
             h2 = int(row["horse_number_2"])
             if h1 not in top_horse_numbers or h2 not in top_horse_numbers:
                 continue
-            prob_i = float(top_prob_map.get(h1, 0))
-            prob_j = float(top_prob_map.get(h2, 0))
             wide_odds = float(row["odds_value"])
             if max_wide_odds is not None and wide_odds > max_wide_odds:
                 continue
-            if prob_i * prob_j * wide_odds > expected_return_threshold:
+            if use_harville:
+                pair_prob = pair_joint_probability(q, horse_idx[h1], horse_idx[h2], gamma=gamma)
+            else:
+                pair_prob = float(top_prob_map.get(h1, 0)) * float(top_prob_map.get(h2, 0))
+            if pair_prob * wide_odds > expected_return_threshold:
                 pair = tuple(sorted([h1, h2]))
                 # ワイド券の購入は "wide" 有効時のみ。ただしペア自体は馬連選定に使うため
                 # selected_wide_pairs には常に追加する。
@@ -221,11 +249,18 @@ def select_base_bets(
             h3 = int(h3_raw)
             if h1 not in top_horse_numbers or h2 not in top_horse_numbers or h3 not in top_horse_numbers:
                 continue
-            prob_i = float(top_prob_map.get(h1, 0))
-            prob_j = float(top_prob_map.get(h2, 0))
-            prob_k = float(top_prob_map.get(h3, 0))
             san_odds = float(row["odds_value"])
-            if prob_i * prob_j * prob_k * san_odds > expected_return_threshold:
+            if use_harville:
+                triple_prob = triple_joint_probability(
+                    q, horse_idx[h1], horse_idx[h2], horse_idx[h3], gamma=gamma
+                )
+            else:
+                triple_prob = (
+                    float(top_prob_map.get(h1, 0))
+                    * float(top_prob_map.get(h2, 0))
+                    * float(top_prob_map.get(h3, 0))
+                )
+            if triple_prob * san_odds > expected_return_threshold:
                 combo_bets.append({
                     "bet_type": "sanrenpuku",
                     "horse_numbers": sorted([h1, h2, h3]),
@@ -247,6 +282,8 @@ def select_bets_for_race(
     prob_weight_r: float = 1.0,
     max_wide_odds: float | None = None,
     enabled_bet_types: list[str] | None = None,
+    gamma: float = 1.0,
+    use_harville: bool = False,
     # 後方互換性のための旧パラメータ（無視される）
     p1: float | None = None,
     top_n_dominant: int | None = None,
@@ -275,6 +312,10 @@ def select_bets_for_race(
         max_wide_odds: ワイド購入の上限オッズ（None で無制限）。馬連も連動してスキップ
         enabled_bet_types: 購入対象の券種リスト（place/wide/umaren/sanrenpuku）。
             None で全券種。三連複除外時は ["place", "wide", "umaren"] を指定。
+        gamma: ワイド・三連複の同時確率計算に使うHenery補正の指数（1.0で素のHarville）。
+            use_harville=False の場合は無視される
+        use_harville: True でワイド・三連複の同時確率をHarvilleモデルで計算する
+            （デフォルトFalse=従来の独立積を使用。詳細は select_base_bets を参照）
         p1: 廃止済み（無視される）
         top_n_dominant: 廃止済み（無視される）
         top_n_standard: 廃止済み（無視される）
@@ -317,6 +358,8 @@ def select_bets_for_race(
         prob_weight_r=prob_weight_r,
         max_wide_odds=max_wide_odds,
         enabled_bet_types=enabled_bet_types,
+        gamma=gamma,
+        use_harville=use_harville,
     )
 
     # 同一 (bet_type, horse_numbers) の重複排除（先着優先）
