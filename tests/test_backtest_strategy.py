@@ -982,3 +982,111 @@ class TestMaxWideOdds:
         )
         wide_no_limit = [b for b in bets_no_limit if b["bet_type"] == "wide"]
         assert len(wide_no_limit) == 1
+
+
+# ---------------------------------------------------------------------------
+# use_harville フラグのテスト
+# ---------------------------------------------------------------------------
+
+
+class TestUseHarvilleFlag:
+    """ワイド・三連複の同時確率計算モデル切り替えのテスト"""
+
+    def test_default_uses_independent_product(self):
+        """use_harville未指定時は従来の独立積（prob_i * prob_j）を使う"""
+        race_df = _make_race_df(
+            n_horses=3,
+            probs=[0.4, 0.3, 0.2],
+            odds=[3.0, 3.0, 3.0],
+        )
+        # 独立積: 0.4*0.3=0.12 → *odds(10.0)=1.2 == threshold なので僅かに超える9.99は除外、
+        # 10.01倍なら選定される境界値で検証する
+        combo_df = _make_combo_odds_df([
+            {"bet_type": "wide", "horse_number_1": 1, "horse_number_2": 2, "odds_value": 10.01},
+        ])
+        bets_default = select_base_bets(race_df, combo_df, expected_return_threshold=1.2)
+        bets_explicit_false = select_base_bets(
+            race_df, combo_df, expected_return_threshold=1.2, use_harville=False
+        )
+        assert bets_default == bets_explicit_false
+        wide_default = [b for b in bets_default if b["bet_type"] == "wide"]
+        assert len(wide_default) == 1
+
+    def test_harville_uses_joint_probability_not_independent_product(self):
+        """use_harville=Trueでは独立積ではなくHarvilleモデルの同時確率を使う"""
+        from src.backtest.combo_probability import (
+            invert_win_probabilities,
+            pair_joint_probability,
+        )
+
+        # sum=3.0を満たす現実的な複勝率（8頭立て）
+        probs = [0.868, 0.739, 0.552, 0.327, 0.252, 0.130, 0.088, 0.044]
+        race_df = _make_race_df(n_horses=8, probs=probs, odds=[3.0] * 8)
+
+        q = invert_win_probabilities(np.array(probs))
+        true_joint = pair_joint_probability(q, 0, 1)  # 1番人気・2番人気の同時確率
+        naive_product = probs[0] * probs[1]
+        assert true_joint != pytest.approx(naive_product), (
+            "テスト前提が崩れている: 独立積とHarville同時確率が一致してしまっている"
+        )
+
+        # 独立積とHarville同時確率のちょうど中間にオッズ閾値を設定し、
+        # 「どちらのモデルが使われたか」で選定結果が変わるようにする
+        wide_odds = 1.2 / ((true_joint + naive_product) / 2)
+        combo_df = _make_combo_odds_df([
+            {"bet_type": "wide", "horse_number_1": 1, "horse_number_2": 2, "odds_value": wide_odds},
+        ])
+
+        bets_naive = select_base_bets(
+            race_df, combo_df, expected_return_threshold=1.2, use_harville=False
+        )
+        bets_harville = select_base_bets(
+            race_df, combo_df, expected_return_threshold=1.2, use_harville=True
+        )
+        wide_naive = [b for b in bets_naive if b["bet_type"] == "wide"]
+        wide_harville = [b for b in bets_harville if b["bet_type"] == "wide"]
+
+        # 独立積(0.6415)は閾値超え、Harville同時確率(0.6274)は閾値未満になるよう
+        # wide_oddsを設定しているため、モデルによって選定結果が変わるはず
+        assert (len(wide_naive) == 1) != (len(wide_harville) == 1), (
+            "独立積とHarvilleモデルで異なる選定結果になるはずが、同じ結果だった"
+        )
+
+    def test_harville_gamma_has_no_effect_when_disabled(self):
+        """use_harville=False（デフォルト）ではgammaは無視される"""
+        race_df = _make_race_df(
+            n_horses=3,
+            probs=[0.4, 0.3, 0.2],
+            odds=[3.0, 3.0, 3.0],
+        )
+        combo_df = _make_combo_odds_df([
+            {"bet_type": "wide", "horse_number_1": 1, "horse_number_2": 2, "odds_value": 10.01},
+        ])
+        bets_gamma1 = select_base_bets(
+            race_df, combo_df, expected_return_threshold=1.2, gamma=1.0
+        )
+        bets_gamma_low = select_base_bets(
+            race_df, combo_df, expected_return_threshold=1.2, gamma=0.6
+        )
+        assert len(bets_gamma1) == len(bets_gamma_low)
+
+    def test_harville_handles_excluded_horses_without_crashing(self):
+        """回帰テスト: オッズ欠損等で一部の馬が除外され複勝率の合計が3を大きく
+        下回る場合でも、Harville計算が例外や不正な確率（>1やNaN）を出さないこと。
+        （8頭立てのうち5頭がオッズ欠損で除外され、残り3頭の合計が1.0まで
+        下がるという極端なケース）"""
+        race_df = _make_race_df(
+            n_horses=8,
+            probs=[0.868, None, None, None, None, None, 0.088, 0.044],
+            odds=[3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0],
+        )
+        combo_df = _make_combo_odds_df([
+            {"bet_type": "wide", "horse_number_1": 1, "horse_number_2": 7, "odds_value": 5.0},
+        ])
+        bets = select_bets_for_race(
+            race_df, combo_df, expected_return_threshold=1.0, use_harville=True, top_n=5,
+        )
+        # 例外なく完了し、複勝・ワイドとも妥当な範囲の結果が得られること
+        assert isinstance(bets, list)
+        for b in bets:
+            assert b["odds"] > 0

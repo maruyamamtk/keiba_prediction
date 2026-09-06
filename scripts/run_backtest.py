@@ -661,6 +661,8 @@ def run_full_strategy_backtest_pipeline(
     top_n: int = 5,
     max_wide_odds: float | None = None,
     enabled_bet_types: list[str] | None = None,
+    gamma: float = 1.0,
+    use_harville: bool = False,
     initial_capital: float = 100_000.0,
     output_csv: str | None = None,
     save_bq: bool = False,
@@ -692,6 +694,9 @@ def run_full_strategy_backtest_pipeline(
         prob_weight_r: 選定スコア係数 (score = odds * prob^r)
         top_n: 候補馬数
         max_wide_odds: ワイド購入の上限オッズ（None で無制限）
+        gamma: ワイド・三連複の同時確率計算に使うHenery補正の指数（use_harville=True時のみ有効）
+        use_harville: True でワイド・三連複の同時確率をHarvilleモデルで計算する
+            （デフォルトFalse=従来の独立積）
         initial_capital: 初期資金 (円)
         output_csv: CSV 出力パス (None でスキップ)
         save_bq: BigQuery 保存フラグ
@@ -779,6 +784,7 @@ def run_full_strategy_backtest_pipeline(
         combo_odds_df=combo_odds_df if len(combo_odds_df) > 0 else None,
         budget_per_race=budget_per_race,
         enabled_bet_types=enabled_bet_types,
+        use_harville=use_harville,
     )
 
     history_df, _ = optimizer._run_simulation(
@@ -787,6 +793,7 @@ def run_full_strategy_backtest_pipeline(
         prob_weight_r=prob_weight_r,
         top_n=top_n,
         max_wide_odds=max_wide_odds,
+        gamma=gamma,
     )
 
     # 6. 評価指標計算
@@ -960,6 +967,8 @@ def main() -> int:
     max_wide_odds = args.max_wide_odds if args.max_wide_odds is not None else \
         (float(_yaml_mwo) if _yaml_mwo is not None else None)
     enabled_bet_types = strategy_cfg.get("enabled_bet_types")
+    gamma = float(strategy_cfg.get("gamma", 1.0))
+    use_harville = bool(strategy_cfg.get("use_harville", False))
 
     print(f"\nバックテスト設定:")
     print(f"  期間:                          {start_date} ~ {end_date}")
@@ -972,6 +981,8 @@ def main() -> int:
     print(f"  prob_weight_r:                 {prob_weight_r}")
     print(f"  max_wide_odds:                 {max_wide_odds if max_wide_odds is not None else '無制限'}")
     print(f"  enabled_bet_types:             {enabled_bet_types if enabled_bet_types else '全券種'}")
+    print(f"  use_harville:                  {use_harville}")
+    print(f"  gamma:                         {gamma}")
 
     history_df, metrics = run_full_strategy_backtest_pipeline(
         project_id=args.project_id,
@@ -986,6 +997,8 @@ def main() -> int:
         top_n=top_n,
         max_wide_odds=max_wide_odds,
         enabled_bet_types=enabled_bet_types,
+        gamma=gamma,
+        use_harville=use_harville,
         initial_capital=args.initial_capital,
         output_csv=args.output_csv,
         save_bq=args.save_to_bq,

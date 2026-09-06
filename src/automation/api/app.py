@@ -1402,6 +1402,8 @@ def _refresh_investment_decisions_for_race(
         _mwo = config.get("max_wide_odds", None)
         max_wide_odds = float(_mwo) if _mwo is not None else None
         enabled_bet_types = config.get("enabled_bet_types")
+        gamma = float(config.get("gamma", 1.0))
+        use_harville = bool(config.get("use_harville", False))
 
         # 推奨馬券を再計算
         bets = select_bets_for_race(
@@ -1415,6 +1417,8 @@ def _refresh_investment_decisions_for_race(
             top_n=top_n,
             max_wide_odds=max_wide_odds,
             enabled_bet_types=enabled_bet_types,
+            gamma=gamma,
+            use_harville=use_harville,
         )
 
         # 投資判断 dict を構築して MERGE UPSERT 保存

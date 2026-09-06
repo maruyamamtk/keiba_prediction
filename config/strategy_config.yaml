@@ -5,6 +5,15 @@ min_bet_amount: 100
 min_prob_threshold: 0.24342928840836991
 top_n: 5
 max_wide_odds: 44.020508484687106
+# use_harville: ワイド・三連複の同時確率をHarvilleモデルで計算するかどうか。
+# 独立積(false)は数学的には複勝圏の排他性を無視するため理論上ズレるが、
+# 実バックテスト(2025-12-27〜2026-09-04)ではHarvilleモデルが独立積を上回る
+# 結果は確認できておらず(回収率で独立積が優位、的中率・DDはHarvilleが優位という
+# トレードオフ)、本番は引き続き独立積(false)を使用する。切り替える場合は
+# scripts/optimize_strategy.py --use-harville [--search-gamma] で
+# ハイパーパラメータを再最適化してから true にすること。
+use_harville: false
+gamma: 1.0
 enabled_bet_types:
 - place
 - wide
