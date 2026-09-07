@@ -1,17 +1,10 @@
-expected_return_threshold: 1.938823538783936
+expected_return_threshold: 2.352836612600469
 prob_weight_r: 1.0
 budget_per_race: 2000
 min_bet_amount: 100
-min_prob_threshold: 0.24342928840836991
-top_n: 5
-max_wide_odds: 44.020508484687106
-# use_harville: ワイド・三連複の同時確率をHarvilleモデルで計算するかどうか。
-# 独立積(false)は数学的には複勝圏の排他性を無視するため理論上ズレるが、
-# 実バックテスト(2025-12-27〜2026-09-04)ではHarvilleモデルが独立積を上回る
-# 結果は確認できておらず(回収率で独立積が優位、的中率・DDはHarvilleが優位という
-# トレードオフ)、本番は引き続き独立積(false)を使用する。切り替える場合は
-# scripts/optimize_strategy.py --use-harville [--search-gamma] で
-# ハイパーパラメータを再最適化してから true にすること。
+min_prob_threshold: 0.15465887278099097
+top_n: 6
+max_wide_odds: null
 use_harville: false
 gamma: 1.0
 enabled_bet_types:
@@ -19,13 +12,13 @@ enabled_bet_types:
 - wide
 - umaren
 optimization:
-  last_run: '2026-06-27T16:51:26'
+  last_run: '2026-09-07T01:56:00'
   method: optuna
   metric: recovery_rate
   n_trials: 500
-  start_date: '2025-12-20'
-  end_date: '2026-06-27'
-  recovery_rate: 216.58
-  hit_rate: 16.2
-  max_drawdown: 9.17
-  total_bets: 605
+  start_date: '2025-09-07'
+  end_date: '2026-07-09'
+  recovery_rate: 304.32
+  hit_rate: 16.37
+  max_drawdown: 20.4
+  total_bets: 672

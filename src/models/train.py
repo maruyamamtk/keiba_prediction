@@ -618,6 +618,7 @@ def train_pipeline(
         "model_path": model_path,
         "gcs_uri": gcs_uri,
         "metrics": metrics,
+        "training_period": training_period,
         "calibration_temperature": calibration_temperature,
         "calibration_isotonic_points": len(calibration_isotonic["x_thresholds"]),
         "best_iteration": ranker.model.best_iteration,
