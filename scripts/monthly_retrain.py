@@ -44,7 +44,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pandas as pd
 import yaml
 from dotenv import load_dotenv
 
@@ -55,7 +54,11 @@ from scripts.run_backtest import (  # noqa: E402
     _load_strategy_config,
     run_full_strategy_backtest_pipeline,
 )
-from src.models.train import compute_week_boundaries, load_config, train_pipeline  # noqa: E402
+from src.models.train import (  # noqa: E402
+    compute_validation_boundaries,
+    load_config,
+    train_pipeline,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -68,12 +71,19 @@ DEFAULT_AUC_MIN = 0.78
 DEFAULT_NDCG_MIN = 0.54
 DEFAULT_RECALL_MIN = 0.47
 DEFAULT_RECOVERY_MIN = 95.0  # ホールドアウト OOS 回収率 (%)
-DEFAULT_HOLDOUT_MIN_BETS = 30  # ホールドアウトは短期間のため賭け数下限は緩め（参考値扱い）
+DEFAULT_HOLDOUT_MIN_BETS = 150  # ホールドアウト賭け数の参考下限（60日分の目安。未達は警告のみ）
 
 # --- 期間の既定値 ---
 FEATURE_START = "2016-01-01"
-STRATEGY_RESERVE_DAYS = 120  # モデルの学習・検証に使わず確保する期間（日数）
+# モデルの学習・検証に使わず確保する期間（日数）。旧設計（Issue #422時点）の
+# ホールドアウト期間（60日）と同等の統計的サンプル数を確保するため、
+# 予約期間=前半90日(戦略最適化)+後半60日(ホールドアウト)=150日とする。
+STRATEGY_RESERVE_DAYS = 150
 STRATEGY_OPTIMIZE_DAYS = 90  # 予約期間のうち前半を戦略最適化に使う日数（残りはホールドアウト）
+assert STRATEGY_OPTIMIZE_DAYS < STRATEGY_RESERVE_DAYS, (
+    "STRATEGY_OPTIMIZE_DAYS は STRATEGY_RESERVE_DAYS 未満である必要があります"
+    "（ホールドアウト用に少なくとも1日は残す）"
+)
 
 
 def notify(subject: str, body: str) -> None:
@@ -165,19 +175,16 @@ def main() -> int:
         )
         gcs_uri = f"gs://{args.project_id}-keiba-models/lgbm_ranker_multi/{date_str}/lgbm_ranker_multi_{date_str}.txt"
         metrics = {"ndcg@3": 0.0, "recall@3": 0.0, "auc": 0.0}
-        # dry-runではモデルを学習しないため、実際の split_train_valid_predict と
-        # 同じ日数計算で検証期間・予約期間を再現する（config実値の validation_months を使用）
+        # dry-runではモデルを学習しないため、train_pipeline内部と全く同じ関数
+        # （compute_validation_boundaries）で検証期間・予約期間を再現する
+        # （日付計算ロジックの二重実装によるドリフトを防ぐ・Issue #430）
         validation_months = config["model"]["training"]["validation_months"]
-        saturday, _ = compute_week_boundaries(today)
-        valid_end = saturday - datetime.timedelta(days=1 + STRATEGY_RESERVE_DAYS)
-        valid_start = (pd.Timestamp(valid_end) - pd.DateOffset(months=validation_months)).date()
-        reserve_from = valid_end + datetime.timedelta(days=1)
-        reserve_to = saturday - datetime.timedelta(days=1)
+        boundaries = compute_validation_boundaries(today, validation_months, STRATEGY_RESERVE_DAYS)
         training_period = {
-            "valid_from": valid_start.isoformat(),
-            "valid_to": valid_end.isoformat(),
-            "strategy_reserve_from": reserve_from.isoformat(),
-            "strategy_reserve_to": reserve_to.isoformat(),
+            "valid_from": boundaries["valid_start"].isoformat(),
+            "valid_to": boundaries["valid_end"].isoformat(),
+            "strategy_reserve_from": boundaries["strategy_reserve_from"].isoformat(),
+            "strategy_reserve_to": boundaries["strategy_reserve_to"].isoformat(),
         }
     else:
         result = train_pipeline(

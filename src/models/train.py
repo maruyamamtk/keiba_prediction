@@ -159,6 +159,37 @@ def fetch_training_data_from_sql(
     return df
 
 
+def compute_validation_boundaries(
+    execution_date: datetime.date,
+    validation_months: int,
+    strategy_reserve_days: int = 0,
+) -> dict:
+    """検証期間・予約期間の境界日付を計算する（純粋な日付計算のみ、データ非依存）
+
+    split_train_valid_predict/train_pipeline の内部計算と、monthly_retrain.py の
+    --dry-run 表示が同じロジックを共有するための唯一の実装（Issue #430）。
+
+    Args:
+        execution_date: 実行日
+        validation_months: 検証期間（月数）
+        strategy_reserve_days: 検証期間終端を実行日からこの日数分手前にずらす量
+
+    Returns:
+        dict: valid_start, valid_end を必ず含む。strategy_reserve_days > 0 の場合は
+              strategy_reserve_from, strategy_reserve_to も含む（すべて datetime.date）
+    """
+    saturday, _ = compute_week_boundaries(execution_date)
+    valid_end = saturday - datetime.timedelta(days=1 + strategy_reserve_days)
+    valid_start = (
+        pd.Timestamp(valid_end) - pd.DateOffset(months=validation_months)
+    ).date()
+    result = {"valid_start": valid_start, "valid_end": valid_end}
+    if strategy_reserve_days > 0:
+        result["strategy_reserve_from"] = valid_end + datetime.timedelta(days=1)
+        result["strategy_reserve_to"] = saturday - datetime.timedelta(days=1)
+    return result
+
+
 def split_train_valid_predict(
     df: pd.DataFrame,
     execution_date: datetime.date,
@@ -198,10 +229,11 @@ def split_train_valid_predict(
 
     # 検証期間の境界を計算（datetime.date型で統一）。strategy_reserve_daysの分だけ
     # 実行日から手前にずらし、その後ろを戦略最適化・ホールドアウト用に未使用のまま残す。
-    valid_end = saturday - datetime.timedelta(days=1 + strategy_reserve_days)
-    # validation_months分前の日付を計算
-    valid_start_ts = pd.Timestamp(valid_end) - pd.DateOffset(months=validation_months)
-    valid_start = valid_start_ts.date()
+    boundaries = compute_validation_boundaries(
+        execution_date, validation_months, strategy_reserve_days
+    )
+    valid_end = boundaries["valid_end"]
+    valid_start = boundaries["valid_start"]
 
     # race_dateカラムの型に依存しないよう、pd.Timestamp経由で比較
     remaining_dates = pd.to_datetime(remaining[date_column])
@@ -605,14 +637,11 @@ def train_pipeline(
     if strategy_reserve_days > 0:
         # モデルの学習・検証のどちらにも使われていない期間（Issue #430）。
         # 戦略パラメータ最適化・ホールドアウト検証専用に確保している。
-        _saturday, _ = compute_week_boundaries(execution_date)
-        _valid_end = _saturday - datetime.timedelta(days=1 + strategy_reserve_days)
-        training_period["strategy_reserve_from"] = (
-            _valid_end + datetime.timedelta(days=1)
-        ).isoformat()
-        training_period["strategy_reserve_to"] = (
-            _saturday - datetime.timedelta(days=1)
-        ).isoformat()
+        _boundaries = compute_validation_boundaries(
+            execution_date, model_config["training"]["validation_months"], strategy_reserve_days
+        )
+        training_period["strategy_reserve_from"] = _boundaries["strategy_reserve_from"].isoformat()
+        training_period["strategy_reserve_to"] = _boundaries["strategy_reserve_to"].isoformat()
     ranker.calibration_temperature = calibration_temperature
     ranker.calibration_isotonic = calibration_isotonic
     ranker.save(model_path, training_period=training_period)
