@@ -117,11 +117,11 @@
 #### 実行内容（`scripts/monthly_retrain.py`）
 
 1. 特徴量再生成（`generate_features.py --truncate`・全期間）
-2. 学習（`train_pipeline(tune=True, strategy_reserve_days=120)`）→ **品質ゲート①**: NDCG@3≥0.54 / Recall@3≥0.47 / AUC≥0.78
-   - モデルの検証期間終端を実行日の120日前で打ち切り、学習・検証のどちらにも使わない
+2. 学習（`train_pipeline(tune=True, strategy_reserve_days=150)`）→ **品質ゲート①**: NDCG@3≥0.54 / Recall@3≥0.47 / AUC≥0.78
+   - モデルの検証期間終端を実行日の150日前で打ち切り、学習・検証のどちらにも使わない
      「予約期間」（`training_period["strategy_reserve_from"〜"_to"]`）を確保する（Issue #430）
 3. 戦略再最適化（`optimize_strategy.py`・予約期間の前半90日・校正済み確率・`prob_weight_r=1.0` 固定）
-4. ホールドアウト（OOS）検証（予約期間の後半・真に未見データ） → **品質ゲート②**: 回収率≥95%
+4. ホールドアウト（OOS）検証（予約期間の後半60日・真に未見データ） → **品質ゲート②**: 回収率≥95%
 5. デプロイ（`build_and_push.sh` → `deploy_cloud_run.sh`）
 
 戦略最適化・ホールドアウトの期間はモデルの学習・検証期間と重複しない（Early Stopping・

@@ -237,7 +237,13 @@ def main() -> int:
     # ここで--use-harvilleを付けずに実行すると、運用者が手動でHarvilleモデルに
     # 切り替えていた場合でも毎月の再学習で独立積へ無言で戻ってしまう。
     reserve_from = datetime.date.fromisoformat(training_period["strategy_reserve_from"])
-    reserve_to = datetime.date.fromisoformat(training_period["strategy_reserve_to"])
+    # reserve_to は saturday-1 由来のため、週前半（月〜水）の実行では「今日」より
+    # 数日先になり得る（split_train_valid_predictのvalid_end等と同じ既存の性質）。
+    # 未来日を指定してもクエリ側は該当データなしで自然に空振りするだけで実害はないが、
+    # ログ・実際の問い合わせ範囲としては「今日」で頭打ちにしておく方が誤解がない。
+    reserve_to = min(
+        datetime.date.fromisoformat(training_period["strategy_reserve_to"]), today
+    )
     optimize_start = reserve_from
     optimize_end = min(
         reserve_from + datetime.timedelta(days=STRATEGY_OPTIMIZE_DAYS - 1), reserve_to
