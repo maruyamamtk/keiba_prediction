@@ -50,13 +50,23 @@ gcloud storage ls gs://keiba-prediction-1768734113-keiba-models/lgbm_ranker_mult
 戦略パラメータを再最適化します。**校正を本番反映する場合、戦略再最適化を deploy 前に必ず実施**
 してください（最適化したパラメータが本番の確率分布と食い違うのを防ぐため）。
 
+**重要（Issue #430）**: `--start-date`/`--end-date` には、ステップ2で学習したモデルの
+**検証期間（valid_from〜valid_to）と重ならない**日付を指定してください。モデルの
+Early Stopping・Optunaハイパーパラメータ選定はvalid期間の成績を基準に行われるため、
+同じ期間で戦略を最適化すると「モデル選択で既に見たデータ上での二重最適化」になり
+バックテストの数字が楽観的に出ます。モデルのmeta.jsonの`training_period.valid_to`
+より後の日付から使ってください（`gsutil cat gs://.../lgbm_ranker_multi_$(date +%Y%m%d).meta.json`
+で確認可能）。自動フロー（`monthly_retrain.py`）はこれを`strategy_reserve_days`で
+自動的に確保しているので、手動実行時も同様の考え方で期間を選ぶこと。
+
 ```bash
 # 校正済み確率（optimize_strategy.py は内部で run_backtest.generate_predictions を呼び、
 # meta.json の校正器を自動適用）で再最適化。prob_weight_r は校正後 1.0 固定・探索対象外（Issue #417）。
+# 以下の日付はモデルのvalid_toより後の期間の例。実行時は上記の確認手順で実際の値に置き換えること。
 .venv/bin/python scripts/optimize_strategy.py \
     --project-id keiba-prediction-1768734113 \
     --model-path gs://keiba-prediction-1768734113-keiba-models/lgbm_ranker_multi/$(date +%Y%m%d)/lgbm_ranker_multi_$(date +%Y%m%d).txt \
-    --start-date 2025-12-20 \
+    --start-date <モデルのvalid_toより後の日付> \
     --end-date $(date +%Y-%m-%d) \
     --n-trials 500
 ```
@@ -64,8 +74,9 @@ gcloud storage ls gs://keiba-prediction-1768734113-keiba-models/lgbm_ranker_mult
 - 最適化対象は `expected_return_threshold` / `top_n` / `min_prob_threshold` / `max_wide_odds`。
   `prob_weight_r` は 1.0 固定（校正後は odds × prob がそのまま真の EV のため純 EV 順が正解）。
 - 結果は `config/strategy_config.yaml` に自動反映されます。`prob_weight_r: 1.0` であることを確認。
-- 反映後、ホールドアウト（OOS）で回収率が維持されていることを `scripts/run_backtest.py` で検証してから
-  デプロイに進んでください（バックテストの win_place_prob は本番予測パスと同一校正器で一致します）。
+- 反映後、上記の最適化期間よりさらに後（真に未見）の直近データで回収率が維持されていることを
+  `scripts/run_backtest.py` で検証してからデプロイに進んでください（バックテストのwin_place_probは
+  本番予測パスと同一校正器で一致します）。
 
 ## ステップ4: Cloud Runへデプロイ
 

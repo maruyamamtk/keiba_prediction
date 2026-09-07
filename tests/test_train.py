@@ -126,6 +126,21 @@ class TestSplitTrainValidPredict:
         if len(train_df) > 0 and len(valid_df) > 0:
             assert train_df["race_date"].max() < valid_df["race_date"].min()
 
+    def test_strategy_reserve_days_creates_gap(self, sample_df):
+        """strategy_reserve_days指定時、検証期間の終端が実行日からその日数分
+        手前にずれ、その間のデータは学習・検証どちらにも含まれないこと（Issue #430）"""
+        execution_date = datetime.date(2026, 2, 13)  # 金曜日
+        train_df, valid_df, predict_df = split_train_valid_predict(
+            sample_df, execution_date, validation_months=6, strategy_reserve_days=30,
+        )
+        # reserve_days=0のときの検証終端は2026-02-13（saturday=2/14の前日）
+        # reserve_days=30なら2026-01-14まで手前にずれる
+        assert valid_df["race_date"].max() <= datetime.date(2026, 1, 14)
+        # ずらした分のギャップ期間（1/15〜2/13）は学習にも検証にも含まれない
+        gap_dates = pd.date_range("2026-01-15", "2026-02-13", freq="D")
+        all_used_dates = set(train_df["race_date"].unique()) | set(valid_df["race_date"].unique())
+        assert not (set(d.date() for d in gap_dates) & all_used_dates)
+
     def test_split_no_predict_data(self):
         """推論対象データがない場合でもエラーにならないこと"""
         dates = pd.date_range("2025-01-01", "2025-12-31", freq="D")
@@ -355,6 +370,34 @@ class TestTrainPipeline:
             assert result["predict_rows"] > 0
             assert result["num_features"] > 0
             assert Path(result["model_path"]).exists()
+            assert "training_period" in result
+            assert "valid_from" in result["training_period"]
+            assert "valid_to" in result["training_period"]
+            # strategy_reserve_days未指定（デフォルト0）時は予約期間フィールドが無いこと
+            assert "strategy_reserve_from" not in result["training_period"]
+
+    @patch("src.models.train.fetch_training_data")
+    def test_train_pipeline_strategy_reserve_days(self, mock_fetch, mock_config, mock_training_df):
+        """strategy_reserve_days指定時、training_periodに予約期間が含まれること（Issue #430）"""
+        mock_fetch.return_value = mock_training_df
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = train_pipeline(
+                project_id="test-project",
+                execution_date=datetime.date(2026, 2, 13),
+                config=mock_config,
+                output_dir=tmpdir,
+                skip_gcs_upload=True,
+                strategy_reserve_days=30,
+            )
+            period = result["training_period"]
+            assert "strategy_reserve_from" in period
+            assert "strategy_reserve_to" in period
+            reserve_from = datetime.date.fromisoformat(period["strategy_reserve_from"])
+            reserve_to = datetime.date.fromisoformat(period["strategy_reserve_to"])
+            valid_to = datetime.date.fromisoformat(period["valid_to"])
+            assert reserve_from > valid_to
+            assert reserve_to >= reserve_from
 
     @patch("src.models.train.fetch_training_data_from_sql")
     def test_train_pipeline_use_feature_sql(self, mock_fetch_sql, mock_config, mock_training_df):

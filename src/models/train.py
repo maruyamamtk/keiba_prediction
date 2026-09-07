@@ -164,12 +164,13 @@ def split_train_valid_predict(
     execution_date: datetime.date,
     validation_months: int,
     date_column: str = "race_date",
+    strategy_reserve_days: int = 0,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """
     時系列分割でデータを学習・検証・推論に分ける
 
     推論対象: 実行日の週の土曜・日曜
-    検証: 推論対象日直前のvalidation_months分
+    検証: 推論対象日直前のvalidation_months分（strategy_reserve_days分だけ手前で区切る）
     学習: それ以前の全データ
 
     Args:
@@ -177,6 +178,11 @@ def split_train_valid_predict(
         execution_date: 実行日
         validation_months: 検証期間（月数）
         date_column: 日付カラム名
+        strategy_reserve_days: 検証期間の終端を実行日からこの日数分手前にずらし、
+            モデルの学習・検証（Early Stopping・ハイパーパラメータ選定）が一切
+            触れていない期間を確保する（Issue #430）。この確保された期間は
+            戦略パラメータの最適化・ホールドアウト検証に使うことを想定している。
+            0（デフォルト）の場合は従来通り実行日直前まで検証期間として使う。
 
     Returns:
         (train_df, valid_df, predict_df) のタプル
@@ -190,8 +196,9 @@ def split_train_valid_predict(
     # 推論対象以外のデータ
     remaining = df[~predict_mask].copy()
 
-    # 検証期間の境界を計算（datetime.date型で統一）
-    valid_end = saturday - datetime.timedelta(days=1)
+    # 検証期間の境界を計算（datetime.date型で統一）。strategy_reserve_daysの分だけ
+    # 実行日から手前にずらし、その後ろを戦略最適化・ホールドアウト用に未使用のまま残す。
+    valid_end = saturday - datetime.timedelta(days=1 + strategy_reserve_days)
     # validation_months分前の日付を計算
     valid_start_ts = pd.Timestamp(valid_end) - pd.DateOffset(months=validation_months)
     valid_start = valid_start_ts.date()
@@ -421,6 +428,7 @@ def train_pipeline(
     tune: bool = False,
     n_trials: int | None = None,
     tune_timeout: int | None = None,
+    strategy_reserve_days: int = 0,
 ) -> dict:
     """
     多値ランク学習パイプラインを実行する（JRA賞金ウェイト多値ラベル + LambdaRank）
@@ -437,6 +445,10 @@ def train_pipeline(
         tune: True のとき Optuna でハイパーパラメータ調整を実行
         n_trials: チューニング試行回数（None のとき config 値を使用）
         tune_timeout: チューニングタイムアウト秒数（None のとき config 値を使用）
+        strategy_reserve_days: モデルの検証期間終端を実行日からこの日数分手前に
+            ずらし、学習・検証のどちらにも使われない期間を確保する（Issue #430）。
+            戻り値の training_period["strategy_reserve_from"/"strategy_reserve_to"]
+            としてこの期間を返す（戦略パラメータ最適化・ホールドアウト検証専用）。
 
     Returns:
         学習結果の辞書（model_type="ranker_multi" を含む）
@@ -467,6 +479,7 @@ def train_pipeline(
         execution_date=execution_date,
         validation_months=model_config["training"]["validation_months"],
         date_column=data_config["date_column"],
+        strategy_reserve_days=strategy_reserve_days,
     )
 
     if len(train_df) == 0:
@@ -580,15 +593,26 @@ def train_pipeline(
     date_str = execution_date.strftime("%Y%m%d")
     model_path = str(Path(output_dir) / f"lgbm_ranker_multi_{date_str}.txt")
     training_period = {
-        "train_from": str(train_df[data_config["date_column"]].min()),
-        "train_to": str(train_df[data_config["date_column"]].max()),
+        "train_from": pd.Timestamp(train_df[data_config["date_column"]].min()).date().isoformat(),
+        "train_to": pd.Timestamp(train_df[data_config["date_column"]].max()).date().isoformat(),
         "train_rows": len(train_df),
         "train_races": train_df[data_config["group_column"]].nunique(),
-        "valid_from": str(valid_df[data_config["date_column"]].min()),
-        "valid_to": str(valid_df[data_config["date_column"]].max()),
+        "valid_from": pd.Timestamp(valid_df[data_config["date_column"]].min()).date().isoformat(),
+        "valid_to": pd.Timestamp(valid_df[data_config["date_column"]].max()).date().isoformat(),
         "valid_rows": len(valid_df),
         "valid_races": valid_df[data_config["group_column"]].nunique(),
     }
+    if strategy_reserve_days > 0:
+        # モデルの学習・検証のどちらにも使われていない期間（Issue #430）。
+        # 戦略パラメータ最適化・ホールドアウト検証専用に確保している。
+        _saturday, _ = compute_week_boundaries(execution_date)
+        _valid_end = _saturday - datetime.timedelta(days=1 + strategy_reserve_days)
+        training_period["strategy_reserve_from"] = (
+            _valid_end + datetime.timedelta(days=1)
+        ).isoformat()
+        training_period["strategy_reserve_to"] = (
+            _saturday - datetime.timedelta(days=1)
+        ).isoformat()
     ranker.calibration_temperature = calibration_temperature
     ranker.calibration_isotonic = calibration_isotonic
     ranker.save(model_path, training_period=training_period)
