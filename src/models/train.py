@@ -530,6 +530,7 @@ def train_pipeline(
     n_trials: int | None = None,
     tune_timeout: int | None = None,
     test_days: int = 0,
+    calibration_days: int = 0,
 ) -> dict:
     """
     多値ランク学習パイプラインを実行する（JRA賞金ウェイト多値ラベル + LambdaRank）
@@ -544,11 +545,22 @@ def train_pipeline(
       3. train+validを結合し、Early Stoppingで決まったラウンド数固定でリフィット
          （test期間には一切触れない）
       4. リフィットしたモデルをtest（真に未見データ）で評価し、これを
-         報告するモデル品質指標・キャリブレーション基準とする
-    こうすることで、モデル品質指標（NDCG@3等）とキャリブレーション自体も
-    ハイパーパラメータ選定に使ったのと同じデータで評価するバイアスを避けられる。
+         報告するモデル品質指標とする
+    こうすることで、モデル品質指標（NDCG@3等）をハイパーパラメータ選定に
+    使ったのと同じデータで評価するバイアスを避けられる。
     さらにtest期間はモデルの学習・選定に一切使われていないため、
     戦略パラメータ最適化・ホールドアウト検証にそのまま安全に使い回せる。
+
+    キャリブレーション（温度・アイソトニック）は、calibration_days>0の場合、
+    test期間の先頭からcalibration_days日ぶんのみでフィットする（呼び出し側が
+    戦略最適化に使うのと同じ日数を渡すことを想定）。calibration_days=0
+    （デフォルト）の場合はtest期間全体（test_days>0時）またはvalid全体
+    （test_days=0時）でフィットする。呼び出し側が戦略最適化用にtest期間を
+    さらに前半（最適化）/後半（ホールドアウト）に分けて使う場合、キャリブレーション
+    まで含めてtest全体でフィットすると、ホールドアウトの実績が校正器に間接的に
+    使われてしまい「真に未見データ」という前提が崩れる（一段深いモデル選択リーク）。
+    calibration_daysを最適化用の日数と揃えることで、ホールドアウト分は
+    キャリブレーションからも完全に隔離される。
 
     Args:
         project_id: GCPプロジェクトID
@@ -565,10 +577,19 @@ def train_pipeline(
         test_days: test期間の日数。0（デフォルト）ならtrain/valid2分割。
             1以上ならtrain/valid/test3分割＋リフィットワークフローを実行し、
             戻り値の training_period に test_from/test_to を含める。
+        calibration_days: キャリブレーションのフィットに使うtest期間先頭からの
+            日数。0（デフォルト）はtest期間全体を使う。呼び出し側が戦略最適化用に
+            test期間の末尾を「真に未見のホールドアウト」として使う場合は、
+            その日数と合わせてここに指定すること（例: STRATEGY_OPTIMIZE_DAYS）。
 
     Returns:
         学習結果の辞書（model_type="ranker_multi" を含む）
     """
+    if calibration_days > 0 and test_days == 0:
+        raise ValueError("calibration_days は test_days>0 の場合のみ指定できます")
+    if calibration_days > test_days:
+        raise ValueError("calibration_days は test_days 以下である必要があります")
+
     data_config = config["data"]
     model_config = config["model"]
     gcs_config = config["gcs"]
@@ -591,6 +612,7 @@ def train_pipeline(
 
     # 2. データ分割
     test_df: pd.DataFrame | None = None
+    test_start: datetime.date | None = None
     if test_days > 0:
         train_df, valid_df, test_df, predict_df = split_train_valid_test_predict(
             df=df,
@@ -599,6 +621,9 @@ def train_pipeline(
             test_days=test_days,
             date_column=data_config["date_column"],
         )
+        test_start = compute_validation_boundaries(
+            execution_date, model_config["training"]["validation_months"], test_days
+        )["test_start"]
     else:
         train_df, valid_df, predict_df = split_train_valid_predict(
             df=df,
@@ -733,13 +758,34 @@ def train_pipeline(
 
     # 5d. キャリブレーション温度・アイソトニック校正器のフィット（Issue #414/#416）
     # test_days>0時はtest（真に未見）、そうでなければvalid（従来通り）上でフィットする。
+    # calibration_days>0の場合はtest期間の先頭からその日数分だけに絞る。これにより、
+    # 戦略最適化側がtest期間の末尾をホールドアウトとして使う場合、ホールドアウトの
+    # 実績がキャリブレーションに一切混入しない（一段深いモデル選択リークの回避・Issue #430）。
+    if test_days > 0 and calibration_days > 0:
+        assert test_start is not None
+        calib_cutoff = test_start + datetime.timedelta(days=calibration_days - 1)
+        calib_date_mask = (
+            pd.to_datetime(eval_df[data_config["date_column"]]).values
+            <= pd.Timestamp(calib_cutoff)
+        )
+        calib_source_df = eval_df[calib_date_mask]
+        calib_pred = eval_pred[calib_date_mask]
+        logger.info(
+            f"キャリブレーションはtest期間の先頭部分 {test_start}〜{calib_cutoff} "
+            f"（calibration_days={calibration_days}）のみでフィットする"
+            f"（残りのtest期間はホールドアウト用に一切使わない）"
+        )
+    else:
+        calib_source_df = eval_df
+        calib_pred = eval_pred
+
     # 出走取消・結果なし馬（finish_position<=0）は実績が無いため除外し、
     # scripts/evaluate_calibration.py の評価方法（raced horses のみ）と一致させる。
-    eval_positions = eval_df["finish_position"].fillna(0).values.astype(int)
+    eval_positions = calib_source_df["finish_position"].fillna(0).values.astype(int)
     calib_df = pd.DataFrame(
         {
-            "race_id": eval_df[data_config["group_column"]].values,
-            "pred_score": eval_pred,
+            "race_id": calib_source_df[data_config["group_column"]].values,
+            "pred_score": calib_pred,
             "finish_position": eval_positions,
         }
     )
@@ -811,11 +857,9 @@ def train_pipeline(
         "training_period": training_period,
         "calibration_temperature": calibration_temperature,
         "calibration_isotonic_points": len(calibration_isotonic["x_thresholds"]),
-        # リフィットモデル（test_days>0）はEarly Stoppingを使わないためbest_iteration=0に
-        # なる（意味を持たない）。実際に使われたラウンド数はnum_trees()で取得する。
-        "best_iteration": (
-            ranker.model.num_trees() if test_days > 0 else ranker.model.best_iteration
-        ),
+        # Early Stoppingなしで学習した場合best_iterationは0（規約上「全ラウンド使用」の意）
+        # になり意味を持たないため、その場合は実際のラウンド数num_trees()を使う。
+        "best_iteration": ranker.model.best_iteration or ranker.model.num_trees(),
         "train_rows": len(train_df),
         "valid_rows": len(valid_df),
         "predict_rows": len(predict_df),

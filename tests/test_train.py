@@ -449,6 +449,104 @@ class TestTrainPipeline:
             # 品質指標はtest期間で評価されている
             assert 0.0 <= result["metrics"]["ndcg@3"] <= 1.0
 
+    @patch("src.models.train.fit_calibration_temperature")
+    @patch("src.models.train.fit_calibration_isotonic")
+    @patch("src.models.train.fetch_training_data")
+    def test_train_pipeline_calibration_days_restricts_range(
+        self, mock_fetch, mock_iso, mock_temp, mock_config, mock_training_df
+    ):
+        """calibration_days指定時、キャリブレーションのフィットに使われるデータが
+        test期間の先頭calibration_days日分のみに絞られ、末尾（ホールドアウト想定）の
+        レースは一切混入しないこと（Issue #430追加修正: キャリブレーション経由の
+        一段深いモデル選択リークの防止）"""
+        mock_iso.return_value = {
+            "method": "isotonic", "x_thresholds": [0.1, 0.5, 0.9], "y_thresholds": [0.1, 0.5, 0.9],
+        }
+        mock_temp.return_value = 1.0
+
+        extra_rows = []
+        np.random.seed(44)
+        for d in [15, 22, 29]:
+            race_date = datetime.date(2026, 1, d)
+            for race_num in range(2):
+                race_id = f"race_{race_date.strftime('%Y%m%d')}_{race_num}"
+                for horse_num in range(1, 9):
+                    extra_rows.append({
+                        "race_id": race_id,
+                        "horse_id": f"horse_{horse_num}",
+                        "race_date": race_date,
+                        "target_place": horse_num <= 3,
+                        "finish_position": horse_num,
+                        "venue_code": "01",
+                        "race_number": race_num + 1,
+                        "course_type": "turf" if horse_num % 2 == 0 else "dirt",
+                        "track_condition": "good",
+                        "distance": 1600,
+                        "num_horses": 8,
+                        "bracket_number": (horse_num - 1) // 2 + 1,
+                        "horse_number": horse_num,
+                        "weight": 55.0 + np.random.randn(),
+                        "jockey_id": f"j{horse_num}",
+                        "trainer_id": f"t{horse_num}",
+                        "created_at": None,
+                        "feature_a": np.random.randn(),
+                        "feature_b": np.random.randn(),
+                        "feature_c": np.random.randn(),
+                    })
+        df_with_test = pd.concat([mock_training_df, pd.DataFrame(extra_rows)], ignore_index=True)
+        mock_fetch.return_value = df_with_test
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # test期間は2026-01-15〜2026-02-13（test_days=30）。calibration_days=7を
+            # 指定すると、フィットに使えるのは先頭7日分＝2026-01-15の1レース日だけになり、
+            # 01-22・01-29のレース（ホールドアウト想定）はキャリブレーションに一切使われない。
+            train_pipeline(
+                project_id="test-project",
+                execution_date=datetime.date(2026, 2, 13),
+                config=mock_config,
+                output_dir=tmpdir,
+                skip_gcs_upload=True,
+                test_days=30,
+                calibration_days=7,
+            )
+
+        assert mock_iso.called
+        calib_df_arg = mock_iso.call_args.args[0]
+        race_dates = {rid.split("_")[1] for rid in calib_df_arg["race_id"].unique()}
+        assert race_dates == {"20260115"}
+        assert "20260122" not in race_dates
+        assert "20260129" not in race_dates
+
+    @patch("src.models.train.fetch_training_data")
+    def test_train_pipeline_calibration_days_validation_errors(
+        self, mock_fetch, mock_config, mock_training_df
+    ):
+        """calibration_daysの引数バリデーション（Issue #430追加修正）"""
+        mock_fetch.return_value = mock_training_df
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # test_days=0の場合にcalibration_daysを指定するのは無効な組み合わせ
+            with pytest.raises(ValueError, match="test_days>0"):
+                train_pipeline(
+                    project_id="test-project",
+                    execution_date=datetime.date(2026, 2, 13),
+                    config=mock_config,
+                    output_dir=tmpdir,
+                    skip_gcs_upload=True,
+                    calibration_days=7,
+                )
+            # calibration_days が test_days を超えるのも無効
+            with pytest.raises(ValueError, match="test_days 以下"):
+                train_pipeline(
+                    project_id="test-project",
+                    execution_date=datetime.date(2026, 2, 13),
+                    config=mock_config,
+                    output_dir=tmpdir,
+                    skip_gcs_upload=True,
+                    test_days=30,
+                    calibration_days=31,
+                )
+
     @patch("src.models.train.fetch_training_data_from_sql")
     def test_train_pipeline_use_feature_sql(self, mock_fetch_sql, mock_config, mock_training_df):
         """use_feature_sql=True の場合、fetch_training_data_from_sql が呼ばれること（Issue #328）"""

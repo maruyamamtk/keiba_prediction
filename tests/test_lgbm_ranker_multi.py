@@ -244,6 +244,32 @@ class TestLGBMRankerMulti:
                 loaded.predict(X_valid),
             )
 
+    def test_refit_mode_meta_json_best_iteration_uses_num_trees(self, sample_data):
+        """X_valid省略のリフィットモード（Issue #430）でEarly Stoppingを使わず
+        学習した場合、Booster.best_iterationは0（LightGBM規約上「全ラウンド使用」の意）
+        になり意味を持たないため、meta.jsonにはnum_trees()（実際の学習ラウンド数）を
+        記録すること"""
+        X, y, groups = sample_data
+        num_boost_round = 7
+
+        config = LGBMRankerMultiConfig(
+            num_boost_round=num_boost_round,
+            early_stopping_rounds=5,
+            log_evaluation=0,
+        )
+        ranker = LGBMRankerMulti(config=config)
+        ranker.train(X, y, groups)  # X_valid省略 -> リフィットモード
+
+        assert ranker.model.best_iteration == 0
+        assert ranker.model.num_trees() == num_boost_round
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            model_path = str(Path(tmpdir) / "model_refit.txt")
+            ranker.save(model_path)
+
+            meta = json.loads(Path(model_path).with_suffix(".meta.json").read_text())
+            assert meta["best_iteration"] == num_boost_round
+
     def test_meta_json_has_training_period(self, sample_data):
         """training_period が meta.json に記録されること"""
         X, y, groups = sample_data

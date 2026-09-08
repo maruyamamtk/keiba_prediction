@@ -241,9 +241,13 @@ class LGBMRanker(LGBMModelBase):
         self.model.save_model(str(model_path))
 
         meta_path = model_path.with_suffix(".meta.json")
+        # best_iteration は Early Stopping なしで学習した場合 0 になる
+        # （LightGBMの規約上「全ラウンド使用」を意味するが、人が読むメタ情報としては
+        # 誤解を招くため、その場合は実際に学習したラウンド数 num_trees() を記録する）
+        best_iteration = self.model.best_iteration or self.model.num_trees()
         meta = {
             "feature_names": self.feature_names,
-            "best_iteration": self.model.best_iteration,
+            "best_iteration": best_iteration,
             "params": self.config.params,
         }
         if training_period:

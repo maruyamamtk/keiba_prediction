@@ -178,7 +178,7 @@ def main() -> int:
     if args.dry_run:
         logger.info(
             f"[dry-run] train_pipeline(project_id={args.project_id}, tune=True, "
-            f"test_days={TEST_DAYS})"
+            f"test_days={TEST_DAYS}, calibration_days={STRATEGY_OPTIMIZE_DAYS})"
         )
         gcs_uri = f"gs://{args.project_id}-keiba-models/lgbm_ranker_multi/{date_str}/lgbm_ranker_multi_{date_str}.txt"
         metrics = {"ndcg@3": 0.0, "recall@3": 0.0, "auc": 0.0}
@@ -200,6 +200,11 @@ def main() -> int:
             config=config,
             tune=True,
             test_days=TEST_DAYS,
+            # test期間の末尾（ホールドアウト）が真に未見のままになるよう、
+            # キャリブレーションもtest期間の先頭90日（戦略最適化と同じ範囲）だけでフィットする。
+            # ここをSTRATEGY_OPTIMIZE_DAYSからずらすと、ステップ4のホールドアウトの実績が
+            # キャリブレーションに混入する「一段深いモデル選択リーク」が再発する（Issue #430追加修正）。
+            calibration_days=STRATEGY_OPTIMIZE_DAYS,
         )
         gcs_uri = result["gcs_uri"]
         metrics = result["metrics"]
@@ -255,6 +260,13 @@ def main() -> int:
     )
     holdout_start = optimize_end + datetime.timedelta(days=1)
     holdout_end = test_to
+    if holdout_start > holdout_end:
+        fail(
+            "ホールドアウト期間の計算が不正（設定不整合）→ デプロイ中止",
+            f"holdout_start={holdout_start} > holdout_end={holdout_end}。"
+            f"TEST_DAYS({TEST_DAYS})とSTRATEGY_OPTIMIZE_DAYS({STRATEGY_OPTIMIZE_DAYS})の"
+            f"関係、またはtest_to({test_to})のクランプを確認すること。",
+        )
 
     prev_strat = _load_strategy_config()
     prev_use_harville = bool(prev_strat.get("use_harville", False))
