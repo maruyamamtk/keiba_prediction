@@ -270,6 +270,32 @@ class TestLGBMRankerMulti:
             meta = json.loads(Path(model_path).with_suffix(".meta.json").read_text())
             assert meta["best_iteration"] == num_boost_round
 
+    def test_meta_json_has_metrics_for_overfit_check(self, sample_data):
+        """save()にmetricsを渡した場合、meta.jsonのmetricsキーとして永続化されること
+        （過学習チェック用: eval/train/overfit_gap）"""
+        X, y, groups = sample_data
+        split = 8 * 10
+        X_train, X_valid = X.iloc[:split], X.iloc[split:]
+        y_train, y_valid = y[:split], y[split:]
+
+        config = LGBMRankerMultiConfig(num_boost_round=10, early_stopping_rounds=5, log_evaluation=0)
+        ranker = LGBMRankerMulti(config=config)
+        ranker.train(X_train, y_train, groups[:8], X_valid, y_valid, groups[8:])
+
+        metrics = {
+            "eval": {"ndcg@3": 0.7, "recall@3": 0.6, "auc": 0.75, "num_races": 2},
+            "eval_source": "valid",
+            "train": {"ndcg@3": 0.9, "recall@3": 0.8, "auc": 0.95, "num_races": 8},
+            "overfit_gap": {"ndcg@3": 0.2, "recall@3": 0.2, "auc": 0.2},
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            model_path = str(Path(tmpdir) / "model_multi.txt")
+            ranker.save(model_path, metrics=metrics)
+
+            meta = json.loads(Path(model_path).with_suffix(".meta.json").read_text())
+            assert meta["metrics"] == metrics
+
     def test_meta_json_has_training_period(self, sample_data):
         """training_period が meta.json に記録されること"""
         X, y, groups = sample_data

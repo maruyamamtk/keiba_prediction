@@ -61,9 +61,14 @@ class LGBMRankerMulti(LGBMRanker):
     def __init__(self, config: LGBMRankerMultiConfig | None = None):
         super().__init__(config or LGBMRankerMultiConfig())
 
-    def save(self, path: str, training_period: dict | None = None) -> None:
+    def save(
+        self,
+        path: str,
+        training_period: dict | None = None,
+        metrics: dict | None = None,
+    ) -> None:
         """モデルをローカルに保存する（meta.jsonにmodel_typeを追記）"""
-        super().save(path, training_period=training_period)
+        super().save(path, training_period=training_period, metrics=metrics)
 
         meta_path = Path(path).with_suffix(".meta.json")
         if meta_path.exists():

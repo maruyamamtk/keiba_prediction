@@ -3,6 +3,7 @@
 """
 
 import datetime
+import json
 import tempfile
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -388,6 +389,22 @@ class TestTrainPipeline:
             # test_days未指定（デフォルト0）時はtest期間フィールドが無いこと
             assert "test_from" not in result["training_period"]
 
+            # 過学習チェック用のtrain_metrics/overfit_gap（test_days=0時はtrain vs valid）
+            assert "train_metrics" in result
+            for key in ("ndcg@3", "recall@3", "auc"):
+                assert 0.0 <= result["train_metrics"][key] <= 1.0
+            assert "overfit_gap" in result
+            assert set(result["overfit_gap"].keys()) == {"ndcg@3", "recall@3", "auc"}
+            for key in ("ndcg@3", "recall@3", "auc"):
+                expected_gap = round(result["train_metrics"][key] - result["metrics"][key], 4)
+                assert result["overfit_gap"][key] == expected_gap
+
+            meta = json.loads(Path(result["model_path"]).with_suffix(".meta.json").read_text())
+            assert meta["metrics"]["eval_source"] == "valid"
+            assert meta["metrics"]["eval"]["ndcg@3"] == result["metrics"]["ndcg@3"]
+            assert meta["metrics"]["train"]["ndcg@3"] == result["train_metrics"]["ndcg@3"]
+            assert meta["metrics"]["overfit_gap"] == result["overfit_gap"]
+
     @patch("src.models.train.fetch_training_data")
     def test_train_pipeline_test_days_three_way_split(self, mock_fetch, mock_config, mock_training_df):
         """test_days指定時、training_periodにtest期間が含まれ、リフィット後の
@@ -448,6 +465,15 @@ class TestTrainPipeline:
             assert 1 <= result["best_iteration"] <= mock_config["model"]["training"]["num_boost_round"]
             # 品質指標はtest期間で評価されている
             assert 0.0 <= result["metrics"]["ndcg@3"] <= 1.0
+
+            # 過学習チェック: test_days>0時はtrain+valid(リフィット学習データ) vs test
+            assert "train_metrics" in result
+            assert "overfit_gap" in result
+            for key in ("ndcg@3", "recall@3", "auc"):
+                expected_gap = round(result["train_metrics"][key] - result["metrics"][key], 4)
+                assert result["overfit_gap"][key] == expected_gap
+            meta = json.loads(Path(result["model_path"]).with_suffix(".meta.json").read_text())
+            assert meta["metrics"]["eval_source"] == "test"
 
     @patch("src.models.train.fit_calibration_temperature")
     @patch("src.models.train.fit_calibration_isotonic")
