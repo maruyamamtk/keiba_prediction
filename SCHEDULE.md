@@ -117,13 +117,22 @@
 #### 実行内容（`scripts/monthly_retrain.py`）
 
 1. 特徴量再生成（`generate_features.py --truncate`・全期間）
-2. 学習（`train_pipeline(tune=True)`）→ **品質ゲート①**: NDCG@3≥0.54 / Recall@3≥0.47 / AUC≥0.78
-3. 戦略再最適化（`optimize_strategy.py`・校正済み確率・`prob_weight_r=1.0` 固定）
-4. ホールドアウト（OOS）検証 → **品質ゲート②**: 回収率≥95%
+2. 学習（`train_pipeline(tune=True, test_days=150)`）:
+   - train/valid/testの3分割にする。モデルの検証期間終端を実行日の150日前で打ち切り、
+     その後ろに学習・検証のどちらにも一切使わない「test期間」
+     （`training_period["test_from"〜"test_to"]`）を確保する（Issue #430）
+   - train+validでハイパーパラメータ調整・Early Stopping（従来通り）
+   - train+validを結合し、Early Stoppingで決まったラウンド数固定でリフィット（testには一切触れない）
+   - リフィットしたモデルをtestで評価 → **品質ゲート①**: NDCG@3≥0.54 / Recall@3≥0.47 / AUC≥0.78
+3. 戦略再最適化（`optimize_strategy.py`・test期間の前半90日・校正済み確率・`prob_weight_r=1.0` 固定）
+4. ホールドアウト（OOS）検証（test期間の後半60日・真に未見データ） → **品質ゲート②**: 回収率≥95%
 5. デプロイ（`build_and_push.sh` → `deploy_cloud_run.sh`）
 
-いずれかのステップ失敗・ゲート不合格で**即停止しデプロイしない**。結果は LINE（`LINE_NOTIFY_TO`
-設定時）と macOS 通知で報告し、ログは `logs/monthly_retrain_YYYYMM.log` に残る。
+test期間はモデルの学習・検証（Early Stopping・ハイパーパラメータ選定）のどちらにも
+一切使われていないため、モデルの汎化性能評価（ゲート①）と戦略パラメータ最適化・
+ホールドアウト検証（ゲート②）の両方に安全に使い回せる（「モデル選択リーク」を回避）。
+いずれかのステップ失敗・ゲート不合格で**即停止しデプロイしない**。
+結果は LINE（`LINE_NOTIFY_TO`設定時）と macOS 通知で報告し、ログは `logs/monthly_retrain_YYYYMM.log` に残る。
 保存先: `gs://{PROJECT_ID}-keiba-models/lgbm_ranker_multi/{YYYYMMDD}/…txt`。
 翌 `race-day-predict`（AM 8:00）が GCS 最新モデルを自動選択して予測に使う。
 

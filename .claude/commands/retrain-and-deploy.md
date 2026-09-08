@@ -29,10 +29,16 @@
 ```bash
 .venv/bin/python -m src.models.train \
     --tune \
-    --project-id keiba-prediction-1768734113
+    --project-id keiba-prediction-1768734113 \
+    --test-days 150 \
+    --calibration-days 90
 ```
 
 - 現行 train.py は `LGBMRankerMulti` 単一構成のため `--model-type` 引数は存在しません（指定するとエラー）。
+- `--test-days 150 --calibration-days 90` は `scripts/monthly_retrain.py` の自動フローと同じ値。
+  train/valid/testの3分割＋リフィットを行い、**NDCG@3/AUC/Recall@3はtest（学習・検証のどちらにも
+  一切使われていない真に未見データ）で評価**される（Issue #430）。省略するとtrain/valid2分割の
+  従来動作に戻り、ステップ3.5のリーク対策と整合しなくなるため、手動実行時も必ず指定すること。
 - 完了まで数時間かかる場合があります（Optunaチューニングあり）
 - 完了後、検証指標 **NDCG@3 / AUC / Recall@3**（参考水準: NDCG@3≈0.57 / AUC≈0.81 / Recall@3≈0.51）を確認し、前回より大幅に悪化していないことを確認してください
 
@@ -50,22 +56,39 @@ gcloud storage ls gs://keiba-prediction-1768734113-keiba-models/lgbm_ranker_mult
 戦略パラメータを再最適化します。**校正を本番反映する場合、戦略再最適化を deploy 前に必ず実施**
 してください（最適化したパラメータが本番の確率分布と食い違うのを防ぐため）。
 
+**重要（Issue #430）**: `--start-date`/`--end-date` には、ステップ2で学習したモデルの
+**検証期間（valid_from〜valid_to）と重ならない**日付を指定してください。モデルの
+Early Stopping・Optunaハイパーパラメータ選定はvalid期間の成績を基準に行われるため、
+同じ期間で戦略を最適化すると「モデル選択で既に見たデータ上での二重最適化」になり
+バックテストの数字が楽観的に出ます。モデルのmeta.jsonの`training_period.valid_to`
+より後の日付から使ってください（`gsutil cat gs://.../lgbm_ranker_multi_$(date +%Y%m%d).meta.json`
+で確認可能）。自動フロー（`monthly_retrain.py`）は`train_pipeline(..., test_days=150)`で
+train/valid/testの3分割にし、testを学習・検証のどちらにも使わず戦略最適化専用に
+確保しているので、手動実行時も同様の考え方（`training_period.test_from`以降）で期間を選ぶこと。
+
 ```bash
 # 校正済み確率（optimize_strategy.py は内部で run_backtest.generate_predictions を呼び、
 # meta.json の校正器を自動適用）で再最適化。prob_weight_r は校正後 1.0 固定・探索対象外（Issue #417）。
+# --start-date は training_period.test_from、--end-date はそこから89日後（calibration_days=90と
+# 揃える）を指定する。test期間の残り（末尾）はホールドアウトとして残し、
+# scripts/run_backtest.py で回収率が維持されていることを確認してからデプロイに進むこと。
 .venv/bin/python scripts/optimize_strategy.py \
     --project-id keiba-prediction-1768734113 \
     --model-path gs://keiba-prediction-1768734113-keiba-models/lgbm_ranker_multi/$(date +%Y%m%d)/lgbm_ranker_multi_$(date +%Y%m%d).txt \
-    --start-date 2025-12-20 \
-    --end-date $(date +%Y-%m-%d) \
+    --start-date <training_period.test_from> \
+    --end-date <test_fromの89日後> \
     --n-trials 500
 ```
 
+- `--min-total-bets`（デフォルト600）は約6ヶ月の期間を前提とした値（Issue #399）。上記の
+  期間が数ヶ月に満たない場合は、期間の長さに応じて `--min-total-bets` を明示的に下げること
+  （デフォルトのままだとほぼ全試行が制約落ちする）。
 - 最適化対象は `expected_return_threshold` / `top_n` / `min_prob_threshold` / `max_wide_odds`。
   `prob_weight_r` は 1.0 固定（校正後は odds × prob がそのまま真の EV のため純 EV 順が正解）。
 - 結果は `config/strategy_config.yaml` に自動反映されます。`prob_weight_r: 1.0` であることを確認。
-- 反映後、ホールドアウト（OOS）で回収率が維持されていることを `scripts/run_backtest.py` で検証してから
-  デプロイに進んでください（バックテストの win_place_prob は本番予測パスと同一校正器で一致します）。
+- 反映後、上記の最適化期間よりさらに後（真に未見）の直近データで回収率が維持されていることを
+  `scripts/run_backtest.py` で検証してからデプロイに進んでください（バックテストのwin_place_probは
+  本番予測パスと同一校正器で一致します）。
 
 ## ステップ4: Cloud Runへデプロイ
 

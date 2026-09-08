@@ -14,6 +14,11 @@
 
 set -u
 
+# launchd は .zshrc 等を読み込まないため PATH が最小限（/usr/bin:/bin:/usr/sbin:/sbin）になり、
+# Homebrew でインストールした gcloud 等が見つからない（ステップ5 build_and_push.sh が
+# "gcloud: command not found" で失敗する不具合の修正）。
+export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:${PATH}"
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "${PROJECT_ROOT}"

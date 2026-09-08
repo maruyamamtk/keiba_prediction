@@ -147,11 +147,18 @@ class LGBMRanker(LGBMModelBase):
         X_train: pd.DataFrame,
         y_train: np.ndarray,
         groups_train: list[int],
-        X_valid: pd.DataFrame,
-        y_valid: np.ndarray,
-        groups_valid: list[int],
+        X_valid: pd.DataFrame | None = None,
+        y_valid: np.ndarray | None = None,
+        groups_valid: list[int] | None = None,
         categorical_feature: list[str] | None = None,
     ) -> lgb.Booster:
+        """モデルを学習する
+
+        X_valid を指定した場合は valid に対する Early Stopping を行う（通常の学習）。
+        X_valid を省略した場合は Early Stopping を行わず、
+        self.config.num_boost_round で指定した固定ラウンド数だけ学習する
+        （train+valid結合データでの最終リフィット用・Issue #430）。
+        """
         self.feature_names = list(X_train.columns)
 
         train_data = lgb.Dataset(
@@ -162,41 +169,58 @@ class LGBMRanker(LGBMModelBase):
             free_raw_data=False,
         )
 
-        valid_data = lgb.Dataset(
-            X_valid,
-            label=y_valid,
-            group=groups_valid,
-            categorical_feature=categorical_feature or "auto",
-            reference=train_data,
-            free_raw_data=False,
-        )
-
-        logger.info(
-            f"Training started: {X_train.shape[0]} rows, "
-            f"{X_train.shape[1]} features, "
-            f"{len(groups_train)} races (train), "
-            f"{len(groups_valid)} races (valid)"
-        )
-
-        self.model = lgb.train(
-            self.config.params,
-            train_data,
-            num_boost_round=self.config.num_boost_round,
-            valid_sets=[train_data, valid_data],
-            valid_names=["train", "valid"],
-            callbacks=[
-                lgb.early_stopping(self.config.early_stopping_rounds),
-                lgb.log_evaluation(self.config.log_evaluation),
-            ],
-        )
+        if X_valid is not None:
+            valid_data = lgb.Dataset(
+                X_valid,
+                label=y_valid,
+                group=groups_valid,
+                categorical_feature=categorical_feature or "auto",
+                reference=train_data,
+                free_raw_data=False,
+            )
+            logger.info(
+                f"Training started: {X_train.shape[0]} rows, "
+                f"{X_train.shape[1]} features, "
+                f"{len(groups_train)} races (train), "
+                f"{len(groups_valid)} races (valid)"
+            )
+            self.model = lgb.train(
+                self.config.params,
+                train_data,
+                num_boost_round=self.config.num_boost_round,
+                valid_sets=[train_data, valid_data],
+                valid_names=["train", "valid"],
+                callbacks=[
+                    lgb.early_stopping(self.config.early_stopping_rounds),
+                    lgb.log_evaluation(self.config.log_evaluation),
+                ],
+            )
+            logger.info(
+                f"Training completed: best_iteration={self.model.best_iteration}"
+            )
+        else:
+            # リフィットモード: Early Stoppingなし・固定ラウンド数（他の未見データに
+            # 一切触れずに学習するため、num_boost_roundは呼び出し側が事前に決めておくこと）
+            logger.info(
+                f"Refit training started (no early stopping): {X_train.shape[0]} rows, "
+                f"{X_train.shape[1]} features, {len(groups_train)} races, "
+                f"num_boost_round={self.config.num_boost_round}"
+            )
+            self.model = lgb.train(
+                self.config.params,
+                train_data,
+                num_boost_round=self.config.num_boost_round,
+                valid_sets=[train_data],
+                valid_names=["train"],
+                callbacks=[lgb.log_evaluation(self.config.log_evaluation)],
+            )
+            logger.info(
+                f"Refit training completed: num_boost_round={self.config.num_boost_round}"
+            )
 
         if categorical_feature:
             self._categorical_feature_names = list(categorical_feature)
             self._build_categorical_dtypes()
-
-        logger.info(
-            f"Training completed: best_iteration={self.model.best_iteration}"
-        )
 
         return self.model
 
@@ -217,9 +241,13 @@ class LGBMRanker(LGBMModelBase):
         self.model.save_model(str(model_path))
 
         meta_path = model_path.with_suffix(".meta.json")
+        # best_iteration は Early Stopping なしで学習した場合 0 になる
+        # （LightGBMの規約上「全ラウンド使用」を意味するが、人が読むメタ情報としては
+        # 誤解を招くため、その場合は実際に学習したラウンド数 num_trees() を記録する）
+        best_iteration = self.model.best_iteration or self.model.num_trees()
         meta = {
             "feature_names": self.feature_names,
-            "best_iteration": self.model.best_iteration,
+            "best_iteration": best_iteration,
             "params": self.config.params,
         }
         if training_period:
