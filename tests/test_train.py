@@ -20,6 +20,7 @@ from src.models.train import (
     fetch_training_data_from_sql,
     load_config,
     split_train_valid_predict,
+    split_train_valid_test_predict,
     train_pipeline,
 )
 
@@ -126,20 +127,31 @@ class TestSplitTrainValidPredict:
         if len(train_df) > 0 and len(valid_df) > 0:
             assert train_df["race_date"].max() < valid_df["race_date"].min()
 
-    def test_strategy_reserve_days_creates_gap(self, sample_df):
-        """strategy_reserve_days指定時、検証期間の終端が実行日からその日数分
-        手前にずれ、その間のデータは学習・検証どちらにも含まれないこと（Issue #430）"""
+    def test_split_train_valid_test_predict_three_way(self, sample_df):
+        """split_train_valid_test_predictがtrain/valid/testを重複なく3分割すること（Issue #430）"""
         execution_date = datetime.date(2026, 2, 13)  # 金曜日
-        train_df, valid_df, predict_df = split_train_valid_predict(
-            sample_df, execution_date, validation_months=6, strategy_reserve_days=30,
+        train_df, valid_df, test_df, predict_df = split_train_valid_test_predict(
+            sample_df, execution_date, validation_months=6, test_days=30,
         )
-        # reserve_days=0のときの検証終端は2026-02-13（saturday=2/14の前日）
-        # reserve_days=30なら2026-01-14まで手前にずれる
+        # valid終端は2026-01-14（reserve_days=0時の2026-02-13から30日手前）
         assert valid_df["race_date"].max() <= datetime.date(2026, 1, 14)
-        # ずらした分のギャップ期間（1/15〜2/13）は学習にも検証にも含まれない
-        gap_dates = pd.date_range("2026-01-15", "2026-02-13", freq="D")
-        all_used_dates = set(train_df["race_date"].unique()) | set(valid_df["race_date"].unique())
-        assert not (set(d.date() for d in gap_dates) & all_used_dates)
+        # test期間は1/15〜2/13の30日間
+        assert test_df["race_date"].min() >= datetime.date(2026, 1, 15)
+        assert test_df["race_date"].max() <= datetime.date(2026, 2, 13)
+        # train/valid/testは互いに重複しない
+        train_dates = set(train_df["race_date"].unique())
+        valid_dates = set(valid_df["race_date"].unique())
+        test_dates = set(test_df["race_date"].unique())
+        assert not (train_dates & valid_dates)
+        assert not (valid_dates & test_dates)
+        assert not (train_dates & test_dates)
+
+    def test_split_train_valid_test_predict_requires_positive_test_days(self, sample_df):
+        """test_days<=0はエラーになること（split_train_valid_predictを使うべき旨を案内）"""
+        with pytest.raises(ValueError):
+            split_train_valid_test_predict(
+                sample_df, datetime.date(2026, 2, 13), validation_months=6, test_days=0,
+            )
 
     def test_split_no_predict_data(self):
         """推論対象データがない場合でもエラーにならないこと"""
@@ -373,13 +385,46 @@ class TestTrainPipeline:
             assert "training_period" in result
             assert "valid_from" in result["training_period"]
             assert "valid_to" in result["training_period"]
-            # strategy_reserve_days未指定（デフォルト0）時は予約期間フィールドが無いこと
-            assert "strategy_reserve_from" not in result["training_period"]
+            # test_days未指定（デフォルト0）時はtest期間フィールドが無いこと
+            assert "test_from" not in result["training_period"]
 
     @patch("src.models.train.fetch_training_data")
-    def test_train_pipeline_strategy_reserve_days(self, mock_fetch, mock_config, mock_training_df):
-        """strategy_reserve_days指定時、training_periodに予約期間が含まれること（Issue #430）"""
-        mock_fetch.return_value = mock_training_df
+    def test_train_pipeline_test_days_three_way_split(self, mock_fetch, mock_config, mock_training_df):
+        """test_days指定時、training_periodにtest期間が含まれ、リフィット後の
+        モデルがtestで評価されること（Issue #430）"""
+        # test期間(2026-01-15〜2026-02-13)にもデータが必要なため、
+        # mock_training_dfに数レースぶん追加する
+        extra_rows = []
+        np.random.seed(43)
+        for d in [15, 22, 29]:
+            race_date = datetime.date(2026, 1, d)
+            for race_num in range(2):
+                race_id = f"race_{race_date.strftime('%Y%m%d')}_{race_num}"
+                for horse_num in range(1, 9):
+                    extra_rows.append({
+                        "race_id": race_id,
+                        "horse_id": f"horse_{horse_num}",
+                        "race_date": race_date,
+                        "target_place": horse_num <= 3,
+                        "finish_position": horse_num,
+                        "venue_code": "01",
+                        "race_number": race_num + 1,
+                        "course_type": "turf" if horse_num % 2 == 0 else "dirt",
+                        "track_condition": "good",
+                        "distance": 1600,
+                        "num_horses": 8,
+                        "bracket_number": (horse_num - 1) // 2 + 1,
+                        "horse_number": horse_num,
+                        "weight": 55.0 + np.random.randn(),
+                        "jockey_id": f"j{horse_num}",
+                        "trainer_id": f"t{horse_num}",
+                        "created_at": None,
+                        "feature_a": np.random.randn(),
+                        "feature_b": np.random.randn(),
+                        "feature_c": np.random.randn(),
+                    })
+        df_with_test = pd.concat([mock_training_df, pd.DataFrame(extra_rows)], ignore_index=True)
+        mock_fetch.return_value = df_with_test
 
         with tempfile.TemporaryDirectory() as tmpdir:
             result = train_pipeline(
@@ -388,16 +433,21 @@ class TestTrainPipeline:
                 config=mock_config,
                 output_dir=tmpdir,
                 skip_gcs_upload=True,
-                strategy_reserve_days=30,
+                test_days=30,
             )
             period = result["training_period"]
-            assert "strategy_reserve_from" in period
-            assert "strategy_reserve_to" in period
-            reserve_from = datetime.date.fromisoformat(period["strategy_reserve_from"])
-            reserve_to = datetime.date.fromisoformat(period["strategy_reserve_to"])
+            assert "test_from" in period
+            assert "test_to" in period
+            test_from = datetime.date.fromisoformat(period["test_from"])
+            test_to = datetime.date.fromisoformat(period["test_to"])
             valid_to = datetime.date.fromisoformat(period["valid_to"])
-            assert reserve_from > valid_to
-            assert reserve_to >= reserve_from
+            assert test_from > valid_to
+            assert test_to >= test_from
+            # リフィットモデルはEarly Stoppingを使わず、初回学習で決まった
+            # best_iteration固定のラウンド数で学習される（num_trees()で取得）
+            assert 1 <= result["best_iteration"] <= mock_config["model"]["training"]["num_boost_round"]
+            # 品質指標はtest期間で評価されている
+            assert 0.0 <= result["metrics"]["ndcg@3"] <= 1.0
 
     @patch("src.models.train.fetch_training_data_from_sql")
     def test_train_pipeline_use_feature_sql(self, mock_fetch_sql, mock_config, mock_training_df):

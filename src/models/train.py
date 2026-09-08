@@ -162,31 +162,39 @@ def fetch_training_data_from_sql(
 def compute_validation_boundaries(
     execution_date: datetime.date,
     validation_months: int,
-    strategy_reserve_days: int = 0,
+    test_days: int = 0,
 ) -> dict:
-    """検証期間・予約期間の境界日付を計算する（純粋な日付計算のみ、データ非依存）
+    """検証期間・test期間の境界日付を計算する（純粋な日付計算のみ、データ非依存）
 
-    split_train_valid_predict/train_pipeline の内部計算と、monthly_retrain.py の
-    --dry-run 表示が同じロジックを共有するための唯一の実装（Issue #430）。
+    split_train_valid_predict/split_train_valid_test_predict の内部計算と、
+    monthly_retrain.py の --dry-run 表示が同じロジックを共有するための
+    唯一の実装（Issue #430）。
+
+    3分割の考え方: train（validより前の全期間）→ valid（Early Stopping・
+    ハイパーパラメータ選定用）→ test（train+validどちらにも一切使わない、
+    真に未見のデータ。モデルの汎化性能評価と戦略パラメータ最適化の両方に使う）
+    → predict（今週末の予測対象）。test_days=0 の場合は従来通りvalidが
+    実行日直前まで伸びる2分割（train/valid）になる。
 
     Args:
         execution_date: 実行日
         validation_months: 検証期間（月数）
-        strategy_reserve_days: 検証期間終端を実行日からこの日数分手前にずらす量
+        test_days: test期間の日数。検証期間の終端を実行日からこの日数分
+            手前にずらすことで、その後ろにtest期間を確保する
 
     Returns:
-        dict: valid_start, valid_end を必ず含む。strategy_reserve_days > 0 の場合は
-              strategy_reserve_from, strategy_reserve_to も含む（すべて datetime.date）
+        dict: valid_start, valid_end を必ず含む。test_days > 0 の場合は
+              test_start, test_end も含む（すべて datetime.date）
     """
     saturday, _ = compute_week_boundaries(execution_date)
-    valid_end = saturday - datetime.timedelta(days=1 + strategy_reserve_days)
+    valid_end = saturday - datetime.timedelta(days=1 + test_days)
     valid_start = (
         pd.Timestamp(valid_end) - pd.DateOffset(months=validation_months)
     ).date()
     result = {"valid_start": valid_start, "valid_end": valid_end}
-    if strategy_reserve_days > 0:
-        result["strategy_reserve_from"] = valid_end + datetime.timedelta(days=1)
-        result["strategy_reserve_to"] = saturday - datetime.timedelta(days=1)
+    if test_days > 0:
+        result["test_start"] = valid_end + datetime.timedelta(days=1)
+        result["test_end"] = saturday - datetime.timedelta(days=1)
     return result
 
 
@@ -195,25 +203,21 @@ def split_train_valid_predict(
     execution_date: datetime.date,
     validation_months: int,
     date_column: str = "race_date",
-    strategy_reserve_days: int = 0,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """
     時系列分割でデータを学習・検証・推論に分ける
 
     推論対象: 実行日の週の土曜・日曜
-    検証: 推論対象日直前のvalidation_months分（strategy_reserve_days分だけ手前で区切る）
+    検証: 推論対象日直前のvalidation_months分
     学習: それ以前の全データ
+
+    3分割（train/valid/test）が必要な場合は split_train_valid_test_predict を使うこと。
 
     Args:
         df: 全データ
         execution_date: 実行日
         validation_months: 検証期間（月数）
         date_column: 日付カラム名
-        strategy_reserve_days: 検証期間の終端を実行日からこの日数分手前にずらし、
-            モデルの学習・検証（Early Stopping・ハイパーパラメータ選定）が一切
-            触れていない期間を確保する（Issue #430）。この確保された期間は
-            戦略パラメータの最適化・ホールドアウト検証に使うことを想定している。
-            0（デフォルト）の場合は従来通り実行日直前まで検証期間として使う。
 
     Returns:
         (train_df, valid_df, predict_df) のタプル
@@ -227,11 +231,7 @@ def split_train_valid_predict(
     # 推論対象以外のデータ
     remaining = df[~predict_mask].copy()
 
-    # 検証期間の境界を計算（datetime.date型で統一）。strategy_reserve_daysの分だけ
-    # 実行日から手前にずらし、その後ろを戦略最適化・ホールドアウト用に未使用のまま残す。
-    boundaries = compute_validation_boundaries(
-        execution_date, validation_months, strategy_reserve_days
-    )
+    boundaries = compute_validation_boundaries(execution_date, validation_months)
     valid_end = boundaries["valid_end"]
     valid_start = boundaries["valid_start"]
 
@@ -262,6 +262,75 @@ def split_train_valid_predict(
         logger.info("No prediction target data found for this week's Saturday/Sunday")
 
     return train_df, valid_df, predict_df
+
+
+def split_train_valid_test_predict(
+    df: pd.DataFrame,
+    execution_date: datetime.date,
+    validation_months: int,
+    test_days: int,
+    date_column: str = "race_date",
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """
+    時系列3分割（train/valid/test）+ 推論対象データに分ける（Issue #430）
+
+    train（それ以前の全期間）→ valid（Early Stopping・ハイパーパラメータ選定用）
+    → test（train・validのどちらにも一切使われない、真に未見のデータ。
+    train+valid結合データで再学習した最終モデルの汎化性能評価と、戦略パラメータ
+    最適化の両方に安全に使い回せる）→ predict（今週末の予測対象）の順に並ぶ。
+
+    Args:
+        df: 全データ
+        execution_date: 実行日
+        validation_months: 検証期間（月数）
+        test_days: test期間の日数（1以上を指定すること）
+        date_column: 日付カラム名
+
+    Returns:
+        (train_df, valid_df, test_df, predict_df) のタプル
+    """
+    if test_days <= 0:
+        raise ValueError("test_days は1以上を指定してください（0の場合は split_train_valid_predict を使うこと）")
+
+    saturday, sunday = compute_week_boundaries(execution_date)
+
+    predict_mask = df[date_column].isin([saturday, sunday])
+    predict_df = df[predict_mask].copy()
+    remaining = df[~predict_mask].copy()
+
+    boundaries = compute_validation_boundaries(execution_date, validation_months, test_days)
+    valid_start, valid_end = boundaries["valid_start"], boundaries["valid_end"]
+    test_start, test_end = boundaries["test_start"], boundaries["test_end"]
+
+    remaining_dates = pd.to_datetime(remaining[date_column])
+    train_mask = remaining_dates < pd.Timestamp(valid_start)
+    valid_mask = (remaining_dates >= pd.Timestamp(valid_start)) & (
+        remaining_dates <= pd.Timestamp(valid_end)
+    )
+    test_mask = (remaining_dates >= pd.Timestamp(test_start)) & (
+        remaining_dates <= pd.Timestamp(test_end)
+    )
+
+    train_df = remaining[train_mask].copy()
+    valid_df = remaining[valid_mask].copy()
+    test_df = remaining[test_mask].copy()
+
+    logger.info(
+        f"Data split (train/valid/test): train={len(train_df)}, valid={len(valid_df)}, "
+        f"test={len(test_df)}, predict={len(predict_df)}"
+    )
+    if len(train_df) > 0:
+        logger.info(f"Train period: {train_df[date_column].min()} ~ {train_df[date_column].max()}")
+    if len(valid_df) > 0:
+        logger.info(f"Valid period: {valid_df[date_column].min()} ~ {valid_df[date_column].max()}")
+    if len(test_df) > 0:
+        logger.info(f"Test period: {test_df[date_column].min()} ~ {test_df[date_column].max()}")
+    if len(predict_df) > 0:
+        logger.info(f"Predict dates: {predict_df[date_column].unique().tolist()}")
+    else:
+        logger.info("No prediction target data found for this week's Saturday/Sunday")
+
+    return train_df, valid_df, test_df, predict_df
 
 
 def build_feature_matrix(
@@ -460,10 +529,26 @@ def train_pipeline(
     tune: bool = False,
     n_trials: int | None = None,
     tune_timeout: int | None = None,
-    strategy_reserve_days: int = 0,
+    test_days: int = 0,
 ) -> dict:
     """
     多値ランク学習パイプラインを実行する（JRA賞金ウェイト多値ラベル + LambdaRank）
+
+    test_days=0（デフォルト）の場合は従来通りtrain/valid/predictの2分割。
+    train+validでハイパーパラメータ調整・Early Stoppingを行い、validの成績を
+    そのままモデル品質指標として報告する。
+
+    test_days>0の場合はIssue #430の3分割ワークフローになる:
+      1. train/valid/testに3分割する（test_days日ぶんをtestとして確保）
+      2. train+validでハイパーパラメータ調整・Early Stopping（従来通り）
+      3. train+validを結合し、Early Stoppingで決まったラウンド数固定でリフィット
+         （test期間には一切触れない）
+      4. リフィットしたモデルをtest（真に未見データ）で評価し、これを
+         報告するモデル品質指標・キャリブレーション基準とする
+    こうすることで、モデル品質指標（NDCG@3等）とキャリブレーション自体も
+    ハイパーパラメータ選定に使ったのと同じデータで評価するバイアスを避けられる。
+    さらにtest期間はモデルの学習・選定に一切使われていないため、
+    戦略パラメータ最適化・ホールドアウト検証にそのまま安全に使い回せる。
 
     Args:
         project_id: GCPプロジェクトID
@@ -477,10 +562,9 @@ def train_pipeline(
         tune: True のとき Optuna でハイパーパラメータ調整を実行
         n_trials: チューニング試行回数（None のとき config 値を使用）
         tune_timeout: チューニングタイムアウト秒数（None のとき config 値を使用）
-        strategy_reserve_days: モデルの検証期間終端を実行日からこの日数分手前に
-            ずらし、学習・検証のどちらにも使われない期間を確保する（Issue #430）。
-            戻り値の training_period["strategy_reserve_from"/"strategy_reserve_to"]
-            としてこの期間を返す（戦略パラメータ最適化・ホールドアウト検証専用）。
+        test_days: test期間の日数。0（デフォルト）ならtrain/valid2分割。
+            1以上ならtrain/valid/test3分割＋リフィットワークフローを実行し、
+            戻り値の training_period に test_from/test_to を含める。
 
     Returns:
         学習結果の辞書（model_type="ranker_multi" を含む）
@@ -506,18 +590,29 @@ def train_pipeline(
         )
 
     # 2. データ分割
-    train_df, valid_df, predict_df = split_train_valid_predict(
-        df=df,
-        execution_date=execution_date,
-        validation_months=model_config["training"]["validation_months"],
-        date_column=data_config["date_column"],
-        strategy_reserve_days=strategy_reserve_days,
-    )
+    test_df: pd.DataFrame | None = None
+    if test_days > 0:
+        train_df, valid_df, test_df, predict_df = split_train_valid_test_predict(
+            df=df,
+            execution_date=execution_date,
+            validation_months=model_config["training"]["validation_months"],
+            test_days=test_days,
+            date_column=data_config["date_column"],
+        )
+    else:
+        train_df, valid_df, predict_df = split_train_valid_predict(
+            df=df,
+            execution_date=execution_date,
+            validation_months=model_config["training"]["validation_months"],
+            date_column=data_config["date_column"],
+        )
 
     if len(train_df) == 0:
         raise ValueError("学習データがありません")
     if len(valid_df) == 0:
         raise ValueError("検証データがありません")
+    if test_days > 0 and (test_df is None or len(test_df) == 0):
+        raise ValueError("test期間のデータがありません")
 
     # 3. 特徴量準備（多値ラベル）
     X_train, y_train, groups_train = prepare_features_multi_label(
@@ -566,7 +661,7 @@ def train_pipeline(
         model_params = tuning_result["best_params"]
         logger.info(f"Using tuned params (ranker_multi): {model_params}")
 
-    # 5. モデル学習（LGBMRankerMulti）
+    # 5. モデル学習（LGBMRankerMulti、train+validでEarly Stopping・ハイパラ調整）
     ranker_config = LGBMRankerMultiConfig(
         params=model_params,
         num_boost_round=model_config["training"]["num_boost_round"],
@@ -585,33 +680,72 @@ def train_pipeline(
         categorical_feature=categorical_in_features or None,
     )
 
-    # 5. 検証データで評価（評価はbinary視点でも計算）
-    valid_pred = ranker.predict(X_valid)
-    metrics = evaluate_predictions(
-        y_true_positions=valid_df["finish_position"].fillna(0).values.astype(int),
-        y_pred=valid_pred,
-        groups=groups_valid,
-    )
-    logger.info(f"Validation metrics (multi-label): {metrics}")
+    if test_days > 0:
+        # 5b. リフィット（Issue #430）: train+validを結合し、上記Early Stoppingで
+        # 決まったラウンド数に固定して再学習する。test期間には一切触れないため、
+        # 最終モデルはtrain+validの全データを活用しつつ、testでの評価は完全にクリーンなまま。
+        best_num_boost_round = max(int(ranker.model.best_iteration), 1)
+        logger.info(
+            f"リフィット開始: train+valid結合={len(train_df) + len(valid_df)}行, "
+            f"num_boost_round={best_num_boost_round}固定（Early Stoppingなし）"
+        )
+        combined_df = pd.concat([train_df, valid_df], ignore_index=True)
+        X_combined, y_combined, groups_combined = prepare_features_multi_label(
+            combined_df,
+            exclude_columns=data_config["exclude_columns"],
+            categorical_columns=data_config.get("categorical_columns", []),
+        )
+        refit_config = LGBMRankerMultiConfig(
+            params=model_params,
+            num_boost_round=best_num_boost_round,
+            early_stopping_rounds=model_config["training"]["early_stopping_rounds"],
+            log_evaluation=model_config["training"]["log_evaluation"],
+        )
+        final_ranker = LGBMRankerMulti(config=refit_config)
+        final_ranker.train(
+            X_train=X_combined,
+            y_train=y_combined,
+            groups_train=groups_combined,
+            categorical_feature=categorical_in_features or None,
+        )
 
-    # 5b. キャリブレーション温度のフィット（Issue #414）
-    # 検証データ（out-of-sample）上で、win_place_prob の Brier スコアを最小化する温度を求める。
-    # 単調変換のためランク指標（NDCG@3/Recall@3）は不変。再学習のたびに再フィットされる。
+        # 5c. test（train・validのどちらにも一切使われていない真に未見データ）で評価する。
+        # これが報告するモデル品質指標・キャリブレーション基準になる。
+        X_eval, y_eval, groups_eval = prepare_features_multi_label(
+            test_df,
+            exclude_columns=data_config["exclude_columns"],
+            categorical_columns=data_config.get("categorical_columns", []),
+        )
+        eval_pred = final_ranker.predict(X_eval)
+        eval_df = test_df
+        ranker = final_ranker  # 保存・デプロイするのはリフィット後のモデル
+    else:
+        eval_pred = ranker.predict(X_valid)
+        eval_df = valid_df
+        groups_eval = groups_valid
+
+    metrics = evaluate_predictions(
+        y_true_positions=eval_df["finish_position"].fillna(0).values.astype(int),
+        y_pred=eval_pred,
+        groups=groups_eval,
+    )
+    logger.info(f"{'Test' if test_days > 0 else 'Validation'} metrics (multi-label): {metrics}")
+
+    # 5d. キャリブレーション温度・アイソトニック校正器のフィット（Issue #414/#416）
+    # test_days>0時はtest（真に未見）、そうでなければvalid（従来通り）上でフィットする。
     # 出走取消・結果なし馬（finish_position<=0）は実績が無いため除外し、
     # scripts/evaluate_calibration.py の評価方法（raced horses のみ）と一致させる。
-    valid_positions = valid_df["finish_position"].fillna(0).values.astype(int)
+    eval_positions = eval_df["finish_position"].fillna(0).values.astype(int)
     calib_df = pd.DataFrame(
         {
-            "race_id": valid_df[data_config["group_column"]].values,
-            "pred_score": valid_pred,
-            "finish_position": valid_positions,
+            "race_id": eval_df[data_config["group_column"]].values,
+            "pred_score": eval_pred,
+            "finish_position": eval_positions,
         }
     )
     calib_df = calib_df[calib_df["finish_position"] > 0].copy()
     calib_df["is_place"] = (calib_df["finish_position"] <= 3).astype(int)
-    # アイソトニック校正器（Issue #416・本番の既定手法）を検証データでフィット。
     calibration_isotonic = fit_calibration_isotonic(calib_df)
-    # 温度も後方互換のためフィットして保存する（推論時はアイソトニックを優先）。
     calibration_temperature = fit_calibration_temperature(calib_df)
     logger.info(
         f"Calibration temperature: {calibration_temperature:.4f}, "
@@ -634,14 +768,17 @@ def train_pipeline(
         "valid_rows": len(valid_df),
         "valid_races": valid_df[data_config["group_column"]].nunique(),
     }
-    if strategy_reserve_days > 0:
-        # モデルの学習・検証のどちらにも使われていない期間（Issue #430）。
-        # 戦略パラメータ最適化・ホールドアウト検証専用に確保している。
-        _boundaries = compute_validation_boundaries(
-            execution_date, model_config["training"]["validation_months"], strategy_reserve_days
-        )
-        training_period["strategy_reserve_from"] = _boundaries["strategy_reserve_from"].isoformat()
-        training_period["strategy_reserve_to"] = _boundaries["strategy_reserve_to"].isoformat()
+    if test_days > 0:
+        # train・validのどちらにも一切使われていない真に未見の期間（Issue #430）。
+        # モデルの汎化性能評価・戦略パラメータ最適化・ホールドアウト検証に使う。
+        training_period["test_from"] = pd.Timestamp(
+            test_df[data_config["date_column"]].min()
+        ).date().isoformat()
+        training_period["test_to"] = pd.Timestamp(
+            test_df[data_config["date_column"]].max()
+        ).date().isoformat()
+        training_period["test_rows"] = len(test_df)
+        training_period["test_races"] = test_df[data_config["group_column"]].nunique()
     ranker.calibration_temperature = calibration_temperature
     ranker.calibration_isotonic = calibration_isotonic
     ranker.save(model_path, training_period=training_period)
@@ -674,7 +811,11 @@ def train_pipeline(
         "training_period": training_period,
         "calibration_temperature": calibration_temperature,
         "calibration_isotonic_points": len(calibration_isotonic["x_thresholds"]),
-        "best_iteration": ranker.model.best_iteration,
+        # リフィットモデル（test_days>0）はEarly Stoppingを使わないためbest_iteration=0に
+        # なる（意味を持たない）。実際に使われたラウンド数はnum_trees()で取得する。
+        "best_iteration": (
+            ranker.model.num_trees() if test_days > 0 else ranker.model.best_iteration
+        ),
         "train_rows": len(train_df),
         "valid_rows": len(valid_df),
         "predict_rows": len(predict_df),

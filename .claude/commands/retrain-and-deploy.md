@@ -56,8 +56,9 @@ Early Stopping・Optunaハイパーパラメータ選定はvalid期間の成績�
 同じ期間で戦略を最適化すると「モデル選択で既に見たデータ上での二重最適化」になり
 バックテストの数字が楽観的に出ます。モデルのmeta.jsonの`training_period.valid_to`
 より後の日付から使ってください（`gsutil cat gs://.../lgbm_ranker_multi_$(date +%Y%m%d).meta.json`
-で確認可能）。自動フロー（`monthly_retrain.py`）はこれを`strategy_reserve_days`で
-自動的に確保しているので、手動実行時も同様の考え方で期間を選ぶこと。
+で確認可能）。自動フロー（`monthly_retrain.py`）は`train_pipeline(..., test_days=150)`で
+train/valid/testの3分割にし、testを学習・検証のどちらにも使わず戦略最適化専用に
+確保しているので、手動実行時も同様の考え方（`training_period.test_from`以降）で期間を選ぶこと。
 
 ```bash
 # 校正済み確率（optimize_strategy.py は内部で run_backtest.generate_predictions を呼び、

@@ -5,27 +5,34 @@
 以下を無人で実行する。各ステップ失敗・品質ゲート不合格で即停止し、結果を通知する。
 
   1. 特徴量再生成      : scripts/generate_features.py --truncate（全期間）
-  2. 学習             : src.models.train.train_pipeline(tune=True, strategy_reserve_days=...)
-     ├─ 品質ゲート①   : NDCG@3 / Recall@3 / AUC が閾値以上か（未満ならデプロイせず停止）
-  3. 戦略再最適化      : scripts/optimize_strategy.py（ステップ2で確保した予約期間の前半）
-  4. ホールドアウト検証: run_full_strategy_backtest_pipeline（予約期間の後半・真に未見）
+  2. 学習             : src.models.train.train_pipeline(tune=True, test_days=...)
+     ├─ train/valid/testの3分割。train+validでハイパラ調整・Early Stopping
+     ├─ train+validを結合し、決まったラウンド数固定でリフィット（testには一切触れない）
+     ├─ リフィットモデルをtest（真に未見データ）で評価 → 品質ゲート①: NDCG@3/Recall@3/AUC
+  3. 戦略再最適化      : scripts/optimize_strategy.py（testの前半・校正済み確率）
+  4. ホールドアウト検証: run_full_strategy_backtest_pipeline（testの後半・真に未見）
      ├─ 品質ゲート②   : 回収率が閾値以上か（未満ならデプロイせず停止）
   5. デプロイ         : build_and_push.sh → deploy_cloud_run.sh
 
-期間設計（Issue #430）:
-  以前は戦略最適化・ホールドアウト検証の期間を「今日からN日前」という独立した
-  日数計算で求めていたが、モデルの検証期間（valid_from〜valid_to、Early Stopping・
-  Optunaハイパーパラメータ選定に使われる）が常に「今日」の直前まで伸びるように
-  学習されるため、両者が必ず重なってしまい、モデル選択で既に「見た」データの上で
-  さらに戦略を最適化・検証するリークが生じていた。
+データ分割設計（Issue #430）:
+  train/valid の2分割だけだと、validはEarly Stopping・Optunaハイパーパラメータ
+  選定に使われるため「モデル選択済み」のデータになる。このvalidと同じ・重なる期間で
+  戦略パラメータを最適化・検証すると、モデル選択で既に「見た」データの上でさらに
+  戦略を最適化するリークが生じる（実際に発生していた不具合）。
 
-  対応として、train_pipeline() に strategy_reserve_days を渡し、モデルの検証期間
-  終端を実行日からその日数分手前に切り上げることで、学習・検証のどちらにも
-  一切使われていない「予約期間」（training_period["strategy_reserve_from"〜"_to"]）
-  を確保する。この予約期間を前半（戦略最適化用・STRATEGY_OPTIMIZE_DAYS日）と
-  後半（ホールドアウト検証用・残り、真に未見データでの最終チェック）に分割する。
-  optimize_strategy.py 自身のdocstringが定める「学習・検証期間に含まれない日付を
-  指定すること」というOOS原則に、この分割によって整合する。
+  対応として train/valid/test の3分割にする:
+    1. train/valid/testに分割する（testはtrain_pipeline()にtest_daysを渡すことで
+       validの終端を実行日からその日数分手前に切り上げて確保する）
+    2. train+validでハイパーパラメータ調整・Early Stopping（従来通り）
+    3. train+validを結合し、Early Stoppingで決まったラウンド数固定でリフィット
+       （testには一切触れない）
+    4. リフィットしたモデルをtest（真に未見データ）で評価する（＝品質ゲート①）
+    5. このモデルを使って戦略パラメータを最適化する。最適化データはtestを使い、
+       test内でさらに前半（最適化用）/後半（ホールドアウト用）に分割する
+  testはモデルの学習・選定のどちらにも一切使われていないため、モデルの汎化性能評価
+  （ゲート①）と戦略パラメータ最適化・ホールドアウト検証（ゲート②）の両方に
+  安全に使い回せる。optimize_strategy.py 自身のdocstringが定める「学習・検証期間に
+  含まれない日付を指定すること」というOOS原則にも、この設計で整合する。
 
 背景: 旧 weekly-model-retrain（Cloud Run Job）は毎週 OOM でサイレント失敗していたため廃止し、
 本フローに移行した。校正器はモデル meta.json に保存され本番予測で適用される（PR #421 と整合）。
@@ -75,13 +82,13 @@ DEFAULT_HOLDOUT_MIN_BETS = 150  # ホールドアウト賭け数の参考下限�
 
 # --- 期間の既定値 ---
 FEATURE_START = "2016-01-01"
-# モデルの学習・検証に使わず確保する期間（日数）。旧設計（Issue #422時点）の
+# train/validのどちらにも使わず確保するtest期間（日数）。旧設計（Issue #422時点）の
 # ホールドアウト期間（60日）と同等の統計的サンプル数を確保するため、
-# 予約期間=前半90日(戦略最適化)+後半60日(ホールドアウト)=150日とする。
-STRATEGY_RESERVE_DAYS = 150
-STRATEGY_OPTIMIZE_DAYS = 90  # 予約期間のうち前半を戦略最適化に使う日数（残りはホールドアウト）
-assert STRATEGY_OPTIMIZE_DAYS < STRATEGY_RESERVE_DAYS, (
-    "STRATEGY_OPTIMIZE_DAYS は STRATEGY_RESERVE_DAYS 未満である必要があります"
+# test期間=前半90日(戦略最適化)+後半60日(ホールドアウト)=150日とする。
+TEST_DAYS = 150
+STRATEGY_OPTIMIZE_DAYS = 90  # test期間のうち前半を戦略最適化に使う日数（残りはホールドアウト）
+assert STRATEGY_OPTIMIZE_DAYS < TEST_DAYS, (
+    "STRATEGY_OPTIMIZE_DAYS は TEST_DAYS 未満である必要があります"
     "（ホールドアウト用に少なくとも1日は残す）"
 )
 
@@ -146,8 +153,8 @@ def main() -> int:
     logger.info("=" * 60)
     logger.info("ローカル月次モデル再学習を開始します")
     logger.info(f"  プロジェクト: {args.project_id}")
-    logger.info(f"  ゲート①: AUC>={args.auc_min} NDCG@3>={args.ndcg_min} Recall@3>={args.recall_min}")
-    logger.info(f"  ゲート②: 回収率>={args.recovery_min}%（予約期間後半のホールドアウト）")
+    logger.info(f"  ゲート①: AUC>={args.auc_min} NDCG@3>={args.ndcg_min} Recall@3>={args.recall_min}（test期間で評価）")
+    logger.info(f"  ゲート②: 回収率>={args.recovery_min}%（test期間後半のホールドアウト）")
     logger.info(f"  dry_run={args.dry_run} skip_deploy={args.skip_deploy}")
     logger.info("=" * 60)
     notify("開始", f"{today} 再学習を開始（dry_run={args.dry_run}, skip_deploy={args.skip_deploy}）")
@@ -165,26 +172,26 @@ def main() -> int:
         args.dry_run,
     )
 
-    # --- ステップ2: 学習（Optunaチューニング・GCSアップロード） ---
+    # --- ステップ2: 学習（train/valid/test3分割・リフィット・Optunaチューニング・GCSアップロード） ---
     logger.info("[2/5] モデル学習 train_pipeline(tune=True)")
     config = load_config()
     if args.dry_run:
         logger.info(
             f"[dry-run] train_pipeline(project_id={args.project_id}, tune=True, "
-            f"strategy_reserve_days={STRATEGY_RESERVE_DAYS})"
+            f"test_days={TEST_DAYS})"
         )
         gcs_uri = f"gs://{args.project_id}-keiba-models/lgbm_ranker_multi/{date_str}/lgbm_ranker_multi_{date_str}.txt"
         metrics = {"ndcg@3": 0.0, "recall@3": 0.0, "auc": 0.0}
         # dry-runではモデルを学習しないため、train_pipeline内部と全く同じ関数
-        # （compute_validation_boundaries）で検証期間・予約期間を再現する
+        # （compute_validation_boundaries）で検証期間・test期間を再現する
         # （日付計算ロジックの二重実装によるドリフトを防ぐ・Issue #430）
         validation_months = config["model"]["training"]["validation_months"]
-        boundaries = compute_validation_boundaries(today, validation_months, STRATEGY_RESERVE_DAYS)
+        boundaries = compute_validation_boundaries(today, validation_months, TEST_DAYS)
         training_period = {
             "valid_from": boundaries["valid_start"].isoformat(),
             "valid_to": boundaries["valid_end"].isoformat(),
-            "strategy_reserve_from": boundaries["strategy_reserve_from"].isoformat(),
-            "strategy_reserve_to": boundaries["strategy_reserve_to"].isoformat(),
+            "test_from": boundaries["test_start"].isoformat(),
+            "test_to": boundaries["test_end"].isoformat(),
         }
     else:
         result = train_pipeline(
@@ -192,19 +199,19 @@ def main() -> int:
             execution_date=today,
             config=config,
             tune=True,
-            strategy_reserve_days=STRATEGY_RESERVE_DAYS,
+            test_days=TEST_DAYS,
         )
         gcs_uri = result["gcs_uri"]
         metrics = result["metrics"]
         training_period = result["training_period"]
-        logger.info(f"学習完了: metrics={metrics} gcs_uri={gcs_uri}")
+        logger.info(f"学習完了: metrics(test評価)={metrics} gcs_uri={gcs_uri}")
         logger.info(f"検証期間: {training_period['valid_from']} 〜 {training_period['valid_to']}")
         logger.info(
-            f"予約期間（未見データ）: {training_period['strategy_reserve_from']} 〜 "
-            f"{training_period['strategy_reserve_to']}"
+            f"test期間（真に未見データ）: {training_period['test_from']} 〜 "
+            f"{training_period['test_to']}"
         )
 
-        # --- 品質ゲート① ---
+        # --- 品質ゲート①（test期間で評価したリフィットモデルの指標） ---
         gate1 = (
             metrics["auc"] >= args.auc_min
             and metrics["ndcg@3"] >= args.ndcg_min
@@ -228,28 +235,26 @@ def main() -> int:
             fail("GCSアップロード未検出", "train_pipeline が gcs_uri を返しませんでした")
 
     # --- ステップ3: 戦略再最適化（校正済み確率・prob_weight_r=1.0 固定） ---
-    # 最適化期間はステップ2で確保した予約期間の前半（STRATEGY_OPTIMIZE_DAYS日）を使う。
-    # 予約期間はモデルの学習・検証のどちらにも使われていないため、
+    # 最適化期間はステップ2で確保したtest期間の前半（STRATEGY_OPTIMIZE_DAYS日）を使う。
+    # test期間はモデルの学習・検証・選定のどちらにも使われていないため、
     # optimize_strategy.py 自身が定めるOOS原則（学習・検証期間に含まれない日付を
     # 指定すること）に適合する（Issue #430）。
     # 既存configのuse_harvilleを引き継ぐ: optimize_strategy.pyは実行時の
     # フラグでconfig/strategy_config.yamlのuse_harville/gammaを上書き保存するため、
     # ここで--use-harvilleを付けずに実行すると、運用者が手動でHarvilleモデルに
     # 切り替えていた場合でも毎月の再学習で独立積へ無言で戻ってしまう。
-    reserve_from = datetime.date.fromisoformat(training_period["strategy_reserve_from"])
-    # reserve_to は saturday-1 由来のため、週前半（月〜水）の実行では「今日」より
+    test_from = datetime.date.fromisoformat(training_period["test_from"])
+    # test_to は saturday-1 由来のため、週前半（月〜水）の実行では「今日」より
     # 数日先になり得る（split_train_valid_predictのvalid_end等と同じ既存の性質）。
     # 未来日を指定してもクエリ側は該当データなしで自然に空振りするだけで実害はないが、
     # ログ・実際の問い合わせ範囲としては「今日」で頭打ちにしておく方が誤解がない。
-    reserve_to = min(
-        datetime.date.fromisoformat(training_period["strategy_reserve_to"]), today
-    )
-    optimize_start = reserve_from
+    test_to = min(datetime.date.fromisoformat(training_period["test_to"]), today)
+    optimize_start = test_from
     optimize_end = min(
-        reserve_from + datetime.timedelta(days=STRATEGY_OPTIMIZE_DAYS - 1), reserve_to
+        test_from + datetime.timedelta(days=STRATEGY_OPTIMIZE_DAYS - 1), test_to
     )
     holdout_start = optimize_end + datetime.timedelta(days=1)
-    holdout_end = reserve_to
+    holdout_end = test_to
 
     prev_strat = _load_strategy_config()
     prev_use_harville = bool(prev_strat.get("use_harville", False))
@@ -274,7 +279,7 @@ def main() -> int:
         optimize_cmd.append("--use-harville")
     run_cmd(optimize_cmd, args.dry_run)
 
-    # --- ステップ4: ホールドアウト検証（予約期間の後半・真に未見データでのOOS回収率） ---
+    # --- ステップ4: ホールドアウト検証（test期間の後半・真に未見データでのOOS回収率） ---
     logger.info(f"[4/5] ホールドアウト検証 {holdout_start}〜{holdout_end}")
     if args.dry_run:
         logger.info("[dry-run] run_full_strategy_backtest_pipeline(...) で OOS 回収率を検証")
