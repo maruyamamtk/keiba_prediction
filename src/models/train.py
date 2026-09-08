@@ -736,7 +736,9 @@ def train_pipeline(
 
         # 5c. test（train・validのどちらにも一切使われていない真に未見データ）で評価する。
         # これが報告するモデル品質指標・キャリブレーション基準になる。
-        X_eval, y_eval, groups_eval = prepare_features_multi_label(
+        # ラベルはevaluate_predictions/キャリブレーションどちらもeval_df["finish_position"]から
+        # 直接読むため、ここではX_eval（予測入力）とgroups_evalのみ使用する。
+        X_eval, _, groups_eval = prepare_features_multi_label(
             test_df,
             exclude_columns=data_config["exclude_columns"],
             categorical_columns=data_config.get("categorical_columns", []),
@@ -943,6 +945,27 @@ def main():
         default=None,
         help="--use-feature-sql 時の取得終了日 (YYYY-MM-DD, デフォルト: 実行日)",
     )
+    parser.add_argument(
+        "--test-days",
+        type=int,
+        default=0,
+        help=(
+            "test期間の日数（Issue #430）。0（デフォルト）はtrain/valid2分割（従来通り）。"
+            "1以上でtrain/valid/test3分割＋リフィットを行い、汎化性能をtest（真に未見データ）"
+            "で評価する。scripts/monthly_retrain.py と同じ考え方で手動実行する場合は150を指定すること。"
+        ),
+    )
+    parser.add_argument(
+        "--calibration-days",
+        type=int,
+        default=0,
+        help=(
+            "--test-days>0時、キャリブレーションのフィットに使うtest期間先頭からの日数。"
+            "0（デフォルト）はtest期間全体を使う。戦略最適化用にtest期間の末尾を真に未見の"
+            "ホールドアウトとして残す場合は、その最適化用日数と揃えて指定すること"
+            "（scripts/monthly_retrain.py の STRATEGY_OPTIMIZE_DAYS=90 相当）。"
+        ),
+    )
     args = parser.parse_args()
 
     log_level = logging.DEBUG if args.verbose else logging.INFO
@@ -970,6 +993,8 @@ def main():
         use_feature_sql=args.use_feature_sql,
         start_date=args.start_date,
         end_date=args.end_date,
+        test_days=args.test_days,
+        calibration_days=args.calibration_days,
     )
 
     print("\n" + "=" * 60)

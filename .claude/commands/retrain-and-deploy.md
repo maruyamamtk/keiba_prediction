@@ -29,10 +29,16 @@
 ```bash
 .venv/bin/python -m src.models.train \
     --tune \
-    --project-id keiba-prediction-1768734113
+    --project-id keiba-prediction-1768734113 \
+    --test-days 150 \
+    --calibration-days 90
 ```
 
 - 現行 train.py は `LGBMRankerMulti` 単一構成のため `--model-type` 引数は存在しません（指定するとエラー）。
+- `--test-days 150 --calibration-days 90` は `scripts/monthly_retrain.py` の自動フローと同じ値。
+  train/valid/testの3分割＋リフィットを行い、**NDCG@3/AUC/Recall@3はtest（学習・検証のどちらにも
+  一切使われていない真に未見データ）で評価**される（Issue #430）。省略するとtrain/valid2分割の
+  従来動作に戻り、ステップ3.5のリーク対策と整合しなくなるため、手動実行時も必ず指定すること。
 - 完了まで数時間かかる場合があります（Optunaチューニングあり）
 - 完了後、検証指標 **NDCG@3 / AUC / Recall@3**（参考水準: NDCG@3≈0.57 / AUC≈0.81 / Recall@3≈0.51）を確認し、前回より大幅に悪化していないことを確認してください
 
@@ -63,12 +69,14 @@ train/valid/testの3分割にし、testを学習・検証のどちらにも使�
 ```bash
 # 校正済み確率（optimize_strategy.py は内部で run_backtest.generate_predictions を呼び、
 # meta.json の校正器を自動適用）で再最適化。prob_weight_r は校正後 1.0 固定・探索対象外（Issue #417）。
-# 以下の日付はモデルのvalid_toより後の期間の例。実行時は上記の確認手順で実際の値に置き換えること。
+# --start-date は training_period.test_from、--end-date はそこから89日後（calibration_days=90と
+# 揃える）を指定する。test期間の残り（末尾）はホールドアウトとして残し、
+# scripts/run_backtest.py で回収率が維持されていることを確認してからデプロイに進むこと。
 .venv/bin/python scripts/optimize_strategy.py \
     --project-id keiba-prediction-1768734113 \
     --model-path gs://keiba-prediction-1768734113-keiba-models/lgbm_ranker_multi/$(date +%Y%m%d)/lgbm_ranker_multi_$(date +%Y%m%d).txt \
-    --start-date <モデルのvalid_toより後の日付> \
-    --end-date $(date +%Y-%m-%d) \
+    --start-date <training_period.test_from> \
+    --end-date <test_fromの89日後> \
     --n-trials 500
 ```
 

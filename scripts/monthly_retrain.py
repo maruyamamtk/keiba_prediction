@@ -79,6 +79,9 @@ DEFAULT_NDCG_MIN = 0.54
 DEFAULT_RECALL_MIN = 0.47
 DEFAULT_RECOVERY_MIN = 95.0  # ホールドアウト OOS 回収率 (%)
 DEFAULT_HOLDOUT_MIN_BETS = 150  # ホールドアウト賭け数の参考下限（60日分の目安。未達は警告のみ）
+# これを下回る賭け数では回収率が実質ノイズ（数件のまぐれ的中で95%ラインを超えうる）となるため、
+# 回収率の値によらずデプロイを止める絶対下限（Issue #430レビュー対応）
+DEFAULT_HOLDOUT_MIN_BETS_HARD = 30
 
 # --- 期間の既定値 ---
 FEATURE_START = "2016-01-01"
@@ -184,7 +187,10 @@ def main() -> int:
         metrics = {"ndcg@3": 0.0, "recall@3": 0.0, "auc": 0.0}
         # dry-runではモデルを学習しないため、train_pipeline内部と全く同じ関数
         # （compute_validation_boundaries）で検証期間・test期間を再現する
-        # （日付計算ロジックの二重実装によるドリフトを防ぐ・Issue #430）
+        # （日付計算ロジックの二重実装によるドリフトを防ぐ・Issue #430）。
+        # 実行時（train_pipeline()の戻り値）にはtrain_from/train_rows/test_rows等も
+        # 含まれるが、ここではステップ3以降が参照する日付4項目のみを意図的に用意する
+        # （dry-run専用の簡略版。他のキーへのアクセスを追加する場合は実行時分岐も要確認）。
         validation_months = config["model"]["training"]["validation_months"]
         boundaries = compute_validation_boundaries(today, validation_months, TEST_DAYS)
         training_period = {
@@ -316,10 +322,17 @@ def main() -> int:
         recovery = float(bt_metrics.get("recovery_rate", 0.0)) if bt_metrics else 0.0
         total_bets = int(bt_metrics.get("total_bets", 0)) if bt_metrics else 0
         logger.info(f"ホールドアウト回収率={recovery:.1f}% 賭け数={total_bets}")
+        if total_bets < DEFAULT_HOLDOUT_MIN_BETS_HARD:
+            fail(
+                "ホールドアウトの賭け数が少なすぎる（統計的に無意味）→ デプロイ中止",
+                f"賭け数={total_bets} < {DEFAULT_HOLDOUT_MIN_BETS_HARD}（回収率={recovery:.1f}%）。"
+                f"少数のまぐれ的中で回収率ゲートを通過しうるため、回収率の値によらず停止する。",
+            )
         if total_bets < DEFAULT_HOLDOUT_MIN_BETS:
             logger.warning(
                 f"ホールドアウトの賭け数が少なく（{total_bets}件）統計的信頼性は低いが、"
-                f"期間の性質上は継続する（参考値扱い）。"
+                f"デプロイ停止の絶対下限（{DEFAULT_HOLDOUT_MIN_BETS_HARD}件）は上回っているため継続する"
+                f"（参考値扱い）。"
             )
         if recovery < args.recovery_min:
             fail(
