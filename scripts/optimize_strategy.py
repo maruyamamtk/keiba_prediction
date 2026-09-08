@@ -97,6 +97,7 @@ def save_best_params_to_yaml(
     metric: str,
     n_trials: int,
     use_harville: bool = False,
+    min_prob_threshold_floor: float = 0.0,
 ) -> None:
     """最良パラメータを config/strategy_config.yaml に上書き保存する"""
     with open(STRATEGY_CONFIG_PATH) as f:
@@ -130,6 +131,9 @@ def save_best_params_to_yaml(
         "max_drawdown": round(best.max_drawdown, 2),
         "total_bets": best.total_bets,
     }
+    if min_prob_threshold_floor > 0.0:
+        # min_prob_threshold探索範囲に下限制約を課した場合、後から見て分かるよう記録する
+        config["optimization"]["min_prob_threshold_floor"] = min_prob_threshold_floor
 
     with open(STRATEGY_CONFIG_PATH, "w") as f:
         yaml.dump(config, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
@@ -193,6 +197,15 @@ def main() -> None:
         default=600,
         help="制約: 最低賭け数（デフォルト: 600）。約6ヶ月のバックテスト期間では600を標準とし、"
              "少数サンプルのまぐれ高回収率解を排除する（Issue #399）。",
+    )
+    parser.add_argument(
+        "--min-prob-threshold-floor",
+        type=float,
+        default=0.0,
+        help="min_prob_threshold探索範囲の下限（デフォルト: 0.0＝制約なし）。"
+             "例えば0.1を指定すると軸馬の最低複勝率10%未満の解を探索対象から除外する"
+             "（低確率・高配当馬を積極的に取る、的中率低下・ドローダウン拡大とトレードオフの"
+             "戦略を避けたい場合に指定）。",
     )
     parser.add_argument("--initial-capital", type=float, default=100_000.0)
     parser.add_argument(
@@ -309,6 +322,7 @@ def main() -> None:
         max_max_drawdown=args.max_drawdown,
         min_total_bets=args.min_total_bets,
         search_gamma=args.search_gamma,
+        min_prob_threshold_floor=args.min_prob_threshold_floor,
     )
 
     if not results:
@@ -375,7 +389,11 @@ def main() -> None:
             )
             best = optimizer.best_params(results, metric=args.metric)
 
-    save_best_params_to_yaml(best, start_date, end_date, args.metric, args.n_trials, use_harville=use_harville)
+    save_best_params_to_yaml(
+        best, start_date, end_date, args.metric, args.n_trials,
+        use_harville=use_harville,
+        min_prob_threshold_floor=args.min_prob_threshold_floor,
+    )
 
     logger.info("\n=== 完了 ===")
     logger.info("次回の POST /api/v1/strategy/daily から新しいパラメータが適用されます。")

@@ -584,6 +584,39 @@ class TestRunOptunaSearch:
         with pytest.raises(ValueError, match="metric="):
             optimizer.run_optuna_search(n_trials=1, metric="invalid_metric")
 
+    def test_run_optuna_search_min_prob_threshold_floor_is_respected(self):
+        """min_prob_threshold_floor指定時、全試行のmin_prob_thresholdがその値以上になること"""
+        import pytest
+        pytest.importorskip("optuna")
+        df = _make_predictions_df(n_races=3, n_horses=5, win_place_prob=0.5, odds=3.0)
+        optimizer = StrategyOptimizer(df, None, combo_odds_df=None)
+        results = optimizer.run_optuna_search(
+            n_trials=10, timeout=30, min_prob_threshold_floor=0.1
+        )
+        assert results
+        for r in results:
+            assert r.params["min_prob_threshold"] >= 0.1
+
+    def test_run_optuna_search_min_prob_threshold_floor_default_unconstrained(self):
+        """min_prob_threshold_floor未指定時は従来通り0.0から探索されうること（後方互換）"""
+        import pytest
+        pytest.importorskip("optuna")
+        df = _make_predictions_df(n_races=3, n_horses=5, win_place_prob=0.5, odds=3.0)
+        optimizer = StrategyOptimizer(df, None, combo_odds_df=None)
+        results = optimizer.run_optuna_search(n_trials=20, timeout=30)
+        assert results
+        for r in results:
+            assert r.params["min_prob_threshold"] >= 0.0
+
+    def test_run_optuna_search_raises_when_floor_exceeds_upper_bound(self):
+        """min_prob_threshold_floorが探索範囲上限(0.3)以上だとValueError"""
+        import pytest
+        pytest.importorskip("optuna")
+        df = _make_predictions_df(n_races=2, n_horses=5, win_place_prob=0.5, odds=3.0)
+        optimizer = StrategyOptimizer(df, None, combo_odds_df=None)
+        with pytest.raises(ValueError, match="min_prob_threshold_floor"):
+            optimizer.run_optuna_search(n_trials=1, min_prob_threshold_floor=0.3)
+
     def test_run_optuna_search_zero_trials_does_not_crash(self):
         """n_trials=0 で試行なしでも study.best_value クラッシュが起きない"""
         import pytest

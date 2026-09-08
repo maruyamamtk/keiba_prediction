@@ -520,6 +520,7 @@ class StrategyOptimizer:
         min_total_bets: int = 30,
         sampler: "optuna.samplers.BaseSampler | None" = None,
         search_gamma: bool = False,
+        min_prob_threshold_floor: float = 0.0,
     ) -> list[OptimizationResult]:
         """
         Optunaベイズ最適化で投資戦略パラメータを探索する
@@ -527,7 +528,7 @@ class StrategyOptimizer:
         探索パラメータ:
           - expected_return_threshold: [1.0, 2.5]（連続）
           - top_n: [1, 6]（整数）
-          - min_prob_threshold: [0.0, 0.3]（連続）
+          - min_prob_threshold: [min_prob_threshold_floor, 0.3]（連続）
           - max_wide_odds: [5.0, 50.0] または None（条件付き連続）
           - gamma: [0.5, 1.5]（連続、search_gamma=True の場合のみ。Henery補正の指数。
             1.0未満で本命優位を割り引き下位人気の同時確率を引き上げる）
@@ -549,14 +550,25 @@ class StrategyOptimizer:
             sampler: Optunaサンプラー（None の場合は TPESampler）
             search_gamma: True でHarvilleモデルのHenery補正指数gammaも探索対象に加える
                 （デフォルト: False = gamma=1.0固定、独立積からの移行時の挙動を維持）
+            min_prob_threshold_floor: min_prob_threshold探索範囲の下限（デフォルト: 0.0）。
+                低確率・高配当馬を積極的に取る戦略（的中率低下・ドローダウン拡大とトレードオフ）
+                を避けたい場合、例えば0.1を指定すると軸馬の最低複勝率10%未満の解を探索対象から除外する。
 
         Returns:
             OptimizationResult のリスト（全試行分）
 
         Raises:
-            ValueError: metric が有効値でない場合
+            ValueError: metric が有効値でない場合、または min_prob_threshold_floor が
+                探索範囲の上限（0.3）以上の場合
         """
         import optuna
+
+        _min_prob_threshold_upper = 0.3
+        if min_prob_threshold_floor >= _min_prob_threshold_upper:
+            raise ValueError(
+                f"min_prob_threshold_floor({min_prob_threshold_floor})は探索範囲の上限"
+                f"({_min_prob_threshold_upper})未満である必要があります"
+            )
 
         _valid_metrics = {"recovery_rate", "hit_rate", "sharpe_ratio"}
         if metric not in _valid_metrics:
@@ -580,7 +592,9 @@ class StrategyOptimizer:
             # 探索空間から除外する（Issue #417）。校正後は odds × prob がそのまま真の期待
             # 回収率（EV）であり、選定スコア（odds × prob^r）は r=1（純EV順）が原理的に正解。
             prob_weight_r = 1.0
-            min_prob_threshold = trial.suggest_float("min_prob_threshold", 0.0, 0.3)
+            min_prob_threshold = trial.suggest_float(
+                "min_prob_threshold", min_prob_threshold_floor, _min_prob_threshold_upper
+            )
             use_max_wide_odds = trial.suggest_categorical(
                 "use_max_wide_odds", [True, False]
             )
