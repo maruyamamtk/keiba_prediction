@@ -231,6 +231,13 @@ def main() -> None:
 
     if not args.project_id:
         parser.error("--project-id または GCP_PROJECT_ID 環境変数を設定してください")
+    # BigQueryフェッチ・モデル推論という高コストな処理の前に不正な範囲を検知する
+    # （run_optuna_search内部での検証だけだと、それらの処理がすべて無駄になる）
+    if not (0.0 <= args.min_prob_threshold_floor < 0.3):
+        parser.error(
+            f"--min-prob-threshold-floor は 0.0 以上 0.3 未満で指定してください "
+            f"（指定値: {args.min_prob_threshold_floor}）"
+        )
 
     use_harville = args.use_harville or args.search_gamma
 

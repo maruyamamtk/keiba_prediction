@@ -617,6 +617,15 @@ class TestRunOptunaSearch:
         with pytest.raises(ValueError, match="min_prob_threshold_floor"):
             optimizer.run_optuna_search(n_trials=1, min_prob_threshold_floor=0.3)
 
+    def test_run_optuna_search_raises_when_floor_is_negative(self):
+        """min_prob_threshold_floorが負値だとValueError（複勝率は負値を取らないため）"""
+        import pytest
+        pytest.importorskip("optuna")
+        df = _make_predictions_df(n_races=2, n_horses=5, win_place_prob=0.5, odds=3.0)
+        optimizer = StrategyOptimizer(df, None, combo_odds_df=None)
+        with pytest.raises(ValueError, match="min_prob_threshold_floor"):
+            optimizer.run_optuna_search(n_trials=1, min_prob_threshold_floor=-0.05)
+
     def test_run_optuna_search_zero_trials_does_not_crash(self):
         """n_trials=0 で試行なしでも study.best_value クラッシュが起きない"""
         import pytest

@@ -559,11 +559,16 @@ class StrategyOptimizer:
 
         Raises:
             ValueError: metric が有効値でない場合、または min_prob_threshold_floor が
-                探索範囲の上限（0.3）以上の場合
+                負値、もしくは探索範囲の上限（0.3）以上の場合
         """
         import optuna
 
         _min_prob_threshold_upper = 0.3
+        if min_prob_threshold_floor < 0.0:
+            raise ValueError(
+                f"min_prob_threshold_floor({min_prob_threshold_floor})は0以上である必要があります"
+                "（複勝率は負値を取らないため、負の下限は実質的に制約なしと同じになり誤解を招く）"
+            )
         if min_prob_threshold_floor >= _min_prob_threshold_upper:
             raise ValueError(
                 f"min_prob_threshold_floor({min_prob_threshold_floor})は探索範囲の上限"
