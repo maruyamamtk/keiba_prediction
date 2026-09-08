@@ -758,7 +758,39 @@ def train_pipeline(
     )
     logger.info(f"{'Test' if test_days > 0 else 'Validation'} metrics (multi-label): {metrics}")
 
-    # 5d. キャリブレーション温度・アイソトニック校正器のフィット（Issue #414/#416）
+    # 5d. 過学習チェック: 最終モデルが実際にフィットしたデータ（in-sample）に対する
+    # 指標も計算し、eval（test/valid）との差（overfit_gap）を可視化する。
+    # Early Stoppingは過学習の"予防"にはなるが、trainとeval/testの乖離そのものを
+    # 見る仕組みがこれまで無かったため追加。gapが大きいほど（train >> eval）過学習寄り、
+    # 差が小さいのに両方とも低ければ単純な実力不足（特徴量・モデル改善が必要）と読み分けられる。
+    if test_days > 0:
+        train_fit_pred = final_ranker.predict(X_combined)
+        train_fit_df = combined_df
+        train_fit_groups = groups_combined
+    else:
+        train_fit_pred = ranker.predict(X_train)
+        train_fit_df = train_df
+        train_fit_groups = groups_train
+
+    train_metrics = evaluate_predictions(
+        y_true_positions=train_fit_df["finish_position"].fillna(0).values.astype(int),
+        y_pred=train_fit_pred,
+        groups=train_fit_groups,
+    )
+    overfit_gap = {
+        key: round(train_metrics[key] - metrics[key], 4)
+        for key in ("ndcg@3", "recall@3", "auc")
+    }
+    logger.info(
+        f"{'Train+Valid(リフィット学習データ)' if test_days > 0 else 'Train'} "
+        f"metrics (in-sample, 過学習チェック用): {train_metrics}"
+    )
+    logger.info(
+        f"過学習チェック: train - {'test' if test_days > 0 else 'valid'} の指標差 "
+        f"(overfit_gap、プラスが大きいほどtrainの方が良く過学習寄り): {overfit_gap}"
+    )
+
+    # 5e. キャリブレーション温度・アイソトニック校正器のフィット（Issue #414/#416）
     # test_days>0時はtest（真に未見）、そうでなければvalid（従来通り）上でフィットする。
     # calibration_days>0の場合はtest期間の先頭からその日数分だけに絞る。これにより、
     # 戦略最適化側がtest期間の末尾をホールドアウトとして使う場合、ホールドアウトの
@@ -829,7 +861,13 @@ def train_pipeline(
         training_period["test_races"] = test_df[data_config["group_column"]].nunique()
     ranker.calibration_temperature = calibration_temperature
     ranker.calibration_isotonic = calibration_isotonic
-    ranker.save(model_path, training_period=training_period)
+    meta_metrics = {
+        "eval": metrics,
+        "eval_source": "test" if test_days > 0 else "valid",
+        "train": train_metrics,
+        "overfit_gap": overfit_gap,
+    }
+    ranker.save(model_path, training_period=training_period, metrics=meta_metrics)
 
     if tuning_result is not None:
         params_path = str(Path(output_dir) / f"best_params_ranker_multi_{date_str}.json")
@@ -856,6 +894,8 @@ def train_pipeline(
         "model_path": model_path,
         "gcs_uri": gcs_uri,
         "metrics": metrics,
+        "train_metrics": train_metrics,
+        "overfit_gap": overfit_gap,
         "training_period": training_period,
         "calibration_temperature": calibration_temperature,
         "calibration_isotonic_points": len(calibration_isotonic["x_thresholds"]),
@@ -1016,6 +1056,10 @@ def main():
     print(f"  Recall@3: {result['metrics']['recall@3']:.4f}")
     print(f"  AUC:      {result['metrics']['auc']:.4f}")
     print(f"  レース数: {result['metrics']['num_races']}")
+    print(f"\n過学習チェック（train - {'test' if args.test_days > 0 else 'valid'}、プラスが大きいほど過学習寄り）:")
+    print(f"  NDCG@3:   train={result['train_metrics']['ndcg@3']:.4f}  gap={result['overfit_gap']['ndcg@3']:+.4f}")
+    print(f"  Recall@3: train={result['train_metrics']['recall@3']:.4f}  gap={result['overfit_gap']['recall@3']:+.4f}")
+    print(f"  AUC:      train={result['train_metrics']['auc']:.4f}  gap={result['overfit_gap']['auc']:+.4f}")
     if "tuning" in result:
         print(f"\nチューニング結果:")
         print(f"  Best AUC (tuning): {result['tuning']['best_value']:.4f}")

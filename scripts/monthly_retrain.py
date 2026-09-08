@@ -221,6 +221,12 @@ def main() -> int:
             f"test期間（真に未見データ）: {training_period['test_from']} 〜 "
             f"{training_period['test_to']}"
         )
+        # 過学習チェック（可視化のみ・非ブロッキング）: train(リフィット学習データ) vs test の指標差。
+        # プラスが大きいほどtrainの方が良く過学習寄り（meta.jsonにも保存済み・Issue #430追加）
+        logger.info(
+            f"過学習チェック: train_metrics={result['train_metrics']} "
+            f"overfit_gap(train-test)={result['overfit_gap']}"
+        )
 
         # --- 品質ゲート①（test期間で評価したリフィットモデルの指標） ---
         gate1 = (

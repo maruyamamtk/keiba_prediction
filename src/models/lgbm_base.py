@@ -231,7 +231,21 @@ class LGBMRanker(LGBMModelBase):
         X_pred = self._prepare_prediction_data(X)
         return self.model.predict(X_pred)
 
-    def save(self, path: str, training_period: dict | None = None) -> None:
+    def save(
+        self,
+        path: str,
+        training_period: dict | None = None,
+        metrics: dict | None = None,
+    ) -> None:
+        """モデルをローカルに保存する。
+
+        Args:
+            path: 保存先パス
+            training_period: 学習・検証・test期間の情報（Issue #430）
+            metrics: 評価指標一式（eval/train/overfit_gap）。過学習チェック用に、
+                モデルの評価指標（eval）だけでなく学習に使ったデータ自体への
+                当てはまり（train）とその差（overfit_gap）もmeta.jsonに残す。
+        """
         if self.model is None:
             raise RuntimeError("保存するモデルがありません。")
 
@@ -252,6 +266,8 @@ class LGBMRanker(LGBMModelBase):
         }
         if training_period:
             meta["training_period"] = training_period
+        if metrics:
+            meta["metrics"] = metrics
         if self.calibration_temperature is not None:
             meta["calibration_temperature"] = self.calibration_temperature
         if self.calibration_isotonic is not None:
