@@ -54,7 +54,7 @@ BET_TYPE_MAP: dict[str, str] = {
 # 1日あたりの購入上限額（円）
 DAILY_BUDGET_LIMIT = 50_000
 
-# 投票送信前フェーズ（通常投票クリック〜金額セット）の最大試行回数（初回+リトライ）
+# 投票送信前フェーズ（通常投票クリック〜合計金額入力）の最大試行回数（初回+リトライ）
 PRE_SUBMIT_MAX_ATTEMPTS = 3
 
 # 発走までの残り時間がこれ未満になったらリトライを打ち切る（分）
@@ -254,8 +254,12 @@ class IpatPurchaser:
             # ここが確認できないまま先に進むと、購入フェーズで初めて失敗が発覚し
             # 原因（IPAT側の想定外画面）が分からなくなる（2026-09-19 本番障害）。
             try:
+                # 他の全画面遷移と同じ PURCHASE_TIMEOUT_MS を使う。ここだけ短いタイムアウトに
+                # すると、IPAT側の描画が遅いだけ（5秒はかかるが30秒以内には表示される）の
+                # ケースまで「ログイン失敗」と誤判定し、tick全体（他レース分も含む）の
+                # 購入を中断させてしまう（/code-review指摘）。
                 await self._page.wait_for_selector(
-                    'a:has-text("通常投票")', state="visible", timeout=5_000
+                    'a:has-text("通常投票")', state="visible", timeout=PURCHASE_TIMEOUT_MS
                 )
             except Exception:
                 logger.warning(f"IPAT ログイン失敗: 「通常投票」が表示されません URL={current_url}")
@@ -309,7 +313,7 @@ class IpatPurchaser:
         投票一覧に全馬券を追加してから1回の「投票」で確定する。
         2件目以降は「場名から続けて入力」で同じウィザードセッションを継続する。
 
-        投票送信（「投票」ボタン押下）**前**のフェーズ（通常投票クリック〜金額セット）で
+        投票送信（「投票」ボタン押下）**前**のフェーズ（通常投票クリック〜合計金額入力）で
         失敗した場合は、発走まで余裕がある限りセッションを作り直して最大
         PRE_SUBMIT_MAX_ATTEMPTS 回まで自動リトライする。
         投票送信**後**のエラーは二重購入を避けるため絶対にリトライしない
@@ -373,7 +377,10 @@ class IpatPurchaser:
                         race_number,
                         is_first_bet=(i == 0),
                     )
-                break  # 投票一覧への追加に成功 → フェーズ2へ
+                # 「入力終了」〜合計金額入力まではまだサーバに未送信のため、ここまでを
+                # リトライ可能フェーズに含める（「投票」ボタン押下のみをフェーズ2に残す）。
+                await self._prepare_final_confirmation(total_amount)
+                break  # 投票送信の準備が完了 → フェーズ2へ
             except IpatPurchaseError:
                 raise
             except Exception as e:
@@ -404,17 +411,21 @@ class IpatPurchaser:
 
                 reset_ok = await self._reset_session_for_retry()
                 if not reset_ok:
+                    # 再ログイン自体の失敗原因（例: IPAT側の障害・メンテナンス画面）を報告する。
+                    # last_debug は「元の（購入画面での）失敗」のスナップショットであり、
+                    # ここで実際にブロッキング要因になっているのは再ログイン失敗の方なので、
+                    # login() が記録した self.last_login_debug を優先する（/code-review指摘）。
                     return {
                         "status": "failed",
                         "total_amount": total_amount,
                         "error_message": f"リトライ用の再ログインに失敗しました（元エラー: {last_error_msg}）",
-                        "debug": last_debug,
+                        "debug": self.last_login_debug or last_debug,
                     }
                 logger.info(f"再ログイン完了。購入を再試行します（試行{attempt + 1}/{PRE_SUBMIT_MAX_ATTEMPTS}）")
 
         # --- フェーズ2: 投票送信（ここから先は絶対にリトライしない。二重購入防止） ---
         try:
-            result = await self._finalize_and_submit(total_amount)
+            result = await self._submit_and_confirm()
             result["total_amount"] = total_amount
             result.setdefault("debug", None)
             logger.info(f"一括購入完了: {venue_name} {race_number}R → {result['status']}")
@@ -580,20 +591,34 @@ class IpatPurchaser:
         await self._wait_for_jqm_ready()
         logger.info(f"投票一覧に追加: {bet_label} {horse_str} {amount}円")
 
-    async def _finalize_and_submit(self, total_amount: int) -> dict:
+    async def _prepare_final_confirmation(self, total_amount: int) -> None:
         """
-        投票一覧から「入力終了」→ 合計金額確認 →「投票」まで処理する。
+        投票一覧の「入力終了」クリック〜合計金額欄への入力までを行う。
 
-        #sum は FORM0 の外にある独立した入力欄。JS の投票ハンドラが #sum を読んで
-        検証し、confirm ダイアログ後に FORM0.submit() する。
+        ここまではまだサーバに投票を送信していない（画面遷移とフォーム入力のみ）ため、
+        失敗しても安全にリトライできる。「投票」ボタン押下（_submit_and_confirm）と
+        意図的に分離している（/code-review指摘: 以前はこの部分の失敗も
+        「投票送信後のエラー」として扱われ、安全にリトライできるケースまで
+        need_confirmation（要手動確認）になってしまっていた）。
         """
         # 「入力終了」→ 合計金額入力へ
         await self._page.click('.ui-page-active a:text-is("入力終了")', timeout=PURCHASE_TIMEOUT_MS)
         await self._wait_for_jqm_ready()
 
-        # 合計金額確認入力 → 「投票」
+        # 合計金額確認入力
         await self._page.wait_for_selector('#sum', state='attached', timeout=PURCHASE_TIMEOUT_MS)
         await self._page.locator('#sum').fill(str(total_amount), timeout=PURCHASE_TIMEOUT_MS)
+
+    async def _submit_and_confirm(self) -> dict:
+        """
+        「投票」ボタン押下〜完了確認。
+
+        #sum は FORM0 の外にある独立した入力欄。JS の投票ハンドラが #sum を読んで
+        検証し、confirm ダイアログ後に FORM0.submit() する。
+
+        ここから先はサーバに送信済みの可能性がある（＝投票が成立している可能性がある）
+        ため、呼び出し元は絶対にリトライしてはいけない（二重購入防止）。
+        """
         async with self._page.expect_navigation(
             wait_until="domcontentloaded", timeout=PURCHASE_TIMEOUT_MS
         ):
@@ -753,19 +778,23 @@ def fetch_recommended_bets(
     return result
 
 
-def has_successful_purchase(
+def has_purchase_attempt_recorded(
     project_id: str,
     target_date: datetime.date,
     race_id: str,
 ) -> bool:
     """
-    対象レースについて既に purchase_history に status='success' の記録があるか確認する。
+    対象レースについて既に purchase_history に status='success' または
+    'need_confirmation' の記録があるか確認する。
 
     購入失敗レースを次回tickでも再試行できるようウィンドウを拡張した際（Issue #433）、
-    既に購入済みのレースを再度購入してしまう二重購入を防ぐために使用する。
+    既に購入成功済み、または投票送信後にエラーが発生し実際の購入有無が不明
+    （need_confirmation。サーバに送信済みの可能性がある）なレースを再度自動購入
+    してしまう二重購入を防ぐために使用する。status='failed'（投票送信前の失敗。
+    サーバには一切送信されていない）のみは対象外とし、次tickでの再挑戦を許可する。
 
     Returns:
-        True: 既に購入成功済み（再購入してはいけない）
+        True: 既に購入成功済み、または結果不明で要確認（自動での再購入は禁止）
     """
     client = bigquery.Client(project=project_id)
     query = """
@@ -773,7 +802,7 @@ def has_successful_purchase(
         FROM `{project}.predictions.purchase_history`
         WHERE race_date = @race_date
           AND race_id = @race_id
-          AND status = 'success'
+          AND status IN ('success', 'need_confirmation')
     """.format(project=project_id)
 
     job_config = bigquery.QueryJobConfig(
@@ -791,7 +820,13 @@ def fetch_daily_spent_amount(
     target_date: datetime.date,
 ) -> int:
     """
-    当日の累計購入金額（成功分のみ）を取得する。
+    当日の累計購入金額を取得する。
+
+    status='success'（購入成功）に加え、status='need_confirmation'（投票送信後に
+    エラーが発生し実際に購入されたか不明。サーバに送信済みの可能性がある）も
+    「実際に使われた可能性がある金額」として保守的に合算する。need_confirmation
+    を除外すると、実際には購入済みの金額が1日の購入上限（DAILY_BUDGET_LIMIT）の
+    チェックから漏れ、上限を超過しうる（Issue #433）。
 
     Returns:
         累計購入金額（円）
@@ -801,7 +836,7 @@ def fetch_daily_spent_amount(
         SELECT COALESCE(SUM(amount), 0) AS total
         FROM `{project}.predictions.purchase_history`
         WHERE race_date = @race_date
-          AND status = 'success'
+          AND status IN ('success', 'need_confirmation')
     """.format(project=project_id)
 
     job_config = bigquery.QueryJobConfig(

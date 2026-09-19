@@ -339,7 +339,8 @@ class TestPurchaseBetsRetryAndSafety:
         purchaser._navigate_to_top_menu = AsyncMock(return_value=None)
         purchaser._add_bet_to_list = flaky_add_bet_to_list
         purchaser.login = AsyncMock(return_value=True)
-        purchaser._finalize_and_submit = AsyncMock(
+        purchaser._prepare_final_confirmation = AsyncMock(return_value=None)
+        purchaser._submit_and_confirm = AsyncMock(
             return_value={"status": "success", "error_message": None}
         )
 
@@ -363,7 +364,8 @@ class TestPurchaseBetsRetryAndSafety:
         purchaser._navigate_to_top_menu = AsyncMock(return_value=None)
         purchaser._add_bet_to_list = always_fail
         purchaser.login = AsyncMock(return_value=True)
-        purchaser._finalize_and_submit = AsyncMock(
+        purchaser._prepare_final_confirmation = AsyncMock(return_value=None)
+        purchaser._submit_and_confirm = AsyncMock(
             return_value={"status": "success", "error_message": None}
         )
 
@@ -374,7 +376,8 @@ class TestPurchaseBetsRetryAndSafety:
         assert result["status"] == "failed"
         assert attempts["add_bet"] == PRE_SUBMIT_MAX_ATTEMPTS
         assert purchaser.login.call_count == PRE_SUBMIT_MAX_ATTEMPTS - 1
-        purchaser._finalize_and_submit.assert_not_called()
+        purchaser._prepare_final_confirmation.assert_not_called()
+        purchaser._submit_and_confirm.assert_not_called()
 
     def test_pre_submit_retry_stops_near_race_start(self):
         """発走まで残り僅か（MIN_MINUTES_BEFORE_START_FOR_RETRY分未満）ならリトライせず即座に失敗を返すこと"""
@@ -405,7 +408,7 @@ class TestPurchaseBetsRetryAndSafety:
         purchaser.login.assert_not_called()
 
     def test_no_retry_after_submit_returns_need_confirmation(self):
-        """投票送信（_finalize_and_submit）後の例外は絶対にリトライせず need_confirmation を返すこと"""
+        """投票送信（_submit_and_confirm）後の例外は絶対にリトライせず need_confirmation を返すこと"""
         purchaser = self._make_purchaser()
         attempts = {"add_bet": 0}
 
@@ -415,7 +418,8 @@ class TestPurchaseBetsRetryAndSafety:
         purchaser._navigate_to_top_menu = AsyncMock(return_value=None)
         purchaser._add_bet_to_list = succeed_once
         purchaser.login = AsyncMock(return_value=True)
-        purchaser._finalize_and_submit = AsyncMock(
+        purchaser._prepare_final_confirmation = AsyncMock(return_value=None)
+        purchaser._submit_and_confirm = AsyncMock(
             side_effect=Exception("Timeout: navigation after submit")
         )
 
@@ -426,7 +430,37 @@ class TestPurchaseBetsRetryAndSafety:
         assert result["status"] == "need_confirmation"
         assert attempts["add_bet"] == 1
         purchaser.login.assert_not_called()
-        purchaser._finalize_and_submit.assert_called_once()
+        purchaser._prepare_final_confirmation.assert_called_once()
+        purchaser._submit_and_confirm.assert_called_once()
+
+    def test_prepare_final_confirmation_failure_is_retried_not_need_confirmation(self):
+        """
+        「入力終了」〜合計金額入力（_prepare_final_confirmation）の失敗はまだサーバ未送信のため、
+        need_confirmation ではなく通常のリトライ対象として扱われること（/code-review指摘）。
+        """
+        purchaser = self._make_purchaser()
+        attempts = {"prepare": 0}
+
+        async def flaky_prepare(*args, **kwargs):
+            attempts["prepare"] += 1
+            if attempts["prepare"] == 1:
+                raise Exception('Timeout: waiting for locator("a:text-is(\\"入力終了\\")")')
+
+        purchaser._navigate_to_top_menu = AsyncMock(return_value=None)
+        purchaser._add_bet_to_list = AsyncMock(return_value=None)
+        purchaser.login = AsyncMock(return_value=True)
+        purchaser._prepare_final_confirmation = flaky_prepare
+        purchaser._submit_and_confirm = AsyncMock(
+            return_value={"status": "success", "error_message": None}
+        )
+
+        result = run_async(
+            purchaser.purchase_bets_for_race(self.BETS, "中山(土)", 7)
+        )
+
+        assert result["status"] == "success"
+        assert attempts["prepare"] == 2
+        purchaser.login.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -811,7 +845,7 @@ class TestProductionPurchaseFlow:
         """対象レースが既に購入成功済みなら IPAT へログインしないこと"""
         mock_ipat_cls = MagicMock()
         result = self._run({
-            "src.automation.data.ipat_purchaser.has_successful_purchase": MagicMock(return_value=True),
+            "src.automation.data.ipat_purchaser.has_purchase_attempt_recorded": MagicMock(return_value=True),
             "src.automation.data.ipat_purchaser.IpatPurchaser": mock_ipat_cls,
         })
 
@@ -823,7 +857,7 @@ class TestProductionPurchaseFlow:
         """推奨馬券が0件なら IPAT へログインしないこと"""
         mock_ipat_cls = MagicMock()
         result = self._run({
-            "src.automation.data.ipat_purchaser.has_successful_purchase": MagicMock(return_value=False),
+            "src.automation.data.ipat_purchaser.has_purchase_attempt_recorded": MagicMock(return_value=False),
             "src.automation.data.ipat_purchaser.fetch_recommended_bets": MagicMock(return_value=[]),
             "src.automation.data.ipat_purchaser.IpatPurchaser": mock_ipat_cls,
         })
@@ -845,7 +879,7 @@ class TestProductionPurchaseFlow:
         mock_ipat_cls.return_value.__aexit__ = AsyncMock(return_value=False)
 
         result = self._run({
-            "src.automation.data.ipat_purchaser.has_successful_purchase": MagicMock(return_value=False),
+            "src.automation.data.ipat_purchaser.has_purchase_attempt_recorded": MagicMock(return_value=False),
             "src.automation.data.ipat_purchaser.fetch_recommended_bets": MagicMock(
                 return_value=[{"bet_type": "place", "horse_numbers": [3], "bet_amount": 300}]
             ),

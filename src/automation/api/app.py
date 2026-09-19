@@ -1482,7 +1482,7 @@ async def _purchase_pipeline_async(
       4. 対象レースのオッズをリアルタイムスクレイピング（netkeiba）
          失敗時はフォールバック（既存の daily_odds を使用）
       5. [dry_run=False] 各レースについて、ログイン前に購入要否を確定する
-         5a. 既に購入成功済み（purchase_history）なら二重購入防止のためスキップ
+         5a. 既に購入成功済み／要確認（need_confirmation）なら二重購入防止のためスキップ
          5b. 最新オッズで investment_decisions を上書き（_refresh_investment_decisions_for_race）
              失敗時はフォールバック（既存の investment_decisions を使用）
          5c. 推奨馬券を取得。0件ならスキップ
@@ -1500,7 +1500,7 @@ async def _purchase_pipeline_async(
         fetch_recommended_bets,
         fetch_today_races_with_start_time,
         fetch_target_races,
-        has_successful_purchase,
+        has_purchase_attempt_recorded,
         save_purchase_record,
         DAILY_BUDGET_LIMIT,
     )
@@ -1524,7 +1524,7 @@ async def _purchase_pipeline_async(
     # start_time は JST で格納されているため、now も JST で取得する
     # 5分おきスケジューラで window_minutes_after=0 のままだと、1回失敗したレースは
     # 二度と対象にならず購入機会を完全に失っていた（Issue #433, 2026-09-19本番障害）。
-    # ウィンドウを10分に拡張し、二重購入は has_successful_purchase() で防止する。
+    # ウィンドウを10分に拡張し、二重購入は has_purchase_attempt_recorded() で防止する。
     now = datetime.datetime.now(ZoneInfo("Asia/Tokyo"))
     target_races = fetch_target_races(all_races, now, window_minutes_before=5, window_minutes_after=-5)
 
@@ -1627,7 +1627,7 @@ async def _purchase_pipeline_async(
     #    投資判断の更新・推奨馬券取得はIPATセッション不要のため、これをログインより先に
     #    行うことで、購入対象が0件のtickで無駄なログインを発生させない（Issue #433）。
     #    ウィンドウ拡張（-5〜+5分）により同一レースが複数tickで対象になり得るため、
-    #    既に購入成功済みのレースはここで除外し二重購入を防ぐ。
+    #    既に購入成功済み／要確認（need_confirmation）のレースはここで除外し二重購入を防ぐ。
     _WEEKDAY_JP = ["月", "火", "水", "木", "金", "土", "日"]
     weekday_suffix = f"({_WEEKDAY_JP[target_date.weekday()]})"
 
@@ -1635,8 +1635,8 @@ async def _purchase_pipeline_async(
     for race in target_races:
         race_id = race["race_id"]
 
-        if has_successful_purchase(project_id, target_date, race_id):
-            logger.info(f"race_id={race_id}: 既に購入成功済み → スキップ")
+        if has_purchase_attempt_recorded(project_id, target_date, race_id):
+            logger.info(f"race_id={race_id}: 既に購入成功済み/要確認済み → スキップ")
             continue
 
         # 最新オッズで investment_decisions を上書き
