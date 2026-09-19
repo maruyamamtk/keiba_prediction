@@ -15,6 +15,7 @@ Note: pytest-asyncio が未インストールのため、asyncio.run() でラッ
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import datetime
 import sys
 from pathlib import Path
@@ -28,6 +29,7 @@ sys.path.insert(0, str(ROOT_DIR))
 from src.automation.data.ipat_purchaser import (
     BET_TYPE_MAP,
     DAILY_BUDGET_LIMIT,
+    PRE_SUBMIT_MAX_ATTEMPTS,
     IpatLoginError,
     IpatPurchaseError,
     IpatPurchaser,
@@ -61,10 +63,17 @@ class TestFetchTargetRaces:
         assert len(result) == 1
         assert result[0]["race_id"] == "race_1007"
 
-    def test_race_too_soon_is_excluded(self):
-        """ウィンドウより前（3分後）のレースは除外されること"""
+    def test_already_started_race_is_excluded_by_default(self):
+        """
+        デフォルト引数（window_minutes_before=5, window_minutes_after=0）では、
+        既に発走したレース（-3分）は除外されること。
+
+        購入エンドポイント側（_purchase_pipeline_async）は Issue #433 でこの関数を
+        window_minutes_after=-5 で明示的に呼び出しウィンドウを広げているが、
+        この関数自体のデフォルト値は変更していない（0〜5分のみ）。
+        """
         now = datetime.datetime(2026, 4, 5, 10, 0, 0)
-        races = self._make_races(["1003"])  # 10:03 = now + 3分
+        races = self._make_races(["0957"])  # 09:57 = now - 3分
         result = fetch_target_races(races, now)
         assert len(result) == 0
 
@@ -76,15 +85,15 @@ class TestFetchTargetRaces:
         assert len(result) == 0
 
     def test_multiple_races_in_window(self):
-        """ウィンドウ内に複数レースがある場合すべて抽出されること"""
+        """デフォルトウィンドウ（0〜5分後）内の複数レースのみ抽出されること"""
         now = datetime.datetime(2026, 4, 5, 10, 0, 0)
-        races = self._make_races(["1006", "1008", "1003", "1020"])
+        races = self._make_races(["1002", "1004", "1008", "0955"])
         result = fetch_target_races(races, now)
         race_ids = [r["race_id"] for r in result]
-        assert "race_1006" in race_ids
-        assert "race_1008" in race_ids
-        assert "race_1003" not in race_ids
-        assert "race_1020" not in race_ids
+        assert "race_1002" in race_ids
+        assert "race_1004" in race_ids
+        assert "race_1008" not in race_ids
+        assert "race_0955" not in race_ids
 
     def test_null_start_time_is_skipped(self):
         """start_time が空またはNoneのレースはスキップされること"""
@@ -109,10 +118,10 @@ class TestFetchTargetRaces:
         result = fetch_target_races(races, now)
         assert len(result) == 1
 
-    def test_boundary_at_ten_minutes(self):
-        """ウィンドウ境界値（ちょうど10分後）のレースが含まれること"""
+    def test_boundary_at_zero_minutes(self):
+        """ウィンドウ境界値（ちょうど発走時刻＝0分後）のレースが含まれること"""
         now = datetime.datetime(2026, 4, 5, 10, 0, 0)
-        races = self._make_races(["1010"])  # 10:10 = now + 10分
+        races = self._make_races(["1000"])  # 10:00 = now + 0分
         result = fetch_target_races(races, now)
         assert len(result) == 1
 
@@ -132,6 +141,11 @@ class TestIpatPurchaserLogin:
         p._page = AsyncMock()
         # dialog イベントリスナー登録のモック
         p._page.on = MagicMock()
+        # page.locator() は実際のPlaywrightでは同期メソッドなので MagicMock にする
+        # （_capture_failure_state() が失敗時の画面文言取得に使用する）
+        locator_mock = MagicMock()
+        locator_mock.inner_text = AsyncMock(return_value="")
+        p._page.locator = MagicMock(return_value=locator_mock)
         return p
 
     def test_login_success(self):
@@ -177,6 +191,23 @@ class TestIpatPurchaserLogin:
         result = run_async(purchaser.login())
 
         assert result is False
+
+    def test_login_failure_menu_not_visible(self):
+        """URL遷移・エラーメッセージ判定を通過しても「通常投票」が表示されなければ False を返すこと（Issue #433）"""
+        purchaser = self._make_purchaser()
+        purchaser._page.url = self.IPAT_MENU_URL
+        purchaser._page.text_content = AsyncMock(return_value="ただいまメンテナンス中です")
+        purchaser._page.locator.return_value.inner_text = AsyncMock(
+            return_value="ただいまメンテナンス中です"
+        )
+        purchaser._page.wait_for_selector = AsyncMock(side_effect=Exception("Timeout 5000ms exceeded"))
+
+        result = run_async(purchaser.login())
+
+        assert result is False
+        assert purchaser.last_login_debug is not None
+        assert purchaser.last_login_debug["url"] == self.IPAT_MENU_URL
+        assert "メンテナンス" in purchaser.last_login_debug["text_snippet"]
 
     def test_login_raises_on_playwright_error(self):
         """Playwright エラー時は IpatLoginError を送出すること"""
@@ -268,6 +299,134 @@ class TestIpatPurchaserPurchaseBet:
 
         assert result["status"] == "failed"
         assert result["error_message"] is not None
+
+
+# ---------------------------------------------------------------------------
+# purchase_bets_for_race() の投票送信前リトライ・送信後の二重購入防止（Issue #433）
+# ---------------------------------------------------------------------------
+
+class TestPurchaseBetsRetryAndSafety:
+    """
+    投票送信前フェーズ（通常投票クリック〜金額セット）の自動リトライと、
+    投票送信後は絶対にリトライしない（二重購入防止）ことを検証する。
+    """
+
+    BETS = [{"bet_type": "place", "horse_numbers": [3], "amount": 300}]
+
+    def _make_purchaser(self) -> IpatPurchaser:
+        p = IpatPurchaser("12345678", "1234", "8765")
+        p._page = AsyncMock()
+        p._page.on = MagicMock()
+        locator_mock = MagicMock()
+        locator_mock.inner_text = AsyncMock(return_value="")
+        p._page.locator = MagicMock(return_value=locator_mock)
+        p._page.text_content = AsyncMock(return_value="")
+        p._browser = AsyncMock()
+        # リトライ時に同じ（.locator設定済みの）ページを使い回す
+        p._browser.new_page = AsyncMock(return_value=p._page)
+        return p
+
+    def test_pre_submit_retry_succeeds_after_one_failure(self):
+        """投票一覧への追加が1回失敗しても、再ログイン後のリトライで成功すること"""
+        purchaser = self._make_purchaser()
+        attempts = {"add_bet": 0}
+
+        async def flaky_add_bet_to_list(*args, **kwargs):
+            attempts["add_bet"] += 1
+            if attempts["add_bet"] == 1:
+                raise Exception('Timeout: waiting for locator("a:has-text(\\"通常投票\\")")')
+
+        purchaser._navigate_to_top_menu = AsyncMock(return_value=None)
+        purchaser._add_bet_to_list = flaky_add_bet_to_list
+        purchaser.login = AsyncMock(return_value=True)
+        purchaser._finalize_and_submit = AsyncMock(
+            return_value={"status": "success", "error_message": None}
+        )
+
+        result = run_async(
+            purchaser.purchase_bets_for_race(self.BETS, "中山(土)", 7)
+        )
+
+        assert result["status"] == "success"
+        assert attempts["add_bet"] == 2
+        purchaser.login.assert_called_once()
+
+    def test_pre_submit_retry_exhausted_returns_failed(self):
+        """PRE_SUBMIT_MAX_ATTEMPTS回失敗し続けたら status=failed で諦めること"""
+        purchaser = self._make_purchaser()
+        attempts = {"add_bet": 0}
+
+        async def always_fail(*args, **kwargs):
+            attempts["add_bet"] += 1
+            raise Exception("Timeout: locator not found")
+
+        purchaser._navigate_to_top_menu = AsyncMock(return_value=None)
+        purchaser._add_bet_to_list = always_fail
+        purchaser.login = AsyncMock(return_value=True)
+        purchaser._finalize_and_submit = AsyncMock(
+            return_value={"status": "success", "error_message": None}
+        )
+
+        result = run_async(
+            purchaser.purchase_bets_for_race(self.BETS, "中山(土)", 7)
+        )
+
+        assert result["status"] == "failed"
+        assert attempts["add_bet"] == PRE_SUBMIT_MAX_ATTEMPTS
+        assert purchaser.login.call_count == PRE_SUBMIT_MAX_ATTEMPTS - 1
+        purchaser._finalize_and_submit.assert_not_called()
+
+    def test_pre_submit_retry_stops_near_race_start(self):
+        """発走まで残り僅か（MIN_MINUTES_BEFORE_START_FOR_RETRY分未満）ならリトライせず即座に失敗を返すこと"""
+        purchaser = self._make_purchaser()
+        attempts = {"add_bet": 0}
+
+        async def always_fail(*args, **kwargs):
+            attempts["add_bet"] += 1
+            raise Exception("Timeout: locator not found")
+
+        purchaser._navigate_to_top_menu = AsyncMock(return_value=None)
+        purchaser._add_bet_to_list = always_fail
+        purchaser.login = AsyncMock(return_value=True)
+
+        from zoneinfo import ZoneInfo as _ZoneInfo
+
+        now_jst = datetime.datetime.now(_ZoneInfo("Asia/Tokyo"))
+        # 発走時刻を「今」に設定 → リトライ猶予（MIN_MINUTES_BEFORE_START_FOR_RETRY分）を
+        # 既に過ぎている状態を再現する
+        start_time = now_jst.strftime("%H%M")
+
+        result = run_async(
+            purchaser.purchase_bets_for_race(self.BETS, "中山(土)", 7, start_time=start_time)
+        )
+
+        assert result["status"] == "failed"
+        assert attempts["add_bet"] == 1
+        purchaser.login.assert_not_called()
+
+    def test_no_retry_after_submit_returns_need_confirmation(self):
+        """投票送信（_finalize_and_submit）後の例外は絶対にリトライせず need_confirmation を返すこと"""
+        purchaser = self._make_purchaser()
+        attempts = {"add_bet": 0}
+
+        async def succeed_once(*args, **kwargs):
+            attempts["add_bet"] += 1
+
+        purchaser._navigate_to_top_menu = AsyncMock(return_value=None)
+        purchaser._add_bet_to_list = succeed_once
+        purchaser.login = AsyncMock(return_value=True)
+        purchaser._finalize_and_submit = AsyncMock(
+            side_effect=Exception("Timeout: navigation after submit")
+        )
+
+        result = run_async(
+            purchaser.purchase_bets_for_race(self.BETS, "中山(土)", 7)
+        )
+
+        assert result["status"] == "need_confirmation"
+        assert attempts["add_bet"] == 1
+        purchaser.login.assert_not_called()
+        purchaser._finalize_and_submit.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -588,3 +747,114 @@ class TestNoLineNotificationOnSkip:
 
         mock_push.assert_not_called()
         assert result["status"] == "success"
+
+
+# ---------------------------------------------------------------------------
+# 本番購入フロー（dry_run=False）: ログイン要否判定・二重購入防止（Issue #433）
+# ---------------------------------------------------------------------------
+
+class TestProductionPurchaseFlow:
+    """
+    投資判断の更新・推奨馬券取得をログインより先に行い、購入対象が0件なら
+    IPATへのログイン自体を行わないこと、および既に購入成功済みのレースを
+    二重購入しないことを検証する。
+    """
+
+    TARGET_DATE = datetime.date(2026, 9, 19)
+    RACE_ID = "06264507"
+
+    def _target_race(self) -> dict:
+        return {
+            "race_id": self.RACE_ID,
+            "start_time": "1325",
+            "venue_name": "中山",
+            "race_number": 7,
+        }
+
+    def _run(self, extra_patches: dict):
+        import importlib
+
+        app_module = importlib.import_module("src.automation.api.app")
+        target_race = self._target_race()
+        base_patches = {
+            "src.automation.data.ipat_purchaser.fetch_today_races_with_start_time": MagicMock(
+                return_value=[target_race]
+            ),
+            "src.automation.data.ipat_purchaser.fetch_target_races": MagicMock(
+                return_value=[target_race]
+            ),
+            "src.automation.data.netkeiba_scraper.scrape_odds_for_race": MagicMock(return_value=True),
+            "src.automation.api.app._refresh_investment_decisions_for_race": MagicMock(return_value=True),
+            "src.automation.data.ipat_purchaser.fetch_daily_spent_amount": MagicMock(return_value=0),
+            "src.automation.data.ipat_purchaser.save_purchase_record": MagicMock(),
+            "src.utils.line_notify.push_messages": MagicMock(),
+        }
+        base_patches.update(extra_patches)
+
+        with contextlib.ExitStack() as stack:
+            for target, new in base_patches.items():
+                stack.enter_context(patch(target, new))
+            return run_async(
+                app_module._purchase_pipeline_async(
+                    project_id="test-project",
+                    target_date=self.TARGET_DATE,
+                    member_id="12345678",
+                    pin="1234",
+                    pat_number="87654321",
+                    channel_access_token="",
+                    line_user_id="",
+                    dry_run=False,
+                )
+            )
+
+    def test_skips_login_when_already_purchased(self):
+        """対象レースが既に購入成功済みなら IPAT へログインしないこと"""
+        mock_ipat_cls = MagicMock()
+        result = self._run({
+            "src.automation.data.ipat_purchaser.has_successful_purchase": MagicMock(return_value=True),
+            "src.automation.data.ipat_purchaser.IpatPurchaser": mock_ipat_cls,
+        })
+
+        assert result["status"] == "success"
+        assert result["purchased_races"] == 0
+        mock_ipat_cls.assert_not_called()
+
+    def test_skips_login_when_no_recommended_bets(self):
+        """推奨馬券が0件なら IPAT へログインしないこと"""
+        mock_ipat_cls = MagicMock()
+        result = self._run({
+            "src.automation.data.ipat_purchaser.has_successful_purchase": MagicMock(return_value=False),
+            "src.automation.data.ipat_purchaser.fetch_recommended_bets": MagicMock(return_value=[]),
+            "src.automation.data.ipat_purchaser.IpatPurchaser": mock_ipat_cls,
+        })
+
+        assert result["status"] == "success"
+        assert result["purchased_races"] == 0
+        mock_ipat_cls.assert_not_called()
+
+    def test_logs_in_and_purchases_when_bets_exist(self):
+        """購入対象レースが1件でもあれば IPAT へログインし購入を実行すること"""
+        purchaser_instance = AsyncMock()
+        purchaser_instance.login = AsyncMock(return_value=True)
+        purchaser_instance.purchase_bets_for_race = AsyncMock(
+            return_value={"status": "success", "total_amount": 300, "error_message": None}
+        )
+
+        mock_ipat_cls = MagicMock()
+        mock_ipat_cls.return_value.__aenter__ = AsyncMock(return_value=purchaser_instance)
+        mock_ipat_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        result = self._run({
+            "src.automation.data.ipat_purchaser.has_successful_purchase": MagicMock(return_value=False),
+            "src.automation.data.ipat_purchaser.fetch_recommended_bets": MagicMock(
+                return_value=[{"bet_type": "place", "horse_numbers": [3], "bet_amount": 300}]
+            ),
+            "src.automation.data.ipat_purchaser.IpatPurchaser": mock_ipat_cls,
+        })
+
+        assert result["status"] == "success"
+        assert result["purchased_races"] == 1
+        purchaser_instance.login.assert_called_once()
+        # start_time がレース発走時刻として渡されること
+        _, kwargs = purchaser_instance.purchase_bets_for_race.call_args
+        assert kwargs.get("start_time") == "1325"

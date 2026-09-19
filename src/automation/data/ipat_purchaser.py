@@ -26,6 +26,7 @@ import asyncio
 import datetime
 import logging
 import uuid
+from zoneinfo import ZoneInfo
 
 from google.cloud import bigquery
 
@@ -53,6 +54,15 @@ BET_TYPE_MAP: dict[str, str] = {
 # 1日あたりの購入上限額（円）
 DAILY_BUDGET_LIMIT = 50_000
 
+# 投票送信前フェーズ（通常投票クリック〜金額セット）の最大試行回数（初回+リトライ）
+PRE_SUBMIT_MAX_ATTEMPTS = 3
+
+# 発走までの残り時間がこれ未満になったらリトライを打ち切る（分）
+MIN_MINUTES_BEFORE_START_FOR_RETRY = 2
+
+# 失敗時のデバッグ情報（スクリーンショット等）の保存先バケットサフィックス
+DEBUG_BUCKET_SUFFIX = "keiba-predictions"
+
 
 class IpatLoginError(Exception):
     """IPAT ログイン失敗時の例外"""
@@ -74,15 +84,28 @@ class IpatPurchaser:
         async with IpatPurchaser(member_id, pin, pat_number) as purchaser:
             await purchaser.login()
             result = await purchaser.purchase_bet("place", [3], 300)
+
+    Args:
+        project_id: 失敗時のスクリーンショットをGCSに保存する場合のGCPプロジェクトID。
+            None の場合はスクリーンショット保存をスキップする（テキスト情報のみ記録）。
     """
 
-    def __init__(self, member_id: str, pin: str, pat_number: str) -> None:
+    def __init__(
+        self,
+        member_id: str,
+        pin: str,
+        pat_number: str,
+        project_id: str | None = None,
+    ) -> None:
         self.member_id = member_id
         self.pin = pin
         self.pat_number = pat_number
+        self.project_id = project_id
         self._playwright = None
         self._browser = None
         self._page = None
+        # 直近のログイン失敗時にキャプチャしたデバッグ情報（url/画面文言/スクリーンショットパス）
+        self.last_login_debug: dict | None = None
 
     async def __aenter__(self) -> "IpatPurchaser":
         from playwright.async_api import async_playwright
@@ -107,19 +130,78 @@ class IpatPurchaser:
         if self._playwright:
             await self._playwright.stop()
 
+    async def _capture_failure_state(self, context: str) -> dict:
+        """
+        失敗時の画面状態（URL・表示テキスト・スクリーンショット）を記録する。
+
+        原因究明用の証跡が一切残らず事後調査が不可能だった問題（Issue #433）への対応。
+        この関数自体の失敗が呼び出し元のエラーハンドリングを妨げないよう、
+        内部で発生した例外はすべて握りつぶし、取得できた範囲の情報のみを返す。
+
+        Args:
+            context: どの処理段階での失敗かを示すラベル（ログ・GCSパスに使用）
+
+        Returns:
+            {"context": str, "url": str|None, "text_snippet": str|None, "screenshot_gcs_path": str|None}
+        """
+        debug: dict = {
+            "context": context,
+            "url": None,
+            "text_snippet": None,
+            "screenshot_gcs_path": None,
+        }
+        if self._page is None:
+            return debug
+
+        try:
+            debug["url"] = self._page.url
+        except Exception:
+            pass
+
+        try:
+            text = await self._page.locator(".ui-page-active").inner_text()
+            if not text:
+                text = await self._page.text_content("body") or ""
+            debug["text_snippet"] = text.strip()[:500]
+        except Exception:
+            pass
+
+        if self.project_id:
+            try:
+                png_bytes = await self._page.screenshot()
+                timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%S%f")
+                blob_path = f"ipat_debug/{timestamp}_{context}.png"
+                from google.cloud import storage as _storage
+
+                gcs_client = _storage.Client(project=self.project_id)
+                bucket = gcs_client.bucket(f"{self.project_id}-{DEBUG_BUCKET_SUFFIX}")
+                blob = bucket.blob(blob_path)
+                blob.upload_from_string(png_bytes, content_type="image/png")
+                debug["screenshot_gcs_path"] = f"gs://{self.project_id}-{DEBUG_BUCKET_SUFFIX}/{blob_path}"
+            except Exception as e:
+                logger.warning(f"失敗時スクリーンショットの保存に失敗（無視します）: {e}")
+
+        return debug
+
     async def login(self) -> bool:
         """
         JRA IPAT にログインする。
 
+        ログイン後は「通常投票」リンクが実際に表示されるまで確認する。URL遷移と
+        エラーキーワード判定だけでは、意図しない中間画面（お知らせ・セッション
+        エラー等）が返ってきた場合に誤って成功と判定してしまうため（Issue #433）。
+
         Returns:
             True: ログイン成功
-            False: ログイン失敗
+            False: ログイン失敗（失敗時は self.last_login_debug に画面状態を記録）
 
         Raises:
             IpatLoginError: ログイン処理中に予期しないエラーが発生した場合
         """
         if self._page is None:
             raise IpatLoginError("ブラウザが初期化されていません。コンテキストマネージャー経由で使用してください。")
+
+        self.last_login_debug = None
 
         try:
             logger.info("JRA IPAT ログイン開始")
@@ -159,11 +241,28 @@ class IpatPurchaser:
             has_error = any(kw in page_text for kw in error_keywords)
             if has_error:
                 logger.warning(f"IPAT ログイン失敗: エラーメッセージ検出 URL={current_url}")
+                self.last_login_debug = await self._capture_failure_state("login_error_keyword")
                 return False
 
             # ログインページのままなら失敗（ToSPMenu のバリデーションで弾かれた等）
             if current_url == IPAT_LOGIN_URL:
                 logger.warning(f"IPAT ログイン失敗: ページが遷移していません URL={current_url}")
+                self.last_login_debug = await self._capture_failure_state("login_url_unchanged")
+                return False
+
+            # 「通常投票」リンクが実際に表示されるまで確認する。
+            # ここが確認できないまま先に進むと、購入フェーズで初めて失敗が発覚し
+            # 原因（IPAT側の想定外画面）が分からなくなる（2026-09-19 本番障害）。
+            try:
+                await self._page.wait_for_selector(
+                    'a:has-text("通常投票")', state="visible", timeout=5_000
+                )
+            except Exception:
+                logger.warning(f"IPAT ログイン失敗: 「通常投票」が表示されません URL={current_url}")
+                self.last_login_debug = await self._capture_failure_state("login_menu_not_visible")
+                snippet = (self.last_login_debug or {}).get("text_snippet")
+                if snippet:
+                    logger.warning(f"IPAT ログイン失敗時の画面文言: {snippet}")
                 return False
 
             logger.info(f"JRA IPAT ログイン成功 URL={current_url}")
@@ -173,11 +272,36 @@ class IpatPurchaser:
             logger.error(f"JRA IPAT ログインエラー: {e}", exc_info=True)
             raise IpatLoginError(f"ログイン処理中にエラーが発生しました: {e}") from e
 
+    async def _reset_session_for_retry(self) -> bool:
+        """
+        投票送信前フェーズのリトライ用にブラウザセッションを作り直す。
+
+        新規ページ（＝新規Cookie）で再ログインすることで、前回試行で
+        投票一覧に途中まで追加された内容をサーバ側ごと確実に破棄する
+        （中途半端な一覧が残ったまま次の試行に進むと合計金額がずれる恐れがあるため）。
+
+        Returns:
+            True: 再ログイン成功, False: 再ログイン失敗（これ以上リトライしない）
+        """
+        try:
+            if self._page is not None:
+                await self._page.close()
+        except Exception as e:
+            logger.warning(f"リトライ用ページのクローズに失敗（続行します）: {e}")
+
+        try:
+            self._page = await self._browser.new_page()
+            return await self.login()
+        except Exception as e:
+            logger.error(f"リトライ用セッションの再構築に失敗: {e}", exc_info=True)
+            return False
+
     async def purchase_bets_for_race(
         self,
         bets: list[dict],
         venue_name: str,
         race_number: int,
+        start_time: str | None = None,
     ) -> dict:
         """
         同一レースの複数馬券を一括購入する。
@@ -185,16 +309,24 @@ class IpatPurchaser:
         投票一覧に全馬券を追加してから1回の「投票」で確定する。
         2件目以降は「場名から続けて入力」で同じウィザードセッションを継続する。
 
+        投票送信（「投票」ボタン押下）**前**のフェーズ（通常投票クリック〜金額セット）で
+        失敗した場合は、発走まで余裕がある限りセッションを作り直して最大
+        PRE_SUBMIT_MAX_ATTEMPTS 回まで自動リトライする。
+        投票送信**後**のエラーは二重購入を避けるため絶対にリトライしない
+        （status="need_confirmation" を返し、手動確認を促す）。
+
         Args:
             bets: 馬券リスト [{"bet_type": str, "horse_numbers": list[int], "amount": int}, ...]
             venue_name: 競馬場名（曜日付き、例: "中山(土)"）
             race_number: レース番号（例: 7）
+            start_time: レース発走時刻（"HHMM"形式）。指定するとリトライの締切判定に使う。
 
         Returns:
-            {"status": "success"|"failed", "total_amount": int, "error_message": str|None}
+            {"status": "success"|"failed"|"need_confirmation", "total_amount": int,
+             "error_message": str|None, "debug": dict|None}
 
         Raises:
-            IpatPurchaseError: 予期しないエラーが発生した場合
+            IpatPurchaseError: 入力値が不正な場合
         """
         if self._page is None:
             raise IpatPurchaseError("ブラウザが初期化されていません。")
@@ -215,31 +347,92 @@ class IpatPurchaser:
         )
         logger.info(f"一括購入開始: {venue_name} {race_number}R / {len(bets)}件 合計{total_amount}円 [{summary}]")
 
-        try:
-            await self._navigate_to_top_menu()
+        retry_deadline: datetime.datetime | None = None
+        if start_time and len(start_time) >= 4:
+            try:
+                hour, minute = int(start_time[:2]), int(start_time[2:4])
+                now_jst = datetime.datetime.now(ZoneInfo("Asia/Tokyo"))
+                retry_deadline = now_jst.replace(
+                    hour=hour, minute=minute, second=0, microsecond=0
+                ) - datetime.timedelta(minutes=MIN_MINUTES_BEFORE_START_FOR_RETRY)
+            except ValueError:
+                retry_deadline = None
 
-            for i, bet in enumerate(bets):
-                await self._add_bet_to_list(
-                    bet["bet_type"],
-                    bet["horse_numbers"],
-                    bet["amount"],
-                    venue_name,
-                    race_number,
-                    is_first_bet=(i == 0),
+        # --- フェーズ1: 投票一覧への追加（投票送信前。失敗時はリトライ可） ---
+        last_error_msg: str | None = None
+        last_debug: dict | None = None
+        for attempt in range(1, PRE_SUBMIT_MAX_ATTEMPTS + 1):
+            try:
+                await self._navigate_to_top_menu()
+                for i, bet in enumerate(bets):
+                    await self._add_bet_to_list(
+                        bet["bet_type"],
+                        bet["horse_numbers"],
+                        bet["amount"],
+                        venue_name,
+                        race_number,
+                        is_first_bet=(i == 0),
+                    )
+                break  # 投票一覧への追加に成功 → フェーズ2へ
+            except IpatPurchaseError:
+                raise
+            except Exception as e:
+                last_error_msg = str(e)
+                last_debug = await self._capture_failure_state(f"pre_submit_attempt{attempt}")
+                logger.warning(
+                    f"馬券入力に失敗（試行{attempt}/{PRE_SUBMIT_MAX_ATTEMPTS}）: {last_error_msg}"
                 )
 
+                if attempt >= PRE_SUBMIT_MAX_ATTEMPTS:
+                    return {
+                        "status": "failed",
+                        "total_amount": total_amount,
+                        "error_message": f"購入画面エラー（{attempt}回試行）: {last_error_msg}",
+                        "debug": last_debug,
+                    }
+
+                if retry_deadline and datetime.datetime.now(ZoneInfo("Asia/Tokyo")) >= retry_deadline:
+                    logger.warning(
+                        f"発走まで{MIN_MINUTES_BEFORE_START_FOR_RETRY}分未満のためリトライを中止します"
+                    )
+                    return {
+                        "status": "failed",
+                        "total_amount": total_amount,
+                        "error_message": f"購入画面エラー（発走間近のためリトライ中止）: {last_error_msg}",
+                        "debug": last_debug,
+                    }
+
+                reset_ok = await self._reset_session_for_retry()
+                if not reset_ok:
+                    return {
+                        "status": "failed",
+                        "total_amount": total_amount,
+                        "error_message": f"リトライ用の再ログインに失敗しました（元エラー: {last_error_msg}）",
+                        "debug": last_debug,
+                    }
+                logger.info(f"再ログイン完了。購入を再試行します（試行{attempt + 1}/{PRE_SUBMIT_MAX_ATTEMPTS}）")
+
+        # --- フェーズ2: 投票送信（ここから先は絶対にリトライしない。二重購入防止） ---
+        try:
             result = await self._finalize_and_submit(total_amount)
             result["total_amount"] = total_amount
+            result.setdefault("debug", None)
             logger.info(f"一括購入完了: {venue_name} {race_number}R → {result['status']}")
             return result
-
         except IpatPurchaseError:
             raise
         except Exception as e:
-            error_msg = str(e)
-            if "Timeout" in error_msg:
-                return {"status": "failed", "total_amount": total_amount, "error_message": f"購入画面タイムアウト: {error_msg}"}
-            raise IpatPurchaseError(error_msg) from e
+            debug = await self._capture_failure_state("finalize_submit_error")
+            error_msg = (
+                f"投票送信中にエラーが発生しました。実際に購入されているか必ずIPATで確認してください: {e}"
+            )
+            logger.error(error_msg, exc_info=True)
+            return {
+                "status": "need_confirmation",
+                "total_amount": total_amount,
+                "error_message": error_msg,
+                "debug": debug,
+            }
 
     async def purchase_bet(
         self,
@@ -558,6 +751,39 @@ def fetch_recommended_bets(
         })
     logger.info(f"race_id={race_id}: 推奨馬券 {len(result)}件取得")
     return result
+
+
+def has_successful_purchase(
+    project_id: str,
+    target_date: datetime.date,
+    race_id: str,
+) -> bool:
+    """
+    対象レースについて既に purchase_history に status='success' の記録があるか確認する。
+
+    購入失敗レースを次回tickでも再試行できるようウィンドウを拡張した際（Issue #433）、
+    既に購入済みのレースを再度購入してしまう二重購入を防ぐために使用する。
+
+    Returns:
+        True: 既に購入成功済み（再購入してはいけない）
+    """
+    client = bigquery.Client(project=project_id)
+    query = """
+        SELECT COUNT(*) AS n
+        FROM `{project}.predictions.purchase_history`
+        WHERE race_date = @race_date
+          AND race_id = @race_id
+          AND status = 'success'
+    """.format(project=project_id)
+
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("race_date", "DATE", target_date.isoformat()),
+            bigquery.ScalarQueryParameter("race_id", "STRING", race_id),
+        ]
+    )
+    rows = list(client.query(query, job_config=job_config).result())
+    return bool(rows and int(rows[0]["n"]) > 0)
 
 
 def fetch_daily_spent_amount(

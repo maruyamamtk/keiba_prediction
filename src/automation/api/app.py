@@ -1199,6 +1199,7 @@ class PurchaseRaceResult(BaseModel):
     bets_purchased: int
     bets_failed: int
     bets_skipped_budget: int
+    bets_need_confirmation: int = 0
     amount: int
     status: str
 
@@ -1475,18 +1476,22 @@ async def _purchase_pipeline_async(
 
     フロー:
       1. raw.race_info から当日の発走時刻を取得
-      2. 現在時刻の0〜5分後に発走するレースを特定
+      2. 現在時刻の-5〜5分後に発走するレースを特定
+         （マイナス側は直前tickでの購入失敗を次tickで再挑戦するためのウィンドウ。Issue #433）
       3. 対象レースが0件なら skipped を返す
       4. 対象レースのオッズをリアルタイムスクレイピング（netkeiba）
          失敗時はフォールバック（既存の daily_odds を使用）
-      5. [dry_run=False] IPAT ログイン
-      6. 各レースについて:
-         6a. 最新オッズで investment_decisions を上書き（_refresh_investment_decisions_for_race）
+      5. [dry_run=False] 各レースについて、ログイン前に購入要否を確定する
+         5a. 既に購入成功済み（purchase_history）なら二重購入防止のためスキップ
+         5b. 最新オッズで investment_decisions を上書き（_refresh_investment_decisions_for_race）
              失敗時はフォールバック（既存の investment_decisions を使用）
-         6b. 推奨馬券を取得
-             [dry_run=True]  LINE通知のみ
-             [dry_run=False] 予算チェック → 購入 → 履歴保存
-      7. [dry_run=False] ログアウト
+         5c. 推奨馬券を取得。0件ならスキップ
+         購入対象レースが1件もなければ IPAT へのログイン自体を行わない
+      6. [dry_run=False] 購入対象レースが1件以上ある場合のみ IPAT ログイン
+      7. 各レースについて:
+         [dry_run=True]  LINE通知のみ
+         [dry_run=False] 予算チェック → 購入（送信前フェーズは自動リトライ） → 履歴保存
+      8. [dry_run=False] ログアウト
     """
     from src.automation.data.ipat_purchaser import (
         IpatLoginError,
@@ -1495,6 +1500,7 @@ async def _purchase_pipeline_async(
         fetch_recommended_bets,
         fetch_today_races_with_start_time,
         fetch_target_races,
+        has_successful_purchase,
         save_purchase_record,
         DAILY_BUDGET_LIMIT,
     )
@@ -1514,10 +1520,13 @@ async def _purchase_pipeline_async(
         logger.info(f"{target_date}: start_time付きレースが存在しません")
         return {"status": "skipped", "purchased_races": 0, "total_amount": 0, "results": []}
 
-    # 2. 対象レースを抽出（現在時刻の0〜5分後）
+    # 2. 対象レースを抽出（現在時刻の-5〜5分。マイナス側は直前tickでの購入失敗の再挑戦用）
     # start_time は JST で格納されているため、now も JST で取得する
+    # 5分おきスケジューラで window_minutes_after=0 のままだと、1回失敗したレースは
+    # 二度と対象にならず購入機会を完全に失っていた（Issue #433, 2026-09-19本番障害）。
+    # ウィンドウを10分に拡張し、二重購入は has_successful_purchase() で防止する。
     now = datetime.datetime.now(ZoneInfo("Asia/Tokyo"))
-    target_races = fetch_target_races(all_races, now, window_minutes_before=5, window_minutes_after=0)
+    target_races = fetch_target_races(all_races, now, window_minutes_before=5, window_minutes_after=-5)
 
     if not target_races:
         logger.info(f"{target_date}: 現在時刻 {now.strftime('%H:%M')} に対象レースなし")
@@ -1602,9 +1611,60 @@ async def _purchase_pipeline_async(
             "results": race_results,
         }
 
+    def _debug_suffix(debug: dict | None) -> str:
+        """LINE通知・ログに付与する失敗時デバッグ情報（画面文言・スクリーンショットパス）"""
+        if not debug:
+            return ""
+        parts = []
+        if debug.get("text_snippet"):
+            parts.append(f"画面: {debug['text_snippet'][:120]}")
+        if debug.get("screenshot_gcs_path"):
+            parts.append(f"SS: {debug['screenshot_gcs_path']}")
+        return ("\n" + "\n".join(parts)) if parts else ""
+
     # --- 本番購入モード ---
-    # 3. IPAT ログイン
-    async with IpatPurchaser(member_id, pin, pat_number) as purchaser:
+    # 3. ログイン前に「実際に購入すべきレース」を確定する。
+    #    投資判断の更新・推奨馬券取得はIPATセッション不要のため、これをログインより先に
+    #    行うことで、購入対象が0件のtickで無駄なログインを発生させない（Issue #433）。
+    #    ウィンドウ拡張（-5〜+5分）により同一レースが複数tickで対象になり得るため、
+    #    既に購入成功済みのレースはここで除外し二重購入を防ぐ。
+    _WEEKDAY_JP = ["月", "火", "水", "木", "金", "土", "日"]
+    weekday_suffix = f"({_WEEKDAY_JP[target_date.weekday()]})"
+
+    races_to_purchase: list[dict] = []
+    for race in target_races:
+        race_id = race["race_id"]
+
+        if has_successful_purchase(project_id, target_date, race_id):
+            logger.info(f"race_id={race_id}: 既に購入成功済み → スキップ")
+            continue
+
+        # 最新オッズで investment_decisions を上書き
+        refreshed = _refresh_investment_decisions_for_race(project_id, race_id, target_date)
+        if refreshed:
+            logger.info(f"race_id={race_id}: 最新オッズで investment_decisions を更新済み")
+        else:
+            logger.info(f"race_id={race_id}: フォールバック（既存 investment_decisions を使用）")
+
+        # 推奨馬券取得
+        bets = fetch_recommended_bets(project_id, race_id, target_date)
+        if not bets:
+            logger.info(f"race_id={race_id}: 推奨馬券なし → スキップ")
+            continue
+
+        races_to_purchase.append({**race, "_bets": bets})
+
+    if not races_to_purchase:
+        logger.info("購入対象レースがないため、IPATへのログインをスキップします")
+        return {
+            "status": "success",
+            "purchased_races": 0,
+            "total_amount": fetch_daily_spent_amount(project_id, target_date),
+            "results": [],
+        }
+
+    # 4. IPAT ログイン
+    async with IpatPurchaser(member_id, pin, pat_number, project_id=project_id) as purchaser:
         try:
             logged_in = await purchaser.login()
         except IpatLoginError as e:
@@ -1614,41 +1674,30 @@ async def _purchase_pipeline_async(
             return {"status": "error", "purchased_races": 0, "total_amount": 0, "results": []}
 
         if not logged_in:
-            msg = "IPATログインに失敗しました（認証情報を確認してください）"
+            msg = "IPATログインに失敗しました（認証情報を確認してください）" + _debug_suffix(
+                purchaser.last_login_debug
+            )
             logger.error(msg)
             _send_line(msg)
             return {"status": "error", "purchased_races": 0, "total_amount": 0, "results": []}
 
-        # 曜日付き競馬場名を計算（IPATのSP版は「中山(土)」形式で表示）
-        _WEEKDAY_JP = ["月", "火", "水", "木", "金", "土", "日"]
-        weekday_suffix = f"({_WEEKDAY_JP[target_date.weekday()]})"
-
-        # 4. 各レースの購入処理
-        for race in target_races:
+        # 5. 各レースの購入処理
+        for race in races_to_purchase:
             race_id = race["race_id"]
             venue_name = race.get("venue_name", "")
             race_number = race.get("race_number", 0)
+            start_time = race.get("start_time")
             # IPATのSP版に表示される競馬場名（「中山(土)」形式）
             venue_name_with_day = f"{venue_name}{weekday_suffix}"
-
-            # 最新オッズで investment_decisions を上書き
-            refreshed = _refresh_investment_decisions_for_race(project_id, race_id, target_date)
-            if refreshed:
-                logger.info(f"race_id={race_id}: 最新オッズで investment_decisions を更新済み")
-            else:
-                logger.info(f"race_id={race_id}: フォールバック（既存 investment_decisions を使用）")
-
-            # 推奨馬券取得
-            bets = fetch_recommended_bets(project_id, race_id, target_date)
-            if not bets:
-                logger.info(f"race_id={race_id}: 推奨馬券なし → スキップ")
-                continue
+            bets = race["_bets"]
 
             bets_purchased = 0
             bets_failed = 0
             bets_skipped_budget = 0
+            bets_need_confirmation = 0
             race_amount = 0
             budget_exceeded = False
+            race_status = "processed"
 
             # 予算内の馬券のみ選別
             spent = fetch_daily_spent_amount(project_id, target_date)
@@ -1677,10 +1726,11 @@ async def _purchase_pipeline_async(
             # 予算内の馬券を1レース分まとめて購入
             if valid_bets:
                 result = await purchaser.purchase_bets_for_race(
-                    valid_bets, venue_name_with_day, race_number
+                    valid_bets, venue_name_with_day, race_number, start_time=start_time
                 )
                 status = result["status"]
                 error_message = result.get("error_message")
+                debug = result.get("debug")
 
                 if status == "success":
                     bets_purchased = len(valid_bets)
@@ -1690,6 +1740,26 @@ async def _purchase_pipeline_async(
                             project_id, target_date, race_id,
                             bet["bet_type"], bet["horse_numbers"], bet["amount"], "success",
                         )
+                elif status == "need_confirmation":
+                    # 投票送信後にエラーが発生 = 実際に購入済みの可能性がある（二重購入防止のためリトライ済みでない）
+                    bets_need_confirmation = len(valid_bets)
+                    race_status = "need_confirmation"
+                    bet_summary = ", ".join(
+                        f"{b['bet_type']} {'-'.join(str(h) for h in b['horse_numbers'])} {b['amount']}円"
+                        for b in valid_bets
+                    )
+                    msg = (
+                        f"【要確認】馬券購入結果不明: {venue_name}{race_number}R [{bet_summary}] "
+                        f"- {error_message}{_debug_suffix(debug)}"
+                    )
+                    logger.error(msg)
+                    _send_line(msg)
+                    for bet in valid_bets:
+                        save_purchase_record(
+                            project_id, target_date, race_id,
+                            bet["bet_type"], bet["horse_numbers"], bet["amount"],
+                            "need_confirmation", error_message,
+                        )
                 else:
                     bets_failed = len(valid_bets)
                     bet_summary = ", ".join(
@@ -1697,7 +1767,8 @@ async def _purchase_pipeline_async(
                         for b in valid_bets
                     )
                     msg = (
-                        f"馬券購入失敗: {venue_name}{race_number}R [{bet_summary}] - {error_message}"
+                        f"馬券購入失敗: {venue_name}{race_number}R [{bet_summary}] "
+                        f"- {error_message}{_debug_suffix(debug)}"
                     )
                     logger.warning(msg)
                     _send_line(msg)
@@ -1712,8 +1783,9 @@ async def _purchase_pipeline_async(
                 "bets_purchased": bets_purchased,
                 "bets_failed": bets_failed,
                 "bets_skipped_budget": bets_skipped_budget,
+                "bets_need_confirmation": bets_need_confirmation,
                 "amount": race_amount,
-                "status": "skipped_budget" if budget_exceeded else "processed",
+                "status": "skipped_budget" if budget_exceeded else race_status,
             })
 
             if budget_exceeded:

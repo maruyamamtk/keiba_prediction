@@ -175,21 +175,28 @@ launchctl list | grep com.keiba.monthly-retrain      # 登録確認
 
 **夏競馬対応（2026-07-25追加）**: 夏場（7〜9月）は暑さを避けるためナイター開催が組まれ、最終レースの発走が19:00頃まで続く。通常スケジュール（〜17:55）のままでは19:00頃発走のレースを取りこぼすため、7〜9月のみ稼働する `race-day-purchase-summer`（〜19:55）を別ジョブとして追加した。処理ロジック・エンドポイントは `race-day-purchase` と完全に同一で、cron式の月フィールド（`1-6,10-12` と `7-9`）のみが異なる。
 
-**概要**: 5分おきに起動し、現在時刻の5〜10分後に発走するレースが存在する場合に以下を実行します。netkeibaで最新オッズをスクレイピングして `daily_odds` を上書きし、投資戦略を再計算して `investment_decisions` を更新した上で、JRA IPAT SP版（`https://www.ipat.jra.go.jp/sp/`）で馬券を自動購入します。
+**概要**: 5分おきに起動し、現在時刻の-5〜5分後に発走するレースが存在する場合に以下を実行します。netkeibaで最新オッズをスクレイピングして `daily_odds` を上書きし、投資戦略を再計算して `investment_decisions` を更新した上で、JRA IPAT SP版（`https://www.ipat.jra.go.jp/sp/`）で馬券を自動購入します。
 
 **対応馬券種**: 単勝・複勝・馬連・ワイド・馬単・三連複
 
 **処理フロー**（両モード共通 → dry_run 分岐）:
 1. `raw.race_info` から当日の発走時刻付きレース一覧を取得
-2. 現在時刻の **5〜10分後**に発走するレースを抽出（`window_minutes_before=10, window_minutes_after=5`）
+2. 現在時刻の **-5〜5分後**に発走するレースを抽出（`window_minutes_before=5, window_minutes_after=-5`）
+   - マイナス側（発走を過ぎたレース）は、直前tickでの購入失敗を次tickで再挑戦するためのウィンドウ（Issue #433）。
+     既に購入成功済みのレースは `has_successful_purchase()` で除外し二重購入を防ぐ。
    - 対象レースが0件の場合はそのまま終了（skipped）
-3. 対象レースの最新オッズを netkeiba からリアルタイムスクレイピング → `predictions.daily_odds` に上書き保存
+3. [dry_run=false] 対象レースごとに、既に購入成功済みでなく推奨馬券が1件以上ある場合のみ「購入対象」とする
+   （購入対象が0件ならIPATへのログイン自体を行わない）
+4. 対象レースの最新オッズを netkeiba からリアルタイムスクレイピング → `predictions.daily_odds` に上書き保存
    - 失敗時はフォールバック（既存の `daily_odds` を使用）
-4. `_refresh_investment_decisions_for_race()` で最新オッズを使い投資戦略を再計算 → `predictions.investment_decisions` を上書き保存
+5. `_refresh_investment_decisions_for_race()` で最新オッズを使い投資戦略を再計算 → `predictions.investment_decisions` を上書き保存
    - 失敗時はフォールバック（既存の `investment_decisions` を使用）
-5. 推奨馬券を取得し、**dry_run に応じて分岐**:
+6. 推奨馬券を取得し、**dry_run に応じて分岐**:
    - `dry_run=true`: LINE通知のみ（IPATログイン・購入は行わない）
    - `dry_run=false`: IPAT SP版にログイン → ウィザード形式で馬券購入（`IpatPurchaser`） → `predictions.purchase_history` に保存 → LINE通知
+     - 投票送信**前**（通常投票クリック〜金額セット）の失敗は、発走まで余裕がある限り再ログインして最大3回まで自動リトライ
+     - 投票送信**後**のエラーは二重購入防止のため絶対にリトライせず、`status=need_confirmation` として手動確認を促すLINE通知を送信
+     - 失敗時は画面URL・表示文言・スクリーンショット（`gs://{project}-keiba-predictions/ipat_debug/`）を記録
 
 **IPAT SP版購入ウィザード（`src/automation/data/ipat_purchaser.py`）**:
 - ログイン: `https://www.ipat.jra.go.jp/sp/index.cgi`（SP版）
