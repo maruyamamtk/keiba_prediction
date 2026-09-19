@@ -981,10 +981,12 @@ class TestProductionPurchaseFlow:
         mock_ipat_cls.assert_not_called()
 
     def test_skips_login_when_no_recommended_bets(self):
-        """推奨馬券が0件なら IPAT へログインしないこと"""
+        """refresh後も推奨馬券が0件なら IPAT へログインしないこと"""
         mock_ipat_cls = MagicMock()
+        mock_refresh = MagicMock(return_value=True)
         result = self._run({
             "src.automation.data.ipat_purchaser.has_purchase_attempt_recorded": MagicMock(return_value=False),
+            "src.automation.api.app._refresh_investment_decisions_for_race": mock_refresh,
             "src.automation.data.ipat_purchaser.fetch_recommended_bets": MagicMock(return_value=[]),
             "src.automation.data.ipat_purchaser.IpatPurchaser": mock_ipat_cls,
         })
@@ -992,6 +994,51 @@ class TestProductionPurchaseFlow:
         assert result["status"] == "success"
         assert result["purchased_races"] == 0
         mock_ipat_cls.assert_not_called()
+        # refresh自体は必ず試みられていること（下のデッドロック回帰テスト参照）
+        mock_refresh.assert_called()
+
+    def test_pre_check_refreshes_before_checking_for_bets(self):
+        """
+        investment_decisions は _refresh_investment_decisions_for_race() でしか
+        書き込まれない（race-day-strategyの8:30ジョブはdry_run=trueがデフォルトで
+        BQ保存しない）。事前チェックでrefreshを行わず既存データだけを見ると、
+        まだ一度もrefreshされていないレースが永久に購入対象と判定されない
+        デッドロックになっていた（/code-review指摘・重大な回帰）。
+        refreshが実際に呼ばれた後で初めて推奨馬券が見つかり、購入まで
+        到達することを検証する。
+        """
+        state = {"refreshed": False}
+
+        def fake_refresh(project_id, race_id, target_date):
+            state["refreshed"] = True
+            return True
+
+        def fake_fetch_bets(project_id, race_id, target_date):
+            # refresh前は investment_decisions が空のまま（本番の実際の挙動を再現）
+            if not state["refreshed"]:
+                return []
+            return [{"bet_type": "place", "horse_numbers": [3], "bet_amount": 300}]
+
+        purchaser_instance = AsyncMock()
+        purchaser_instance.login = AsyncMock(return_value=True)
+        purchaser_instance.purchase_bets_for_race = AsyncMock(
+            return_value={"status": "success", "total_amount": 300, "error_message": None}
+        )
+        mock_ipat_cls = MagicMock()
+        mock_ipat_cls.return_value.__aenter__ = AsyncMock(return_value=purchaser_instance)
+        mock_ipat_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        result = self._run({
+            "src.automation.data.ipat_purchaser.has_purchase_attempt_recorded": MagicMock(return_value=False),
+            "src.automation.api.app._refresh_investment_decisions_for_race": MagicMock(side_effect=fake_refresh),
+            "src.automation.data.ipat_purchaser.fetch_recommended_bets": MagicMock(side_effect=fake_fetch_bets),
+            "src.automation.data.ipat_purchaser.IpatPurchaser": mock_ipat_cls,
+        })
+
+        assert state["refreshed"] is True
+        assert result["status"] == "success"
+        assert result["purchased_races"] == 1
+        mock_ipat_cls.assert_called_once()
 
     def test_logs_in_and_purchases_when_bets_exist(self):
         """購入対象レースが1件でもあれば IPAT へログインし購入を実行すること"""
@@ -1241,3 +1288,42 @@ class TestProductionPurchaseFlow:
             c.args[6] for c in mock_save_record.call_args_list if c.args[2] == "06264507"
         ]
         assert race_a_statuses == ["in_progress", "failed"]
+
+    def test_partial_save_failure_does_not_mask_success_as_error(self):
+        """
+        購入成功後、複数馬券のうち1件の save_purchase_record 呼び出しが
+        BQ一時障害で失敗しても、外側のtry/exceptに伝播して
+        status='error'（failed相当・自動再購入OK）で上書きされないこと
+        （/code-review指摘）。実際には投票が成功しているため、これを
+        failed扱いにすると次tickで二重購入してしまう。
+        """
+        purchaser_instance = AsyncMock()
+        purchaser_instance.login = AsyncMock(return_value=True)
+        purchaser_instance.purchase_bets_for_race = AsyncMock(
+            return_value={"status": "success", "total_amount": 600, "error_message": None}
+        )
+        mock_ipat_cls = MagicMock()
+        mock_ipat_cls.return_value.__aenter__ = AsyncMock(return_value=purchaser_instance)
+        mock_ipat_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        # 1件目の保存は成功、2件目の保存はBQ一時障害で失敗
+        mock_save_record = MagicMock(side_effect=[None, RuntimeError("BQ insert失敗")])
+
+        result = self._run({
+            "src.automation.data.ipat_purchaser.has_purchase_attempt_recorded": MagicMock(return_value=False),
+            "src.automation.data.ipat_purchaser.fetch_recommended_bets": MagicMock(
+                return_value=[
+                    {"bet_type": "place", "horse_numbers": [3], "bet_amount": 300},
+                    {"bet_type": "win", "horse_numbers": [3], "bet_amount": 300},
+                ]
+            ),
+            "src.automation.data.ipat_purchaser.IpatPurchaser": mock_ipat_cls,
+            "src.automation.data.ipat_purchaser.save_purchase_record": mock_save_record,
+        })
+
+        assert len(result["results"]) == 1
+        race_result = result["results"][0]
+        # 保存の一部が失敗しても、想定外エラー扱い（error）にはならない
+        assert race_result["status"] != "error"
+        assert race_result["status"] == "processed"
+        assert race_result["bets_purchased"] == 2

@@ -1484,7 +1484,12 @@ async def _purchase_pipeline_async(
       5. [dry_run=False] 各レースについて、ログイン前に「購入する価値があるか」を軽くチェックする
          5a. 既に購入成功済み／要確認（need_confirmation）／処理中（in_progress・並行tick対策）
              なら二重購入防止のためスキップ
-         5b. 現時点の investment_decisions から推奨馬券を取得（refreshはまだ行わない）。0件ならスキップ
+         5b. 最新オッズで investment_decisions を上書き（_refresh_investment_decisions_for_race）
+             → investment_decisions はこの関数でしか書き込まれないため、ここで
+               refreshしないと「まだ一度もrefreshされていないレース」が永久に
+               購入対象と判定されないデッドロックになる（過去の実装ミス）
+             失敗時はフォールバック（既存の investment_decisions を使用）
+         5c. 推奨馬券を取得。0件ならスキップ
          購入対象レースが1件もなければ IPAT へのログイン自体を行わない
       6. [dry_run=False] 購入対象レースが1件以上ある場合のみ IPAT ログイン
       7. 各レースについて:
@@ -1492,8 +1497,9 @@ async def _purchase_pipeline_async(
          [dry_run=False]
            7a. 5a を再確認（ログイン待ち等で時間が空いた分の再チェック）
            7b. in_progress マーカーを記録（購入直前。次tickとの二重購入防止）
-           7c. 最新オッズで investment_decisions を上書き（_refresh_investment_decisions_for_race）
-               → 推奨馬券を購入直前に取得し直すことでオッズの鮮度を保つ
+           7c. 最新オッズで investment_decisions を再度上書き
+               → 5bからの経過時間がある分、購入直前にもう一度refreshすることで
+                 オッズの鮮度を保つ（意図的な二重refresh。5b/6/7参照）
                失敗時はフォールバック（既存の investment_decisions を使用）
            7d. 予算チェック → 購入（送信前フェーズは自動リトライ） → 履歴保存
       8. [dry_run=False] ログアウト
@@ -1635,6 +1641,24 @@ async def _purchase_pipeline_async(
             for b in bets
         )
 
+    def _safe_save_purchase_record(*args, **kwargs) -> None:
+        """
+        save_purchase_record() を例外安全に呼ぶラッパー。
+
+        1レースにつき複数回 save_purchase_record を呼ぶ箇所（1馬券ごとに1回）で、
+        そのうちの1回がBQ一時障害等で失敗すると、例外が1レース分の処理を囲む
+        try/exceptまで伝播し、「想定外のエラー」用のfailedマーカーで
+        上書きされてしまう。しかし実際にはIPATへの投票が既にsuccess/
+        need_confirmationとして確定している場合、それをfailed（＝次tickで
+        自動再購入してよい）に見せかけてしまうのは二重購入に直結する
+        （/code-review指摘）。個々の保存呼び出しの失敗はログのみに留め、
+        レース全体の処理を止めない。
+        """
+        try:
+            save_purchase_record(*args, **kwargs)
+        except Exception as e:
+            logger.error(f"purchase_history への保存に失敗しました（続行します）: {e}", exc_info=True)
+
     # --- 本番購入モード ---
     # 3. ログイン前に「実際に購入すべきレース」を確定する。
     #    投資判断の更新・推奨馬券取得はIPATセッション不要のため、これをログインより先に
@@ -1644,11 +1668,19 @@ async def _purchase_pipeline_async(
     _WEEKDAY_JP = ["月", "火", "水", "木", "金", "土", "日"]
     weekday_suffix = f"({_WEEKDAY_JP[target_date.weekday()]})"
 
-    # ここでは investment_decisions の再計算（refresh）は行わない、あくまで「ログインする
-    # 価値があるか」の軽い事前チェック（現時点のinvestment_decisionsを見るだけ）に留める。
-    # refreshは実際の購入直前（ログイン後のループ内）で改めて行う——事前チェックの時点で
-    # refreshしてしまうと、複数レースがtickに含まれる場合、後続レースの購入時には
-    # オッズが古くなってしまう（/code-review指摘）。
+    # 重要: investment_decisions は _refresh_investment_decisions_for_race() でしか
+    # 書き込まれない（race-day-strategy の8:30ジョブは dry_run=true がデフォルトで
+    # BQ保存を行わない）。そのため、ここでrefreshを一切行わずに「既存の
+    # investment_decisions」だけを見て購入要否を判定すると、そのレースについて
+    # まだ一度もrefreshが実行されていない（＝1日のうち最初にこのレースがウィンドウに
+    # 入ったtick）場合、常に0件と判定されてしまい、refresh自体が永久に呼ばれず
+    # 当該レースが決して購入されないという致命的なデッドロックになる
+    # （/code-review指摘。当初はこれを避けるためrefreshを省略していたが、それ自体が
+    # 誤りだった）。
+    # したがって事前チェックでもrefreshは必ず行う。実購入直前（ログイン後のループ内）
+    # でも同じレースに対してもう一度refresh+再取得するため、二重に計算コストが
+    # かかるが、これは「無駄なログインを避ける」ことと「購入直前までオッズを鮮度良く
+    # 保つ」ことを両立するための意図的なトレードオフである。
     races_to_purchase: list[dict] = []
     for race in target_races:
         race_id = race["race_id"]
@@ -1657,9 +1689,15 @@ async def _purchase_pipeline_async(
             logger.info(f"race_id={race_id}: 既に購入成功済み/要確認済み/処理中 → スキップ")
             continue
 
+        refreshed = _refresh_investment_decisions_for_race(project_id, race_id, target_date)
+        if refreshed:
+            logger.info(f"race_id={race_id}: 事前チェック用に investment_decisions を更新済み")
+        else:
+            logger.info(f"race_id={race_id}: フォールバック（既存 investment_decisions を使用）")
+
         bets = fetch_recommended_bets(project_id, race_id, target_date)
         if not bets:
-            logger.info(f"race_id={race_id}: 推奨馬券なし（現時点のinvestment_decisions） → スキップ")
+            logger.info(f"race_id={race_id}: 推奨馬券なし（refresh後） → スキップ")
             continue
 
         races_to_purchase.append(race)
@@ -1700,24 +1738,26 @@ async def _purchase_pipeline_async(
             # IPATのSP版に表示される競馬場名（「中山(土)」形式）
             venue_name_with_day = f"{venue_name}{weekday_suffix}"
 
-            # ログイン待ち・前レースの処理時間の間に、並行tickが同じレースを先に
-            # 処理済みでないか再確認する（事前チェックからここまでに時間が空くため）。
-            if has_purchase_attempt_recorded(project_id, target_date, race_id):
-                logger.info(f"race_id={race_id}: 直前の再確認で既に処理済みと判明 → スキップ")
-                continue
-
-            # ログイン・前レースの購入（リトライ含め最大数十秒〜数分）で処理時間が
-            # 伸びたことにより、次tick（5分後）が同じレースを重複購入しにいくリスクが
-            # あるため、実際の購入処理に入る直前にマーカーを記録する（/code-review指摘）。
-            mark_purchase_attempt_in_progress(project_id, target_date, race_id)
-
-            # ここから先で想定外の例外（不正な投資判断データ等でのValueError/
-            # IpatPurchaseError等）が発生すると、in_progressマーカーが未解消のまま
-            # tick全体が中断し、この後に続く他レースの購入機会も失ってしまう
-            # （/code-review指摘）。1レース分の処理を try で囲み、失敗時はマーカーを
-            # 解消した上でこのレースだけスキップして次レースの処理を継続する。
+            # ここから先で想定外の例外（BQ一時障害によるhas_purchase_attempt_recorded/
+            # mark_purchase_attempt_in_progressの失敗、不正な投資判断データによる
+            # ValueError/IpatPurchaseError等）が発生すると、in_progressマーカーが
+            # 未解消のままtick全体が中断し、この後に続く他レースの購入機会も
+            # 失ってしまう（/code-review指摘）。1レース分の処理全体を try で囲み、
+            # 失敗時はマーカーを解消した上でこのレースだけスキップして次レースの
+            # 処理を継続する。
             budget_exceeded = False
             try:
+                # ログイン待ち・前レースの処理時間の間に、並行tickが同じレースを先に
+                # 処理済みでないか再確認する（事前チェックからここまでに時間が空くため）。
+                if has_purchase_attempt_recorded(project_id, target_date, race_id):
+                    logger.info(f"race_id={race_id}: 直前の再確認で既に処理済みと判明 → スキップ")
+                    continue
+
+                # ログイン・前レースの購入（リトライ含め最大数十秒〜数分）で処理時間が
+                # 伸びたことにより、次tick（5分後）が同じレースを重複購入しにいくリスクが
+                # あるため、実際の購入処理に入る直前にマーカーを記録する（/code-review指摘）。
+                mark_purchase_attempt_in_progress(project_id, target_date, race_id)
+
                 # 最新オッズで investment_decisions を上書き（購入直前に行うことで鮮度を保つ）
                 refreshed = _refresh_investment_decisions_for_race(project_id, race_id, target_date)
                 if refreshed:
@@ -1732,7 +1772,7 @@ async def _purchase_pipeline_async(
                     # 購入していないにもかかわらず has_purchase_attempt_recorded() が
                     # IN_PROGRESS_STALE_MINUTES 分間ブロックし続け、当該レースの残り
                     # 購入ウィンドウ（-5〜5分＝10分間）をほぼ使い切ってしまう（/code-review指摘）。
-                    save_purchase_record(
+                    _safe_save_purchase_record(
                         project_id, target_date, race_id, "_lock", [], 0, "failed",
                         "refresh後に推奨馬券が0件になったため購入スキップ（in_progressマーカー解消）",
                     )
@@ -1755,7 +1795,7 @@ async def _purchase_pipeline_async(
                         msg = f"本日の購入上限（{DAILY_BUDGET_LIMIT:,}円）に達しました（累計: {spent:,}円）"
                         logger.warning(msg)
                         _send_line(msg)
-                        save_purchase_record(
+                        _safe_save_purchase_record(
                             project_id, target_date, race_id,
                             bet["bet_type"], bet["horse_numbers"], amount, "skipped_budget",
                         )
@@ -1782,7 +1822,7 @@ async def _purchase_pipeline_async(
                         bets_purchased = len(valid_bets)
                         race_amount = result.get("total_amount", cumulative)
                         for bet in valid_bets:
-                            save_purchase_record(
+                            _safe_save_purchase_record(
                                 project_id, target_date, race_id,
                                 bet["bet_type"], bet["horse_numbers"], bet["amount"], "success",
                             )
@@ -1800,7 +1840,7 @@ async def _purchase_pipeline_async(
                         logger.error(msg)
                         _send_line(msg)
                         for bet in valid_bets:
-                            save_purchase_record(
+                            _safe_save_purchase_record(
                                 project_id, target_date, race_id,
                                 bet["bet_type"], bet["horse_numbers"], bet["amount"],
                                 "need_confirmation", error_message,
@@ -1815,7 +1855,7 @@ async def _purchase_pipeline_async(
                         logger.warning(msg)
                         _send_line(msg)
                         for bet in valid_bets:
-                            save_purchase_record(
+                            _safe_save_purchase_record(
                                 project_id, target_date, race_id,
                                 bet["bet_type"], bet["horse_numbers"], bet["amount"], "failed", error_message,
                             )
@@ -1842,15 +1882,10 @@ async def _purchase_pipeline_async(
                 })
             except Exception as e:
                 logger.error(f"race_id={race_id}: 購入処理中に想定外のエラー: {e}", exc_info=True)
-                try:
-                    save_purchase_record(
-                        project_id, target_date, race_id, "_lock", [], 0, "failed",
-                        f"購入処理中に想定外のエラーが発生したためスキップ: {e}",
-                    )
-                except Exception as save_err:
-                    logger.error(
-                        f"race_id={race_id}: in_progressマーカー解消用のレコード保存にも失敗: {save_err}"
-                    )
+                _safe_save_purchase_record(
+                    project_id, target_date, race_id, "_lock", [], 0, "failed",
+                    f"購入処理中に想定外のエラーが発生したためスキップ: {e}",
+                )
                 _send_line(
                     f"【エラー】{venue_name}{race_number}R の購入処理中に想定外のエラーが発生しました: {e}"
                 )
