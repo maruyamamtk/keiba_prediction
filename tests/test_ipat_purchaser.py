@@ -959,6 +959,41 @@ class TestProductionPurchaseFlow:
         assert in_progress_calls[0].args[2] == self.RACE_ID  # race_id
         assert in_progress_calls[0].args[3] == "_lock"  # bet_type（センチネル）
 
+    def test_resolves_in_progress_marker_when_bets_vanish_after_refresh(self):
+        """
+        事前チェック時点では推奨馬券があったが、購入直前のrefreshで0件になった場合、
+        in_progressマーカーを解消（status='failed'で記録）すること（/code-review指摘）。
+        解消しないと、実際には何も購入していないのに次tickでも
+        has_purchase_attempt_recorded() がブロックし続け、購入ウィンドウを失う。
+        """
+        mock_ipat_cls = MagicMock()
+        purchaser_instance = AsyncMock()
+        purchaser_instance.login = AsyncMock(return_value=True)
+        mock_ipat_cls.return_value.__aenter__ = AsyncMock(return_value=purchaser_instance)
+        mock_ipat_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+        mock_save_record = MagicMock()
+
+        result = self._run({
+            "src.automation.data.ipat_purchaser.has_purchase_attempt_recorded": MagicMock(return_value=False),
+            # 1回目（事前チェック）は非空、2回目（refresh後の実購入直前）は空
+            "src.automation.data.ipat_purchaser.fetch_recommended_bets": MagicMock(
+                side_effect=[
+                    [{"bet_type": "place", "horse_numbers": [3], "bet_amount": 300}],
+                    [],
+                ]
+            ),
+            "src.automation.data.ipat_purchaser.IpatPurchaser": mock_ipat_cls,
+            "src.automation.data.ipat_purchaser.save_purchase_record": mock_save_record,
+        })
+
+        assert result["status"] == "success"
+        assert result["purchased_races"] == 0
+        purchaser_instance.purchase_bets_for_race.assert_not_called()
+
+        # in_progress で記録された後、failed で解消されていること
+        statuses = [c.args[6] for c in mock_save_record.call_args_list if c.args[2] == self.RACE_ID]
+        assert statuses == ["in_progress", "failed"]
+
     def test_skips_purchase_when_concurrent_tick_wins_race(self):
         """
         事前チェック（ログイン前）通過後、実購入直前の再確認で他tickが既に処理済みと
@@ -989,3 +1024,42 @@ class TestProductionPurchaseFlow:
         assert result["status"] == "success"
         assert result["purchased_races"] == 0
         purchaser_instance.purchase_bets_for_race.assert_not_called()
+
+    def test_need_confirmation_status_not_masked_by_budget_skip(self):
+        """
+        一部の馬券が予算超過でスキップされつつ、残りの馬券がneed_confirmationに
+        なった場合、race_results の status が skipped_budget に上書きされず
+        need_confirmation のまま表面化すること（/code-review指摘）。
+        """
+        purchaser_instance = AsyncMock()
+        purchaser_instance.login = AsyncMock(return_value=True)
+        purchaser_instance.purchase_bets_for_race = AsyncMock(
+            return_value={
+                "status": "need_confirmation",
+                "total_amount": 49900,
+                "error_message": "投票送信中にエラー",
+            }
+        )
+
+        mock_ipat_cls = MagicMock()
+        mock_ipat_cls.return_value.__aenter__ = AsyncMock(return_value=purchaser_instance)
+        mock_ipat_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        result = self._run({
+            "src.automation.data.ipat_purchaser.has_purchase_attempt_recorded": MagicMock(return_value=False),
+            "src.automation.data.ipat_purchaser.fetch_recommended_bets": MagicMock(
+                return_value=[
+                    {"bet_type": "place", "horse_numbers": [3], "bet_amount": 49900},
+                    {"bet_type": "win", "horse_numbers": [3], "bet_amount": 200},
+                ]
+            ),
+            "src.automation.data.ipat_purchaser.fetch_daily_spent_amount": MagicMock(return_value=0),
+            "src.automation.data.ipat_purchaser.IpatPurchaser": mock_ipat_cls,
+        })
+
+        assert len(result["results"]) == 1
+        race_result = result["results"][0]
+        assert race_result["bets_skipped_budget"] == 1  # 2件目は予算超過でスキップ
+        assert race_result["bets_need_confirmation"] == 1  # 1件目はneed_confirmation
+        assert race_result["status"] == "need_confirmation"  # skipped_budgetに上書きされない
+        assert race_result["amount"] == 49900

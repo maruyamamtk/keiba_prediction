@@ -1628,6 +1628,13 @@ async def _purchase_pipeline_async(
             parts.append(f"SS: {debug['screenshot_gcs_path']}")
         return ("\n" + "\n".join(parts)) if parts else ""
 
+    def _format_bet_summary(bets: list[dict]) -> str:
+        """LINE通知・ログに使う馬券サマリ文字列を組み立てる。"""
+        return ", ".join(
+            f"{b['bet_type']} {'-'.join(str(h) for h in b['horse_numbers'])} {b['amount']}円"
+            for b in bets
+        )
+
     # --- 本番購入モード ---
     # 3. ログイン前に「実際に購入すべきレース」を確定する。
     #    投資判断の更新・推奨馬券取得はIPATセッション不要のため、これをログインより先に
@@ -1714,6 +1721,14 @@ async def _purchase_pipeline_async(
             bets = fetch_recommended_bets(project_id, race_id, target_date)
             if not bets:
                 logger.info(f"race_id={race_id}: 推奨馬券なし（refresh後） → スキップ")
+                # in_progress マーカーを解消しておく。解消しないと、実際には何も
+                # 購入していないにもかかわらず has_purchase_attempt_recorded() が
+                # IN_PROGRESS_STALE_MINUTES 分間ブロックし続け、当該レースの残り
+                # 購入ウィンドウ（-5〜5分＝10分間）をほぼ使い切ってしまう（/code-review指摘）。
+                save_purchase_record(
+                    project_id, target_date, race_id, "_lock", [], 0, "failed",
+                    "refresh後に推奨馬券が0件になったため購入スキップ（in_progressマーカー解消）",
+                )
                 continue
 
             bets_purchased = 0
@@ -1771,10 +1786,7 @@ async def _purchase_pipeline_async(
                     bets_need_confirmation = len(valid_bets)
                     race_amount = result.get("total_amount", cumulative)
                     race_status = "need_confirmation"
-                    bet_summary = ", ".join(
-                        f"{b['bet_type']} {'-'.join(str(h) for h in b['horse_numbers'])} {b['amount']}円"
-                        for b in valid_bets
-                    )
+                    bet_summary = _format_bet_summary(valid_bets)
                     msg = (
                         f"【要確認】馬券購入結果不明: {venue_name}{race_number}R [{bet_summary}] "
                         f"- {error_message}{_debug_suffix(debug)}"
@@ -1789,10 +1801,7 @@ async def _purchase_pipeline_async(
                         )
                 else:
                     bets_failed = len(valid_bets)
-                    bet_summary = ", ".join(
-                        f"{b['bet_type']} {'-'.join(str(h) for h in b['horse_numbers'])} {b['amount']}円"
-                        for b in valid_bets
-                    )
+                    bet_summary = _format_bet_summary(valid_bets)
                     msg = (
                         f"馬券購入失敗: {venue_name}{race_number}R [{bet_summary}] "
                         f"- {error_message}{_debug_suffix(debug)}"
@@ -1805,6 +1814,17 @@ async def _purchase_pipeline_async(
                             bet["bet_type"], bet["horse_numbers"], bet["amount"], "failed", error_message,
                         )
 
+            # need_confirmation（投票結果不明・要手動確認）は、一部の馬券が予算超過で
+            # skipped_budgetになっていても最優先で表面化させる。skipped_budgetで
+            # 上書きすると「実際には投票され金額が動いたかもしれない」状態が
+            # race_results/APIレスポンス上で見えなくなってしまう（/code-review指摘）。
+            if race_status == "need_confirmation":
+                final_status = "need_confirmation"
+            elif budget_exceeded:
+                final_status = "skipped_budget"
+            else:
+                final_status = race_status
+
             race_results.append({
                 "race_id": race_id,
                 "bets_purchased": bets_purchased,
@@ -1812,7 +1832,7 @@ async def _purchase_pipeline_async(
                 "bets_skipped_budget": bets_skipped_budget,
                 "bets_need_confirmation": bets_need_confirmation,
                 "amount": race_amount,
-                "status": "skipped_budget" if budget_exceeded else race_status,
+                "status": final_status,
             })
 
             if budget_exceeded:

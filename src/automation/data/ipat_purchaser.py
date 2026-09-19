@@ -375,6 +375,15 @@ class IpatPurchaser:
             except ValueError:
                 retry_deadline = None
 
+        def _pre_submit_failed(message: str, debug: dict | None) -> dict:
+            """フェーズ1（投票送信前）を諦める際の統一されたfailed応答を作る。"""
+            return {
+                "status": "failed",
+                "total_amount": total_amount,
+                "error_message": message,
+                "debug": debug,
+            }
+
         # --- フェーズ1: 投票一覧への追加（投票送信前。失敗時はリトライ可） ---
         last_error_msg: str | None = None
         last_debug: dict | None = None
@@ -404,23 +413,17 @@ class IpatPurchaser:
                 )
 
                 if attempt >= PRE_SUBMIT_MAX_ATTEMPTS:
-                    return {
-                        "status": "failed",
-                        "total_amount": total_amount,
-                        "error_message": f"購入画面エラー（{attempt}回試行）: {last_error_msg}",
-                        "debug": last_debug,
-                    }
+                    return _pre_submit_failed(
+                        f"購入画面エラー（{attempt}回試行）: {last_error_msg}", last_debug
+                    )
 
                 if retry_deadline and datetime.datetime.now(ZoneInfo("Asia/Tokyo")) >= retry_deadline:
                     logger.warning(
                         f"発走まで{MIN_MINUTES_BEFORE_START_FOR_RETRY}分未満のためリトライを中止します"
                     )
-                    return {
-                        "status": "failed",
-                        "total_amount": total_amount,
-                        "error_message": f"購入画面エラー（発走間近のためリトライ中止）: {last_error_msg}",
-                        "debug": last_debug,
-                    }
+                    return _pre_submit_failed(
+                        f"購入画面エラー（発走間近のためリトライ中止）: {last_error_msg}", last_debug
+                    )
 
                 reset_ok = await self._reset_session_for_retry()
                 if not reset_ok:
@@ -428,12 +431,10 @@ class IpatPurchaser:
                     # last_debug は「元の（購入画面での）失敗」のスナップショットであり、
                     # ここで実際にブロッキング要因になっているのは再ログイン失敗の方なので、
                     # login() が記録した self.last_login_debug を優先する（/code-review指摘）。
-                    return {
-                        "status": "failed",
-                        "total_amount": total_amount,
-                        "error_message": f"リトライ用の再ログインに失敗しました（元エラー: {last_error_msg}）",
-                        "debug": self.last_login_debug or last_debug,
-                    }
+                    return _pre_submit_failed(
+                        f"リトライ用の再ログインに失敗しました（元エラー: {last_error_msg}）",
+                        self.last_login_debug or last_debug,
+                    )
                 logger.info(f"再ログイン完了。購入を再試行します（試行{attempt + 1}/{PRE_SUBMIT_MAX_ATTEMPTS}）")
 
         # --- フェーズ2: 投票送信（ここから先は絶対にリトライしない。二重購入防止） ---
@@ -824,6 +825,16 @@ def has_purchase_attempt_recorded(
     mark_purchase_attempt_in_progress() で購入処理の開始直前に記録する。
     有効期限切れの in_progress（＝処理がクラッシュ等で完了しないまま放置された）は
     ブロック対象から除外し、再挑戦を許可する。
+
+    重要な限界: これは「チェック→マーカー書き込み」を1つのアトミック操作に
+    できないBigQuery上でのベストエフォートな軽減策であり、完全な排他制御（真の
+    分散ロック）ではない。2つのtickがほぼ同時にこの関数を呼び、両方が
+    in_progressマーカーをまだ見つけられない極めて短いタイミングの重なりが
+    あれば、理論上は二重購入が起こり得る。ただし実装上、マーカー書き込みは
+    ログイン・Playwright操作など時間のかかる処理より前（本チェック直後）に
+    行っているため、実際に重なりうる窓は「連続する2回のBigQueryクエリ」分
+    （通常は数百ミリ秒未満）に絞られている。真にアトミックな排他制御が必要な
+    場合は、Firestoreトランザクション等BigQuery以外の仕組みでの再設計が必要。
 
     Returns:
         True: 既に購入成功済み・結果不明で要確認、または処理中（自動での再購入は禁止）
