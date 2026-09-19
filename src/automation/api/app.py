@@ -1526,6 +1526,22 @@ async def _purchase_pipeline_async(
             except Exception as e:
                 logger.warning(f"LINE通知失敗（無視します）: {e}")
 
+    def _refresh_and_fetch_bets(race_id: str, log_prefix: str = "") -> list[dict]:
+        """
+        最新オッズで investment_decisions を上書きしてから推奨馬券を取得する。
+
+        dry_run分岐・本番の事前チェック・本番の実購入直前の3箇所で全く同じ
+        refresh→fetchの手順が必要なため、ここに集約する（重複による将来の
+        実装ズレを防ぐ・/code-review指摘）。呼び出し元がBQ例外を捕捉すること
+        （このヘルパー自体は例外を送出しうる）。
+        """
+        refreshed = _refresh_investment_decisions_for_race(project_id, race_id, target_date)
+        if refreshed:
+            logger.info(f"{log_prefix}race_id={race_id}: 最新オッズで investment_decisions を更新済み")
+        else:
+            logger.info(f"{log_prefix}race_id={race_id}: フォールバック（既存 investment_decisions を使用）")
+        return fetch_recommended_bets(project_id, race_id, target_date)
+
     # 1. 発走時刻付きレース一覧取得
     all_races = fetch_today_races_with_start_time(project_id, target_date)
     if not all_races:
@@ -1579,40 +1595,43 @@ async def _purchase_pipeline_async(
             venue_name = race.get("venue_name", "")
             race_number = race.get("race_number", "")
 
-            # 最新オッズで investment_decisions を上書き
-            refreshed = _refresh_investment_decisions_for_race(project_id, race_id, target_date)
-            if refreshed:
-                logger.info(f"[DRY RUN] race_id={race_id}: 最新オッズで investment_decisions を更新済み")
-            else:
-                logger.info(f"[DRY RUN] race_id={race_id}: フォールバック（既存 investment_decisions を使用）")
+            # 1レースの処理中の想定外エラー（BQ一時障害等）でtick全体（＝他の全レースの
+            # LINE通知）が失われないよう、このレースだけスキップして次に進む
+            # （/code-review指摘。本番購入ループと同じ問題が同じ関数の別箇所にあった）。
+            try:
+                bets = _refresh_and_fetch_bets(race_id, log_prefix="[DRY RUN] ")
+                if not bets:
+                    logger.info(f"[DRY RUN] race_id={race_id}: 推奨馬券なし → スキップ")
+                    continue
 
-            bets = fetch_recommended_bets(project_id, race_id, target_date)
-            if not bets:
-                logger.info(f"[DRY RUN] race_id={race_id}: 推奨馬券なし → スキップ")
+                # 推奨馬券をLINE通知
+                lines = [f"【ドライラン】{venue_name}{race_number}R 購入予定馬券"]
+                total_amount = 0
+                for bet in bets:
+                    bet_type = bet["bet_type"]
+                    horse_numbers = bet["horse_numbers"]
+                    amount = int(bet["bet_amount"])
+                    horse_str = "-".join(str(h) for h in horse_numbers)
+                    lines.append(f"  {bet_type} {horse_str} {amount:,}円")
+                    total_amount += amount
+                lines.append(f"  合計: {total_amount:,}円")
+                _send_line("\n".join(lines))
+                logger.info(f"[DRY RUN] race_id={race_id}: {len(bets)}件通知")
+
+                race_results.append({
+                    "race_id": race_id,
+                    "bets_purchased": 0,
+                    "bets_failed": 0,
+                    "bets_skipped_budget": 0,
+                    "amount": 0,
+                    "status": "dry_run",
+                })
+            except Exception as e:
+                logger.error(
+                    f"[DRY RUN] race_id={race_id}: 処理中に想定外のエラー（このレースをスキップ）: {e}",
+                    exc_info=True,
+                )
                 continue
-
-            # 推奨馬券をLINE通知
-            lines = [f"【ドライラン】{venue_name}{race_number}R 購入予定馬券"]
-            total_amount = 0
-            for bet in bets:
-                bet_type = bet["bet_type"]
-                horse_numbers = bet["horse_numbers"]
-                amount = int(bet["bet_amount"])
-                horse_str = "-".join(str(h) for h in horse_numbers)
-                lines.append(f"  {bet_type} {horse_str} {amount:,}円")
-                total_amount += amount
-            lines.append(f"  合計: {total_amount:,}円")
-            _send_line("\n".join(lines))
-            logger.info(f"[DRY RUN] race_id={race_id}: {len(bets)}件通知")
-
-            race_results.append({
-                "race_id": race_id,
-                "bets_purchased": 0,
-                "bets_failed": 0,
-                "bets_skipped_budget": 0,
-                "amount": 0,
-                "status": "dry_run",
-            })
 
         notified_races = len(race_results)
         logger.info(f"ドライラン完了: {notified_races}レース分をLINE通知")
@@ -1685,22 +1704,28 @@ async def _purchase_pipeline_async(
     for race in target_races:
         race_id = race["race_id"]
 
-        if has_purchase_attempt_recorded(project_id, target_date, race_id):
-            logger.info(f"race_id={race_id}: 既に購入成功済み/要確認済み/処理中 → スキップ")
+        # has_purchase_attempt_recorded/refresh/fetch はいずれもBQ呼び出しであり
+        # 例外送出しうる。ここを保護しないと、1レースでのBQ一時障害がtick全体
+        # （事前チェック中の他の全レース）を巻き込んで中断させてしまう
+        # （/code-review指摘。本番購入ループ側は既に保護済みだったが、事前チェック
+        # ループ側が同じ問題を抱えたまま残っていた）。
+        try:
+            if has_purchase_attempt_recorded(project_id, target_date, race_id):
+                logger.info(f"race_id={race_id}: 既に購入成功済み/要確認済み/処理中 → スキップ")
+                continue
+
+            bets = _refresh_and_fetch_bets(race_id)
+            if not bets:
+                logger.info(f"race_id={race_id}: 推奨馬券なし（refresh後） → スキップ")
+                continue
+
+            races_to_purchase.append(race)
+        except Exception as e:
+            logger.error(
+                f"race_id={race_id}: 事前チェック中に想定外のエラー（このレースをスキップ）: {e}",
+                exc_info=True,
+            )
             continue
-
-        refreshed = _refresh_investment_decisions_for_race(project_id, race_id, target_date)
-        if refreshed:
-            logger.info(f"race_id={race_id}: 事前チェック用に investment_decisions を更新済み")
-        else:
-            logger.info(f"race_id={race_id}: フォールバック（既存 investment_decisions を使用）")
-
-        bets = fetch_recommended_bets(project_id, race_id, target_date)
-        if not bets:
-            logger.info(f"race_id={race_id}: 推奨馬券なし（refresh後） → スキップ")
-            continue
-
-        races_to_purchase.append(race)
 
     if not races_to_purchase:
         logger.info("購入対象レースがないため、IPATへのログインをスキップします")
@@ -1758,14 +1783,8 @@ async def _purchase_pipeline_async(
                 # あるため、実際の購入処理に入る直前にマーカーを記録する（/code-review指摘）。
                 mark_purchase_attempt_in_progress(project_id, target_date, race_id)
 
-                # 最新オッズで investment_decisions を上書き（購入直前に行うことで鮮度を保つ）
-                refreshed = _refresh_investment_decisions_for_race(project_id, race_id, target_date)
-                if refreshed:
-                    logger.info(f"race_id={race_id}: 最新オッズで investment_decisions を更新済み")
-                else:
-                    logger.info(f"race_id={race_id}: フォールバック（既存 investment_decisions を使用）")
-
-                bets = fetch_recommended_bets(project_id, race_id, target_date)
+                # 購入直前にもう一度refresh（事前チェックからの経過時間の分、鮮度を保つ）
+                bets = _refresh_and_fetch_bets(race_id)
                 if not bets:
                     logger.info(f"race_id={race_id}: 推奨馬券なし（refresh後） → スキップ")
                     # in_progress マーカーを解消しておく。解消しないと、実際には何も

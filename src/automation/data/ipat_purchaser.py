@@ -66,7 +66,15 @@ DEBUG_BUCKET_SUFFIX = "keiba-predictions"
 # in_progress マーカーが「処理中」とみなされる有効期間（分）。
 # Cloud Scheduler は5分おきに次tickを起動するため、それより十分長く取り、
 # クラッシュ等で放置された古いマーカーは次tickでの再挑戦を妨げないようにする。
-IN_PROGRESS_STALE_MINUTES = 10
+#
+# 購入対象ウィンドウ（app.py: window_minutes_before=5, window_minutes_after=-5）は
+# 常に10分幅であり、マーカーは同ウィンドウ内（発走-5分〜+5分）でしか書き込まれない
+# ため、理論上は最も早い書き込み（発走-5分）でもマーカーの失効時刻
+# （書き込み+IN_PROGRESS_STALE_MINUTES）はウィンドウの終端（発走+5分）以降になり、
+# ウィンドウが閉じる前にマーカーだけが先に失効することはない（境界一致のみで
+# 実害はない）はずだが、/code-review指摘を踏まえ、この前提がわずかでも崩れた
+# 場合（例: 発走時刻データの誤差、処理遅延）に備えて安全マージンを確保する。
+IN_PROGRESS_STALE_MINUTES = 15
 
 # 失敗時デバッグ情報キャプチャ（画面文言取得）のタイムアウト（ミリ秒）。
 # あくまでベストエフォートな診断用途のため、他の操作と同じ PURCHASE_TIMEOUT_MS
@@ -696,6 +704,15 @@ class IpatPurchaser:
                 "screenshot_gcs_path": None,
             }
 
+        # 成功判定（受付番号）を先に見る。ERROR_PATTERNS には「ご確認ください」
+        # 「エラーが発生」のような汎用的な文言が含まれており、これらが成功画面の
+        # 定型注意書き等に偶然含まれていた場合、判定順が逆だと実際には成立した
+        # 投票を failed と誤判定してしまう。failed は has_purchase_attempt_recorded()
+        # のブロック対象外（次tickで再購入OK）のため、誤判定は実際の二重購入に
+        # 直結する（/code-review指摘）。
+        if "受付番号" in active_text:
+            return {"status": "success", "error_message": None}
+
         # サーバが明示的に「受け付けなかった」と返しているケースのみ failed とする
         # （これらは投票不成立が確定しており、次tickで安全に再購入してよい）。
         ERROR_PATTERNS = [
@@ -711,9 +728,6 @@ class IpatPurchaser:
         for pat in ERROR_PATTERNS:
             if pat in active_text:
                 return {"status": "failed", "error_message": pat, "debug": _debug_from_active_text()}
-
-        if "受付番号" in active_text:
-            return {"status": "success", "error_message": None}
 
         # 「投票」ボタンは既に押下済み（サーバに送信済みの可能性がある）にもかかわらず、
         # 成功（受付番号）とも既知の失敗パターンとも判定できない未知の画面。

@@ -402,6 +402,22 @@ class TestIpatPurchaserPurchaseBet:
 
         assert result["status"] == "need_confirmation"
 
+    def test_success_text_with_error_pattern_substring_is_still_success(self):
+        """
+        完了確認テキストに「受付番号」と、ERROR_PATTERNSに含まれる汎用的な文言
+        （例:「ご確認ください」という注意書き）が両方含まれる場合でも、
+        successと判定すること（/code-review指摘）。
+        判定順が逆（ERROR_PATTERNS優先）だと、実際には成立した投票を誤って
+        failedにしてしまい、次tickでの二重購入に直結する。
+        """
+        purchaser = self._make_purchaser(
+            "受付番号: 12345 ご確認ください（投票内容は取消できません）"
+        )
+
+        result = run_async(purchaser.purchase_bet("place", [3], 300, "東京(土)", 7))
+
+        assert result["status"] == "success"
+
     def test_submit_button_not_found_returns_failed_not_need_confirmation(self):
         """
         「投票」ボタンがDOM上に存在しない場合、クリックもサーバへの送信も一切発生
@@ -790,6 +806,71 @@ class TestRealtimeScraping:
 
         # スクレイプ失敗でもパイプライン全体は成功
         assert result["status"] == "success"
+
+    def test_dry_run_error_on_one_race_does_not_abort_others(self):
+        """
+        dry_runモードで1レースの推奨馬券取得（refresh後）が想定外の例外を
+        投げても、他のレースのLINE通知は引き続き行われること（/code-review指摘）。
+        本番購入ループ側だけでなく、dry_runループ側も同じ問題を抱えていた。
+        """
+        import importlib
+
+        app_module = importlib.import_module("src.automation.api.app")
+        target_races = [
+            {"race_id": self.RACE_ID_1, "venue_name": "東京", "race_number": 11},
+            {"race_id": self.RACE_ID_2, "venue_name": "中山", "race_number": 8},
+        ]
+
+        def fake_fetch_bets(project_id, race_id, target_date):
+            if race_id == self.RACE_ID_1:
+                raise RuntimeError("不正な投資判断データ")
+            return [{"bet_type": "place", "horse_numbers": [3], "bet_amount": 300}]
+
+        with (
+            patch(
+                "src.automation.data.ipat_purchaser.fetch_today_races_with_start_time",
+                return_value=[
+                    {"race_id": r["race_id"], "start_time": "1000", "venue_name": "東京", "race_number": 1}
+                    for r in target_races
+                ],
+            ),
+            patch(
+                "src.automation.data.ipat_purchaser.fetch_target_races",
+                return_value=target_races,
+            ),
+            patch(
+                "src.automation.data.netkeiba_scraper.scrape_odds_for_race",
+                return_value=True,
+            ),
+            patch(
+                "src.automation.api.app._refresh_investment_decisions_for_race",
+                return_value=True,
+            ),
+            patch(
+                "src.automation.data.ipat_purchaser.fetch_recommended_bets",
+                side_effect=fake_fetch_bets,
+            ),
+            patch("src.utils.line_notify.push_messages") as mock_push,
+        ):
+            result = run_async(
+                app_module._purchase_pipeline_async(
+                    project_id="test-project",
+                    target_date=self.TARGET_DATE,
+                    member_id="12345678",
+                    pin="1234",
+                    pat_number="87654321",
+                    channel_access_token="dummy-token",
+                    line_user_id="dummy-user",
+                    dry_run=True,
+                )
+            )
+
+        assert result["status"] == "success"
+        # RACE_ID_1で例外が起きても、RACE_ID_2の通知は行われる
+        assert mock_push.call_count == 1
+        notified_race_ids = [r["race_id"] for r in result["results"]]
+        assert self.RACE_ID_2 in notified_race_ids
+        assert self.RACE_ID_1 not in notified_race_ids
 
 
 # ---------------------------------------------------------------------------
@@ -1327,3 +1408,85 @@ class TestProductionPurchaseFlow:
         assert race_result["status"] != "error"
         assert race_result["status"] == "processed"
         assert race_result["bets_purchased"] == 2
+
+    def test_precheck_error_on_one_race_does_not_abort_other_races(self):
+        """
+        ログイン前の事前チェック（has_purchase_attempt_recorded/refresh/fetch）で
+        1レースだけ想定外の例外が発生しても、tick全体を中断せず、他のレースは
+        引き続き事前チェック・購入されること（/code-review指摘）。
+        以前は本番購入ループ側だけが例外保護されており、事前チェックループが
+        同じ問題を抱えたまま残っていた。
+        """
+        import importlib
+
+        app_module = importlib.import_module("src.automation.api.app")
+
+        race_a = {"race_id": "06264507", "start_time": "1325", "venue_name": "中山", "race_number": 7}
+        race_b = {"race_id": "09264507", "start_time": "1330", "venue_name": "阪神", "race_number": 7}
+        bets_b = [{"bet_type": "place", "horse_numbers": [5], "bet_amount": 300}]
+
+        purchaser_instance = AsyncMock()
+        purchaser_instance.login = AsyncMock(return_value=True)
+        purchaser_instance.purchase_bets_for_race = AsyncMock(
+            return_value={"status": "success", "total_amount": 300, "error_message": None}
+        )
+        mock_ipat_cls = MagicMock()
+        mock_ipat_cls.return_value.__aenter__ = AsyncMock(return_value=purchaser_instance)
+        mock_ipat_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        def fake_has_attempt(project_id, target_date, race_id):
+            if race_id == "06264507":
+                raise RuntimeError("BQ一時障害")
+            return False
+
+        with (
+            patch(
+                "src.automation.data.ipat_purchaser.fetch_today_races_with_start_time",
+                MagicMock(return_value=[race_a, race_b]),
+            ),
+            patch(
+                "src.automation.data.ipat_purchaser.fetch_target_races",
+                MagicMock(return_value=[race_a, race_b]),
+            ),
+            patch(
+                "src.automation.data.netkeiba_scraper.scrape_odds_for_race",
+                MagicMock(return_value=True),
+            ),
+            patch(
+                "src.automation.api.app._refresh_investment_decisions_for_race",
+                MagicMock(return_value=True),
+            ),
+            patch(
+                "src.automation.data.ipat_purchaser.fetch_daily_spent_amount",
+                MagicMock(return_value=0),
+            ),
+            patch(
+                "src.automation.data.ipat_purchaser.has_purchase_attempt_recorded",
+                MagicMock(side_effect=fake_has_attempt),
+            ),
+            patch(
+                "src.automation.data.ipat_purchaser.fetch_recommended_bets",
+                MagicMock(return_value=bets_b),
+            ),
+            patch("src.automation.data.ipat_purchaser.IpatPurchaser", mock_ipat_cls),
+            patch("src.automation.data.ipat_purchaser.save_purchase_record", MagicMock()),
+            patch("src.utils.line_notify.push_messages", MagicMock()),
+        ):
+            result = run_async(
+                app_module._purchase_pipeline_async(
+                    project_id="test-project",
+                    target_date=self.TARGET_DATE,
+                    member_id="12345678",
+                    pin="1234",
+                    pat_number="87654321",
+                    channel_access_token="",
+                    line_user_id="",
+                    dry_run=False,
+                )
+            )
+
+        # tick全体が500で落ちず、正常応答が返ること
+        assert result["status"] == "success"
+        # race_aは事前チェックで例外→除外されるが、race_bは購入まで到達すること
+        assert result["purchased_races"] == 1
+        purchaser_instance.purchase_bets_for_race.assert_called_once()
