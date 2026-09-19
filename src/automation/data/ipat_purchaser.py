@@ -68,6 +68,13 @@ DEBUG_BUCKET_SUFFIX = "keiba-predictions"
 # クラッシュ等で放置された古いマーカーは次tickでの再挑戦を妨げないようにする。
 IN_PROGRESS_STALE_MINUTES = 10
 
+# 失敗時デバッグ情報キャプチャ（画面文言取得）のタイムアウト（ミリ秒）。
+# あくまでベストエフォートな診断用途のため、他の操作と同じ PURCHASE_TIMEOUT_MS
+# を使わず短めに設定する。ページが応答不能な状態でここが毎回30秒近く粘ると、
+# 発走までのリトライ猶予（MIN_MINUTES_BEFORE_START_FOR_RETRY）を無駄に消費して
+# しまうため（/code-review指摘）。
+DEBUG_CAPTURE_TIMEOUT_MS = 5_000
+
 
 class IpatLoginError(Exception):
     """IPAT ログイン失敗時の例外"""
@@ -168,12 +175,14 @@ class IpatPurchaser:
         # （1つの try にまとめると前者の失敗でフォールバックごと失われていた。/code-review指摘）。
         text = ""
         try:
-            text = await self._page.locator(".ui-page-active").inner_text()
+            text = await self._page.locator(".ui-page-active").inner_text(
+                timeout=DEBUG_CAPTURE_TIMEOUT_MS
+            )
         except Exception:
             text = ""
         if not text:
             try:
-                text = await self._page.text_content("body") or ""
+                text = await self._page.text_content("body", timeout=DEBUG_CAPTURE_TIMEOUT_MS) or ""
             except Exception:
                 text = ""
         if text:
@@ -181,7 +190,7 @@ class IpatPurchaser:
 
         if self.project_id:
             try:
-                png_bytes = await self._page.screenshot()
+                png_bytes = await self._page.screenshot(timeout=DEBUG_CAPTURE_TIMEOUT_MS)
                 timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%S%f")
                 blob_path = f"ipat_debug/{timestamp}_{context}.png"
                 from google.cloud import storage as _storage
@@ -293,9 +302,19 @@ class IpatPurchaser:
         """
         投票送信前フェーズのリトライ用にブラウザセッションを作り直す。
 
-        新規ページ（＝新規Cookie）で再ログインすることで、前回試行で
-        投票一覧に途中まで追加された内容をサーバ側ごと確実に破棄する
-        （中途半端な一覧が残ったまま次の試行に進むと合計金額がずれる恐れがあるため）。
+        `self._browser.new_page()` は新規 BrowserContext（＝新規Cookie）でページを
+        作成するため、クライアント（ブラウザ）側のCookie/セッションは前回試行と
+        完全に分離される。これにより前回試行で投票一覧に途中まで追加された内容が
+        サーバ側でも破棄されることを期待している（中途半端な一覧が残ったまま次の
+        試行に進むと合計金額がずれる恐れがあるため）。
+
+        既知の限界（/code-review指摘）: これはIPATが「投票一覧」の状態をCookie/
+        ブラウザセッション単位で管理していることを前提としたクライアント側の対策
+        であり、IPATが加入者番号（アカウント）単位でサーバ側に状態を保持している
+        場合はこの前提が成り立たない可能性がある。IPATの内部実装は公開されておらず
+        本コードからは検証できないため、本番投入前に `scripts/test_ipat_e2e.py` 等で
+        実際にリトライを発生させ、合計金額のズレ（「金額が一致しません」等）が
+        起きないことを確認することを強く推奨する。
 
         Returns:
             True: 再ログイン成功, False: 再ログイン失敗（これ以上リトライしない）
@@ -643,9 +662,15 @@ class IpatPurchaser:
         submit_selector = ".ui-page-active .btnColor a"
         button_count = await self._page.locator(submit_selector).count()
         if button_count == 0:
+            # 失敗時の証跡を必ず残す（Issue #433の核心的な目的）。この分岐は
+            # purchase_bets_for_race の例外ハンドラを経由しない（例外を送出しない）
+            # ため、ここで明示的に _capture_failure_state() を呼ぶ必要がある
+            # （/code-review指摘: 以前は debug が一切付与されていなかった）。
+            debug = await self._capture_failure_state("submit_button_not_found")
             return {
                 "status": "failed",
                 "error_message": "投票ボタンが見つかりませんでした（サーバへは未送信のため再試行可能）",
+                "debug": debug,
             }
 
         async with self._page.expect_navigation(
@@ -659,6 +684,17 @@ class IpatPurchaser:
         # 完了確認
         active_text = await self._page.locator('.ui-page-active').inner_text() or ""
         logger.info(f"完了確認 active_text: {active_text[:300]}")
+
+        # 以降の分岐はいずれも例外を送出せずdictを返すため、purchase_bets_for_race側の
+        # 例外ハンドラによる自動デバッグ記録が効かない。ここで取得済みのURL/画面文言を
+        # そのままdebugとして持たせる（再度ページアクセスして取得し直す必要はない）。
+        def _debug_from_active_text() -> dict:
+            return {
+                "context": "submit_confirmation",
+                "url": self._page.url if self._page else None,
+                "text_snippet": active_text.strip()[:500] if active_text else None,
+                "screenshot_gcs_path": None,
+            }
 
         # サーバが明示的に「受け付けなかった」と返しているケースのみ failed とする
         # （これらは投票不成立が確定しており、次tickで安全に再購入してよい）。
@@ -674,7 +710,7 @@ class IpatPurchaser:
         ]
         for pat in ERROR_PATTERNS:
             if pat in active_text:
-                return {"status": "failed", "error_message": pat}
+                return {"status": "failed", "error_message": pat, "debug": _debug_from_active_text()}
 
         if "受付番号" in active_text:
             return {"status": "success", "error_message": None}
@@ -688,6 +724,7 @@ class IpatPurchaser:
         return {
             "status": "need_confirmation",
             "error_message": f"完了確認できず（投票結果不明・要手動確認）: {snippet}",
+            "debug": _debug_from_active_text(),
         }
 
     async def logout(self) -> None:

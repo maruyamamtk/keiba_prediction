@@ -1711,129 +1711,159 @@ async def _purchase_pipeline_async(
             # あるため、実際の購入処理に入る直前にマーカーを記録する（/code-review指摘）。
             mark_purchase_attempt_in_progress(project_id, target_date, race_id)
 
-            # 最新オッズで investment_decisions を上書き（購入直前に行うことで鮮度を保つ）
-            refreshed = _refresh_investment_decisions_for_race(project_id, race_id, target_date)
-            if refreshed:
-                logger.info(f"race_id={race_id}: 最新オッズで investment_decisions を更新済み")
-            else:
-                logger.info(f"race_id={race_id}: フォールバック（既存 investment_decisions を使用）")
-
-            bets = fetch_recommended_bets(project_id, race_id, target_date)
-            if not bets:
-                logger.info(f"race_id={race_id}: 推奨馬券なし（refresh後） → スキップ")
-                # in_progress マーカーを解消しておく。解消しないと、実際には何も
-                # 購入していないにもかかわらず has_purchase_attempt_recorded() が
-                # IN_PROGRESS_STALE_MINUTES 分間ブロックし続け、当該レースの残り
-                # 購入ウィンドウ（-5〜5分＝10分間）をほぼ使い切ってしまう（/code-review指摘）。
-                save_purchase_record(
-                    project_id, target_date, race_id, "_lock", [], 0, "failed",
-                    "refresh後に推奨馬券が0件になったため購入スキップ（in_progressマーカー解消）",
-                )
-                continue
-
-            bets_purchased = 0
-            bets_failed = 0
-            bets_skipped_budget = 0
-            bets_need_confirmation = 0
-            race_amount = 0
+            # ここから先で想定外の例外（不正な投資判断データ等でのValueError/
+            # IpatPurchaseError等）が発生すると、in_progressマーカーが未解消のまま
+            # tick全体が中断し、この後に続く他レースの購入機会も失ってしまう
+            # （/code-review指摘）。1レース分の処理を try で囲み、失敗時はマーカーを
+            # 解消した上でこのレースだけスキップして次レースの処理を継続する。
             budget_exceeded = False
-            race_status = "processed"
+            try:
+                # 最新オッズで investment_decisions を上書き（購入直前に行うことで鮮度を保つ）
+                refreshed = _refresh_investment_decisions_for_race(project_id, race_id, target_date)
+                if refreshed:
+                    logger.info(f"race_id={race_id}: 最新オッズで investment_decisions を更新済み")
+                else:
+                    logger.info(f"race_id={race_id}: フォールバック（既存 investment_decisions を使用）")
 
-            # 予算内の馬券のみ選別
-            spent = fetch_daily_spent_amount(project_id, target_date)
-            valid_bets: list[dict] = []
-            cumulative = 0
-            for bet in bets:
-                amount = int(bet["bet_amount"])
-                if spent + cumulative + amount > DAILY_BUDGET_LIMIT:
-                    msg = f"本日の購入上限（{DAILY_BUDGET_LIMIT:,}円）に達しました（累計: {spent:,}円）"
-                    logger.warning(msg)
-                    _send_line(msg)
+                bets = fetch_recommended_bets(project_id, race_id, target_date)
+                if not bets:
+                    logger.info(f"race_id={race_id}: 推奨馬券なし（refresh後） → スキップ")
+                    # in_progress マーカーを解消しておく。解消しないと、実際には何も
+                    # 購入していないにもかかわらず has_purchase_attempt_recorded() が
+                    # IN_PROGRESS_STALE_MINUTES 分間ブロックし続け、当該レースの残り
+                    # 購入ウィンドウ（-5〜5分＝10分間）をほぼ使い切ってしまう（/code-review指摘）。
                     save_purchase_record(
-                        project_id, target_date, race_id,
-                        bet["bet_type"], bet["horse_numbers"], amount, "skipped_budget",
+                        project_id, target_date, race_id, "_lock", [], 0, "failed",
+                        "refresh後に推奨馬券が0件になったため購入スキップ（in_progressマーカー解消）",
                     )
-                    bets_skipped_budget += 1
-                    budget_exceeded = True
-                else:
-                    cumulative += amount
-                    valid_bets.append({
-                        "bet_type": bet["bet_type"],
-                        "horse_numbers": bet["horse_numbers"],
-                        "amount": amount,
-                    })
+                    continue
 
-            # 予算内の馬券を1レース分まとめて購入
-            if valid_bets:
-                result = await purchaser.purchase_bets_for_race(
-                    valid_bets, venue_name_with_day, race_number, start_time=start_time
+                bets_purchased = 0
+                bets_failed = 0
+                bets_skipped_budget = 0
+                bets_need_confirmation = 0
+                race_amount = 0
+                race_status = "processed"
+
+                # 予算内の馬券のみ選別
+                spent = fetch_daily_spent_amount(project_id, target_date)
+                valid_bets: list[dict] = []
+                cumulative = 0
+                for bet in bets:
+                    amount = int(bet["bet_amount"])
+                    if spent + cumulative + amount > DAILY_BUDGET_LIMIT:
+                        msg = f"本日の購入上限（{DAILY_BUDGET_LIMIT:,}円）に達しました（累計: {spent:,}円）"
+                        logger.warning(msg)
+                        _send_line(msg)
+                        save_purchase_record(
+                            project_id, target_date, race_id,
+                            bet["bet_type"], bet["horse_numbers"], amount, "skipped_budget",
+                        )
+                        bets_skipped_budget += 1
+                        budget_exceeded = True
+                    else:
+                        cumulative += amount
+                        valid_bets.append({
+                            "bet_type": bet["bet_type"],
+                            "horse_numbers": bet["horse_numbers"],
+                            "amount": amount,
+                        })
+
+                # 予算内の馬券を1レース分まとめて購入
+                if valid_bets:
+                    result = await purchaser.purchase_bets_for_race(
+                        valid_bets, venue_name_with_day, race_number, start_time=start_time
+                    )
+                    status = result["status"]
+                    error_message = result.get("error_message")
+                    debug = result.get("debug")
+
+                    if status == "success":
+                        bets_purchased = len(valid_bets)
+                        race_amount = result.get("total_amount", cumulative)
+                        for bet in valid_bets:
+                            save_purchase_record(
+                                project_id, target_date, race_id,
+                                bet["bet_type"], bet["horse_numbers"], bet["amount"], "success",
+                            )
+                    elif status == "need_confirmation":
+                        # 投票送信後にエラーが発生 = 実際に購入済みの可能性がある（二重購入防止のためリトライ済みでない）。
+                        # 実際に投票されていた場合の金額を race_results / LINE通知に正しく反映する。
+                        bets_need_confirmation = len(valid_bets)
+                        race_amount = result.get("total_amount", cumulative)
+                        race_status = "need_confirmation"
+                        bet_summary = _format_bet_summary(valid_bets)
+                        msg = (
+                            f"【要確認】馬券購入結果不明: {venue_name}{race_number}R [{bet_summary}] "
+                            f"- {error_message}{_debug_suffix(debug)}"
+                        )
+                        logger.error(msg)
+                        _send_line(msg)
+                        for bet in valid_bets:
+                            save_purchase_record(
+                                project_id, target_date, race_id,
+                                bet["bet_type"], bet["horse_numbers"], bet["amount"],
+                                "need_confirmation", error_message,
+                            )
+                    else:
+                        bets_failed = len(valid_bets)
+                        bet_summary = _format_bet_summary(valid_bets)
+                        msg = (
+                            f"馬券購入失敗: {venue_name}{race_number}R [{bet_summary}] "
+                            f"- {error_message}{_debug_suffix(debug)}"
+                        )
+                        logger.warning(msg)
+                        _send_line(msg)
+                        for bet in valid_bets:
+                            save_purchase_record(
+                                project_id, target_date, race_id,
+                                bet["bet_type"], bet["horse_numbers"], bet["amount"], "failed", error_message,
+                            )
+
+                # need_confirmation（投票結果不明・要手動確認）は、一部の馬券が予算超過で
+                # skipped_budgetになっていても最優先で表面化させる。skipped_budgetで
+                # 上書きすると「実際には投票され金額が動いたかもしれない」状態が
+                # race_results/APIレスポンス上で見えなくなってしまう（/code-review指摘）。
+                if race_status == "need_confirmation":
+                    final_status = "need_confirmation"
+                elif budget_exceeded:
+                    final_status = "skipped_budget"
+                else:
+                    final_status = race_status
+
+                race_results.append({
+                    "race_id": race_id,
+                    "bets_purchased": bets_purchased,
+                    "bets_failed": bets_failed,
+                    "bets_skipped_budget": bets_skipped_budget,
+                    "bets_need_confirmation": bets_need_confirmation,
+                    "amount": race_amount,
+                    "status": final_status,
+                })
+            except Exception as e:
+                logger.error(f"race_id={race_id}: 購入処理中に想定外のエラー: {e}", exc_info=True)
+                try:
+                    save_purchase_record(
+                        project_id, target_date, race_id, "_lock", [], 0, "failed",
+                        f"購入処理中に想定外のエラーが発生したためスキップ: {e}",
+                    )
+                except Exception as save_err:
+                    logger.error(
+                        f"race_id={race_id}: in_progressマーカー解消用のレコード保存にも失敗: {save_err}"
+                    )
+                _send_line(
+                    f"【エラー】{venue_name}{race_number}R の購入処理中に想定外のエラーが発生しました: {e}"
                 )
-                status = result["status"]
-                error_message = result.get("error_message")
-                debug = result.get("debug")
-
-                if status == "success":
-                    bets_purchased = len(valid_bets)
-                    race_amount = result.get("total_amount", cumulative)
-                    for bet in valid_bets:
-                        save_purchase_record(
-                            project_id, target_date, race_id,
-                            bet["bet_type"], bet["horse_numbers"], bet["amount"], "success",
-                        )
-                elif status == "need_confirmation":
-                    # 投票送信後にエラーが発生 = 実際に購入済みの可能性がある（二重購入防止のためリトライ済みでない）。
-                    # 実際に投票されていた場合の金額を race_results / LINE通知に正しく反映する。
-                    bets_need_confirmation = len(valid_bets)
-                    race_amount = result.get("total_amount", cumulative)
-                    race_status = "need_confirmation"
-                    bet_summary = _format_bet_summary(valid_bets)
-                    msg = (
-                        f"【要確認】馬券購入結果不明: {venue_name}{race_number}R [{bet_summary}] "
-                        f"- {error_message}{_debug_suffix(debug)}"
-                    )
-                    logger.error(msg)
-                    _send_line(msg)
-                    for bet in valid_bets:
-                        save_purchase_record(
-                            project_id, target_date, race_id,
-                            bet["bet_type"], bet["horse_numbers"], bet["amount"],
-                            "need_confirmation", error_message,
-                        )
-                else:
-                    bets_failed = len(valid_bets)
-                    bet_summary = _format_bet_summary(valid_bets)
-                    msg = (
-                        f"馬券購入失敗: {venue_name}{race_number}R [{bet_summary}] "
-                        f"- {error_message}{_debug_suffix(debug)}"
-                    )
-                    logger.warning(msg)
-                    _send_line(msg)
-                    for bet in valid_bets:
-                        save_purchase_record(
-                            project_id, target_date, race_id,
-                            bet["bet_type"], bet["horse_numbers"], bet["amount"], "failed", error_message,
-                        )
-
-            # need_confirmation（投票結果不明・要手動確認）は、一部の馬券が予算超過で
-            # skipped_budgetになっていても最優先で表面化させる。skipped_budgetで
-            # 上書きすると「実際には投票され金額が動いたかもしれない」状態が
-            # race_results/APIレスポンス上で見えなくなってしまう（/code-review指摘）。
-            if race_status == "need_confirmation":
-                final_status = "need_confirmation"
-            elif budget_exceeded:
-                final_status = "skipped_budget"
-            else:
-                final_status = race_status
-
-            race_results.append({
-                "race_id": race_id,
-                "bets_purchased": bets_purchased,
-                "bets_failed": bets_failed,
-                "bets_skipped_budget": bets_skipped_budget,
-                "bets_need_confirmation": bets_need_confirmation,
-                "amount": race_amount,
-                "status": final_status,
-            })
+                race_results.append({
+                    "race_id": race_id,
+                    "bets_purchased": 0,
+                    "bets_failed": 0,
+                    "bets_skipped_budget": 0,
+                    "bets_need_confirmation": 0,
+                    "amount": 0,
+                    "status": "error",
+                })
+                continue
 
             if budget_exceeded:
                 logger.warning("予算上限到達のため以降のレースをスキップします")

@@ -411,10 +411,19 @@ class TestIpatPurchaserPurchaseBet:
         purchaser = self._make_purchaser()
         purchaser._page.locator.return_value.count = AsyncMock(return_value=0)
 
-        result = run_async(purchaser.purchase_bet("place", [3], 300, "東京(土)", 7))
+        # purchase_bet()（後方互換ラッパー）は debug を落とすため、本番コード
+        # （app.py）が実際に使う purchase_bets_for_race() を直接呼んで検証する。
+        result = run_async(
+            purchaser.purchase_bets_for_race(
+                [{"bet_type": "place", "horse_numbers": [3], "amount": 300}],
+                "東京(土)", 7,
+            )
+        )
 
         assert result["status"] == "failed"
         assert "投票ボタン" in result["error_message"]
+        # 失敗時の証跡（画面URL等）が記録されていること（/code-review指摘）
+        assert result.get("debug") is not None
         # サーバへの送信を試みていないため expect_navigation は呼ばれない
         purchaser._page.expect_navigation.assert_not_called()
 
@@ -1148,3 +1157,87 @@ class TestProductionPurchaseFlow:
         assert race_result["bets_need_confirmation"] == 1  # 1件目はneed_confirmation
         assert race_result["status"] == "need_confirmation"  # skipped_budgetに上書きされない
         assert race_result["amount"] == 49900
+
+    def test_unexpected_error_in_one_race_does_not_abort_other_races(self):
+        """
+        1レースの購入処理中に想定外の例外（不正な投資判断データ等）が発生しても、
+        tick全体を中断せず、そのレースだけをエラー扱いにして次レースの処理を
+        継続すること（/code-review指摘）。in_progressマーカーも解消されること。
+        """
+        import importlib
+
+        app_module = importlib.import_module("src.automation.api.app")
+
+        race_a = {"race_id": "06264507", "start_time": "1325", "venue_name": "中山", "race_number": 7}
+        race_b = {"race_id": "09264507", "start_time": "1330", "venue_name": "阪神", "race_number": 7}
+        bets_a = [{"bet_type": "place", "horse_numbers": [3], "bet_amount": 300}]
+        bets_b = [{"bet_type": "place", "horse_numbers": [5], "bet_amount": 300}]
+
+        purchaser_instance = AsyncMock()
+        purchaser_instance.login = AsyncMock(return_value=True)
+        purchaser_instance.purchase_bets_for_race = AsyncMock(
+            return_value={"status": "success", "total_amount": 300, "error_message": None}
+        )
+        mock_ipat_cls = MagicMock()
+        mock_ipat_cls.return_value.__aenter__ = AsyncMock(return_value=purchaser_instance)
+        mock_ipat_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+        mock_save_record = MagicMock()
+
+        # 呼び出し順: 事前チェック(A), 事前チェック(B), 実購入直前のrefresh後(A)=例外, 実購入直前(B)=正常
+        with (
+            patch(
+                "src.automation.data.ipat_purchaser.fetch_today_races_with_start_time",
+                MagicMock(return_value=[race_a, race_b]),
+            ),
+            patch(
+                "src.automation.data.ipat_purchaser.fetch_target_races",
+                MagicMock(return_value=[race_a, race_b]),
+            ),
+            patch(
+                "src.automation.data.netkeiba_scraper.scrape_odds_for_race",
+                MagicMock(return_value=True),
+            ),
+            patch(
+                "src.automation.api.app._refresh_investment_decisions_for_race",
+                MagicMock(return_value=True),
+            ),
+            patch(
+                "src.automation.data.ipat_purchaser.fetch_daily_spent_amount",
+                MagicMock(return_value=0),
+            ),
+            patch(
+                "src.automation.data.ipat_purchaser.has_purchase_attempt_recorded",
+                MagicMock(return_value=False),
+            ),
+            patch(
+                "src.automation.data.ipat_purchaser.fetch_recommended_bets",
+                MagicMock(side_effect=[bets_a, bets_b, ValueError("不正な馬番データ"), bets_b]),
+            ),
+            patch("src.automation.data.ipat_purchaser.IpatPurchaser", mock_ipat_cls),
+            patch("src.automation.data.ipat_purchaser.save_purchase_record", mock_save_record),
+            patch("src.utils.line_notify.push_messages", MagicMock()),
+        ):
+            result = run_async(
+                app_module._purchase_pipeline_async(
+                    project_id="test-project",
+                    target_date=self.TARGET_DATE,
+                    member_id="12345678",
+                    pin="1234",
+                    pat_number="87654321",
+                    channel_access_token="",
+                    line_user_id="",
+                    dry_run=False,
+                )
+            )
+
+        assert result["status"] == "success"
+        statuses = {r["race_id"]: r["status"] for r in result["results"]}
+        assert statuses["06264507"] == "error"  # 例外発生レース
+        assert statuses["09264507"] == "processed"  # 後続レースは正常処理された
+        purchaser_instance.purchase_bets_for_race.assert_called_once()  # Bのみ購入実行
+
+        # race_aのin_progressマーカーがfailedで解消されていること
+        race_a_statuses = [
+            c.args[6] for c in mock_save_record.call_args_list if c.args[2] == "06264507"
+        ]
+        assert race_a_statuses == ["in_progress", "failed"]

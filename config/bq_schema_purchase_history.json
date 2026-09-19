@@ -21,7 +21,7 @@
     "name": "bet_type",
     "type": "STRING",
     "mode": "REQUIRED",
-    "description": "馬券種（place/win/wide/umaren/umatan/sanrenpuku）"
+    "description": "馬券種（place/win/wide/umaren/umatan/sanrenpuku）。'_lock'は実在の馬券種ではなく、mark_purchase_attempt_in_progress()等が二重購入防止用マーカー（status='in_progress'/'failed'、horse_numbers=[]、amount=0）を記録する際に使うセンチネル値（Issue #433）"
   },
   {
     "name": "horse_numbers",
