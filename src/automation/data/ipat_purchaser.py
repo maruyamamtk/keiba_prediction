@@ -63,6 +63,11 @@ MIN_MINUTES_BEFORE_START_FOR_RETRY = 2
 # 失敗時のデバッグ情報（スクリーンショット等）の保存先バケットサフィックス
 DEBUG_BUCKET_SUFFIX = "keiba-predictions"
 
+# in_progress マーカーが「処理中」とみなされる有効期間（分）。
+# Cloud Scheduler は5分おきに次tickを起動するため、それより十分長く取り、
+# クラッシュ等で放置された古いマーカーは次tickでの再挑戦を妨げないようにする。
+IN_PROGRESS_STALE_MINUTES = 10
+
 
 class IpatLoginError(Exception):
     """IPAT ログイン失敗時の例外"""
@@ -158,13 +163,21 @@ class IpatPurchaser:
         except Exception:
             pass
 
+        # .ui-page-active が見つからない（想定外の画面）場合こそ、body 全体への
+        # フォールバックで文言を取れることが重要なので、それぞれ個別に例外を握りつぶす
+        # （1つの try にまとめると前者の失敗でフォールバックごと失われていた。/code-review指摘）。
+        text = ""
         try:
             text = await self._page.locator(".ui-page-active").inner_text()
-            if not text:
-                text = await self._page.text_content("body") or ""
-            debug["text_snippet"] = text.strip()[:500]
         except Exception:
-            pass
+            text = ""
+        if not text:
+            try:
+                text = await self._page.text_content("body") or ""
+            except Exception:
+                text = ""
+        if text:
+            debug["text_snippet"] = text.strip()[:500]
 
         if self.project_id:
             try:
@@ -631,6 +644,8 @@ class IpatPurchaser:
         active_text = await self._page.locator('.ui-page-active').inner_text() or ""
         logger.info(f"完了確認 active_text: {active_text[:300]}")
 
+        # サーバが明示的に「受け付けなかった」と返しているケースのみ failed とする
+        # （これらは投票不成立が確定しており、次tickで安全に再購入してよい）。
         ERROR_PATTERNS = [
             "残高不足",
             "締め切られました",
@@ -648,8 +663,16 @@ class IpatPurchaser:
         if "受付番号" in active_text:
             return {"status": "success", "error_message": None}
 
+        # 「投票」ボタンは既に押下済み（サーバに送信済みの可能性がある）にもかかわらず、
+        # 成功（受付番号）とも既知の失敗パターンとも判定できない未知の画面。
+        # ここで status="failed" にすると、has_purchase_attempt_recorded() の対象外
+        # となり次tickで同じ馬券が再購入されてしまう（/code-review指摘）。
+        # 実際に投票されたか不明なので need_confirmation として手動確認を促す。
         snippet = active_text.strip()[:200]
-        return {"status": "failed", "error_message": f"完了確認できず: {snippet}"}
+        return {
+            "status": "need_confirmation",
+            "error_message": f"完了確認できず（投票結果不明・要手動確認）: {snippet}",
+        }
 
     async def logout(self) -> None:
         """IPAT からログアウトする"""
@@ -784,8 +807,10 @@ def has_purchase_attempt_recorded(
     race_id: str,
 ) -> bool:
     """
-    対象レースについて既に purchase_history に status='success' または
-    'need_confirmation' の記録があるか確認する。
+    対象レースについて既に purchase_history に
+    - status='success' または 'need_confirmation'、または
+    - 有効期限内（IN_PROGRESS_STALE_MINUTES分以内）の status='in_progress'
+    の記録があるか確認する。
 
     購入失敗レースを次回tickでも再試行できるようウィンドウを拡張した際（Issue #433）、
     既に購入成功済み、または投票送信後にエラーが発生し実際の購入有無が不明
@@ -793,8 +818,15 @@ def has_purchase_attempt_recorded(
     してしまう二重購入を防ぐために使用する。status='failed'（投票送信前の失敗。
     サーバには一切送信されていない）のみは対象外とし、次tickでの再挑戦を許可する。
 
+    in_progress は、リトライ機構によって1レースあたりの処理時間が数十秒〜数分に
+    伸びたことで、前回tickの処理がまだ完了していないうちに次tick（5分後）が
+    同じレースを重複して購入しにいくリスクへの対策（/code-review指摘）。
+    mark_purchase_attempt_in_progress() で購入処理の開始直前に記録する。
+    有効期限切れの in_progress（＝処理がクラッシュ等で完了しないまま放置された）は
+    ブロック対象から除外し、再挑戦を許可する。
+
     Returns:
-        True: 既に購入成功済み、または結果不明で要確認（自動での再購入は禁止）
+        True: 既に購入成功済み・結果不明で要確認、または処理中（自動での再購入は禁止）
     """
     client = bigquery.Client(project=project_id)
     query = """
@@ -802,17 +834,40 @@ def has_purchase_attempt_recorded(
         FROM `{project}.predictions.purchase_history`
         WHERE race_date = @race_date
           AND race_id = @race_id
-          AND status IN ('success', 'need_confirmation')
+          AND (
+            status IN ('success', 'need_confirmation')
+            OR (
+              status = 'in_progress'
+              AND purchased_at > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL @stale_minutes MINUTE)
+            )
+          )
     """.format(project=project_id)
 
     job_config = bigquery.QueryJobConfig(
         query_parameters=[
             bigquery.ScalarQueryParameter("race_date", "DATE", target_date.isoformat()),
             bigquery.ScalarQueryParameter("race_id", "STRING", race_id),
+            bigquery.ScalarQueryParameter("stale_minutes", "INT64", IN_PROGRESS_STALE_MINUTES),
         ]
     )
     rows = list(client.query(query, job_config=job_config).result())
     return bool(rows and int(rows[0]["n"]) > 0)
+
+
+def mark_purchase_attempt_in_progress(
+    project_id: str,
+    target_date: datetime.date,
+    race_id: str,
+) -> None:
+    """
+    対象レースの購入処理を開始する直前に、purchase_history へ
+    status='in_progress' のマーカー行を記録する（Issue #433）。
+
+    ログイン・購入は数十秒〜（リトライ時は）数分かかりうるため、これを記録せずに
+    処理を始めると、処理中に次tick（5分後）が起動した際 has_purchase_attempt_recorded()
+    がまだ何も見つけられず、同じレースを重複して購入しにいってしまう。
+    """
+    save_purchase_record(project_id, target_date, race_id, "_lock", [], 0, "in_progress")
 
 
 def fetch_daily_spent_amount(

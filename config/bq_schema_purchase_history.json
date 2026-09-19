@@ -39,7 +39,7 @@
     "name": "status",
     "type": "STRING",
     "mode": "REQUIRED",
-    "description": "購入ステータス（success / failed / skipped_budget / need_confirmation）。need_confirmationは投票送信後にエラーが発生し実際の購入有無が不明なケース（要手動確認・Issue #433）"
+    "description": "購入ステータス（success / failed / skipped_budget / need_confirmation / in_progress）。need_confirmationは投票送信後にエラーが発生し実際の購入有無が不明なケース（要手動確認）。in_progressは購入処理中を示す一時マーカー（bet_type='_lock'）で、並行tickによる二重購入防止に使用（いずれもIssue #433）"
   },
   {
     "name": "error_message",

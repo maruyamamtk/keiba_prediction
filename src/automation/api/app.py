@@ -1481,16 +1481,21 @@ async def _purchase_pipeline_async(
       3. 対象レースが0件なら skipped を返す
       4. 対象レースのオッズをリアルタイムスクレイピング（netkeiba）
          失敗時はフォールバック（既存の daily_odds を使用）
-      5. [dry_run=False] 各レースについて、ログイン前に購入要否を確定する
-         5a. 既に購入成功済み／要確認（need_confirmation）なら二重購入防止のためスキップ
-         5b. 最新オッズで investment_decisions を上書き（_refresh_investment_decisions_for_race）
-             失敗時はフォールバック（既存の investment_decisions を使用）
-         5c. 推奨馬券を取得。0件ならスキップ
+      5. [dry_run=False] 各レースについて、ログイン前に「購入する価値があるか」を軽くチェックする
+         5a. 既に購入成功済み／要確認（need_confirmation）／処理中（in_progress・並行tick対策）
+             なら二重購入防止のためスキップ
+         5b. 現時点の investment_decisions から推奨馬券を取得（refreshはまだ行わない）。0件ならスキップ
          購入対象レースが1件もなければ IPAT へのログイン自体を行わない
       6. [dry_run=False] 購入対象レースが1件以上ある場合のみ IPAT ログイン
       7. 各レースについて:
          [dry_run=True]  LINE通知のみ
-         [dry_run=False] 予算チェック → 購入（送信前フェーズは自動リトライ） → 履歴保存
+         [dry_run=False]
+           7a. 5a を再確認（ログイン待ち等で時間が空いた分の再チェック）
+           7b. in_progress マーカーを記録（購入直前。次tickとの二重購入防止）
+           7c. 最新オッズで investment_decisions を上書き（_refresh_investment_decisions_for_race）
+               → 推奨馬券を購入直前に取得し直すことでオッズの鮮度を保つ
+               失敗時はフォールバック（既存の investment_decisions を使用）
+           7d. 予算チェック → 購入（送信前フェーズは自動リトライ） → 履歴保存
       8. [dry_run=False] ログアウト
     """
     from src.automation.data.ipat_purchaser import (
@@ -1501,6 +1506,7 @@ async def _purchase_pipeline_async(
         fetch_today_races_with_start_time,
         fetch_target_races,
         has_purchase_attempt_recorded,
+        mark_purchase_attempt_in_progress,
         save_purchase_record,
         DAILY_BUDGET_LIMIT,
     )
@@ -1631,28 +1637,25 @@ async def _purchase_pipeline_async(
     _WEEKDAY_JP = ["月", "火", "水", "木", "金", "土", "日"]
     weekday_suffix = f"({_WEEKDAY_JP[target_date.weekday()]})"
 
+    # ここでは investment_decisions の再計算（refresh）は行わない、あくまで「ログインする
+    # 価値があるか」の軽い事前チェック（現時点のinvestment_decisionsを見るだけ）に留める。
+    # refreshは実際の購入直前（ログイン後のループ内）で改めて行う——事前チェックの時点で
+    # refreshしてしまうと、複数レースがtickに含まれる場合、後続レースの購入時には
+    # オッズが古くなってしまう（/code-review指摘）。
     races_to_purchase: list[dict] = []
     for race in target_races:
         race_id = race["race_id"]
 
         if has_purchase_attempt_recorded(project_id, target_date, race_id):
-            logger.info(f"race_id={race_id}: 既に購入成功済み/要確認済み → スキップ")
+            logger.info(f"race_id={race_id}: 既に購入成功済み/要確認済み/処理中 → スキップ")
             continue
 
-        # 最新オッズで investment_decisions を上書き
-        refreshed = _refresh_investment_decisions_for_race(project_id, race_id, target_date)
-        if refreshed:
-            logger.info(f"race_id={race_id}: 最新オッズで investment_decisions を更新済み")
-        else:
-            logger.info(f"race_id={race_id}: フォールバック（既存 investment_decisions を使用）")
-
-        # 推奨馬券取得
         bets = fetch_recommended_bets(project_id, race_id, target_date)
         if not bets:
-            logger.info(f"race_id={race_id}: 推奨馬券なし → スキップ")
+            logger.info(f"race_id={race_id}: 推奨馬券なし（現時点のinvestment_decisions） → スキップ")
             continue
 
-        races_to_purchase.append({**race, "_bets": bets})
+        races_to_purchase.append(race)
 
     if not races_to_purchase:
         logger.info("購入対象レースがないため、IPATへのログインをスキップします")
@@ -1689,7 +1692,29 @@ async def _purchase_pipeline_async(
             start_time = race.get("start_time")
             # IPATのSP版に表示される競馬場名（「中山(土)」形式）
             venue_name_with_day = f"{venue_name}{weekday_suffix}"
-            bets = race["_bets"]
+
+            # ログイン待ち・前レースの処理時間の間に、並行tickが同じレースを先に
+            # 処理済みでないか再確認する（事前チェックからここまでに時間が空くため）。
+            if has_purchase_attempt_recorded(project_id, target_date, race_id):
+                logger.info(f"race_id={race_id}: 直前の再確認で既に処理済みと判明 → スキップ")
+                continue
+
+            # ログイン・前レースの購入（リトライ含め最大数十秒〜数分）で処理時間が
+            # 伸びたことにより、次tick（5分後）が同じレースを重複購入しにいくリスクが
+            # あるため、実際の購入処理に入る直前にマーカーを記録する（/code-review指摘）。
+            mark_purchase_attempt_in_progress(project_id, target_date, race_id)
+
+            # 最新オッズで investment_decisions を上書き（購入直前に行うことで鮮度を保つ）
+            refreshed = _refresh_investment_decisions_for_race(project_id, race_id, target_date)
+            if refreshed:
+                logger.info(f"race_id={race_id}: 最新オッズで investment_decisions を更新済み")
+            else:
+                logger.info(f"race_id={race_id}: フォールバック（既存 investment_decisions を使用）")
+
+            bets = fetch_recommended_bets(project_id, race_id, target_date)
+            if not bets:
+                logger.info(f"race_id={race_id}: 推奨馬券なし（refresh後） → スキップ")
+                continue
 
             bets_purchased = 0
             bets_failed = 0
@@ -1741,8 +1766,10 @@ async def _purchase_pipeline_async(
                             bet["bet_type"], bet["horse_numbers"], bet["amount"], "success",
                         )
                 elif status == "need_confirmation":
-                    # 投票送信後にエラーが発生 = 実際に購入済みの可能性がある（二重購入防止のためリトライ済みでない）
+                    # 投票送信後にエラーが発生 = 実際に購入済みの可能性がある（二重購入防止のためリトライ済みでない）。
+                    # 実際に投票されていた場合の金額を race_results / LINE通知に正しく反映する。
                     bets_need_confirmation = len(valid_bets)
+                    race_amount = result.get("total_amount", cumulative)
                     race_status = "need_confirmation"
                     bet_summary = ", ".join(
                         f"{b['bet_type']} {'-'.join(str(h) for h in b['horse_numbers'])} {b['amount']}円"
