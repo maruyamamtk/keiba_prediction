@@ -630,14 +630,29 @@ class IpatPurchaser:
         #sum は FORM0 の外にある独立した入力欄。JS の投票ハンドラが #sum を読んで
         検証し、confirm ダイアログ後に FORM0.submit() する。
 
-        ここから先はサーバに送信済みの可能性がある（＝投票が成立している可能性がある）
-        ため、呼び出し元は絶対にリトライしてはいけない（二重購入防止）。
+        「投票」ボタンをクリック（jQuery Mobile の tap イベント）した後は
+        サーバに送信済みの可能性がある（＝投票が成立している可能性がある）ため、
+        呼び出し元は絶対にリトライしてはいけない（二重購入防止）。
+
+        一方、ボタン自体がDOM上に存在しない場合は、クリックもサーバへの送信も
+        一切発生していないことが確定しているため、そのケースだけは呼び出し元が
+        安全にリトライできる status="failed" を明示的に返す（例外を送出しない）。
+        これを区別しないと、単にボタンが見つからなかっただけの純粋にローカルな
+        失敗までneed_confirmation（要手動確認）扱いになってしまう（/code-review指摘）。
         """
+        submit_selector = ".ui-page-active .btnColor a"
+        button_count = await self._page.locator(submit_selector).count()
+        if button_count == 0:
+            return {
+                "status": "failed",
+                "error_message": "投票ボタンが見つかりませんでした（サーバへは未送信のため再試行可能）",
+            }
+
         async with self._page.expect_navigation(
             wait_until="domcontentloaded", timeout=PURCHASE_TIMEOUT_MS
         ):
             await self._page.evaluate(
-                "window.jQuery('.ui-page-active .btnColor a').trigger('tap')"
+                f"window.jQuery('{submit_selector}').trigger('tap')"
             )
         await self._wait_for_jqm_ready()
 
@@ -808,23 +823,33 @@ def has_purchase_attempt_recorded(
     race_id: str,
 ) -> bool:
     """
-    対象レースについて既に purchase_history に
-    - status='success' または 'need_confirmation'、または
-    - 有効期限内（IN_PROGRESS_STALE_MINUTES分以内）の status='in_progress'
-    の記録があるか確認する。
+    対象レースの purchase_history のうち「最も新しい1行」の status を見て、
+    自動での再購入をブロックすべきか判定する。
 
     購入失敗レースを次回tickでも再試行できるようウィンドウを拡張した際（Issue #433）、
     既に購入成功済み、または投票送信後にエラーが発生し実際の購入有無が不明
     （need_confirmation。サーバに送信済みの可能性がある）なレースを再度自動購入
     してしまう二重購入を防ぐために使用する。status='failed'（投票送信前の失敗。
-    サーバには一切送信されていない）のみは対象外とし、次tickでの再挑戦を許可する。
+    サーバには一切送信されていない）のみはブロック対象外とし、次tickでの再挑戦を許可する。
+
+    最新行だけを見る理由（/code-review指摘・重要）: 当初は「ブロック対象の
+    status を持つ行が1件でも存在するか」（COUNT(*) ... status IN (...) OR ...）
+    で判定していたが、これは誤りだった。mark_purchase_attempt_in_progress() が
+    購入試行のたびに status='in_progress' の行を追加でINSERTするため、その後
+    実際の購入結果（success/failed/need_confirmation）を別行として保存しても、
+    最初の in_progress 行はテーブルに残り続け、有効期限（IN_PROGRESS_STALE_MINUTES）
+    が切れるまで判定をブロックし続けてしまう。特に「投票送信前の失敗
+    （status='failed'、次tickで再挑戦してよいはず）」のケースで、本来再挑戦
+    できるはずのレースが最大10分間ブロックされ、-5〜5分の購入ウィンドウを
+    ほぼ使い切ってしまっていた。「最新行」で判定することで、新しく書き込まれた
+    確定ステータス（failed等）が古い in_progress マーカーを正しく上書きする。
 
     in_progress は、リトライ機構によって1レースあたりの処理時間が数十秒〜数分に
     伸びたことで、前回tickの処理がまだ完了していないうちに次tick（5分後）が
-    同じレースを重複して購入しにいくリスクへの対策（/code-review指摘）。
+    同じレースを重複して購入しにいくリスクへの対策。
     mark_purchase_attempt_in_progress() で購入処理の開始直前に記録する。
-    有効期限切れの in_progress（＝処理がクラッシュ等で完了しないまま放置された）は
-    ブロック対象から除外し、再挑戦を許可する。
+    有効期限切れの in_progress（＝処理がクラッシュ等で完了しないまま、それ以降
+    どの行も追加されずに放置された）はブロック対象から除外し、再挑戦を許可する。
 
     重要な限界: これは「チェック→マーカー書き込み」を1つのアトミック操作に
     できないBigQuery上でのベストエフォートな軽減策であり、完全な排他制御（真の
@@ -837,32 +862,41 @@ def has_purchase_attempt_recorded(
     場合は、Firestoreトランザクション等BigQuery以外の仕組みでの再設計が必要。
 
     Returns:
-        True: 既に購入成功済み・結果不明で要確認、または処理中（自動での再購入は禁止）
+        True: 最新行が購入成功済み・結果不明で要確認、または有効期限内の処理中
+              （自動での再購入は禁止）
     """
     client = bigquery.Client(project=project_id)
     query = """
-        SELECT COUNT(*) AS n
+        SELECT status, purchased_at
         FROM `{project}.predictions.purchase_history`
         WHERE race_date = @race_date
           AND race_id = @race_id
-          AND (
-            status IN ('success', 'need_confirmation')
-            OR (
-              status = 'in_progress'
-              AND purchased_at > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL @stale_minutes MINUTE)
-            )
-          )
+        ORDER BY purchased_at DESC
+        LIMIT 1
     """.format(project=project_id)
 
     job_config = bigquery.QueryJobConfig(
         query_parameters=[
             bigquery.ScalarQueryParameter("race_date", "DATE", target_date.isoformat()),
             bigquery.ScalarQueryParameter("race_id", "STRING", race_id),
-            bigquery.ScalarQueryParameter("stale_minutes", "INT64", IN_PROGRESS_STALE_MINUTES),
         ]
     )
     rows = list(client.query(query, job_config=job_config).result())
-    return bool(rows and int(rows[0]["n"]) > 0)
+    if not rows:
+        return False
+
+    latest_status = rows[0]["status"]
+    if latest_status in ("success", "need_confirmation"):
+        return True
+    if latest_status == "in_progress":
+        purchased_at = rows[0]["purchased_at"]
+        if purchased_at is None:
+            return False
+        age_minutes = (
+            datetime.datetime.now(datetime.timezone.utc) - purchased_at
+        ).total_seconds() / 60
+        return age_minutes <= IN_PROGRESS_STALE_MINUTES
+    return False
 
 
 def mark_purchase_attempt_in_progress(

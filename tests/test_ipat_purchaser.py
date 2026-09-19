@@ -29,11 +29,13 @@ sys.path.insert(0, str(ROOT_DIR))
 from src.automation.data.ipat_purchaser import (
     BET_TYPE_MAP,
     DAILY_BUDGET_LIMIT,
+    IN_PROGRESS_STALE_MINUTES,
     PRE_SUBMIT_MAX_ATTEMPTS,
     IpatLoginError,
     IpatPurchaseError,
     IpatPurchaser,
     fetch_target_races,
+    has_purchase_attempt_recorded,
 )
 
 
@@ -124,6 +126,70 @@ class TestFetchTargetRaces:
         races = self._make_races(["1000"])  # 10:00 = now + 0分
         result = fetch_target_races(races, now)
         assert len(result) == 1
+
+
+# ---------------------------------------------------------------------------
+# has_purchase_attempt_recorded() のテスト（BigQuery Client をモック）
+#
+# /code-reviewで発見: 当初は「ブロック対象のstatusを持つ行が1件でも存在するか」で
+# 判定しており、in_progressマーカー行が後から書かれた確定ステータス行（failed等）に
+# 論理的に上書きされず、有効期限まで誤ってブロックし続けるバグがあった。
+# 「最新行のstatusのみを見る」実装に修正したロジックそのものを検証する。
+# ---------------------------------------------------------------------------
+
+class TestHasPurchaseAttemptRecorded:
+    """has_purchase_attempt_recorded() の「最新行」判定ロジックのテスト"""
+
+    PROJECT_ID = "test-project"
+    TARGET_DATE = datetime.date(2026, 9, 19)
+    RACE_ID = "06264507"
+
+    def _run(self, latest_row: dict | None) -> bool:
+        with patch("google.cloud.bigquery.Client") as mock_bq_cls:
+            mock_client = MagicMock()
+            mock_bq_cls.return_value = mock_client
+            mock_client.query.return_value.result.return_value = (
+                [latest_row] if latest_row is not None else []
+            )
+            return has_purchase_attempt_recorded(self.PROJECT_ID, self.TARGET_DATE, self.RACE_ID)
+
+    def test_no_history_is_not_blocked(self):
+        """履歴が1件もなければブロックしないこと"""
+        assert self._run(None) is False
+
+    def test_latest_success_is_blocked(self):
+        """最新行が success ならブロックすること"""
+        assert self._run({"status": "success", "purchased_at": None}) is True
+
+    def test_latest_need_confirmation_is_blocked(self):
+        """最新行が need_confirmation ならブロックすること"""
+        assert self._run({"status": "need_confirmation", "purchased_at": None}) is True
+
+    def test_latest_failed_is_not_blocked(self):
+        """最新行が failed（投票送信前の失敗）ならブロックしないこと"""
+        assert self._run({"status": "failed", "purchased_at": None}) is False
+
+    def test_latest_fresh_in_progress_is_blocked(self):
+        """最新行が有効期限内の in_progress ならブロックすること"""
+        now_utc = datetime.datetime.now(datetime.timezone.utc)
+        assert self._run({"status": "in_progress", "purchased_at": now_utc}) is True
+
+    def test_latest_stale_in_progress_is_not_blocked(self):
+        """最新行が有効期限切れの in_progress（クラッシュ等で放置）ならブロックしないこと"""
+        now_utc = datetime.datetime.now(datetime.timezone.utc)
+        stale_at = now_utc - datetime.timedelta(minutes=IN_PROGRESS_STALE_MINUTES + 1)
+        assert self._run({"status": "in_progress", "purchased_at": stale_at}) is False
+
+    def test_failed_after_in_progress_unblocks(self):
+        """
+        in_progressマーカーの後に failed 行が追加で書かれた場合、
+        「最新行」は failed になるため、古い in_progress が残っていてもブロックされないこと。
+        これが今回修正した中核のバグ（/code-review指摘）。
+        """
+        now_utc = datetime.datetime.now(datetime.timezone.utc)
+        # ORDER BY purchased_at DESC LIMIT 1 相当なので、テスト側では
+        # 「最新の1行」だけをモックのクエリ結果として渡せば十分
+        assert self._run({"status": "failed", "purchased_at": now_utc}) is False
 
 
 # ---------------------------------------------------------------------------
@@ -257,10 +323,13 @@ class TestIpatPurchaserPurchaseBet:
         p = IpatPurchaser("12345678", "1234", "87654321")
         p._page = AsyncMock()
 
-        # locator() は同期メソッドなので MagicMock にし、fill()/inner_text() を AsyncMock で持たせる
+        # locator() は同期メソッドなので MagicMock にし、fill()/inner_text()/count() を
+        # AsyncMock で持たせる。count()=1 は「投票ボタンがDOM上に存在する」ことを表す
+        # （_submit_and_confirm() の事前チェック用。/code-review指摘）。
         locator_mock = MagicMock()
         locator_mock.fill = AsyncMock()
         locator_mock.inner_text = AsyncMock(return_value=completion_text)
+        locator_mock.count = AsyncMock(return_value=1)
         p._page.locator = MagicMock(return_value=locator_mock)
 
         # expect_navigation() は非同期コンテキストマネージャ
@@ -332,6 +401,22 @@ class TestIpatPurchaserPurchaseBet:
         result = run_async(purchaser.purchase_bet("place", [3], 300, "東京(土)", 7))
 
         assert result["status"] == "need_confirmation"
+
+    def test_submit_button_not_found_returns_failed_not_need_confirmation(self):
+        """
+        「投票」ボタンがDOM上に存在しない場合、クリックもサーバへの送信も一切発生
+        していないことが確定しているため、need_confirmationではなく安全にリトライ
+        可能な failed を返すこと（/code-review指摘）。
+        """
+        purchaser = self._make_purchaser()
+        purchaser._page.locator.return_value.count = AsyncMock(return_value=0)
+
+        result = run_async(purchaser.purchase_bet("place", [3], 300, "東京(土)", 7))
+
+        assert result["status"] == "failed"
+        assert "投票ボタン" in result["error_message"]
+        # サーバへの送信を試みていないため expect_navigation は呼ばれない
+        purchaser._page.expect_navigation.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
