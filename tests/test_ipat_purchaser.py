@@ -295,6 +295,45 @@ class TestIpatPurchaserLogin:
         assert purchaser.last_login_debug is not None
         assert purchaser.last_login_debug["text_snippet"] == "想定外のページ（.ui-page-active無し）"
 
+    def test_capture_failure_state_redacts_credentials_before_screenshot(self):
+        """
+        project_id 設定時、スクリーンショット撮影前にログインフォーム
+        （#userid/#password/#pars）の入力値を消去するJSを実行すること
+        （/code-review指摘）。ログイン失敗画面がそのまま入力済みフォームを
+        再表示するケースで、加入者番号・暗証番号がGCS上のデバッグ用
+        スクリーンショットに平文で残ってしまうリスクへの対応。
+        """
+        purchaser = IpatPurchaser("12345678", "1234", "8765", project_id="test-project")
+        purchaser._page = AsyncMock()
+        purchaser._page.url = "https://www.ipat.jra.go.jp/sp/pw_732_i.cgi"
+        locator_mock = MagicMock()
+        locator_mock.inner_text = AsyncMock(return_value="ログインエラー画面")
+        purchaser._page.locator = MagicMock(return_value=locator_mock)
+
+        call_order: list[str] = []
+
+        async def fake_evaluate(*a, **k):
+            call_order.append("evaluate")
+
+        async def fake_screenshot(*a, **k):
+            call_order.append("screenshot")
+            return b"fake-png-bytes"
+
+        purchaser._page.evaluate = AsyncMock(side_effect=fake_evaluate)
+        purchaser._page.screenshot = AsyncMock(side_effect=fake_screenshot)
+
+        with patch("google.cloud.storage.Client") as mock_storage_cls:
+            mock_storage_cls.return_value.bucket.return_value.blob.return_value.upload_from_string = MagicMock()
+            debug = run_async(purchaser._capture_failure_state("login_url_unchanged"))
+
+        assert debug["screenshot_gcs_path"] is not None
+        # 入力値消去（evaluate）がスクリーンショット撮影より先に行われていること
+        assert call_order == ["evaluate", "screenshot"]
+        evaluate_script = purchaser._page.evaluate.call_args[0][0]
+        assert "userid" in evaluate_script
+        assert "password" in evaluate_script
+        assert "pars" in evaluate_script
+
     def test_login_raises_on_playwright_error(self):
         """Playwright エラー時は IpatLoginError を送出すること"""
         purchaser = self._make_purchaser()
@@ -1067,8 +1106,11 @@ class TestProductionPurchaseFlow:
                     member_id="12345678",
                     pin="1234",
                     pat_number="87654321",
-                    channel_access_token="",
-                    line_user_id="",
+                    # push_messages はモック済みのため、非空のダミートークンを渡して
+                    # _send_line() が実際にpush_messagesを呼ぶようにする
+                    # （LINE通知内容・要否そのものを検証するテストのため）。
+                    channel_access_token="dummy-token",
+                    line_user_id="dummy-user",
                     dry_run=False,
                 )
             )
@@ -1573,3 +1615,210 @@ class TestProductionPurchaseFlow:
         assert result["purchased_races"] == 0
         assert result["results"] == []
         mock_ipat_cls.assert_not_called()
+
+    def test_precheck_partial_outage_with_legit_skip_still_escalates(self):
+        """
+        事前チェック対象のうち一部は正常にスキップ（既に購入成功済み）される
+        一方、残り全てがBQ一時障害等で例外になった場合も、status='error'として
+        検知できること（/code-review指摘）。全レース数に対する単純な比率では
+        なく、正常スキップを除いた「実際に評価すべきレース」数を分母にする。
+        """
+        import importlib
+
+        app_module = importlib.import_module("src.automation.api.app")
+
+        race_a = {"race_id": "06264507", "start_time": "1325", "venue_name": "中山", "race_number": 7}
+        race_b = {"race_id": "09264507", "start_time": "1330", "venue_name": "阪神", "race_number": 7}
+
+        def fake_has_attempt(project_id, target_date, race_id):
+            if race_id == "06264507":
+                return True  # 既に購入成功済み（正常スキップ）
+            raise RuntimeError("BQ一時障害")  # race_b は評価しようとして例外
+
+        mock_ipat_cls = MagicMock()
+
+        with (
+            patch(
+                "src.automation.data.ipat_purchaser.fetch_today_races_with_start_time",
+                MagicMock(return_value=[race_a, race_b]),
+            ),
+            patch(
+                "src.automation.data.ipat_purchaser.fetch_target_races",
+                MagicMock(return_value=[race_a, race_b]),
+            ),
+            patch(
+                "src.automation.data.netkeiba_scraper.scrape_odds_for_race",
+                MagicMock(return_value=True),
+            ),
+            patch(
+                "src.automation.data.ipat_purchaser.has_purchase_attempt_recorded",
+                MagicMock(side_effect=fake_has_attempt),
+            ),
+            patch(
+                "src.automation.data.ipat_purchaser.fetch_daily_spent_amount",
+                MagicMock(return_value=0),
+            ),
+            patch("src.automation.data.ipat_purchaser.IpatPurchaser", mock_ipat_cls),
+            patch("src.utils.line_notify.push_messages", MagicMock()),
+        ):
+            result = run_async(
+                app_module._purchase_pipeline_async(
+                    project_id="test-project",
+                    target_date=self.TARGET_DATE,
+                    member_id="12345678",
+                    pin="1234",
+                    pat_number="87654321",
+                    channel_access_token="",
+                    line_user_id="",
+                    dry_run=False,
+                )
+            )
+
+        assert result["status"] == "error"
+        mock_ipat_cls.assert_not_called()
+
+    def test_dead_session_aborts_remaining_races_in_tick(self):
+        """
+        あるレースの購入中にブラウザセッションが失われた（IpatPurchaser.is_session_alive
+        がFalseになった）場合、同一tick内の以降のレースは購入を試行せず、
+        明確に1回だけ通知して打ち切ること（/code-review指摘）。
+        以前は1レースごとに紛らわしい「想定外のエラー」を繰り返していた。
+        """
+        purchaser_instance = AsyncMock()
+        purchaser_instance.login = AsyncMock(return_value=True)
+        purchaser_instance.purchase_bets_for_race = AsyncMock(
+            side_effect=IpatPurchaseError("ブラウザが初期化されていません。")
+        )
+        # is_session_alive は IpatPurchaser の実プロパティなので、AsyncMock 上では
+        # 通常の属性として False を設定してシミュレートする
+        type(purchaser_instance).is_session_alive = False
+
+        mock_ipat_cls = MagicMock()
+        mock_ipat_cls.return_value.__aenter__ = AsyncMock(return_value=purchaser_instance)
+        mock_ipat_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        import importlib
+
+        app_module = importlib.import_module("src.automation.api.app")
+        race_a = {"race_id": "06264507", "start_time": "1325", "venue_name": "中山", "race_number": 7}
+        race_b = {"race_id": "09264507", "start_time": "1330", "venue_name": "阪神", "race_number": 7}
+        bets = [{"bet_type": "place", "horse_numbers": [3], "bet_amount": 300}]
+
+        with (
+            patch(
+                "src.automation.data.ipat_purchaser.fetch_today_races_with_start_time",
+                MagicMock(return_value=[race_a, race_b]),
+            ),
+            patch(
+                "src.automation.data.ipat_purchaser.fetch_target_races",
+                MagicMock(return_value=[race_a, race_b]),
+            ),
+            patch(
+                "src.automation.data.netkeiba_scraper.scrape_odds_for_race",
+                MagicMock(return_value=True),
+            ),
+            patch(
+                "src.automation.api.app._refresh_investment_decisions_for_race",
+                MagicMock(return_value=True),
+            ),
+            patch(
+                "src.automation.data.ipat_purchaser.fetch_daily_spent_amount",
+                MagicMock(return_value=0),
+            ),
+            patch(
+                "src.automation.data.ipat_purchaser.has_purchase_attempt_recorded",
+                MagicMock(return_value=False),
+            ),
+            patch(
+                "src.automation.data.ipat_purchaser.fetch_recommended_bets",
+                MagicMock(return_value=bets),
+            ),
+            patch("src.automation.data.ipat_purchaser.IpatPurchaser", mock_ipat_cls),
+            patch("src.automation.data.ipat_purchaser.save_purchase_record", MagicMock()),
+            patch("src.utils.line_notify.push_messages", MagicMock()),
+        ):
+            result = run_async(
+                app_module._purchase_pipeline_async(
+                    project_id="test-project",
+                    target_date=self.TARGET_DATE,
+                    member_id="12345678",
+                    pin="1234",
+                    pat_number="87654321",
+                    channel_access_token="",
+                    line_user_id="",
+                    dry_run=False,
+                )
+            )
+
+        # race_aが唯一処理された（＝race_results中の全レースが）status='error'に
+        # なるため、全滅検知（別テストで検証済み）により全体statusもerrorになる
+        assert result["status"] == "error"
+        assert len(result["results"]) == 1
+        assert result["results"][0]["status"] == "error"
+        # race_aで例外→即座にセッション断を検知しbreakするため、race_bへは
+        # purchase_bets_for_race が呼ばれない
+        purchaser_instance.purchase_bets_for_race.assert_called_once()
+
+    def test_closing_time_failure_does_not_send_line_alert(self):
+        """
+        購入ウィンドウ拡張（-5〜5分）により、既に発走済み（締切済み）のレースを
+        再挑戦して「締め切られました」で失敗するのは想定内の挙動のため、
+        他の失敗と同じ警告レベルのLINE通知を送らないこと（/code-review指摘）。
+        BQへの記録（failed）自体は通常どおり行う。
+        """
+        purchaser_instance = AsyncMock()
+        purchaser_instance.login = AsyncMock(return_value=True)
+        purchaser_instance.purchase_bets_for_race = AsyncMock(
+            return_value={
+                "status": "failed",
+                "total_amount": 300,
+                "error_message": "締め切られました",
+            }
+        )
+        mock_ipat_cls = MagicMock()
+        mock_ipat_cls.return_value.__aenter__ = AsyncMock(return_value=purchaser_instance)
+        mock_ipat_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+        mock_push = MagicMock()
+
+        result = self._run({
+            "src.automation.data.ipat_purchaser.has_purchase_attempt_recorded": MagicMock(return_value=False),
+            "src.automation.data.ipat_purchaser.fetch_recommended_bets": MagicMock(
+                return_value=[{"bet_type": "place", "horse_numbers": [3], "bet_amount": 300}]
+            ),
+            "src.automation.data.ipat_purchaser.IpatPurchaser": mock_ipat_cls,
+            "src.utils.line_notify.push_messages": mock_push,
+        })
+
+        assert result["results"][0]["status"] == "processed"
+        assert result["results"][0]["bets_failed"] == 1
+        mock_push.assert_not_called()
+
+    def test_bet_summary_uses_japanese_label(self):
+        """
+        LINE通知の馬券サマリはBET_TYPE_MAPで日本語ラベルに変換すること
+        （/code-review指摘）。ipat_purchaser.py側の「一括購入開始」ログが
+        同じマップで日本語表示しているのと一致させ、障害調査時の混乱を防ぐ。
+        """
+        purchaser_instance = AsyncMock()
+        purchaser_instance.login = AsyncMock(return_value=True)
+        purchaser_instance.purchase_bets_for_race = AsyncMock(
+            return_value={"status": "failed", "total_amount": 300, "error_message": "残高不足"}
+        )
+        mock_ipat_cls = MagicMock()
+        mock_ipat_cls.return_value.__aenter__ = AsyncMock(return_value=purchaser_instance)
+        mock_ipat_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+        mock_push = MagicMock()
+
+        self._run({
+            "src.automation.data.ipat_purchaser.has_purchase_attempt_recorded": MagicMock(return_value=False),
+            "src.automation.data.ipat_purchaser.fetch_recommended_bets": MagicMock(
+                return_value=[{"bet_type": "place", "horse_numbers": [3], "bet_amount": 300}]
+            ),
+            "src.automation.data.ipat_purchaser.IpatPurchaser": mock_ipat_cls,
+            "src.utils.line_notify.push_messages": mock_push,
+        })
+
+        mock_push.assert_called_once()
+        sent_text = mock_push.call_args[0][2][0]["text"]
+        assert "複勝" in sent_text
+        assert "place" not in sent_text

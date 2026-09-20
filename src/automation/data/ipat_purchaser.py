@@ -127,6 +127,20 @@ class IpatPurchaser:
         # 直近のログイン失敗時にキャプチャしたデバッグ情報（url/画面文言/スクリーンショットパス）
         self.last_login_debug: dict | None = None
 
+    @property
+    def is_session_alive(self) -> bool:
+        """
+        ブラウザセッション（ページ）が利用可能かどうか。
+
+        _reset_session_for_retry() が再ログインに失敗すると self._page は
+        None にリセットされる。同一インスタンスを1tick内の複数レースで
+        使い回す呼び出し側（app.py）は、これが False になった時点で
+        「以降のレースも同じ理由で確実に失敗する」と判断し、1レースごとに
+        紛らわしいエラーを繰り返す代わりに、tickの残りを明確に打ち切ることができる
+        （/code-review指摘）。
+        """
+        return self._page is not None
+
     async def __aenter__(self) -> "IpatPurchaser":
         from playwright.async_api import async_playwright
 
@@ -198,6 +212,23 @@ class IpatPurchaser:
 
         if self.project_id:
             try:
+                # 撮影前にログインフォームの入力値を消去する。ログイン失敗
+                # （特に login_url_unchanged: バリデーション等で弾かれ同じ
+                # ログイン画面に留まるケース）では、加入者番号・暗証番号・
+                # PAT番号が入力済みのまま画面に表示されている可能性があり、
+                # スクリーンショットにこれらが平文で写り込むとGCS上の
+                # デバッグ用バケットに認証情報が残ってしまう
+                # （/code-review指摘）。該当要素が存在しないページでは
+                # 単に何もしない（JS側でelはnullのままスキップ）。
+                try:
+                    await self._page.evaluate(
+                        "for (const id of ['userid', 'password', 'pars']) {"
+                        "  const el = document.getElementById(id);"
+                        "  if (el) el.value = '';"
+                        "}"
+                    )
+                except Exception:
+                    pass
                 png_bytes = await self._page.screenshot(timeout=DEBUG_CAPTURE_TIMEOUT_MS)
                 timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%S%f")
                 blob_path = f"ipat_debug/{timestamp}_{context}.png"

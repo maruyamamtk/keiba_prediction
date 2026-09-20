@@ -1514,6 +1514,7 @@ async def _purchase_pipeline_async(
         has_purchase_attempt_recorded,
         mark_purchase_attempt_in_progress,
         save_purchase_record,
+        BET_TYPE_MAP,
         DAILY_BUDGET_LIMIT,
     )
     from src.automation.data.netkeiba_scraper import scrape_odds_for_race
@@ -1654,9 +1655,18 @@ async def _purchase_pipeline_async(
         return ("\n" + "\n".join(parts)) if parts else ""
 
     def _format_bet_summary(bets: list[dict]) -> str:
-        """LINE通知・ログに使う馬券サマリ文字列を組み立てる。"""
+        """
+        LINE通知・ログに使う馬券サマリ文字列を組み立てる。
+
+        BET_TYPE_MAP で日本語ラベル（例: "複勝"）に変換する。ipat_purchaser.py の
+        「一括購入開始」ログも同じマップで日本語表示しており、変換せず
+        bet_type コード（例: "place"）のまま出すと、同じ購入についての
+        LINE通知とCloud Runログで表示が食い違い、障害調査時に混乱を招く
+        （/code-review指摘）。未知のコードはそのまま表示する。
+        """
         return ", ".join(
-            f"{b['bet_type']} {'-'.join(str(h) for h in b['horse_numbers'])} {b['amount']}円"
+            f"{BET_TYPE_MAP.get(b['bet_type'], b['bet_type'])} "
+            f"{'-'.join(str(h) for h in b['horse_numbers'])} {b['amount']}円"
             for b in bets
         )
 
@@ -1702,6 +1712,7 @@ async def _purchase_pipeline_async(
     # 保つ」ことを両立するための意図的なトレードオフである。
     races_to_purchase: list[dict] = []
     precheck_error_count = 0
+    precheck_already_done_count = 0
     for race in target_races:
         race_id = race["race_id"]
 
@@ -1713,6 +1724,7 @@ async def _purchase_pipeline_async(
         try:
             if has_purchase_attempt_recorded(project_id, target_date, race_id):
                 logger.info(f"race_id={race_id}: 既に購入成功済み/要確認済み/処理中 → スキップ")
+                precheck_already_done_count += 1
                 continue
 
             bets = _refresh_and_fetch_bets(race_id)
@@ -1735,11 +1747,16 @@ async def _purchase_pipeline_async(
         # 静かに終わってしまう（/code-review指摘。本番購入ループ側の全滅検知
         # （race_resultsベース）はこの事前チェック段階の全滅を検知できない
         # ——事前チェックで弾かれたレースはrace_resultsに一切追加されないため）。
-        if precheck_error_count > 0 and precheck_error_count == len(target_races):
+        # 「既に購入成功済み等でスキップ」は正常系のためエラー母数から除外する
+        # （/code-review指摘: ウィンドウ拡張により一部レースは正常にスキップされ
+        # つつ、残りの実際に評価すべきレースが全滅するケースを見逃していた）。
+        precheck_attempted_count = len(target_races) - precheck_already_done_count
+        if precheck_error_count > 0 and precheck_error_count == precheck_attempted_count:
             msg = (
-                f"【エラー】本日対象の全{len(target_races)}レースで事前チェック中に"
-                f"想定外のエラーが発生しました。BigQuery等のデータ基盤に問題が"
-                f"ある可能性があります。"
+                f"【エラー】事前チェック対象{precheck_attempted_count}レース"
+                f"（全{len(target_races)}レース中、購入済み等の正常スキップを除く）"
+                f"全てで想定外のエラーが発生しました。BigQuery等のデータ基盤に"
+                f"問題がある可能性があります。"
             )
             logger.error(msg)
             _send_line(msg)
@@ -1893,8 +1910,18 @@ async def _purchase_pipeline_async(
                             f"馬券購入失敗: {venue_name}{race_number}R [{bet_summary}] "
                             f"- {error_message}{_debug_suffix(debug)}"
                         )
-                        logger.warning(msg)
-                        _send_line(msg)
+                        # 購入ウィンドウを-5〜+5分に拡張したことで（Issue #433）、
+                        # 直前tickで未購入だったレースが発走後（既に締切済み）に
+                        # 再挑戦され、「締め切られました」で失敗するのは設計上
+                        # 想定内の挙動。これを他の失敗と同じ警告レベルでLINE
+                        # 通知すると、既に終わったレースについて運用担当者に
+                        # 「異常が起きた」と誤解させるノイズになる
+                        # （/code-review指摘）。BQへの記録は他の失敗と同様に行う。
+                        if error_message in ("締め切られました", "締め切り"):
+                            logger.info(f"[想定内: 発走済みのため締切] {msg}")
+                        else:
+                            logger.warning(msg)
+                            _send_line(msg)
                         for bet in valid_bets:
                             _safe_save_purchase_record(
                                 project_id, target_date, race_id,
@@ -1939,6 +1966,30 @@ async def _purchase_pipeline_async(
                     "amount": 0,
                     "status": "error",
                 })
+                # このレース内で既に予算超過が判明していた場合（一部の馬券が
+                # skipped_budgetになった後、購入呼び出し自体が例外を送出したケース）、
+                # except節のcontinueがこのチェックを素通りしてしまうと以降のレースの
+                # 処理を止められない（/code-review指摘）。もっとも、次レースの予算
+                # 判定はBQから毎回取得する実際の使用済み金額（spent）に基づいて
+                # 独立に行われるため上限自体は超過しない（安全性バグではない）が、
+                # 明らかに無駄な試行を避けるため同様にbreakする。
+                if budget_exceeded:
+                    logger.warning("予算上限到達のため以降のレースをスキップします")
+                    break
+                if not purchaser.is_session_alive:
+                    # ブラウザセッションが失われた（再ログイン失敗等）場合、同一
+                    # IpatPurchaserインスタンスを使い回す以降の全レースも確実に
+                    # 同じ理由で失敗する。1レースごとに紛らわしい「想定外の
+                    # エラー」を繰り返す代わりに、ここで一度だけ明確に通知して
+                    # tickの残りを打ち切る（/code-review指摘）。
+                    msg = (
+                        "【エラー】ブラウザセッションが失われたため、このtickの"
+                        "残りのレース購入処理を中断しました（再ログインに失敗した"
+                        "可能性があります）。"
+                    )
+                    logger.error(msg)
+                    _send_line(msg)
+                    break
                 continue
 
             if budget_exceeded:
