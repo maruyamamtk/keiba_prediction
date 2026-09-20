@@ -701,7 +701,23 @@ class IpatPurchaser:
         失敗までneed_confirmation（要手動確認）扱いになってしまう（/code-review指摘）。
         """
         submit_selector = ".ui-page-active .btnColor a"
-        button_count = await self._page.locator(submit_selector).count()
+        # count() 自体（ページクラッシュ・ナビゲーション中断等）が例外を送出しても、
+        # 「投票」タップ（実際の送信操作）はまだ一切行っていない点は同じであり、
+        # 安全にリトライ可能なfailedとして扱うべきである。ここを保護しないと、
+        # count() の例外がそのまま外側（purchase_bets_for_race のフェーズ2
+        # 例外ハンドラ）まで伝播し、何もサーバに送っていないのに
+        # need_confirmation（要手動確認・自動リトライ禁止）にされてしまう
+        # （/code-review指摘: すぐ下の「ボタン0件」ケースと本質的に同じ状況のはず
+        # なのに、例外経由だと扱いが変わってしまっていた）。
+        try:
+            button_count = await self._page.locator(submit_selector).count()
+        except Exception as e:
+            debug = await self._capture_failure_state("submit_button_count_error")
+            return {
+                "status": "failed",
+                "error_message": f"投票ボタンの確認中にエラー（サーバへは未送信のため再試行可能）: {e}",
+                "debug": debug,
+            }
         if button_count == 0:
             # 失敗時の証跡を必ず残す（Issue #433の核心的な目的）。この分岐は
             # purchase_bets_for_race の例外ハンドラを経由しない（例外を送出しない）

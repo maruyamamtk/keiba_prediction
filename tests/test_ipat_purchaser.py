@@ -443,6 +443,30 @@ class TestIpatPurchaserPurchaseBet:
         # サーバへの送信を試みていないため expect_navigation は呼ばれない
         purchaser._page.expect_navigation.assert_not_called()
 
+    def test_submit_button_count_exception_returns_failed_not_need_confirmation(self):
+        """
+        「投票」ボタンの存在確認（count()）自体が例外を送出した場合も、
+        サーバへの送信は一切発生していないため、need_confirmationではなく
+        安全にリトライ可能な failed を返すこと（/code-review指摘）。
+        すぐ上の「ボタン0件」ケースと本質的に同じ状況のはずが、例外経由だと
+        扱いが変わってしまっていた。
+        """
+        purchaser = self._make_purchaser()
+        purchaser._page.locator.return_value.count = AsyncMock(
+            side_effect=Exception("Target page, context or browser has been closed")
+        )
+
+        result = run_async(
+            purchaser.purchase_bets_for_race(
+                [{"bet_type": "place", "horse_numbers": [3], "amount": 300}],
+                "東京(土)", 7,
+            )
+        )
+
+        assert result["status"] == "failed"
+        assert result.get("debug") is not None
+        purchaser._page.expect_navigation.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # purchase_bets_for_race() の投票送信前リトライ・送信後の二重購入防止（Issue #433）
@@ -1527,3 +1551,25 @@ class TestProductionPurchaseFlow:
         assert result["status"] == "error"
         assert len(result["results"]) == 1
         assert result["results"][0]["status"] == "error"
+
+    def test_all_races_error_in_precheck_returns_error_status(self):
+        """
+        購入対象レースが全て事前チェック（ログイン前）段階で想定外のエラーに
+        なった場合も、status='success'のまま静かに終わらず、status='error'として
+        検知できること（/code-review指摘）。本番購入ループ側の全滅検知は
+        race_resultsを見るため、race_resultsに一切追加されない事前チェック段階の
+        全滅は別途検知する必要があった。
+        """
+        mock_ipat_cls = MagicMock()
+
+        result = self._run({
+            "src.automation.data.ipat_purchaser.has_purchase_attempt_recorded": MagicMock(
+                side_effect=RuntimeError("BQ一時障害")
+            ),
+            "src.automation.data.ipat_purchaser.IpatPurchaser": mock_ipat_cls,
+        })
+
+        assert result["status"] == "error"
+        assert result["purchased_races"] == 0
+        assert result["results"] == []
+        mock_ipat_cls.assert_not_called()

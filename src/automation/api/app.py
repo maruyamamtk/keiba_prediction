@@ -1701,6 +1701,7 @@ async def _purchase_pipeline_async(
     # かかるが、これは「無駄なログインを避ける」ことと「購入直前までオッズを鮮度良く
     # 保つ」ことを両立するための意図的なトレードオフである。
     races_to_purchase: list[dict] = []
+    precheck_error_count = 0
     for race in target_races:
         race_id = race["race_id"]
 
@@ -1721,6 +1722,7 @@ async def _purchase_pipeline_async(
 
             races_to_purchase.append(race)
         except Exception as e:
+            precheck_error_count += 1
             logger.error(
                 f"race_id={race_id}: 事前チェック中に想定外のエラー（このレースをスキップ）: {e}",
                 exc_info=True,
@@ -1728,6 +1730,26 @@ async def _purchase_pipeline_async(
             continue
 
     if not races_to_purchase:
+        # BQ障害等で対象レース全件が事前チェックで例外になった場合、「今tickは
+        # 単に購入対象がなかっただけ」と区別できず、status='success'のまま
+        # 静かに終わってしまう（/code-review指摘。本番購入ループ側の全滅検知
+        # （race_resultsベース）はこの事前チェック段階の全滅を検知できない
+        # ——事前チェックで弾かれたレースはrace_resultsに一切追加されないため）。
+        if precheck_error_count > 0 and precheck_error_count == len(target_races):
+            msg = (
+                f"【エラー】本日対象の全{len(target_races)}レースで事前チェック中に"
+                f"想定外のエラーが発生しました。BigQuery等のデータ基盤に問題が"
+                f"ある可能性があります。"
+            )
+            logger.error(msg)
+            _send_line(msg)
+            return {
+                "status": "error",
+                "purchased_races": 0,
+                "total_amount": fetch_daily_spent_amount(project_id, target_date),
+                "results": [],
+            }
+
         logger.info("購入対象レースがないため、IPATへのログインをスキップします")
         return {
             "status": "success",
