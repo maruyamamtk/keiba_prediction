@@ -336,12 +336,25 @@ class IpatPurchaser:
                 await self._page.context.close()
         except Exception as e:
             logger.warning(f"リトライ用ページ/Contextのクローズに失敗（続行します）: {e}")
+        finally:
+            # クローズの成否によらず古いページへの参照は必ず捨てる。捨てないと、
+            # 直後の new_page() が失敗した場合に self._page が閉じたContextの
+            # ページを指したまま残ってしまう（/code-review指摘）。app.py は
+            # 同一IpatPurchaserインスタンスを1tick内の全レースで使い回すため、
+            # 壊れたページを放置すると以降の全レースが同じ理由で失敗し続ける。
+            self._page = None
 
         try:
             self._page = await self._browser.new_page()
-            return await self.login()
+            logged_in = await self.login()
+            if not logged_in:
+                # ログイン失敗時も再利用不能な状態にしておく（未ログインのページを
+                # 次レースが誤って使い回すのを防ぐ）。
+                self._page = None
+            return logged_in
         except Exception as e:
             logger.error(f"リトライ用セッションの再構築に失敗: {e}", exc_info=True)
+            self._page = None
             return False
 
     async def purchase_bets_for_race(
@@ -400,9 +413,15 @@ class IpatPurchaser:
             try:
                 hour, minute = int(start_time[:2]), int(start_time[2:4])
                 now_jst = datetime.datetime.now(ZoneInfo("Asia/Tokyo"))
-                retry_deadline = now_jst.replace(
-                    hour=hour, minute=minute, second=0, microsecond=0
-                ) - datetime.timedelta(minutes=MIN_MINUTES_BEFORE_START_FOR_RETRY)
+                race_start = now_jst.replace(hour=hour, minute=minute, second=0, microsecond=0)
+                # start_time は常に「本日」の発走時刻のはずだが、日をまたぐレース
+                # （例: now=23:58 で start_time="0002"）では単純な時刻置換だと
+                # 24時間近く過去の時刻になってしまい、リトライ猶予判定が即座に
+                # 「発走間近」と誤判定してしまう（/code-review指摘）。
+                # now より半日以上過去になった場合は翌日の発走とみなす。
+                if race_start < now_jst - datetime.timedelta(hours=12):
+                    race_start += datetime.timedelta(days=1)
+                retry_deadline = race_start - datetime.timedelta(minutes=MIN_MINUTES_BEFORE_START_FOR_RETRY)
             except ValueError:
                 retry_deadline = None
 
@@ -469,6 +488,16 @@ class IpatPurchaser:
                 logger.info(f"再ログイン完了。購入を再試行します（試行{attempt + 1}/{PRE_SUBMIT_MAX_ATTEMPTS}）")
 
         # --- フェーズ2: 投票送信（ここから先は絶対にリトライしない。二重購入防止） ---
+        # 既知の限界（/code-review指摘）: `except Exception` は asyncio.CancelledError
+        # （Python 3.8+ではBaseExceptionのサブクラス）を捕捉しない。Cloud Runの
+        # SIGTERM等でこのタスクが「投票」ボタン押下後・結果確定前にキャンセルされた
+        # 場合、in_progressマーカーを解消するsuccess/need_confirmation/failedのいずれの
+        # 行も保存されないまま終了しうる。この場合マーカーは
+        # IN_PROGRESS_STALE_MINUTES経過後に自然失効し、次tickでの再購入を許可して
+        # しまう可能性がある。この窓は極めて狭く（tap後の数百ミリ秒〜数秒）、
+        # 完全に塞ぐには asyncio.shield() 等によるキャンセル耐性を本番のCloud Run
+        # シャットダウン挙動に対して検証した上で導入する必要があるため、本PRでは
+        # 未対応の既知リスクとして明記するに留める。
         try:
             result = await self._submit_and_confirm()
             result["total_amount"] = total_amount

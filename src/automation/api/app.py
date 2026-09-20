@@ -1924,7 +1924,14 @@ async def _purchase_pipeline_async(
                 break
 
     total_spent = fetch_daily_spent_amount(project_id, target_date)
-    purchased_races = sum(1 for r in race_results if r["bets_purchased"] > 0)
+    # need_confirmation（投票結果不明・要手動確認）のレースも total_amount（=
+    # fetch_daily_spent_amount が success/need_confirmation を合算）には
+    # 実際に使われた可能性がある金額として計上されているため、purchased_races
+    # からも除外しない。除外すると「金額は動いたのに購入件数は0件」という
+    # 矛盾したレスポンスになり、要確認レースの見落としにつながる（/code-review指摘）。
+    purchased_races = sum(
+        1 for r in race_results if r["bets_purchased"] > 0 or r["bets_need_confirmation"] > 0
+    )
 
     logger.info(
         f"IPAT日次購入完了: 購入レース={purchased_races}件, 当日累計={total_spent:,}円"

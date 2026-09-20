@@ -1285,6 +1285,9 @@ class TestProductionPurchaseFlow:
         assert race_result["bets_need_confirmation"] == 1  # 1件目はneed_confirmation
         assert race_result["status"] == "need_confirmation"  # skipped_budgetに上書きされない
         assert race_result["amount"] == 49900
+        # need_confirmationもtotal_amountには実支出の可能性として計上されるため、
+        # purchased_races からも除外してはいけない（/code-review指摘）。
+        assert result["purchased_races"] == 1
 
     def test_unexpected_error_in_one_race_does_not_abort_other_races(self):
         """

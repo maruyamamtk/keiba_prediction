@@ -188,9 +188,14 @@ launchctl list | grep com.keiba.monthly-retrain      # 登録確認
    - 対象レースが0件の場合はそのまま終了（skipped）
 3. 対象レースの最新オッズを netkeiba からリアルタイムスクレイピング → `predictions.daily_odds` に上書き保存
    - 失敗時はフォールバック（既存の `daily_odds` を使用）
-4. [dry_run=false] 対象レースごとに、既に処理済み・処理中でなく、現時点の投資判断
-   （`investment_decisions`）に推奨馬券が1件以上ある場合のみ「購入対象」とする
-   （購入対象が0件ならIPATへのログイン自体を行わない。この時点ではオッズ再計算は行わない）
+4. [dry_run=false] 対象レースごとに、既に処理済み・処理中でなく、
+   `_refresh_investment_decisions_for_race()` で最新オッズを反映した上で
+   推奨馬券が1件以上ある場合のみ「購入対象」とする
+   （購入対象が0件ならIPATへのログイン自体を行わない。この事前チェック時点でも
+   オッズ再計算は行う点に注意——investment_decisionsはこの関数でしか書き込まれない
+   ため、事前チェックで一切refreshしないと「まだ一度もrefreshされていないレース」が
+   永久に購入対象と判定されないデッドロックになる。実購入直前（後述5-2-3）でも
+   もう一度refreshし直すため、購入対象レースはrefreshを2回行う）
 5. `dry_run` に応じて分岐:
    - `dry_run=true`: `_refresh_investment_decisions_for_race()` で最新オッズを反映した上で推奨馬券をLINE通知のみ
      （IPATログイン・購入は行わない）
@@ -198,7 +203,7 @@ launchctl list | grep com.keiba.monthly-retrain      # 登録確認
      1. 直前の再確認（他tickが並行して処理済みでないか）
      2. `predictions.purchase_history` へ `status='in_progress'` のマーカーを記録
         （ログイン・リトライで処理時間が伸びても、次tick(5分後)が同じレースを
-        重複購入しないようにするための一時ロック。IN_PROGRESS_STALE_MINUTES=10分で自然失効）
+        重複購入しないようにするための一時ロック。IN_PROGRESS_STALE_MINUTES=15分で自然失効）
      3. `_refresh_investment_decisions_for_race()` で最新オッズを使い投資戦略を再計算
         → `predictions.investment_decisions` を上書き保存（失敗時はフォールバック）
      4. 推奨馬券を取得し直し、予算チェック → ウィザード形式で馬券購入（`IpatPurchaser`）
