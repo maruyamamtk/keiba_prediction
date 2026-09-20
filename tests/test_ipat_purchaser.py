@@ -1822,3 +1822,163 @@ class TestProductionPurchaseFlow:
         sent_text = mock_push.call_args[0][2][0]["text"]
         assert "複勝" in sent_text
         assert "place" not in sent_text
+
+    def test_dead_session_via_normal_failed_return_aborts_remaining_races(self):
+        """
+        purchase_bets_for_race() がフェーズ1リトライ枯渇（再ログイン失敗）で
+        例外を送出せずstatus='failed'を正常returnした場合も、is_session_alive
+        チェックで次レース以降が中断されること（/code-review指摘）。
+        以前は例外パスの分岐にしかこのチェックがなく、通常returnパスでは
+        1レース分無駄に試行してから次レースの例外でようやく気づいていた。
+        """
+        purchaser_instance = AsyncMock()
+        purchaser_instance.login = AsyncMock(return_value=True)
+        purchaser_instance.purchase_bets_for_race = AsyncMock(
+            return_value={
+                "status": "failed",
+                "total_amount": 0,
+                "error_message": "リトライ用の再ログインに失敗しました",
+            }
+        )
+        type(purchaser_instance).is_session_alive = False
+
+        mock_ipat_cls = MagicMock()
+        mock_ipat_cls.return_value.__aenter__ = AsyncMock(return_value=purchaser_instance)
+        mock_ipat_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        import importlib
+
+        app_module = importlib.import_module("src.automation.api.app")
+        race_a = {"race_id": "06264507", "start_time": "1325", "venue_name": "中山", "race_number": 7}
+        race_b = {"race_id": "09264507", "start_time": "1330", "venue_name": "阪神", "race_number": 7}
+        bets = [{"bet_type": "place", "horse_numbers": [3], "bet_amount": 300}]
+
+        with (
+            patch(
+                "src.automation.data.ipat_purchaser.fetch_today_races_with_start_time",
+                MagicMock(return_value=[race_a, race_b]),
+            ),
+            patch(
+                "src.automation.data.ipat_purchaser.fetch_target_races",
+                MagicMock(return_value=[race_a, race_b]),
+            ),
+            patch(
+                "src.automation.data.netkeiba_scraper.scrape_odds_for_race",
+                MagicMock(return_value=True),
+            ),
+            patch(
+                "src.automation.api.app._refresh_investment_decisions_for_race",
+                MagicMock(return_value=True),
+            ),
+            patch(
+                "src.automation.data.ipat_purchaser.fetch_daily_spent_amount",
+                MagicMock(return_value=0),
+            ),
+            patch(
+                "src.automation.data.ipat_purchaser.has_purchase_attempt_recorded",
+                MagicMock(return_value=False),
+            ),
+            patch(
+                "src.automation.data.ipat_purchaser.fetch_recommended_bets",
+                MagicMock(return_value=bets),
+            ),
+            patch("src.automation.data.ipat_purchaser.IpatPurchaser", mock_ipat_cls),
+            patch("src.automation.data.ipat_purchaser.save_purchase_record", MagicMock()),
+            patch("src.utils.line_notify.push_messages", MagicMock()),
+        ):
+            result = run_async(
+                app_module._purchase_pipeline_async(
+                    project_id="test-project",
+                    target_date=self.TARGET_DATE,
+                    member_id="12345678",
+                    pin="1234",
+                    pat_number="87654321",
+                    channel_access_token="",
+                    line_user_id="",
+                    dry_run=False,
+                )
+            )
+
+        assert result["status"] == "success"
+        # race_a は failed（正常return）として1回だけ試行され、is_session_alive
+        # チェックによりrace_bへは purchase_bets_for_race が呼ばれない
+        purchaser_instance.purchase_bets_for_race.assert_called_once()
+
+    def test_tick_time_budget_defers_remaining_races_to_next_tick(self):
+        """
+        tick開始からの経過時間がTICK_TIME_BUDGET_SECONDSを超えた場合、
+        以降のレースには着手せず次tickに委ねること（/code-review指摘:
+        Cloud Runの900秒タイムアウトに対するリトライ機構の時間消費対策）。
+        着手していないレースは mark_purchase_attempt_in_progress を呼んで
+        いないため、次tickの通常フローで問題なく再評価される。
+
+        TICK_TIME_BUDGET_SECONDS をテスト専用に負の値へ差し替えることで、
+        実際の経過時間（ごく短時間）でも必ず「予算超過」の分岐を通す。
+        """
+        purchaser_instance = AsyncMock()
+        purchaser_instance.login = AsyncMock(return_value=True)
+        purchaser_instance.purchase_bets_for_race = AsyncMock(
+            return_value={"status": "success", "total_amount": 300, "error_message": None}
+        )
+
+        mock_ipat_cls = MagicMock()
+        mock_ipat_cls.return_value.__aenter__ = AsyncMock(return_value=purchaser_instance)
+        mock_ipat_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        import importlib
+
+        app_module = importlib.import_module("src.automation.api.app")
+        race_a = {"race_id": "06264507", "start_time": "1325", "venue_name": "中山", "race_number": 7}
+        race_b = {"race_id": "09264507", "start_time": "1330", "venue_name": "阪神", "race_number": 7}
+        bets = [{"bet_type": "place", "horse_numbers": [3], "bet_amount": 300}]
+
+        with (
+            patch(
+                "src.automation.data.ipat_purchaser.fetch_today_races_with_start_time",
+                MagicMock(return_value=[race_a, race_b]),
+            ),
+            patch(
+                "src.automation.data.ipat_purchaser.fetch_target_races",
+                MagicMock(return_value=[race_a, race_b]),
+            ),
+            patch(
+                "src.automation.data.netkeiba_scraper.scrape_odds_for_race",
+                MagicMock(return_value=True),
+            ),
+            patch(
+                "src.automation.api.app._refresh_investment_decisions_for_race",
+                MagicMock(return_value=True),
+            ),
+            patch(
+                "src.automation.data.ipat_purchaser.fetch_daily_spent_amount",
+                MagicMock(return_value=0),
+            ),
+            patch(
+                "src.automation.data.ipat_purchaser.has_purchase_attempt_recorded",
+                MagicMock(return_value=False),
+            ),
+            patch(
+                "src.automation.data.ipat_purchaser.fetch_recommended_bets",
+                MagicMock(return_value=bets),
+            ),
+            patch("src.automation.data.ipat_purchaser.IpatPurchaser", mock_ipat_cls),
+            patch("src.automation.data.ipat_purchaser.save_purchase_record", MagicMock()),
+            patch("src.utils.line_notify.push_messages", MagicMock()),
+            patch("src.automation.api.app.TICK_TIME_BUDGET_SECONDS", -1),
+        ):
+            result = run_async(
+                app_module._purchase_pipeline_async(
+                    project_id="test-project",
+                    target_date=self.TARGET_DATE,
+                    member_id="12345678",
+                    pin="1234",
+                    pat_number="87654321",
+                    channel_access_token="",
+                    line_user_id="",
+                    dry_run=False,
+                )
+            )
+
+        assert result["status"] == "success"
+        # tick予算超過のため、どちらのレースにも着手しない
+        purchaser_instance.purchase_bets_for_race.assert_not_called()

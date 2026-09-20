@@ -47,6 +47,11 @@ def _today_jst() -> datetime.date:
 # 長時間バックグラウンドタスクの参照を保持してGCによる早期終了を防ぐ
 _long_running_tasks: set[asyncio.Task] = set()
 
+# IPAT購入tick（_purchase_pipeline_async）1回あたりの処理時間予算（秒）。
+# Cloud Runのリクエストタイムアウト（900秒）に対し十分な余裕を残し、超過後は
+# 残りのレースを次tickに委ねる（Issue #433, /code-review指摘）。
+TICK_TIME_BUDGET_SECONDS = 600
+
 # FastAPIアプリケーション
 app = FastAPI(
     title="JRDB Pipeline API",
@@ -1543,6 +1548,16 @@ async def _purchase_pipeline_async(
             logger.info(f"{log_prefix}race_id={race_id}: フォールバック（既存 investment_decisions を使用）")
         return fetch_recommended_bets(project_id, race_id, target_date)
 
+    # tick全体の処理時間を計測する。Cloud Runのリクエストタイムアウト（900秒）に
+    # 対し、PRE_SUBMIT_MAX_ATTEMPTS回のリトライ（再ログイン含む）が複数レース分
+    # 積み重なると近づきうる（/code-review指摘）。タイムアウトでプロセスごと
+    # 強制終了されると、「投票」送信直後〜結果確定前でも例外処理・LINE通知が
+    # 一切行われない（asyncio.CancelledErrorすら発生しない、プロセスの唐突な
+    # 終了）ため、TICK_TIME_BUDGET_SECONDS を十分な余裕を持って設定し、
+    # 超過した時点で残りのレースは次tickに委ねる（次tickのウィンドウ判定・
+    # has_purchase_attempt_recorded による通常の再挑戦フローに乗る）。
+    tick_start = datetime.datetime.now(datetime.timezone.utc)
+
     # 1. 発走時刻付きレース一覧取得
     all_races = fetch_today_races_with_start_time(project_id, target_date)
     if not all_races:
@@ -1802,6 +1817,20 @@ async def _purchase_pipeline_async(
             # IPATのSP版に表示される競馬場名（「中山(土)」形式）
             venue_name_with_day = f"{venue_name}{weekday_suffix}"
 
+            # tick開始からの経過時間がCloud Runタイムアウト（900秒）に近づいて
+            # いる場合、このレースには着手せず次tickに委ねる。まだ
+            # mark_purchase_attempt_in_progress() を呼んでいないため、次tickの
+            # 通常の事前チェックで問題なく再評価される（/code-review指摘）。
+            elapsed_seconds = (
+                datetime.datetime.now(datetime.timezone.utc) - tick_start
+            ).total_seconds()
+            if elapsed_seconds > TICK_TIME_BUDGET_SECONDS:
+                logger.warning(
+                    f"race_id={race_id}: tick開始から{elapsed_seconds:.0f}秒経過したため、"
+                    f"このレース以降は次tickに委ねます（Cloud Runタイムアウト対策）"
+                )
+                break
+
             # ここから先で想定外の例外（BQ一時障害によるhas_purchase_attempt_recorded/
             # mark_purchase_attempt_in_progressの失敗、不正な投資判断データによる
             # ValueError/IpatPurchaseError等）が発生すると、in_progressマーカーが
@@ -1994,6 +2023,21 @@ async def _purchase_pipeline_async(
 
             if budget_exceeded:
                 logger.warning("予算上限到達のため以降のレースをスキップします")
+                break
+            if not purchaser.is_session_alive:
+                # purchase_bets_for_race() はセッション断（再ログイン失敗）時も
+                # 例外を送出せず status="failed" を返す場合がある（フェーズ1の
+                # リトライが尽きて _pre_submit_failed() 経由で正常returnする
+                # パス）。except節側のチェックだけでは、この正常returnパスを
+                # 素通りしてしまい、1レース分無駄に試行してから次レースの例外で
+                # ようやく気づく、という遠回りになっていた（/code-review指摘）。
+                msg = (
+                    "【エラー】ブラウザセッションが失われたため、このtickの"
+                    "残りのレース購入処理を中断しました（再ログインに失敗した"
+                    "可能性があります）。"
+                )
+                logger.error(msg)
+                _send_line(msg)
                 break
 
     total_spent = fetch_daily_spent_amount(project_id, target_date)
