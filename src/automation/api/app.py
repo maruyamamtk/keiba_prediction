@@ -1929,6 +1929,28 @@ async def _purchase_pipeline_async(
     logger.info(
         f"IPAT日次購入完了: 購入レース={purchased_races}件, 当日累計={total_spent:,}円"
     )
+
+    # 1レース単位の例外保護（Issue #433対応）により、以前は不正なstrategy_config.yaml
+    # デプロイ等の「全レース共通の問題」がHTTP 500として大きく可視化されていたのが、
+    # 今は各レースごとにstatus='error'として静かに握りつぶされ、レスポンス全体は
+    # status='success'のままになってしまう（/code-review指摘: レジリエンス設計の
+    # トレードオフ）。対象レースが1件以上あり、その全てがerrorだった場合のみ、
+    # 個別レース保護は維持したまま、レスポンス全体のstatusでシステム的な問題を
+    # 検知できるようにする。
+    if race_results and all(r["status"] == "error" for r in race_results):
+        msg = (
+            f"【エラー】本日購入対象の全{len(race_results)}レースで想定外のエラーが"
+            f"発生しました。investment_decisions等のデータ異常の可能性があります。"
+        )
+        logger.error(msg)
+        _send_line(msg)
+        return {
+            "status": "error",
+            "purchased_races": purchased_races,
+            "total_amount": total_spent,
+            "results": race_results,
+        }
+
     return {
         "status": "success",
         "purchased_races": purchased_races,

@@ -1490,3 +1490,37 @@ class TestProductionPurchaseFlow:
         # race_aは事前チェックで例外→除外されるが、race_bは購入まで到達すること
         assert result["purchased_races"] == 1
         purchaser_instance.purchase_bets_for_race.assert_called_once()
+
+    def test_overall_status_is_error_when_all_races_fail_unexpectedly(self):
+        """
+        購入対象の全レースが想定外のエラー（status='error'）になった場合、
+        個別レース保護は維持しつつ、レスポンス全体のstatusを'error'にして
+        Cloud Run監視等でシステム的な問題として検知できるようにすること
+        （/code-review指摘: レジリエンス設計により、以前は全レース失敗時でも
+        レスポンス全体がstatus='success'のままで異常検知が難しかった）。
+        """
+        purchaser_instance = AsyncMock()
+        purchaser_instance.login = AsyncMock(return_value=True)
+
+        mock_ipat_cls = MagicMock()
+        mock_ipat_cls.return_value.__aenter__ = AsyncMock(return_value=purchaser_instance)
+        mock_ipat_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        # 事前チェックでは正常にbetsが見つかるが、実購入直前のfetch（refresh後）で例外
+        call_count = {"n": 0}
+
+        def fake_fetch_bets(project_id, race_id, target_date):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                return [{"bet_type": "place", "horse_numbers": [3], "bet_amount": 300}]
+            raise ValueError("不正な投資判断データ")
+
+        result = self._run({
+            "src.automation.data.ipat_purchaser.has_purchase_attempt_recorded": MagicMock(return_value=False),
+            "src.automation.data.ipat_purchaser.fetch_recommended_bets": MagicMock(side_effect=fake_fetch_bets),
+            "src.automation.data.ipat_purchaser.IpatPurchaser": mock_ipat_cls,
+        })
+
+        assert result["status"] == "error"
+        assert len(result["results"]) == 1
+        assert result["results"][0]["status"] == "error"

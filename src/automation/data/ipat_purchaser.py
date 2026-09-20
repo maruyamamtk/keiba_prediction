@@ -329,9 +329,13 @@ class IpatPurchaser:
         """
         try:
             if self._page is not None:
-                await self._page.close()
+                # BrowserContext.close() はそのContext配下の全ページも閉じるため、
+                # page.close() だけでは元のBrowserContextがブラウザプロセス内に
+                # 残り続ける（1レースあたり最大 PRE_SUBMIT_MAX_ATTEMPTS-1 回のリトライ
+                # ×同一tick内の複数レース分、蓄積しうる）。/code-review指摘。
+                await self._page.context.close()
         except Exception as e:
-            logger.warning(f"リトライ用ページのクローズに失敗（続行します）: {e}")
+            logger.warning(f"リトライ用ページ/Contextのクローズに失敗（続行します）: {e}")
 
         try:
             self._page = await self._browser.new_page()
