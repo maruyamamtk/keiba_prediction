@@ -211,36 +211,49 @@ class IpatPurchaser:
             debug["text_snippet"] = text.strip()[:500]
 
         if self.project_id:
+            # 撮影前にログインフォームの入力値を消去する。ログイン失敗
+            # （特に login_url_unchanged: バリデーション等で弾かれ同じ
+            # ログイン画面に留まるケース）では、加入者番号・暗証番号・
+            # PAT番号が入力済みのまま画面に表示されている可能性があり、
+            # スクリーンショットにこれらが平文で写り込むとGCS上の
+            # デバッグ用バケットに認証情報が残ってしまう（/code-review指摘）。
+            # 該当要素が存在しないページでは単に何もしない（JS側でelはnullの
+            # ままスキップ）。
+            #
+            # 重要: 消去自体が失敗した場合はスクリーンショットの撮影自体を
+            # 中止する（フェイルセーフ）。以前は消去失敗を無視してそのまま
+            # 撮影・アップロードしており、「証跡を残す」ことを優先するあまり
+            # 認証情報漏洩防止という本来の目的を無効化してしまっていた
+            # （/code-review指摘: セキュリティ上の欠陥）。
+            redaction_ok = True
             try:
-                # 撮影前にログインフォームの入力値を消去する。ログイン失敗
-                # （特に login_url_unchanged: バリデーション等で弾かれ同じ
-                # ログイン画面に留まるケース）では、加入者番号・暗証番号・
-                # PAT番号が入力済みのまま画面に表示されている可能性があり、
-                # スクリーンショットにこれらが平文で写り込むとGCS上の
-                # デバッグ用バケットに認証情報が残ってしまう
-                # （/code-review指摘）。該当要素が存在しないページでは
-                # 単に何もしない（JS側でelはnullのままスキップ）。
-                try:
-                    await self._page.evaluate(
-                        "for (const id of ['userid', 'password', 'pars']) {"
-                        "  const el = document.getElementById(id);"
-                        "  if (el) el.value = '';"
-                        "}"
-                    )
-                except Exception:
-                    pass
-                png_bytes = await self._page.screenshot(timeout=DEBUG_CAPTURE_TIMEOUT_MS)
-                timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%S%f")
-                blob_path = f"ipat_debug/{timestamp}_{context}.png"
-                from google.cloud import storage as _storage
-
-                gcs_client = _storage.Client(project=self.project_id)
-                bucket = gcs_client.bucket(f"{self.project_id}-{DEBUG_BUCKET_SUFFIX}")
-                blob = bucket.blob(blob_path)
-                blob.upload_from_string(png_bytes, content_type="image/png")
-                debug["screenshot_gcs_path"] = f"gs://{self.project_id}-{DEBUG_BUCKET_SUFFIX}/{blob_path}"
+                await self._page.evaluate(
+                    "for (const id of ['userid', 'password', 'pars']) {"
+                    "  const el = document.getElementById(id);"
+                    "  if (el) el.value = '';"
+                    "}"
+                )
             except Exception as e:
-                logger.warning(f"失敗時スクリーンショットの保存に失敗（無視します）: {e}")
+                redaction_ok = False
+                logger.warning(
+                    f"失敗時スクリーンショット用の認証情報消去に失敗したため、"
+                    f"スクリーンショットの撮影をスキップします: {e}"
+                )
+
+            if redaction_ok:
+                try:
+                    png_bytes = await self._page.screenshot(timeout=DEBUG_CAPTURE_TIMEOUT_MS)
+                    timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%S%f")
+                    blob_path = f"ipat_debug/{timestamp}_{context}.png"
+                    from google.cloud import storage as _storage
+
+                    gcs_client = _storage.Client(project=self.project_id)
+                    bucket = gcs_client.bucket(f"{self.project_id}-{DEBUG_BUCKET_SUFFIX}")
+                    blob = bucket.blob(blob_path)
+                    blob.upload_from_string(png_bytes, content_type="image/png")
+                    debug["screenshot_gcs_path"] = f"gs://{self.project_id}-{DEBUG_BUCKET_SUFFIX}/{blob_path}"
+                except Exception as e:
+                    logger.warning(f"失敗時スクリーンショットの保存に失敗（無視します）: {e}")
 
         return debug
 
@@ -337,6 +350,33 @@ class IpatPurchaser:
             logger.error(f"JRA IPAT ログインエラー: {e}", exc_info=True)
             raise IpatLoginError(f"ログイン処理中にエラーが発生しました: {e}") from e
 
+    async def _discard_current_page(self) -> None:
+        """
+        現在のページ（BrowserContext）を破棄し、self._page を None にする。
+
+        途中まで馬券が入力された「汚れた」ページを、同一インスタンスを使い回す
+        次レースに引き継がせないための共通クリーンアップ処理
+        （/code-review指摘）。_reset_session_for_retry() の前半部分に加え、
+        リトライを諦めて再ログインまではしない場合（試行回数上限・発走間近）
+        にも同じクリーンアップだけを行いたいため、独立したメソッドに切り出す。
+        """
+        try:
+            if self._page is not None:
+                # BrowserContext.close() はそのContext配下の全ページも閉じるため、
+                # page.close() だけでは元のBrowserContextがブラウザプロセス内に
+                # 残り続ける（1レースあたり最大 PRE_SUBMIT_MAX_ATTEMPTS-1 回のリトライ
+                # ×同一tick内の複数レース分、蓄積しうる）。/code-review指摘。
+                await self._page.context.close()
+        except Exception as e:
+            logger.warning(f"ページ/Contextのクローズに失敗（続行します）: {e}")
+        finally:
+            # クローズの成否によらず古いページへの参照は必ず捨てる。捨てないと、
+            # 直後の new_page() が失敗した場合に self._page が閉じたContextの
+            # ページを指したまま残ってしまう（/code-review指摘）。app.py は
+            # 同一IpatPurchaserインスタンスを1tick内の全レースで使い回すため、
+            # 壊れたページを放置すると以降の全レースが同じ理由で失敗し続ける。
+            self._page = None
+
     async def _reset_session_for_retry(self) -> bool:
         """
         投票送信前フェーズのリトライ用にブラウザセッションを作り直す。
@@ -358,22 +398,7 @@ class IpatPurchaser:
         Returns:
             True: 再ログイン成功, False: 再ログイン失敗（これ以上リトライしない）
         """
-        try:
-            if self._page is not None:
-                # BrowserContext.close() はそのContext配下の全ページも閉じるため、
-                # page.close() だけでは元のBrowserContextがブラウザプロセス内に
-                # 残り続ける（1レースあたり最大 PRE_SUBMIT_MAX_ATTEMPTS-1 回のリトライ
-                # ×同一tick内の複数レース分、蓄積しうる）。/code-review指摘。
-                await self._page.context.close()
-        except Exception as e:
-            logger.warning(f"リトライ用ページ/Contextのクローズに失敗（続行します）: {e}")
-        finally:
-            # クローズの成否によらず古いページへの参照は必ず捨てる。捨てないと、
-            # 直後の new_page() が失敗した場合に self._page が閉じたContextの
-            # ページを指したまま残ってしまう（/code-review指摘）。app.py は
-            # 同一IpatPurchaserインスタンスを1tick内の全レースで使い回すため、
-            # 壊れたページを放置すると以降の全レースが同じ理由で失敗し続ける。
-            self._page = None
+        await self._discard_current_page()
 
         try:
             self._page = await self._browser.new_page()
@@ -494,6 +519,15 @@ class IpatPurchaser:
                 )
 
                 if attempt >= PRE_SUBMIT_MAX_ATTEMPTS:
+                    # 諦める前にページを破棄しておく（再ログインまではしない —
+                    # 既にリトライ予算を使い切っているため、ここでさらに
+                    # フルの再ログインを行うのは時間の無駄）。破棄せず諦めると、
+                    # 直前の失敗試行で途中まで入力された馬券情報が残ったままの
+                    # ページを、同一IpatPurchaserインスタンスを使い回す次レースが
+                    # そのまま引き継いでしまう（/code-review指摘）。破棄により
+                    # self._pageはNoneになり、is_session_alive経由で呼び出し側が
+                    # 正しくtickを打ち切れる。
+                    await self._discard_current_page()
                     return _pre_submit_failed(
                         f"購入画面エラー（{attempt}回試行）: {last_error_msg}", last_debug
                     )
@@ -502,6 +536,8 @@ class IpatPurchaser:
                     logger.warning(
                         f"発走まで{MIN_MINUTES_BEFORE_START_FOR_RETRY}分未満のためリトライを中止します"
                     )
+                    # 同上の理由でページを破棄してから諦める（再ログインはしない）。
+                    await self._discard_current_page()
                     return _pre_submit_failed(
                         f"購入画面エラー（発走間近のためリトライ中止）: {last_error_msg}", last_debug
                     )
@@ -564,7 +600,14 @@ class IpatPurchaser:
         内部的に purchase_bets_for_race を呼び出す。
 
         Returns:
-            {"status": "success"|"failed", "error_message": str|None}
+            {"status": "success"|"failed"|"need_confirmation", "error_message": str|None}
+
+        重要: status="need_confirmation" は「投票送信後にエラーが発生し、
+        実際に購入されたか不明」を意味し、"failed"（未送信・安全に再試行可能）
+        とは全く異なる（/code-review指摘: 以前のdocstringはこの区別を
+        反映していなかった）。呼び出し側でstatus=="success"以外を一律
+        「失敗として再試行してよい」と扱うと、need_confirmationの場合に
+        二重購入する危険がある。呼び出し側は必ずstatusを個別に判定すること。
         """
         bets = [{"bet_type": bet_type, "horse_numbers": horse_numbers, "amount": amount}]
         result = await self.purchase_bets_for_race(bets, venue_name, race_number)

@@ -334,6 +334,27 @@ class TestIpatPurchaserLogin:
         assert "password" in evaluate_script
         assert "pars" in evaluate_script
 
+    def test_capture_failure_state_skips_screenshot_when_redaction_fails(self):
+        """
+        認証情報消去（evaluate）自体が失敗した場合、フェイルセーフとして
+        スクリーンショットの撮影自体を中止すること（/code-review指摘:
+        セキュリティ上の欠陥）。以前は消去失敗を無視してそのまま撮影・
+        アップロードしており、認証情報漏洩防止という目的を無効化していた。
+        """
+        purchaser = IpatPurchaser("12345678", "1234", "8765", project_id="test-project")
+        purchaser._page = AsyncMock()
+        purchaser._page.url = "https://www.ipat.jra.go.jp/sp/pw_732_i.cgi"
+        locator_mock = MagicMock()
+        locator_mock.inner_text = AsyncMock(return_value="ログインエラー画面")
+        purchaser._page.locator = MagicMock(return_value=locator_mock)
+        purchaser._page.evaluate = AsyncMock(side_effect=Exception("JS実行不可"))
+        purchaser._page.screenshot = AsyncMock(return_value=b"fake-png-bytes")
+
+        debug = run_async(purchaser._capture_failure_state("login_url_unchanged"))
+
+        assert debug["screenshot_gcs_path"] is None
+        purchaser._page.screenshot.assert_not_called()
+
     def test_login_raises_on_playwright_error(self):
         """Playwright エラー時は IpatLoginError を送出すること"""
         purchaser = self._make_purchaser()
@@ -584,6 +605,10 @@ class TestPurchaseBetsRetryAndSafety:
         assert purchaser.login.call_count == PRE_SUBMIT_MAX_ATTEMPTS - 1
         purchaser._prepare_final_confirmation.assert_not_called()
         purchaser._submit_and_confirm.assert_not_called()
+        # リトライを諦める前にページを破棄していること（/code-review指摘）。
+        # 破棄せず諦めると、途中まで入力された馬券情報が残ったページを
+        # 同一インスタンスを使い回す次レースが引き継いでしまう。
+        assert purchaser._page is None
 
     def test_pre_submit_retry_stops_near_race_start(self):
         """発走まで残り僅か（MIN_MINUTES_BEFORE_START_FOR_RETRY分未満）ならリトライせず即座に失敗を返すこと"""
@@ -612,6 +637,9 @@ class TestPurchaseBetsRetryAndSafety:
         assert result["status"] == "failed"
         assert attempts["add_bet"] == 1
         purchaser.login.assert_not_called()
+        # 発走間近で諦める場合も、再ログインはしない（時間の無駄）が
+        # ページは破棄しておくこと（/code-review指摘）
+        assert purchaser._page is None
 
     def test_no_retry_after_submit_returns_need_confirmation(self):
         """投票送信（_submit_and_confirm）後の例外は絶対にリトライせず need_confirmation を返すこと"""
@@ -1982,3 +2010,79 @@ class TestProductionPurchaseFlow:
         assert result["status"] == "success"
         # tick予算超過のため、どちらのレースにも着手しない
         purchaser_instance.purchase_bets_for_race.assert_not_called()
+
+    def test_all_precheck_failed_response_survives_spent_amount_query_failure(self):
+        """
+        事前チェック全滅（BQ障害）検知時のstatus='error'応答組み立て自体が、
+        同じBQ障害でfetch_daily_spent_amountが失敗しても未処理の例外
+        （HTTP 500）にならず、きれいなerror応答を返せること（/code-review指摘）。
+        """
+        mock_ipat_cls = MagicMock()
+
+        result = self._run({
+            "src.automation.data.ipat_purchaser.has_purchase_attempt_recorded": MagicMock(
+                side_effect=RuntimeError("BQ一時障害")
+            ),
+            "src.automation.data.ipat_purchaser.fetch_daily_spent_amount": MagicMock(
+                side_effect=RuntimeError("BQ一時障害（総額取得も失敗）")
+            ),
+            "src.automation.data.ipat_purchaser.IpatPurchaser": mock_ipat_cls,
+        })
+
+        assert result["status"] == "error"
+        assert result["total_amount"] == 0
+        mock_ipat_cls.assert_not_called()
+
+    def test_precheck_loop_respects_tick_time_budget(self):
+        """
+        事前チェックループもtick時間予算を超えたら残りのレースの評価を
+        打ち切ること（/code-review指摘: 本番購入ループ側だけの対策では
+        事前チェック段階での時間超過をカバーできていなかった）。
+        """
+        import importlib
+
+        app_module = importlib.import_module("src.automation.api.app")
+        race_a = {"race_id": "06264507", "start_time": "1325", "venue_name": "中山", "race_number": 7}
+        race_b = {"race_id": "09264507", "start_time": "1330", "venue_name": "阪神", "race_number": 7}
+        mock_has_attempt = MagicMock(return_value=False)
+
+        with (
+            patch(
+                "src.automation.data.ipat_purchaser.fetch_today_races_with_start_time",
+                MagicMock(return_value=[race_a, race_b]),
+            ),
+            patch(
+                "src.automation.data.ipat_purchaser.fetch_target_races",
+                MagicMock(return_value=[race_a, race_b]),
+            ),
+            patch(
+                "src.automation.data.netkeiba_scraper.scrape_odds_for_race",
+                MagicMock(return_value=True),
+            ),
+            patch(
+                "src.automation.data.ipat_purchaser.has_purchase_attempt_recorded",
+                mock_has_attempt,
+            ),
+            patch(
+                "src.automation.data.ipat_purchaser.fetch_daily_spent_amount",
+                MagicMock(return_value=0),
+            ),
+            patch("src.utils.line_notify.push_messages", MagicMock()),
+            patch("src.automation.api.app.TICK_TIME_BUDGET_SECONDS", -1),
+        ):
+            result = run_async(
+                app_module._purchase_pipeline_async(
+                    project_id="test-project",
+                    target_date=self.TARGET_DATE,
+                    member_id="12345678",
+                    pin="1234",
+                    pat_number="87654321",
+                    channel_access_token="",
+                    line_user_id="",
+                    dry_run=False,
+                )
+            )
+
+        assert result["status"] == "success"
+        # tick予算超過のため、事前チェックはどちらのレースも評価しない
+        mock_has_attempt.assert_not_called()

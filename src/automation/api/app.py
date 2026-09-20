@@ -1697,11 +1697,42 @@ async def _purchase_pipeline_async(
         自動再購入してよい）に見せかけてしまうのは二重購入に直結する
         （/code-review指摘）。個々の保存呼び出しの失敗はログのみに留め、
         レース全体の処理を止めない。
+
+        1回だけ即時リトライする（/code-review指摘）。この関数は
+        mark_purchase_attempt_in_progress() が書いたin_progressマーカーを
+        「解消」する唯一の手段になる呼び出し（例: skipped_budget記録）でも
+        使われており、ここが失敗すると例外を伝播させない設計上、他に
+        リカバリ手段がなくマーカーが有効期限（IN_PROGRESS_STALE_MINUTES）
+        まで残ってしまう。完全な保証にはならないが、単発の一時的な
+        書き込みエラーはこれで大半吸収できる。
         """
         try:
             save_purchase_record(*args, **kwargs)
+            return
         except Exception as e:
-            logger.error(f"purchase_history への保存に失敗しました（続行します）: {e}", exc_info=True)
+            logger.warning(f"purchase_history への保存に失敗、1回だけ再試行します: {e}")
+        try:
+            save_purchase_record(*args, **kwargs)
+        except Exception as e:
+            logger.error(
+                f"purchase_history への保存にリトライ後も失敗しました（続行します）: {e}",
+                exc_info=True,
+            )
+
+    def _safe_fetch_daily_spent_amount() -> int:
+        """
+        fetch_daily_spent_amount() を例外安全に呼ぶラッパー（0円にフォールバック）。
+
+        BQ障害を検知して status='error' の応答を組み立てる箇所（事前チェック
+        全滅時・購入対象なし時）でこの関数が無保護のまま呼ばれていると、
+        同じBQ障害でこの呼び出し自体も失敗し、意図した「きれいなerror応答」
+        ではなく未処理の例外（HTTP 500）になってしまう（/code-review指摘）。
+        """
+        try:
+            return fetch_daily_spent_amount(project_id, target_date)
+        except Exception as e:
+            logger.warning(f"当日累計購入額の取得に失敗（0円として扱います）: {e}")
+            return 0
 
     # --- 本番購入モード ---
     # 3. ログイン前に「実際に購入すべきレース」を確定する。
@@ -1730,6 +1761,20 @@ async def _purchase_pipeline_async(
     precheck_already_done_count = 0
     for race in target_races:
         race_id = race["race_id"]
+
+        # 事前チェックも各レースにつき最大2回のBQ round-trip（refresh+fetch）を
+        # 行うため、対象レースが多いtickではCloud Runの900秒タイムアウトに
+        # 近づきうる（/code-review指摘: 本番購入ループ側だけの対策では
+        # 事前チェック段階の時間超過をカバーできていなかった）。
+        elapsed_seconds = (
+            datetime.datetime.now(datetime.timezone.utc) - tick_start
+        ).total_seconds()
+        if elapsed_seconds > TICK_TIME_BUDGET_SECONDS:
+            logger.warning(
+                f"race_id={race_id}: tick開始から{elapsed_seconds:.0f}秒経過したため、"
+                f"事前チェックの残りは次tickに委ねます（Cloud Runタイムアウト対策）"
+            )
+            break
 
         # has_purchase_attempt_recorded/refresh/fetch はいずれもBQ呼び出しであり
         # 例外送出しうる。ここを保護しないと、1レースでのBQ一時障害がtick全体
@@ -1778,7 +1823,7 @@ async def _purchase_pipeline_async(
             return {
                 "status": "error",
                 "purchased_races": 0,
-                "total_amount": fetch_daily_spent_amount(project_id, target_date),
+                "total_amount": _safe_fetch_daily_spent_amount(),
                 "results": [],
             }
 
@@ -1786,7 +1831,7 @@ async def _purchase_pipeline_async(
         return {
             "status": "success",
             "purchased_races": 0,
-            "total_amount": fetch_daily_spent_amount(project_id, target_date),
+            "total_amount": _safe_fetch_daily_spent_amount(),
             "results": [],
         }
 
@@ -2040,7 +2085,7 @@ async def _purchase_pipeline_async(
                 _send_line(msg)
                 break
 
-    total_spent = fetch_daily_spent_amount(project_id, target_date)
+    total_spent = _safe_fetch_daily_spent_amount()
     # need_confirmation（投票結果不明・要手動確認）のレースも total_amount（=
     # fetch_daily_spent_amount が success/need_confirmation を合算）には
     # 実際に使われた可能性がある金額として計上されているため、purchased_races
