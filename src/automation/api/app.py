@@ -1556,6 +1556,11 @@ async def _purchase_pipeline_async(
     # 終了）ため、TICK_TIME_BUDGET_SECONDS を十分な余裕を持って設定し、
     # 超過した時点で残りのレースは次tickに委ねる（次tickのウィンドウ判定・
     # has_purchase_attempt_recorded による通常の再挑戦フローに乗る）。
+    # 注意: Cloud Scheduler側の attempt-deadline
+    # （infrastructure/scripts/setup_scheduler.sh の race-day-purchase(-summer)）
+    # が本値より短いと、Scheduler自体がCloud Run処理継続中にタイムアウト・
+    # 再試行し同一tickが重複実行されうる。両者は必ずセットで見直すこと
+    # （/code-review指摘: 過去に180s vs 600sの不整合が実在した）。
     tick_start = datetime.datetime.now(datetime.timezone.utc)
 
     # 1. 発走時刻付きレース一覧取得
@@ -1606,6 +1611,8 @@ async def _purchase_pipeline_async(
 
     # --- ドライランモード ---
     if dry_run:
+        dry_run_error_count = 0
+        dry_run_no_bets_count = 0
         for race in target_races:
             race_id = race["race_id"]
             venue_name = race.get("venue_name", "")
@@ -1618,6 +1625,7 @@ async def _purchase_pipeline_async(
                 bets = _refresh_and_fetch_bets(race_id, log_prefix="[DRY RUN] ")
                 if not bets:
                     logger.info(f"[DRY RUN] race_id={race_id}: 推奨馬券なし → スキップ")
+                    dry_run_no_bets_count += 1
                     continue
 
                 # 推奨馬券をLINE通知
@@ -1643,11 +1651,28 @@ async def _purchase_pipeline_async(
                     "status": "dry_run",
                 })
             except Exception as e:
+                dry_run_error_count += 1
                 logger.error(
                     f"[DRY RUN] race_id={race_id}: 処理中に想定外のエラー（このレースをスキップ）: {e}",
                     exc_info=True,
                 )
                 continue
+
+        # ドライラン（AM8:30）は当日のIPAT自動購入tick（AM8:00〜）が始まる前の
+        # 唯一の人間向け早期警告機会。本番購入ループと同じ「事前チェック対象
+        # 全滅」検知がここに無いと、BQ全面障害時でも他の正常スキップと区別が
+        # つかずstatus="success"のまま静かに終わり、本番購入直前に気づく機会を
+        # 逃してしまう（/code-review指摘）。
+        dry_run_attempted_count = dry_run_error_count + len(race_results)
+        if dry_run_error_count > 0 and dry_run_error_count == dry_run_attempted_count:
+            msg = (
+                f"【エラー】ドライラン事前確認で対象{dry_run_attempted_count}レース"
+                f"（全{len(target_races)}レース中、推奨馬券なし{dry_run_no_bets_count}件の"
+                f"正常スキップを除く）全てで想定外のエラーが発生しました。"
+                f"本番のIPAT自動購入が正常に動作しない可能性があります。"
+            )
+            logger.error(msg)
+            _send_line(msg)
 
         notified_races = len(race_results)
         logger.info(f"ドライラン完了: {notified_races}レース分をLINE通知")
@@ -1759,6 +1784,7 @@ async def _purchase_pipeline_async(
     races_to_purchase: list[dict] = []
     precheck_error_count = 0
     precheck_already_done_count = 0
+    precheck_no_bets_count = 0
     for race in target_races:
         race_id = race["race_id"]
 
@@ -1790,6 +1816,7 @@ async def _purchase_pipeline_async(
             bets = _refresh_and_fetch_bets(race_id)
             if not bets:
                 logger.info(f"race_id={race_id}: 推奨馬券なし（refresh後） → スキップ")
+                precheck_no_bets_count += 1
                 continue
 
             races_to_purchase.append(race)
@@ -1807,14 +1834,19 @@ async def _purchase_pipeline_async(
         # 静かに終わってしまう（/code-review指摘。本番購入ループ側の全滅検知
         # （race_resultsベース）はこの事前チェック段階の全滅を検知できない
         # ——事前チェックで弾かれたレースはrace_resultsに一切追加されないため）。
-        # 「既に購入成功済み等でスキップ」は正常系のためエラー母数から除外する
-        # （/code-review指摘: ウィンドウ拡張により一部レースは正常にスキップされ
-        # つつ、残りの実際に評価すべきレースが全滅するケースを見逃していた）。
-        precheck_attempted_count = len(target_races) - precheck_already_done_count
+        # 「既に購入成功済み等でスキップ」「推奨馬券なしでスキップ」はいずれも
+        # 正常系のためエラー母数から除外する（/code-review指摘: ウィンドウ拡張
+        # により一部レースは正常にスキップされつつ、残りの実際に評価すべき
+        # レースが全滅するケースを見逃していた。当初は「購入済み等」しか
+        # 除外しておらず、推奨馬券なしの正常スキップが混在すると
+        # precheck_error_count が分母に一致せず、実際には評価対象レースが
+        # 全滅していてもBQ障害アラートが発火しなかった）。
+        precheck_attempted_count = precheck_error_count + len(races_to_purchase)
         if precheck_error_count > 0 and precheck_error_count == precheck_attempted_count:
             msg = (
                 f"【エラー】事前チェック対象{precheck_attempted_count}レース"
-                f"（全{len(target_races)}レース中、購入済み等の正常スキップを除く）"
+                f"（全{len(target_races)}レース中、購入済み等{precheck_already_done_count}件・"
+                f"推奨馬券なし{precheck_no_bets_count}件の正常スキップを除く）"
                 f"全てで想定外のエラーが発生しました。BigQuery等のデータ基盤に"
                 f"問題がある可能性があります。"
             )

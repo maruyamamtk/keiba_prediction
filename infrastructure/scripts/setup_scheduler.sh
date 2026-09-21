@@ -309,23 +309,28 @@ create_or_update_job \
 # 4-7. IPAT自動購入ジョブ（race-day-purchase）
 # 土日 8:00〜17:00 の5分おきに /api/v1/purchase/daily を呼び出す（10〜6月）
 # race-day-strategy(AM 8:30) 完了後に稼働し、発走5〜10分前のレースを investment_decisions から取得して自動購入する
-# attempt-deadline=180s: IPAT ログイン + 購入処理の余裕を確保
+# attempt-deadline=800s: アプリ側 TICK_TIME_BUDGET_SECONDS=600s（app.py）に
+# 十分な余裕を乗せ、Cloud Runタイムアウト(900s)未満に収める。以前は180sだった
+# ため、複数レースの再ログインリトライが積み重なるとSchedulerがCloud Run内の
+# 処理継続中にタイムアウト・再試行（max-retry-attempts=3）してしまい、同一
+# tickの重複実行（二重購入リスク）を招く恐れがあった（/code-review指摘）。
 log_info "--- IPAT自動購入ジョブの設定 ---"
 create_or_update_job \
     "${PURCHASE_JOB_NAME}" \
     "${PURCHASE_SCHEDULE}" \
     "${PURCHASE_TARGET_URI}" \
-    "180s"
+    "800s"
 
 # 4-7b. IPAT自動購入ジョブ（夏競馬・race-day-purchase-summer）
 # 土日 8:00〜19:00 の5分おきに /api/v1/purchase/daily を呼び出す（7〜9月）
 # 夏場はナイター開催のため通常より発走が遅い時間（19:00頃）まで続く。他は race-day-purchase と同一ロジック
+# attempt-deadline=800s: race-day-purchase と同じ理由（/code-review指摘）
 log_info "--- IPAT自動購入ジョブ（夏競馬）の設定 ---"
 create_or_update_job \
     "${PURCHASE_SUMMER_JOB_NAME}" \
     "${PURCHASE_SUMMER_SCHEDULE}" \
     "${PURCHASE_TARGET_URI}" \
-    "180s"
+    "800s"
 
 # 4-8. entity_te_daily 事前計算ジョブ（te-daily-batch）
 # 毎日 AM 7:45 に entity_te_daily を計算・保存して race-day-predict(AM 8:00) を高速化する

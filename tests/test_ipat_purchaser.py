@@ -527,6 +527,55 @@ class TestIpatPurchaserPurchaseBet:
         assert result.get("debug") is not None
         purchaser._page.expect_navigation.assert_not_called()
 
+    def test_error_pattern_failure_captures_screenshot(self):
+        """
+        投票送信後にERROR_PATTERNSに一致するfailedとなった場合も、
+        project_id設定時はスクリーンショットを撮影・保存すること（13回目の
+        /code-review指摘）。以前はこの分岐でscreenshot_gcs_pathを常にNoneに
+        しており、Issue #433の核心である「失敗時の証跡」が投票送信後の
+        失敗では一切残らなかった。
+        """
+        purchaser = self._make_purchaser("残高不足のため購入できませんでした")
+        purchaser.project_id = "test-project"
+        purchaser._page.evaluate = AsyncMock()
+        purchaser._page.screenshot = AsyncMock(return_value=b"fake-png-bytes")
+
+        with patch("google.cloud.storage.Client") as mock_storage_cls:
+            mock_storage_cls.return_value.bucket.return_value.blob.return_value.upload_from_string = MagicMock()
+            result = run_async(
+                purchaser.purchase_bets_for_race(
+                    [{"bet_type": "place", "horse_numbers": [3], "amount": 300}],
+                    "東京(土)", 7,
+                )
+            )
+
+        assert result["status"] == "failed"
+        assert result["debug"]["screenshot_gcs_path"] is not None
+
+    def test_unrecognized_completion_need_confirmation_captures_screenshot(self):
+        """
+        投票送信後、成功/既知失敗のいずれにも一致しないneed_confirmationと
+        なった場合も、project_id設定時はスクリーンショットを撮影・保存する
+        こと（13回目の/code-review指摘）。要手動確認となるこのケースこそ
+        画面証跡が最も重要にもかかわらず、以前は一切残らなかった。
+        """
+        purchaser = self._make_purchaser("予期しないレイアウト変更後の画面テキスト")
+        purchaser.project_id = "test-project"
+        purchaser._page.evaluate = AsyncMock()
+        purchaser._page.screenshot = AsyncMock(return_value=b"fake-png-bytes")
+
+        with patch("google.cloud.storage.Client") as mock_storage_cls:
+            mock_storage_cls.return_value.bucket.return_value.blob.return_value.upload_from_string = MagicMock()
+            result = run_async(
+                purchaser.purchase_bets_for_race(
+                    [{"bet_type": "place", "horse_numbers": [3], "amount": 300}],
+                    "東京(土)", 7,
+                )
+            )
+
+        assert result["status"] == "need_confirmation"
+        assert result["debug"]["screenshot_gcs_path"] is not None
+
 
 # ---------------------------------------------------------------------------
 # purchase_bets_for_race() の投票送信前リトライ・送信後の二重購入防止（Issue #433）
@@ -666,6 +715,11 @@ class TestPurchaseBetsRetryAndSafety:
         purchaser.login.assert_not_called()
         purchaser._prepare_final_confirmation.assert_called_once()
         purchaser._submit_and_confirm.assert_called_once()
+        # 投票結果不明のページを次レースに引き継がせないこと（13回目の/code-review
+        # 指摘）。以前はここでself._pageを破棄しておらず、is_session_aliveが
+        # Trueのままとなり、app.py側の「セッション断でtickを打ち切る」安全策が
+        # 発動できなかった。
+        assert purchaser._page is None
 
     def test_prepare_final_confirmation_failure_is_retried_not_need_confirmation(self):
         """
@@ -695,6 +749,37 @@ class TestPurchaseBetsRetryAndSafety:
         assert result["status"] == "success"
         assert attempts["prepare"] == 2
         purchaser.login.assert_called_once()
+
+    def test_reset_session_for_retry_closes_context_on_login_failure(self):
+        """
+        再ログイン用に new_page() で確保した BrowserContext は、login() が
+        False を返した場合もクローズしてから手放すこと（13回目の/code-review
+        指摘）。以前は self._page = None するだけで、新規に開いた
+        BrowserContext がブラウザプロセス内にリークし続けていた。
+        """
+        purchaser = self._make_purchaser()
+        new_page = AsyncMock()
+        purchaser._browser.new_page = AsyncMock(return_value=new_page)
+        purchaser.login = AsyncMock(return_value=False)
+
+        ok = run_async(purchaser._reset_session_for_retry())
+
+        assert ok is False
+        assert purchaser._page is None
+        new_page.context.close.assert_awaited_once()
+
+    def test_reset_session_for_retry_closes_context_on_login_exception(self):
+        """login() が例外を送出した場合も、確保済みのBrowserContextをクローズすること"""
+        purchaser = self._make_purchaser()
+        new_page = AsyncMock()
+        purchaser._browser.new_page = AsyncMock(return_value=new_page)
+        purchaser.login = AsyncMock(side_effect=Exception("network error"))
+
+        ok = run_async(purchaser._reset_session_for_retry())
+
+        assert ok is False
+        assert purchaser._page is None
+        new_page.context.close.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
@@ -962,6 +1047,67 @@ class TestRealtimeScraping:
         notified_race_ids = [r["race_id"] for r in result["results"]]
         assert self.RACE_ID_2 in notified_race_ids
         assert self.RACE_ID_1 not in notified_race_ids
+
+    def test_dry_run_all_races_error_sends_escalation_alert(self):
+        """
+        dry_runモードで対象レース全件が想定外の例外になった場合、本番購入
+        ループの全滅検知と同様にLINE通知で警告すること（13回目の
+        /code-review指摘）。ドライラン（AM8:30）は本番購入tick（AM8:00〜）
+        開始前の唯一の人間向け早期警告機会であり、以前はBQ全面障害時でも
+        他の正常スキップと区別できずstatus='success'のまま静かに終わって
+        いた。
+        """
+        import importlib
+
+        app_module = importlib.import_module("src.automation.api.app")
+        target_races = [
+            {"race_id": self.RACE_ID_1, "venue_name": "東京", "race_number": 11},
+            {"race_id": self.RACE_ID_2, "venue_name": "中山", "race_number": 8},
+        ]
+
+        def fake_fetch_bets(project_id, race_id, target_date):
+            raise RuntimeError("BQ一時障害")
+
+        with (
+            patch(
+                "src.automation.data.ipat_purchaser.fetch_today_races_with_start_time",
+                return_value=[
+                    {"race_id": r["race_id"], "start_time": "1000", "venue_name": "東京", "race_number": 1}
+                    for r in target_races
+                ],
+            ),
+            patch(
+                "src.automation.data.ipat_purchaser.fetch_target_races",
+                return_value=target_races,
+            ),
+            patch(
+                "src.automation.data.netkeiba_scraper.scrape_odds_for_race",
+                return_value=True,
+            ),
+            patch(
+                "src.automation.api.app._refresh_investment_decisions_for_race",
+                side_effect=fake_fetch_bets,
+            ),
+            patch("src.utils.line_notify.push_messages") as mock_push,
+        ):
+            result = run_async(
+                app_module._purchase_pipeline_async(
+                    project_id="test-project",
+                    target_date=self.TARGET_DATE,
+                    member_id="12345678",
+                    pin="1234",
+                    pat_number="87654321",
+                    channel_access_token="dummy-token",
+                    line_user_id="dummy-user",
+                    dry_run=True,
+                )
+            )
+
+        # ドライランは本番購入ではないため status 自体は success のままだが、
+        # 全滅時は明確にLINE警告を送ること
+        assert result["status"] == "success"
+        assert result["results"] == []
+        mock_push.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -1681,6 +1827,78 @@ class TestProductionPurchaseFlow:
             patch(
                 "src.automation.data.ipat_purchaser.has_purchase_attempt_recorded",
                 MagicMock(side_effect=fake_has_attempt),
+            ),
+            patch(
+                "src.automation.data.ipat_purchaser.fetch_daily_spent_amount",
+                MagicMock(return_value=0),
+            ),
+            patch("src.automation.data.ipat_purchaser.IpatPurchaser", mock_ipat_cls),
+            patch("src.utils.line_notify.push_messages", MagicMock()),
+        ):
+            result = run_async(
+                app_module._purchase_pipeline_async(
+                    project_id="test-project",
+                    target_date=self.TARGET_DATE,
+                    member_id="12345678",
+                    pin="1234",
+                    pat_number="87654321",
+                    channel_access_token="",
+                    line_user_id="",
+                    dry_run=False,
+                )
+            )
+
+        assert result["status"] == "error"
+        mock_ipat_cls.assert_not_called()
+
+    def test_precheck_partial_outage_with_no_bets_skip_still_escalates(self):
+        """
+        事前チェック対象のうち一部は「推奨馬券なし」で正常にスキップされる一方、
+        残り全てがBQ一時障害等で例外になった場合も、status='error'として検知
+        できること（13回目の/code-review指摘）。以前は分母が
+        `len(target_races) - precheck_already_done_count` のままで、
+        「購入済み等」のスキップしか除外できておらず、「推奨馬券なし」の正常
+        スキップが混在すると実際に評価すべきレースが全滅していてもBQ障害
+        アラートが発火しなかった。
+        """
+        import importlib
+
+        app_module = importlib.import_module("src.automation.api.app")
+
+        race_a = {"race_id": "06264507", "start_time": "1325", "venue_name": "中山", "race_number": 7}
+        race_b = {"race_id": "09264507", "start_time": "1330", "venue_name": "阪神", "race_number": 7}
+
+        def fake_refresh(project_id, race_id, target_date):
+            if race_id == "06264507":
+                return True
+            raise RuntimeError("BQ一時障害")  # race_b は評価しようとして例外
+
+        mock_ipat_cls = MagicMock()
+
+        with (
+            patch(
+                "src.automation.data.ipat_purchaser.fetch_today_races_with_start_time",
+                MagicMock(return_value=[race_a, race_b]),
+            ),
+            patch(
+                "src.automation.data.ipat_purchaser.fetch_target_races",
+                MagicMock(return_value=[race_a, race_b]),
+            ),
+            patch(
+                "src.automation.data.netkeiba_scraper.scrape_odds_for_race",
+                MagicMock(return_value=True),
+            ),
+            patch(
+                "src.automation.data.ipat_purchaser.has_purchase_attempt_recorded",
+                MagicMock(return_value=False),
+            ),
+            patch(
+                "src.automation.api.app._refresh_investment_decisions_for_race",
+                MagicMock(side_effect=fake_refresh),
+            ),
+            patch(
+                "src.automation.data.ipat_purchaser.fetch_recommended_bets",
+                MagicMock(return_value=[]),  # race_a は推奨馬券なし（正常スキップ）
             ),
             patch(
                 "src.automation.data.ipat_purchaser.fetch_daily_spent_amount",

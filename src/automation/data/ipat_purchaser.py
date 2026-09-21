@@ -245,12 +245,21 @@ class IpatPurchaser:
                     png_bytes = await self._page.screenshot(timeout=DEBUG_CAPTURE_TIMEOUT_MS)
                     timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%S%f")
                     blob_path = f"ipat_debug/{timestamp}_{context}.png"
-                    from google.cloud import storage as _storage
 
-                    gcs_client = _storage.Client(project=self.project_id)
-                    bucket = gcs_client.bucket(f"{self.project_id}-{DEBUG_BUCKET_SUFFIX}")
-                    blob = bucket.blob(blob_path)
-                    blob.upload_from_string(png_bytes, content_type="image/png")
+                    def _upload() -> None:
+                        # google-cloud-storageクライアントの生成・アップロードは同期API。
+                        # asyncメソッド内で直接呼ぶとイベントループをブロックし、
+                        # PRE_SUBMIT_MAX_ATTEMPTS回のリトライのたびにネットワーク
+                        # I/O分だけ他の非同期処理が止まってしまう（/code-review指摘）
+                        # ため、別スレッドにオフロードする。
+                        from google.cloud import storage as _storage
+
+                        gcs_client = _storage.Client(project=self.project_id)
+                        bucket = gcs_client.bucket(f"{self.project_id}-{DEBUG_BUCKET_SUFFIX}")
+                        blob = bucket.blob(blob_path)
+                        blob.upload_from_string(png_bytes, content_type="image/png")
+
+                    await asyncio.to_thread(_upload)
                     debug["screenshot_gcs_path"] = f"gs://{self.project_id}-{DEBUG_BUCKET_SUFFIX}/{blob_path}"
                 except Exception as e:
                     logger.warning(f"失敗時スクリーンショットの保存に失敗（無視します）: {e}")
@@ -405,12 +414,15 @@ class IpatPurchaser:
             logged_in = await self.login()
             if not logged_in:
                 # ログイン失敗時も再利用不能な状態にしておく（未ログインのページを
-                # 次レースが誤って使い回すのを防ぐ）。
-                self._page = None
+                # 次レースが誤って使い回すのを防ぐ）。new_page()で確保した
+                # BrowserContextを閉じずにself._page=Noneするとそのcontextが
+                # ブラウザプロセス内にリークし続ける（/code-review指摘）ため、
+                # _discard_current_pageと同じ手順でクローズしてから手放す。
+                await self._discard_current_page()
             return logged_in
         except Exception as e:
             logger.error(f"リトライ用セッションの再構築に失敗: {e}", exc_info=True)
-            self._page = None
+            await self._discard_current_page()
             return False
 
     async def purchase_bets_for_race(
@@ -579,6 +591,12 @@ class IpatPurchaser:
                 f"投票送信中にエラーが発生しました。実際に購入されているか必ずIPATで確認してください: {e}"
             )
             logger.error(error_msg, exc_info=True)
+            # 投票結果が不明なこのページを次レースに引き継がせない。ここで
+            # self._pageを破棄せずに正常returnすると、is_session_aliveがTrueの
+            # ままとなり、app.py側の「セッション断でtickを打ち切る」安全策が
+            # 発動できず、状態不明のページのまま次レースの馬券入力を進めて
+            # しまう恐れがある（/code-review指摘）。
+            await self._discard_current_page()
             return {
                 "status": "need_confirmation",
                 "total_amount": total_amount,
@@ -817,15 +835,13 @@ class IpatPurchaser:
         logger.info(f"完了確認 active_text: {active_text[:300]}")
 
         # 以降の分岐はいずれも例外を送出せずdictを返すため、purchase_bets_for_race側の
-        # 例外ハンドラによる自動デバッグ記録が効かない。ここで取得済みのURL/画面文言を
-        # そのままdebugとして持たせる（再度ページアクセスして取得し直す必要はない）。
-        def _debug_from_active_text() -> dict:
-            return {
-                "context": "submit_confirmation",
-                "url": self._page.url if self._page else None,
-                "text_snippet": active_text.strip()[:500] if active_text else None,
-                "screenshot_gcs_path": None,
-            }
+        # 例外ハンドラによる自動デバッグ記録が効かない。ここで明示的に
+        # _capture_failure_state() を呼んでスクリーンショットも残す。以前はURL/
+        # 画面文言のみを詰めてscreenshot_gcs_pathを常にNoneにしていたため、
+        # Issue #433の核心である「失敗時の証跡（スクリーンショット含む）」が
+        # 投票送信後の失敗・要確認ケースでは一切残らなかった（/code-review指摘）。
+        async def _debug_from_active_text(context: str) -> dict:
+            return await self._capture_failure_state(context)
 
         # 成功判定（受付番号）を先に見る。ERROR_PATTERNS には「ご確認ください」
         # 「エラーが発生」のような汎用的な文言が含まれており、これらが成功画面の
@@ -850,7 +866,8 @@ class IpatPurchaser:
         ]
         for pat in ERROR_PATTERNS:
             if pat in active_text:
-                return {"status": "failed", "error_message": pat, "debug": _debug_from_active_text()}
+                debug = await _debug_from_active_text("submit_error_pattern")
+                return {"status": "failed", "error_message": pat, "debug": debug}
 
         # 「投票」ボタンは既に押下済み（サーバに送信済みの可能性がある）にもかかわらず、
         # 成功（受付番号）とも既知の失敗パターンとも判定できない未知の画面。
@@ -858,10 +875,11 @@ class IpatPurchaser:
         # となり次tickで同じ馬券が再購入されてしまう（/code-review指摘）。
         # 実際に投票されたか不明なので need_confirmation として手動確認を促す。
         snippet = active_text.strip()[:200]
+        debug = await _debug_from_active_text("submit_unrecognized_screen")
         return {
             "status": "need_confirmation",
             "error_message": f"完了確認できず（投票結果不明・要手動確認）: {snippet}",
-            "debug": _debug_from_active_text(),
+            "debug": debug,
         }
 
     async def logout(self) -> None:
