@@ -202,6 +202,26 @@ class TestHasPurchaseLock:
         with patch("src.automation.data.ipat_purchaser.datetime.datetime", _FixedDatetime):
             assert self._run({"status": "in_progress", "updated_at": boundary_at}) is False
 
+    def test_query_orders_by_updated_at_desc_limit_one(self):
+        """
+        purchase_locksはtry_acquire_purchase_lock()のMERGE文により本来
+        race_date+race_idごとに1行しか存在しないはずだが、BigQueryには
+        一意制約が無いため、将来重複行が生じても最新の1行だけを見るよう
+        ORDER BY updated_at DESC LIMIT 1 を使っていること（/code-review指摘:
+        本PRが是正した「purchase_historyの最新行判定」と同じ防御的パターンが
+        欠けているとの指摘への回帰テスト）。
+        """
+        with patch("google.cloud.bigquery.Client") as mock_bq_cls:
+            mock_client = MagicMock()
+            mock_bq_cls.return_value = mock_client
+            mock_client.query.return_value.result.return_value = []
+
+            has_purchase_lock(self.PROJECT_ID, self.TARGET_DATE, self.RACE_ID)
+
+            query_text = mock_client.query.call_args[0][0]
+            assert "ORDER BY updated_at DESC" in query_text
+            assert "LIMIT 1" in query_text
+
 
 # ---------------------------------------------------------------------------
 # try_acquire_purchase_lock() のテスト（BigQuery Client をモック）
@@ -217,7 +237,7 @@ class TestTryAcquirePurchaseLock:
     TARGET_DATE = datetime.date(2026, 9, 19)
     RACE_ID = "06264507"
 
-    def _run_with_affected_rows(self, num_dml_affected_rows: int) -> bool:
+    def _run_with_affected_rows(self, num_dml_affected_rows: int):
         with patch("google.cloud.bigquery.Client") as mock_bq_cls:
             mock_client = MagicMock()
             mock_bq_cls.return_value = mock_client
@@ -227,12 +247,19 @@ class TestTryAcquirePurchaseLock:
             return try_acquire_purchase_lock(self.PROJECT_ID, self.TARGET_DATE, self.RACE_ID)
 
     def test_acquires_when_row_updated(self):
-        """MERGE文が1行更新/挿入した（未取得・失効済みだった）ならTrueを返すこと"""
-        assert self._run_with_affected_rows(1) is True
+        """
+        MERGE文が1行更新/挿入した（未取得・失効済みだった）なら、所有権
+        トークンとしてdatetimeを返すこと（Noneではない・/code-review指摘:
+        finalize_purchase_lock()のCASに渡すため、単なるboolではなく取得時の
+        updated_atそのものを返す設計）。
+        """
+        result = self._run_with_affected_rows(1)
+        assert result is not None
+        assert isinstance(result, datetime.datetime)
 
     def test_blocked_when_no_row_affected(self):
-        """MERGE文がどの行も更新しなかった（取得済みでブロック）ならFalseを返すこと"""
-        assert self._run_with_affected_rows(0) is False
+        """MERGE文がどの行も更新しなかった（取得済みでブロック）ならNoneを返すこと"""
+        assert self._run_with_affected_rows(0) is None
 
     def test_retries_once_on_concurrent_update_error_then_succeeds(self):
         """
@@ -251,7 +278,7 @@ class TestTryAcquirePurchaseLock:
             ]
             result = try_acquire_purchase_lock(self.PROJECT_ID, self.TARGET_DATE, self.RACE_ID)
 
-        assert result is True
+        assert result is not None
         assert mock_client.query.call_count == 2
         mock_sleep.assert_called_once()
 
@@ -295,12 +322,21 @@ class TestFinalizePurchaseLock:
     TARGET_DATE = datetime.date(2026, 9, 19)
     RACE_ID = "06264507"
 
+    def _mock_query_job(self, num_dml_affected_rows: int = 1) -> MagicMock:
+        mock_query_job = MagicMock()
+        mock_query_job.num_dml_affected_rows = num_dml_affected_rows
+        return mock_query_job
+
     def test_updates_lock_status(self):
+        acquired_at = datetime.datetime(2026, 9, 19, 12, 0, 0, tzinfo=datetime.timezone.utc)
         with patch("google.cloud.bigquery.Client") as mock_bq_cls:
             mock_client = MagicMock()
             mock_bq_cls.return_value = mock_client
+            mock_client.query.return_value = self._mock_query_job(1)
 
-            finalize_purchase_lock(self.PROJECT_ID, self.TARGET_DATE, self.RACE_ID, "success")
+            finalize_purchase_lock(
+                self.PROJECT_ID, self.TARGET_DATE, self.RACE_ID, "success", acquired_at
+            )
 
             mock_client.query.assert_called_once()
             query_text = mock_client.query.call_args[0][0]
@@ -310,6 +346,30 @@ class TestFinalizePurchaseLock:
             params = {p.name: p.value for p in job_config.query_parameters}
             assert params["status"] == "success"
             assert params["race_id"] == self.RACE_ID
+            # CAS（Compare-And-Swap）用の所有権トークンがWHERE句のパラメータとして
+            # 正しく渡されること（/code-review指摘・重大: これが無いと、処理が
+            # 長引く間に別tickへロックを奪われた場合でも無条件に上書きしてしまう）。
+            # google-cloud-bigqueryはTIMESTAMP型のScalarQueryParameterの値を
+            # 読み出し時にdatetimeへ正規化するため、isoformat()の文字列ではなく
+            # datetimeそのものと比較する。
+            assert params["acquired_at"] == acquired_at
+
+    def test_cas_mismatch_does_not_raise(self):
+        """
+        CAS条件（updated_at = acquired_at）に一致する行が無かった（＝処理が
+        長引く間に別tickへロックを奪われていた）場合、影響行数0で静かに
+        スキップし、例外を送出しないこと（/code-review指摘・重大）。
+        """
+        acquired_at = datetime.datetime(2026, 9, 19, 12, 0, 0, tzinfo=datetime.timezone.utc)
+        with patch("google.cloud.bigquery.Client") as mock_bq_cls:
+            mock_client = MagicMock()
+            mock_bq_cls.return_value = mock_client
+            mock_client.query.return_value = self._mock_query_job(0)
+
+            # 例外を送出しないこと
+            finalize_purchase_lock(
+                self.PROJECT_ID, self.TARGET_DATE, self.RACE_ID, "success", acquired_at
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -1392,6 +1452,11 @@ class TestProductionPurchaseFlow:
 
     TARGET_DATE = datetime.date(2026, 9, 19)
     RACE_ID = "06264507"
+    # try_acquire_purchase_lock() が返す所有権トークン（updated_at）のダミー値。
+    # 実際の値はテストの関心事ではないため、None でないことだけが重要
+    # （/code-review指摘・重大: bool の True/False ではなく datetime | None を
+    # 返す設計に変更したため、モックの戻り値もそれに合わせる）。
+    FAKE_ACQUIRED_AT = datetime.datetime(2026, 9, 19, 12, 0, 0, tzinfo=datetime.timezone.utc)
 
     def _target_race(self) -> dict:
         return {
@@ -1421,7 +1486,9 @@ class TestProductionPurchaseFlow:
             # 常に成功する」正常系（Issue #435）。ブロック挙動を検証するテストは
             # extra_patches で個別に上書きする。
             "src.automation.data.ipat_purchaser.has_purchase_lock": MagicMock(return_value=False),
-            "src.automation.data.ipat_purchaser.try_acquire_purchase_lock": MagicMock(return_value=True),
+            "src.automation.data.ipat_purchaser.try_acquire_purchase_lock": MagicMock(
+                return_value=self.FAKE_ACQUIRED_AT
+            ),
             "src.automation.data.ipat_purchaser.finalize_purchase_lock": MagicMock(),
             "src.utils.line_notify.push_messages": MagicMock(),
         }
@@ -1556,7 +1623,7 @@ class TestProductionPurchaseFlow:
         mock_ipat_cls = MagicMock()
         mock_ipat_cls.return_value.__aenter__ = AsyncMock(return_value=purchaser_instance)
         mock_ipat_cls.return_value.__aexit__ = AsyncMock(return_value=False)
-        mock_acquire = MagicMock(return_value=True)
+        mock_acquire = MagicMock(return_value=self.FAKE_ACQUIRED_AT)
 
         result = self._run({
             "src.automation.data.ipat_purchaser.try_acquire_purchase_lock": mock_acquire,
@@ -1595,7 +1662,7 @@ class TestProductionPurchaseFlow:
 
         assert result["status"] == "success"
         mock_finalize.assert_called_once_with(
-            "test-project", self.TARGET_DATE, self.RACE_ID, "success"
+            "test-project", self.TARGET_DATE, self.RACE_ID, "success", self.FAKE_ACQUIRED_AT
         )
 
     def test_releases_lock_when_bets_vanish_after_refresh(self):
@@ -1628,7 +1695,7 @@ class TestProductionPurchaseFlow:
         assert result["purchased_races"] == 0
         purchaser_instance.purchase_bets_for_race.assert_not_called()
         mock_finalize.assert_called_once_with(
-            "test-project", self.TARGET_DATE, self.RACE_ID, "failed"
+            "test-project", self.TARGET_DATE, self.RACE_ID, "failed", self.FAKE_ACQUIRED_AT
         )
 
     def test_skips_purchase_when_concurrent_tick_wins_race(self):
@@ -1649,8 +1716,8 @@ class TestProductionPurchaseFlow:
 
         result = self._run({
             # 事前チェック（has_purchase_lock）は通過するが、実購入直前の
-            # アトミック取得（try_acquire_purchase_lock）で他tickに敗れる
-            "src.automation.data.ipat_purchaser.try_acquire_purchase_lock": MagicMock(return_value=False),
+            # アトミック取得（try_acquire_purchase_lock）で他tickに敗れる（Noneを返す）
+            "src.automation.data.ipat_purchaser.try_acquire_purchase_lock": MagicMock(return_value=None),
             "src.automation.data.ipat_purchaser.fetch_recommended_bets": MagicMock(
                 return_value=[{"bet_type": "place", "horse_numbers": [3], "bet_amount": 300}]
             ),
@@ -1706,7 +1773,7 @@ class TestProductionPurchaseFlow:
         # ロックも「実際に送信済みの可能性がある」need_confirmationで恒久的に
         # ブロックすること（skipped_budgetが混在してもfailedに落ちない・Issue #435）。
         mock_finalize.assert_called_once_with(
-            "test-project", self.TARGET_DATE, self.RACE_ID, "need_confirmation"
+            "test-project", self.TARGET_DATE, self.RACE_ID, "need_confirmation", self.FAKE_ACQUIRED_AT
         )
 
     def test_unexpected_error_in_one_race_does_not_abort_other_races(self):
@@ -1763,7 +1830,7 @@ class TestProductionPurchaseFlow:
             ),
             patch(
                 "src.automation.data.ipat_purchaser.try_acquire_purchase_lock",
-                MagicMock(return_value=True),
+                MagicMock(return_value=self.FAKE_ACQUIRED_AT),
             ),
             patch(
                 "src.automation.data.ipat_purchaser.finalize_purchase_lock",
@@ -1924,7 +1991,7 @@ class TestProductionPurchaseFlow:
             ),
             patch(
                 "src.automation.data.ipat_purchaser.try_acquire_purchase_lock",
-                MagicMock(return_value=True),
+                MagicMock(return_value=self.FAKE_ACQUIRED_AT),
             ),
             patch(
                 "src.automation.data.ipat_purchaser.finalize_purchase_lock",
@@ -2199,7 +2266,7 @@ class TestProductionPurchaseFlow:
             ),
             patch(
                 "src.automation.data.ipat_purchaser.try_acquire_purchase_lock",
-                MagicMock(return_value=True),
+                MagicMock(return_value=self.FAKE_ACQUIRED_AT),
             ),
             patch(
                 "src.automation.data.ipat_purchaser.finalize_purchase_lock",
@@ -2354,7 +2421,7 @@ class TestProductionPurchaseFlow:
             ),
             patch(
                 "src.automation.data.ipat_purchaser.try_acquire_purchase_lock",
-                MagicMock(return_value=True),
+                MagicMock(return_value=self.FAKE_ACQUIRED_AT),
             ),
             patch(
                 "src.automation.data.ipat_purchaser.finalize_purchase_lock",

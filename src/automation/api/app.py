@@ -1501,13 +1501,17 @@ async def _purchase_pipeline_async(
          [dry_run=True]  LINE通知のみ
          [dry_run=False]
            7a. 購入ロックをアトミックに取得（try_acquire_purchase_lock。取得
-               できなければ他tickが既に処理済みのためスキップ。Issue #435）
+               できなければ他tickが既に処理済みのためスキップ。取得できた場合、
+               戻り値の updated_at を所有権トークン（acquired_at）として保持
+               する。Issue #435）
            7b. 最新オッズで investment_decisions を再度上書き
                → 5bからの経過時間がある分、購入直前にもう一度refreshすることで
                  オッズの鮮度を保つ（意図的な二重refresh。5b/6/7参照）
                失敗時はフォールバック（既存の investment_decisions を使用）
            7c. 予算チェック → 購入（送信前フェーズは自動リトライ） → 履歴保存
-               → 結果確定後、購入ロックを最終ステータスへ更新（finalize_purchase_lock）
+               → 結果確定後、購入ロックを最終ステータスへ更新
+                 （finalize_purchase_lock。acquired_atをCAS条件に渡し、処理が
+                 長引く間に別tickへロックを奪われていた場合は上書きしない）
       8. [dry_run=False] ログアウト
     """
     from src.automation.data.ipat_purchaser import (
@@ -1950,8 +1954,13 @@ async def _purchase_pipeline_async(
             # ロック解放（finalize_purchase_lock）をこの場合にまで行うと、並行tickが
             # 正当に保持している（あるいは既にsuccess等へ更新済みの）ロックを誤って
             # 上書き・解放してしまい、二重購入防止という本PRの目的そのものを破ってしまう
-            # （/code-review指摘・重大）。取得成功が確定した後だけTrueにする。
-            lock_acquired = False
+            # （/code-review指摘・重大）。取得成功が確定した後だけ、この変数に
+            # try_acquire_purchase_lock() が返した所有権トークン（updated_at）を
+            # 格納する。finalize_purchase_lock() 側はこれをCASの条件として使い、
+            # 処理が IN_PROGRESS_STALE_MINUTES を超えて長引き別tickに既にロックを
+            # 奪われていた場合、その別tickの正当な状態を誤って上書きしない
+            # （/code-review指摘・重大）。
+            acquired_at: datetime.datetime | None = None
             # 例外ハンドラ側でもロックの最終ステータスを「実際に金銭が動いた
             # 可能性があるか」で正しく判定できるよう、tryブロックの外（例外が
             # どの時点で発生しても必ず定義済みになる位置）で初期化しておく
@@ -1967,10 +1976,10 @@ async def _purchase_pipeline_async(
                 # （Issue #435）。「チェック→マーカー書き込み」の2クエリ構成だった
                 # 旧実装と異なり、取得判定とマーカー書き込みが単一のDML文で行われる
                 # ため、並行tickによる二重購入を真に排他制御できる。
-                if not try_acquire_purchase_lock(project_id, target_date, race_id):
+                acquired_at = try_acquire_purchase_lock(project_id, target_date, race_id)
+                if acquired_at is None:
                     logger.info(f"race_id={race_id}: 直前の再確認で既に処理済みと判明 → スキップ")
                     continue
-                lock_acquired = True
 
                 # 購入直前にもう一度refresh（事前チェックからの経過時間の分、鮮度を保つ）
                 bets = _refresh_and_fetch_bets(race_id)
@@ -1980,7 +1989,7 @@ async def _purchase_pipeline_async(
                     # にもかかわらずロックが IN_PROGRESS_STALE_MINUTES 分間ブロックし
                     # 続け、当該レースの残り購入ウィンドウ（-5〜5分＝10分間）を
                     # ほぼ使い切ってしまう（/code-review指摘）。
-                    _safe_finalize_purchase_lock(project_id, target_date, race_id, "failed")
+                    _safe_finalize_purchase_lock(project_id, target_date, race_id, "failed", acquired_at)
                     continue
 
                 bets_failed = 0
@@ -2099,6 +2108,7 @@ async def _purchase_pipeline_async(
                 _safe_finalize_purchase_lock(
                     project_id, target_date, race_id,
                     _purchase_lock_final_status(bets_need_confirmation, bets_purchased),
+                    acquired_at,
                 )
 
                 race_results.append({
@@ -2112,12 +2122,14 @@ async def _purchase_pipeline_async(
                 })
             except Exception as e:
                 logger.error(f"race_id={race_id}: 購入処理中に想定外のエラー: {e}", exc_info=True)
-                # lock_acquired=Trueのときだけロックを更新する（/code-review指摘・
+                # acquired_atがNoneでないときだけロックを更新する（/code-review指摘・
                 # 重大）。try_acquire_purchase_lock()自体が例外を送出したケース
-                # （lock_acquired=False）では自分はロックを一切保持していないため、
+                # （acquired_at=None）では自分はロックを一切保持していないため、
                 # ここでfinalizeすると並行tickが正当に保持中のロック（in_progress/
                 # success/need_confirmation）を誤って上書きし、二重購入防止という
-                # 本来の目的を破ってしまう。
+                # 本来の目的を破ってしまう。取得できていた場合もfinalize_purchase_lock()
+                # 側のCAS（acquired_atをWHERE句に含める）により、処理が長引く間に
+                # 別tickへロックを奪われていれば更新自体が0行で無視される。
                 #
                 # 更新する場合も、常にfailedで上書きしてはいけない（/code-review
                 # 指摘・重大）。bets_purchased/bets_need_confirmationはtryブロックの
@@ -2127,10 +2139,11 @@ async def _purchase_pipeline_async(
                 # 正しくsuccess/need_confirmationと判定しfailedへの誤った上書きを防ぐ。
                 # 想定外エラーの詳細（purchase_history相当の監査証跡）はログ・LINE
                 # 通知に残るため、purchase_locksには結果ステータスのみ記録する。
-                if lock_acquired:
+                if acquired_at is not None:
                     _safe_finalize_purchase_lock(
                         project_id, target_date, race_id,
                         _purchase_lock_final_status(bets_need_confirmation, bets_purchased),
+                        acquired_at,
                     )
                 else:
                     logger.warning(

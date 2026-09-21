@@ -220,6 +220,8 @@ launchctl list | grep com.keiba.monthly-retrain      # 登録確認
      3. 推奨馬券を取得し直し、予算チェック → ウィザード形式で馬券購入（`IpatPurchaser`）
         → `predictions.purchase_history` に保存（実際の馬券購入行のみ） → LINE通知
         → 結果確定後、`finalize_purchase_lock()` で購入ロックを最終ステータスへ更新
+          （1のtry_acquire_purchase_lock()が返した取得時刻をCAS条件に使い、処理が
+          15分を超えて長引く間に別tickへロックを奪われていた場合は上書きしない）
         - 投票送信**前**（通常投票クリック〜合計金額入力）の失敗は、発走まで余裕がある限り
           再ログインして最大3回まで自動リトライ
         - 投票送信**後**のエラー、または完了確認画面が既知の成功／失敗パターンに一致しない

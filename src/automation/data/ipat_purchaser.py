@@ -1133,7 +1133,7 @@ def try_acquire_purchase_lock(
     project_id: str,
     target_date: datetime.date,
     race_id: str,
-) -> bool:
+) -> datetime.datetime | None:
     """
     対象レースの購入ロックを、BigQuery MERGE文でアトミックに取得する（Issue #435）。
 
@@ -1152,11 +1152,22 @@ def try_acquire_purchase_lock(
     BigQueryはDML同士が同一テーブルへ同時実行されると「concurrent update」
     エラーで片方を失敗させることがあるため、その場合は短い間隔を空けて
     再試行する（LOCK_ACQUIRE_MAX_ATTEMPTS回まで）。再試行時点では相手側の
-    書き込みが確定しているため、正しく「取得できない（False）」と判定できる。
+    書き込みが確定しているため、正しく「取得できない（None）」と判定できる。
+
+    重要（/code-review指摘・重大）: このtickの処理（ログイン・リトライ含む）が
+    IN_PROGRESS_STALE_MINUTES（15分）を超えて長引くと、その間に別tickが
+    このロックを「失効した」と見なして再取得しうる。その場合、最初のtickが
+    処理完了後にfinalize_purchase_lock()を呼んでも、後発tickの正当な状態を
+    上書きしてはならない。そのための所有権トークンとして、取得に成功した際に
+    このMERGE文が書き込んだ updated_at をそのまま返す。呼び出し元は
+    finalize_purchase_lock()にこの値をそのまま渡し、CAS（Compare-And-Swap）で
+    「まだ自分が所有者のときだけ更新する」ことを保証する。
 
     Returns:
-        True: ロックを取得できた（このtickが購入処理を行ってよい）
-        False: 既に取得済みのためブロック（このtickは購入処理をスキップすべき）
+        取得できた場合: このtickが書き込んだ updated_at（UTC）。
+                        finalize_purchase_lock()の acquired_at 引数に渡すこと。
+        取得できなかった場合: None（既に取得済みのためブロック。購入処理を
+                        スキップすべき）
     """
     client = bigquery.Client(project=project_id)
     now = datetime.datetime.now(datetime.timezone.utc)
@@ -1192,7 +1203,8 @@ def try_acquire_purchase_lock(
                 logger.info(
                     f"race_id={race_id}: 購入ロック取得済み（他tick/前回処理） → 取得できず"
                 )
-            return acquired
+                return None
+            return now
         except Exception as e:
             # BigQueryはDML同時実行の競合を構造化されたエラーコード（例外クラスや
             # errorsのreasonフィールド）で区別せず、常にBadRequest（400）に
@@ -1218,20 +1230,31 @@ def finalize_purchase_lock(
     target_date: datetime.date,
     race_id: str,
     status: str,
+    acquired_at: datetime.datetime,
 ) -> None:
     """
     購入結果が確定した後、対象レースの購入ロックを最終ステータスへ更新する（Issue #435）。
 
     success・need_confirmationは以後の自動購入を恒久的にブロックし、それ以外
     （failed等）は次tickでの再挑戦を許可する（_is_lock_blocking()のルールを参照）。
-    try_acquire_purchase_lock() が成功した後は必ずロック行が存在するため、
-    ここではUPDATEのみで足りる。
+
+    CAS（Compare-And-Swap、/code-review指摘・重大）: acquired_at は
+    try_acquire_purchase_lock() が取得時に返した updated_at（所有権トークン）。
+    WHERE句で updated_at = @acquired_at を課すことで、「自分がまだこのロックの
+    所有者であるときだけ」更新する。このtickの処理（ログイン・リトライ含む）が
+    IN_PROGRESS_STALE_MINUTES（15分）を超えて長引くと、その間に別tickがこの
+    ロックを失効済みと見なして再取得している可能性がある。無条件のUPDATEでは、
+    その場合に自分の古い判定（success/failed等）で後発tickの正当な状態
+    （in_progress/success/need_confirmation）を誤って上書きしてしまい、
+    さらに別tickへの再取得を招いて二重購入に直結する。CAS条件により、その
+    ケースでは影響行数が0になり、何も更新しない（下記ログで検知可能）。
     """
     client = bigquery.Client(project=project_id)
     query = """
         UPDATE `{project}.predictions.purchase_locks`
         SET status = @status, updated_at = @now
         WHERE race_date = @race_date AND race_id = @race_id
+          AND updated_at = @acquired_at
     """.format(project=project_id)
 
     job_config = bigquery.QueryJobConfig(
@@ -1242,10 +1265,19 @@ def finalize_purchase_lock(
             ),
             bigquery.ScalarQueryParameter("race_date", "DATE", target_date.isoformat()),
             bigquery.ScalarQueryParameter("race_id", "STRING", race_id),
+            bigquery.ScalarQueryParameter("acquired_at", "TIMESTAMP", acquired_at.isoformat()),
         ]
     )
-    client.query(query, job_config=job_config).result()
-    logger.info(f"race_id={race_id}: 購入ロックを status={status} に更新しました")
+    query_job = client.query(query, job_config=job_config)
+    query_job.result()
+    if (query_job.num_dml_affected_rows or 0) == 0:
+        logger.warning(
+            f"race_id={race_id}: 購入ロックのCAS更新が0行でした（status={status}）。"
+            f"処理が長引く間に別tickへロックを奪われた可能性があるため、"
+            f"更新をスキップしました（後発tickの状態を保護）"
+        )
+    else:
+        logger.info(f"race_id={race_id}: 購入ロックを status={status} に更新しました")
 
 
 def fetch_daily_spent_amount(
