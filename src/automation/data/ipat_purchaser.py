@@ -89,6 +89,15 @@ DEBUG_CAPTURE_TIMEOUT_MS = 5_000
 # 同一テーブルへのDML同士が同時実行されると片方を失敗させることがあるため
 # （Issue #435）、短い間隔を空けて再試行する。再試行時点では相手側の書き込みが
 # 確定しているため、正しく「取得できない」と判定できる。
+#
+# 既知のトレードオフ（/code-review指摘）: このリトライは time.sleep() による
+# 同期的な待機であり、async関数（_purchase_pipeline_async）から直接呼ばれるため
+# イベントループを最大 LOCK_ACQUIRE_MAX_ATTEMPTS × 本値だけブロックしうる。
+# ただしこの購入エンドポイントをホストするCloud Runサービスは
+# `--concurrency=1`（infrastructure/scripts/deploy_cloud_run.sh）でデプロイして
+# おり、1インスタンスは常に1リクエストしか処理しないため、他の同時リクエストへの
+# 影響はない。このモジュールの他のBigQuery呼び出し（fetch_recommended_bets等）も
+# 同様に同期的でありasyncio.to_threadでラップしていないため、この設計と一貫している。
 LOCK_ACQUIRE_MAX_ATTEMPTS = 3
 LOCK_ACQUIRE_RETRY_DELAY_SECONDS = 0.5
 
@@ -1066,7 +1075,12 @@ def _is_lock_blocking(status: str | None, updated_at: datetime.datetime | None) 
         age_minutes = (
             datetime.datetime.now(datetime.timezone.utc) - updated_at
         ).total_seconds() / 60
-        return age_minutes <= IN_PROGRESS_STALE_MINUTES
+        # try_acquire_purchase_lock()のMERGE文（updated_at > @stale_before で
+        # 「新鮮＝ブロック」を判定）と境界を一致させるため、ここも厳密な不等号を
+        # 使う（/code-review指摘）。<=（以下）だと、ちょうど境界の瞬間に
+        # has_purchase_lock()はブロックと判定する一方、MERGE文は取得可能と
+        # 判定してしまい、「同じルール」であるはずの2つの判定が食い違いうる。
+        return age_minutes < IN_PROGRESS_STALE_MINUTES
     return False
 
 

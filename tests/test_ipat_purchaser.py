@@ -182,6 +182,26 @@ class TestHasPurchaseLock:
         stale_at = now_utc - datetime.timedelta(minutes=IN_PROGRESS_STALE_MINUTES + 1)
         assert self._run({"status": "in_progress", "updated_at": stale_at}) is False
 
+    def test_boundary_uses_strict_inequality_matching_merge_sql(self):
+        """
+        try_acquire_purchase_lock()のMERGE文は updated_at > @stale_before
+        （厳密な不等号）で「新鮮＝ブロック」を判定しており、has_purchase_lock()
+        側もちょうど境界（age_minutes == IN_PROGRESS_STALE_MINUTES）では
+        ブロックしないよう、同じ厳密な不等号（<）を使うこと（/code-review指摘:
+        以前は<=を使っており、ちょうど境界の瞬間に2つの判定が食い違いえた）。
+        実時刻のズレに左右されないよう datetime.now を固定してテストする。
+        """
+        fixed_now = datetime.datetime(2026, 9, 19, 12, 0, 0, tzinfo=datetime.timezone.utc)
+        boundary_at = fixed_now - datetime.timedelta(minutes=IN_PROGRESS_STALE_MINUTES)
+
+        class _FixedDatetime(datetime.datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return fixed_now
+
+        with patch("src.automation.data.ipat_purchaser.datetime.datetime", _FixedDatetime):
+            assert self._run({"status": "in_progress", "updated_at": boundary_at}) is False
+
 
 # ---------------------------------------------------------------------------
 # try_acquire_purchase_lock() のテスト（BigQuery Client をモック）
@@ -1781,6 +1801,33 @@ class TestProductionPurchaseFlow:
         finalize_calls = {c.args[2]: c.args[3] for c in mock_finalize.call_args_list}
         assert finalize_calls["06264507"] == "failed"
         assert finalize_calls["09264507"] == "success"
+
+    def test_does_not_finalize_lock_when_acquire_itself_raises(self):
+        """
+        try_acquire_purchase_lock() 自体が例外を送出した場合（BigQueryの
+        concurrent updateエラーでリトライを使い切った等）、そのMERGE文は
+        一度もコミットされておらず自分はロックを保持していないため、
+        finalize_purchase_lock() を呼んではならないこと（/code-review指摘・
+        重大）。ここでfinalizeしてしまうと、並行tickが正当に保持している
+        （あるいは既にsuccess等へ更新済みの）ロックを誤って上書きし、
+        二重購入防止という本PRの目的そのものを破ってしまう。
+        """
+        mock_ipat_cls = MagicMock()
+        mock_finalize = MagicMock()
+
+        result = self._run({
+            "src.automation.data.ipat_purchaser.try_acquire_purchase_lock": MagicMock(
+                side_effect=RuntimeError("BQ一時障害（リトライ枯渇）")
+            ),
+            "src.automation.data.ipat_purchaser.fetch_recommended_bets": MagicMock(
+                return_value=[{"bet_type": "place", "horse_numbers": [3], "bet_amount": 300}]
+            ),
+            "src.automation.data.ipat_purchaser.IpatPurchaser": mock_ipat_cls,
+            "src.automation.data.ipat_purchaser.finalize_purchase_lock": mock_finalize,
+        })
+
+        assert result["results"][0]["status"] == "error"
+        mock_finalize.assert_not_called()
 
     def test_partial_save_failure_does_not_mask_success_as_error(self):
         """

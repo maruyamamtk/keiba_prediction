@@ -1936,6 +1936,15 @@ async def _purchase_pipeline_async(
             # try で囲み、失敗時はロックを解放した上でこのレースだけスキップして
             # 次レースの処理を継続する。
             budget_exceeded = False
+            # このレースの購入ロックを自分が取得できたかどうか。try_acquire_purchase_lock()
+            # がリトライ枯渇等で例外を送出した場合、そのMERGE文は一度もコミットされて
+            # いない（BigQueryのDML同時実行時の競合エラーはトランザクション全体を
+            # アボートするため）ため、自分はロックを保持していない。except節での
+            # ロック解放（finalize_purchase_lock）をこの場合にまで行うと、並行tickが
+            # 正当に保持している（あるいは既にsuccess等へ更新済みの）ロックを誤って
+            # 上書き・解放してしまい、二重購入防止という本PRの目的そのものを破ってしまう
+            # （/code-review指摘・重大）。取得成功が確定した後だけTrueにする。
+            lock_acquired = False
             try:
                 # 事前チェックからここまでに時間が空くため（ログイン待ち・前レースの
                 # 処理時間）、購入ロックをBigQuery MERGE文でアトミックに取得する
@@ -1945,6 +1954,7 @@ async def _purchase_pipeline_async(
                 if not try_acquire_purchase_lock(project_id, target_date, race_id):
                     logger.info(f"race_id={race_id}: 直前の再確認で既に処理済みと判明 → スキップ")
                     continue
+                lock_acquired = True
 
                 # 購入直前にもう一度refresh（事前チェックからの経過時間の分、鮮度を保つ）
                 bets = _refresh_and_fetch_bets(race_id)
@@ -2095,10 +2105,21 @@ async def _purchase_pipeline_async(
                 })
             except Exception as e:
                 logger.error(f"race_id={race_id}: 購入処理中に想定外のエラー: {e}", exc_info=True)
-                # failedで解放し次tickでの再挑戦を許可する。想定外エラーの詳細
-                # （purchase_history相当の監査証跡）はログ・LINE通知に残るため、
-                # purchase_locksには結果ステータスのみ記録する（Issue #435）。
-                _safe_finalize_purchase_lock(project_id, target_date, race_id, "failed")
+                # lock_acquired=Trueのときだけfailedで解放する（/code-review指摘・
+                # 重大）。try_acquire_purchase_lock()自体が例外を送出したケース
+                # （lock_acquired=False）では自分はロックを一切保持していないため、
+                # ここでfinalizeすると並行tickが正当に保持中のロック（in_progress/
+                # success/need_confirmation）を誤って上書きし、二重購入防止という
+                # 本来の目的を破ってしまう。想定外エラーの詳細（purchase_history
+                # 相当の監査証跡）はログ・LINE通知に残るため、purchase_locksには
+                # 自分が保持しているときのみ結果ステータスを記録する（Issue #435）。
+                if lock_acquired:
+                    _safe_finalize_purchase_lock(project_id, target_date, race_id, "failed")
+                else:
+                    logger.warning(
+                        f"race_id={race_id}: 購入ロックを取得できていない可能性があるため、"
+                        f"ロックの更新はスキップします（並行tickの状態を保護）"
+                    )
                 _send_line(
                     f"【エラー】{venue_name}{race_number}R の購入処理中に想定外のエラーが発生しました: {e}"
                 )
