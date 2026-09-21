@@ -1268,16 +1268,34 @@ def finalize_purchase_lock(
             bigquery.ScalarQueryParameter("acquired_at", "TIMESTAMP", acquired_at.isoformat()),
         ]
     )
-    query_job = client.query(query, job_config=job_config)
-    query_job.result()
-    if (query_job.num_dml_affected_rows or 0) == 0:
-        logger.warning(
-            f"race_id={race_id}: 購入ロックのCAS更新が0行でした（status={status}）。"
-            f"処理が長引く間に別tickへロックを奪われた可能性があるため、"
-            f"更新をスキップしました（後発tickの状態を保護）"
-        )
-    else:
-        logger.info(f"race_id={race_id}: 購入ロックを status={status} に更新しました")
+
+    # try_acquire_purchase_lock()と同じ「concurrent update」リトライ
+    # （/code-review指摘）。他tickのMERGE/UPDATEと衝突すると、ここが失敗した
+    # ままロックがin_progressに取り残され、-5〜5分の購入ウィンドウを過ぎるまで
+    # 気づかれない可能性がある（二重購入には直結しないフェイルセーフだが、
+    # 本来リトライ可能な失敗を見逃す可用性上のリスク）。
+    for attempt in range(1, LOCK_ACQUIRE_MAX_ATTEMPTS + 1):
+        try:
+            query_job = client.query(query, job_config=job_config)
+            query_job.result()
+            if (query_job.num_dml_affected_rows or 0) == 0:
+                logger.warning(
+                    f"race_id={race_id}: 購入ロックのCAS更新が0行でした（status={status}）。"
+                    f"処理が長引く間に別tickへロックを奪われた可能性があるため、"
+                    f"更新をスキップしました（後発tickの状態を保護）"
+                )
+            else:
+                logger.info(f"race_id={race_id}: 購入ロックを status={status} に更新しました")
+            return
+        except Exception as e:
+            if "concurrent update" in str(e).lower() and attempt < LOCK_ACQUIRE_MAX_ATTEMPTS:
+                logger.warning(
+                    f"race_id={race_id}: 購入ロック更新中に同時更新の衝突"
+                    f"（{attempt}/{LOCK_ACQUIRE_MAX_ATTEMPTS}回目） → 再試行します: {e}"
+                )
+                time.sleep(LOCK_ACQUIRE_RETRY_DELAY_SECONDS)
+                continue
+            raise
 
 
 def fetch_daily_spent_amount(

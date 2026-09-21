@@ -371,6 +371,30 @@ class TestFinalizePurchaseLock:
                 self.PROJECT_ID, self.TARGET_DATE, self.RACE_ID, "success", acquired_at
             )
 
+    def test_retries_once_on_concurrent_update_error_then_succeeds(self):
+        """
+        try_acquire_purchase_lock()と同様、BigQueryの「concurrent update」
+        エラーが1回だけ発生した場合は再試行して成功すること（/code-review指摘:
+        以前はfinalize側にこのリトライが無く、他tickとの衝突で失敗すると
+        ロックがin_progressのまま購入ウィンドウを過ぎるまで気づかれない
+        可用性リスクがあった）。
+        """
+        acquired_at = datetime.datetime(2026, 9, 19, 12, 0, 0, tzinfo=datetime.timezone.utc)
+        with patch("google.cloud.bigquery.Client") as mock_bq_cls, patch("time.sleep") as mock_sleep:
+            mock_client = MagicMock()
+            mock_bq_cls.return_value = mock_client
+            mock_client.query.side_effect = [
+                RuntimeError("Could not serialize access due to concurrent update"),
+                self._mock_query_job(1),
+            ]
+
+            finalize_purchase_lock(
+                self.PROJECT_ID, self.TARGET_DATE, self.RACE_ID, "success", acquired_at
+            )
+
+        assert mock_client.query.call_count == 2
+        mock_sleep.assert_called_once()
+
 
 # ---------------------------------------------------------------------------
 # IpatPurchaser.login() のテスト（Playwright をモック）
