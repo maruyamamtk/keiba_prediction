@@ -184,7 +184,7 @@ launchctl list | grep com.keiba.monthly-retrain      # 登録確認
 2. 現在時刻の **-5〜5分後**に発走するレースを抽出（`window_minutes_before=5, window_minutes_after=-5`）
    - マイナス側（発走を過ぎたレース）は、直前tickでの購入失敗を次tickで再挑戦するためのウィンドウ（Issue #433）。
      既に購入成功済み／要確認（need_confirmation）／処理中（in_progress。下記参照）のレースは
-     `has_purchase_attempt_recorded()` で除外し二重購入を防ぐ。
+     `has_purchase_lock()` で除外し二重購入を防ぐ（読み取り専用の事前チェック。Issue #435）。
    - 対象レースが0件の場合はそのまま終了（skipped）
 3. 対象レースの最新オッズを netkeiba からリアルタイムスクレイピング → `predictions.daily_odds` に上書き保存
    - 失敗時はフォールバック（既存の `daily_odds` を使用）
@@ -200,14 +200,28 @@ launchctl list | grep com.keiba.monthly-retrain      # 登録確認
    - `dry_run=true`: `_refresh_investment_decisions_for_race()` で最新オッズを反映した上で推奨馬券をLINE通知のみ
      （IPATログイン・購入は行わない）
    - `dry_run=false`: IPAT SP版にログイン → 購入対象レースごとに:
-     1. 直前の再確認（他tickが並行して処理済みでないか）
-     2. `predictions.purchase_history` へ `status='in_progress'` のマーカーを記録
+     1. `predictions.purchase_locks`（レース単位・1行）への`MERGE`文で購入ロックを
+        アトミックに取得（`try_acquire_purchase_lock()`。並行tickによる直前の
+        再確認と取得を単一のDML文で行う真の排他制御。Issue #435）
         （ログイン・リトライで処理時間が伸びても、次tick(5分後)が同じレースを
         重複購入しないようにするための一時ロック。IN_PROGRESS_STALE_MINUTES=15分で自然失効）
-     3. `_refresh_investment_decisions_for_race()` で最新オッズを使い投資戦略を再計算
+
+        > **デプロイ時の注意（Issue #435移行）**: 旧ロック機構（`purchase_history`
+        > への`in_progress`マーカー）と新ロック機構（`predictions.purchase_locks`）は
+        > 互いを一切参照しない。`infrastructure/scripts/deploy_cloud_run.sh`は
+        > `--no-traffic`を使わない即時切替のデプロイのため、稼働中の購入tick
+        > （発走-5〜+5分の対象レース処理中）とデプロイが重なると、旧リビジョンの
+        > インスタンスが処理を続けている間に新リビジョンが同じレースを別途
+        > 処理してしまい、互いのロックが見えず二重購入しうる。このPR（Issue #435）
+        > を含む本番デプロイは、土日 8:00〜19:55（`race-day-purchase`/
+        > `race-day-purchase-summer`の稼働時間帯）を避けて実施すること。
+     2. `_refresh_investment_decisions_for_race()` で最新オッズを使い投資戦略を再計算
         → `predictions.investment_decisions` を上書き保存（失敗時はフォールバック）
-     4. 推奨馬券を取得し直し、予算チェック → ウィザード形式で馬券購入（`IpatPurchaser`）
-        → `predictions.purchase_history` に保存 → LINE通知
+     3. 推奨馬券を取得し直し、予算チェック → ウィザード形式で馬券購入（`IpatPurchaser`）
+        → `predictions.purchase_history` に保存（実際の馬券購入行のみ） → LINE通知
+        → 結果確定後、`finalize_purchase_lock()` で購入ロックを最終ステータスへ更新
+          （1のtry_acquire_purchase_lock()が返した取得時刻をCAS条件に使い、処理が
+          15分を超えて長引く間に別tickへロックを奪われていた場合は上書きしない）
         - 投票送信**前**（通常投票クリック〜合計金額入力）の失敗は、発走まで余裕がある限り
           再ログインして最大3回まで自動リトライ
         - 投票送信**後**のエラー、または完了確認画面が既知の成功／失敗パターンに一致しない
@@ -230,6 +244,7 @@ launchctl list | grep com.keiba.monthly-retrain      # 登録確認
 | IPATログイン | スキップ | 実行 |
 | 馬券購入 | スキップ | 実行 |
 | purchase_history 保存 | スキップ | 保存（実際の購入結果） |
+| purchase_locks 取得・更新 | スキップ | 実行（二重購入防止ロック） |
 | LINE通知 | 送信（「ドライラン」表記） | 送信 |
 
 **リクエストボディ**: `{}` （`dry_run` デフォルトは `false`・本番購入モード）

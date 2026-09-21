@@ -1500,13 +1500,18 @@ async def _purchase_pipeline_async(
       7. 各レースについて:
          [dry_run=True]  LINE通知のみ
          [dry_run=False]
-           7a. 5a を再確認（ログイン待ち等で時間が空いた分の再チェック）
-           7b. in_progress マーカーを記録（購入直前。次tickとの二重購入防止）
-           7c. 最新オッズで investment_decisions を再度上書き
+           7a. 購入ロックをアトミックに取得（try_acquire_purchase_lock。取得
+               できなければ他tickが既に処理済みのためスキップ。取得できた場合、
+               戻り値の updated_at を所有権トークン（acquired_at）として保持
+               する。Issue #435）
+           7b. 最新オッズで investment_decisions を再度上書き
                → 5bからの経過時間がある分、購入直前にもう一度refreshすることで
                  オッズの鮮度を保つ（意図的な二重refresh。5b/6/7参照）
                失敗時はフォールバック（既存の investment_decisions を使用）
-           7d. 予算チェック → 購入（送信前フェーズは自動リトライ） → 履歴保存
+           7c. 予算チェック → 購入（送信前フェーズは自動リトライ） → 履歴保存
+               → 結果確定後、購入ロックを最終ステータスへ更新
+                 （finalize_purchase_lock。acquired_atをCAS条件に渡し、処理が
+                 長引く間に別tickへロックを奪われていた場合は上書きしない）
       8. [dry_run=False] ログアウト
     """
     from src.automation.data.ipat_purchaser import (
@@ -1516,9 +1521,10 @@ async def _purchase_pipeline_async(
         fetch_recommended_bets,
         fetch_today_races_with_start_time,
         fetch_target_races,
-        has_purchase_attempt_recorded,
-        mark_purchase_attempt_in_progress,
+        finalize_purchase_lock,
+        has_purchase_lock,
         save_purchase_record,
+        try_acquire_purchase_lock,
         BET_TYPE_MAP,
         DAILY_BUDGET_LIMIT,
     )
@@ -1555,7 +1561,8 @@ async def _purchase_pipeline_async(
     # 一切行われない（asyncio.CancelledErrorすら発生しない、プロセスの唐突な
     # 終了）ため、TICK_TIME_BUDGET_SECONDS を十分な余裕を持って設定し、
     # 超過した時点で残りのレースは次tickに委ねる（次tickのウィンドウ判定・
-    # has_purchase_attempt_recorded による通常の再挑戦フローに乗る）。
+    # 購入ロック（has_purchase_lock/try_acquire_purchase_lock）による
+    # 通常の再挑戦フローに乗る）。
     # 注意: Cloud Scheduler側の attempt-deadline
     # （infrastructure/scripts/setup_scheduler.sh の race-day-purchase(-summer)）
     # が本値より短いと、Scheduler自体がCloud Run処理継続中にタイムアウト・
@@ -1573,7 +1580,7 @@ async def _purchase_pipeline_async(
     # start_time は JST で格納されているため、now も JST で取得する
     # 5分おきスケジューラで window_minutes_after=0 のままだと、1回失敗したレースは
     # 二度と対象にならず購入機会を完全に失っていた（Issue #433, 2026-09-19本番障害）。
-    # ウィンドウを10分に拡張し、二重購入は has_purchase_attempt_recorded() で防止する。
+    # ウィンドウを10分に拡張し、二重購入は購入ロック（Issue #435）で防止する。
     now = datetime.datetime.now(ZoneInfo("Asia/Tokyo"))
     target_races = fetch_target_races(all_races, now, window_minutes_before=5, window_minutes_after=-5)
 
@@ -1710,39 +1717,64 @@ async def _purchase_pipeline_async(
             for b in bets
         )
 
-    def _safe_save_purchase_record(*args, **kwargs) -> None:
+    def _safe_call_with_one_retry(fn, label: str, *args, **kwargs) -> None:
         """
-        save_purchase_record() を例外安全に呼ぶラッパー。
+        BQ書き込み系の関数を例外安全に呼ぶ共通ラッパー（/code-review指摘:
+        _safe_save_purchase_record/_safe_finalize_purchase_lockがほぼ同一の
+        「1回だけ即時リトライ・失敗しても伝播させない」ロジックを重複して
+        持っていたため統合。リトライ方針の変更が片方にだけ反映され両者の挙動が
+        乖離するのを防ぐ）。
 
-        1レースにつき複数回 save_purchase_record を呼ぶ箇所（1馬券ごとに1回）で、
-        そのうちの1回がBQ一時障害等で失敗すると、例外が1レース分の処理を囲む
-        try/exceptまで伝播し、「想定外のエラー」用のfailedマーカーで
+        呼び出し元がここで例外を止める理由: これらの書き込みが1レースの処理
+        全体を囲むtry/exceptまで伝播すると、「想定外のエラー」用の処理で
         上書きされてしまう。しかし実際にはIPATへの投票が既にsuccess/
         need_confirmationとして確定している場合、それをfailed（＝次tickで
         自動再購入してよい）に見せかけてしまうのは二重購入に直結する
-        （/code-review指摘）。個々の保存呼び出しの失敗はログのみに留め、
-        レース全体の処理を止めない。
-
-        1回だけ即時リトライする（/code-review指摘）。この関数は
-        mark_purchase_attempt_in_progress() が書いたin_progressマーカーを
-        「解消」する唯一の手段になる呼び出し（例: skipped_budget記録）でも
-        使われており、ここが失敗すると例外を伝播させない設計上、他に
-        リカバリ手段がなくマーカーが有効期限（IN_PROGRESS_STALE_MINUTES）
-        まで残ってしまう。完全な保証にはならないが、単発の一時的な
-        書き込みエラーはこれで大半吸収できる。
+        （/code-review指摘）。個々の書き込み失敗はログのみに留め、レース全体の
+        処理を止めない。完全な保証にはならないが、単発の一時的な書き込み
+        エラーは1回だけの即時リトライで大半吸収できる。
         """
         try:
-            save_purchase_record(*args, **kwargs)
+            fn(*args, **kwargs)
             return
         except Exception as e:
-            logger.warning(f"purchase_history への保存に失敗、1回だけ再試行します: {e}")
+            logger.warning(f"{label}に失敗、1回だけ再試行します: {e}")
         try:
-            save_purchase_record(*args, **kwargs)
+            fn(*args, **kwargs)
         except Exception as e:
-            logger.error(
-                f"purchase_history への保存にリトライ後も失敗しました（続行します）: {e}",
-                exc_info=True,
-            )
+            logger.error(f"{label}にリトライ後も失敗しました（続行します）: {e}", exc_info=True)
+
+    def _safe_save_purchase_record(*args, **kwargs) -> None:
+        """save_purchase_record() を例外安全に呼ぶラッパー。"""
+        _safe_call_with_one_retry(save_purchase_record, "purchase_history への保存", *args, **kwargs)
+
+    def _safe_finalize_purchase_lock(*args, **kwargs) -> None:
+        """
+        finalize_purchase_lock() を例外安全に呼ぶラッパー（Issue #435）。
+
+        購入結果確定後の唯一のロック解放手段（例: skipped_budget記録・no_bets
+        スキップ・想定外エラー時）であり、ここが無保護のまま失敗すると例外が
+        1レース分の処理を止めてしまう上、ロックが有効期限
+        （IN_PROGRESS_STALE_MINUTES）まで解放されないままになる。
+        """
+        _safe_call_with_one_retry(finalize_purchase_lock, "購入ロックの更新", *args, **kwargs)
+
+    def _purchase_lock_final_status(bets_need_confirmation: int, bets_purchased: int) -> str:
+        """
+        購入ロックの最終ステータスを、「実際に金銭が動いた可能性があるか」で
+        判定する（Issue #435・/code-review指摘）。正常完了パス・想定外エラー
+        パスの両方で使う共通ロジック。need_confirmation（投票送信後にエラーが
+        発生し実際の購入有無が不明。サーバに送信済みの可能性がある）は最優先で
+        恒久ブロック、1件でも購入成功していればsuccessとして恒久ブロックする
+        （一部の馬券がskipped_budgetでも同様）。いずれにも該当しなければ
+        （全馬券が失敗/予算超過等、または例外発生時点で未購入）、次tickでの
+        再挑戦を許可する。
+        """
+        if bets_need_confirmation > 0:
+            return "need_confirmation"
+        if bets_purchased > 0:
+            return "success"
+        return "failed"
 
     def _safe_fetch_daily_spent_amount() -> int:
         """
@@ -1802,13 +1834,13 @@ async def _purchase_pipeline_async(
             )
             break
 
-        # has_purchase_attempt_recorded/refresh/fetch はいずれもBQ呼び出しであり
+        # has_purchase_lock/refresh/fetch はいずれもBQ呼び出しであり
         # 例外送出しうる。ここを保護しないと、1レースでのBQ一時障害がtick全体
         # （事前チェック中の他の全レース）を巻き込んで中断させてしまう
         # （/code-review指摘。本番購入ループ側は既に保護済みだったが、事前チェック
         # ループ側が同じ問題を抱えたまま残っていた）。
         try:
-            if has_purchase_attempt_recorded(project_id, target_date, race_id):
+            if has_purchase_lock(project_id, target_date, race_id):
                 logger.info(f"race_id={race_id}: 既に購入成功済み/要確認済み/処理中 → スキップ")
                 precheck_already_done_count += 1
                 continue
@@ -1896,7 +1928,7 @@ async def _purchase_pipeline_async(
 
             # tick開始からの経過時間がCloud Runタイムアウト（900秒）に近づいて
             # いる場合、このレースには着手せず次tickに委ねる。まだ
-            # mark_purchase_attempt_in_progress() を呼んでいないため、次tickの
+            # try_acquire_purchase_lock() を呼んでいないため、次tickの
             # 通常の事前チェックで問題なく再評価される（/code-review指摘）。
             elapsed_seconds = (
                 datetime.datetime.now(datetime.timezone.utc) - tick_start
@@ -1908,44 +1940,60 @@ async def _purchase_pipeline_async(
                 )
                 break
 
-            # ここから先で想定外の例外（BQ一時障害によるhas_purchase_attempt_recorded/
-            # mark_purchase_attempt_in_progressの失敗、不正な投資判断データによる
-            # ValueError/IpatPurchaseError等）が発生すると、in_progressマーカーが
-            # 未解消のままtick全体が中断し、この後に続く他レースの購入機会も
-            # 失ってしまう（/code-review指摘）。1レース分の処理全体を try で囲み、
-            # 失敗時はマーカーを解消した上でこのレースだけスキップして次レースの
-            # 処理を継続する。
+            # ここから先で想定外の例外（BQ一時障害によるtry_acquire_purchase_lockの
+            # 失敗、不正な投資判断データによるValueError/IpatPurchaseError等）が
+            # 発生すると、ロックが未解放のままtick全体が中断し、この後に続く他レース
+            # の購入機会も失ってしまう（/code-review指摘）。1レース分の処理全体を
+            # try で囲み、失敗時はロックを解放した上でこのレースだけスキップして
+            # 次レースの処理を継続する。
             budget_exceeded = False
+            # このレースの購入ロックを自分が取得できたかどうか。try_acquire_purchase_lock()
+            # がリトライ枯渇等で例外を送出した場合、そのMERGE文は一度もコミットされて
+            # いない（BigQueryのDML同時実行時の競合エラーはトランザクション全体を
+            # アボートするため）ため、自分はロックを保持していない。except節での
+            # ロック解放（finalize_purchase_lock）をこの場合にまで行うと、並行tickが
+            # 正当に保持している（あるいは既にsuccess等へ更新済みの）ロックを誤って
+            # 上書き・解放してしまい、二重購入防止という本PRの目的そのものを破ってしまう
+            # （/code-review指摘・重大）。取得成功が確定した後だけ、この変数に
+            # try_acquire_purchase_lock() が返した所有権トークン（updated_at）を
+            # 格納する。finalize_purchase_lock() 側はこれをCASの条件として使い、
+            # 処理が IN_PROGRESS_STALE_MINUTES を超えて長引き別tickに既にロックを
+            # 奪われていた場合、その別tickの正当な状態を誤って上書きしない
+            # （/code-review指摘・重大）。
+            acquired_at: datetime.datetime | None = None
+            # 例外ハンドラ側でもロックの最終ステータスを「実際に金銭が動いた
+            # 可能性があるか」で正しく判定できるよう、tryブロックの外（例外が
+            # どの時点で発生しても必ず定義済みになる位置）で初期化しておく
+            # （/code-review指摘）。将来purchase_bets_for_race()呼び出しの後・
+            # finalize呼び出しの前に新たなI/Oが追加され、その箇所で例外が発生した
+            # 場合でも、既に購入が確定していればexcept節が誤ってfailedで上書きし
+            # 二重購入を招くことがないようにするための安全策。
+            bets_purchased = 0
+            bets_need_confirmation = 0
             try:
-                # ログイン待ち・前レースの処理時間の間に、並行tickが同じレースを先に
-                # 処理済みでないか再確認する（事前チェックからここまでに時間が空くため）。
-                if has_purchase_attempt_recorded(project_id, target_date, race_id):
+                # 事前チェックからここまでに時間が空くため（ログイン待ち・前レースの
+                # 処理時間）、購入ロックをBigQuery MERGE文でアトミックに取得する
+                # （Issue #435）。「チェック→マーカー書き込み」の2クエリ構成だった
+                # 旧実装と異なり、取得判定とマーカー書き込みが単一のDML文で行われる
+                # ため、並行tickによる二重購入を真に排他制御できる。
+                acquired_at = try_acquire_purchase_lock(project_id, target_date, race_id)
+                if acquired_at is None:
                     logger.info(f"race_id={race_id}: 直前の再確認で既に処理済みと判明 → スキップ")
                     continue
-
-                # ログイン・前レースの購入（リトライ含め最大数十秒〜数分）で処理時間が
-                # 伸びたことにより、次tick（5分後）が同じレースを重複購入しにいくリスクが
-                # あるため、実際の購入処理に入る直前にマーカーを記録する（/code-review指摘）。
-                mark_purchase_attempt_in_progress(project_id, target_date, race_id)
 
                 # 購入直前にもう一度refresh（事前チェックからの経過時間の分、鮮度を保つ）
                 bets = _refresh_and_fetch_bets(race_id)
                 if not bets:
                     logger.info(f"race_id={race_id}: 推奨馬券なし（refresh後） → スキップ")
-                    # in_progress マーカーを解消しておく。解消しないと、実際には何も
-                    # 購入していないにもかかわらず has_purchase_attempt_recorded() が
-                    # IN_PROGRESS_STALE_MINUTES 分間ブロックし続け、当該レースの残り
-                    # 購入ウィンドウ（-5〜5分＝10分間）をほぼ使い切ってしまう（/code-review指摘）。
-                    _safe_save_purchase_record(
-                        project_id, target_date, race_id, "_lock", [], 0, "failed",
-                        "refresh後に推奨馬券が0件になったため購入スキップ（in_progressマーカー解消）",
-                    )
+                    # ロックを解放しておく。解放しないと、実際には何も購入していない
+                    # にもかかわらずロックが IN_PROGRESS_STALE_MINUTES 分間ブロックし
+                    # 続け、当該レースの残り購入ウィンドウ（-5〜5分＝10分間）を
+                    # ほぼ使い切ってしまう（/code-review指摘）。
+                    _safe_finalize_purchase_lock(project_id, target_date, race_id, "failed", acquired_at)
                     continue
 
-                bets_purchased = 0
                 bets_failed = 0
                 bets_skipped_budget = 0
-                bets_need_confirmation = 0
                 race_amount = 0
                 race_status = "processed"
 
@@ -2054,6 +2102,15 @@ async def _purchase_pipeline_async(
                 else:
                     final_status = race_status
 
+                # 購入ロックの最終ステータスは、レポート用の final_status（"processed"
+                # 等、API応答用のラベル）とは別に、「実際に金銭が動いた可能性が
+                # あるか」で独立に判定する（Issue #435）。
+                _safe_finalize_purchase_lock(
+                    project_id, target_date, race_id,
+                    _purchase_lock_final_status(bets_need_confirmation, bets_purchased),
+                    acquired_at,
+                )
+
                 race_results.append({
                     "race_id": race_id,
                     "bets_purchased": bets_purchased,
@@ -2065,10 +2122,34 @@ async def _purchase_pipeline_async(
                 })
             except Exception as e:
                 logger.error(f"race_id={race_id}: 購入処理中に想定外のエラー: {e}", exc_info=True)
-                _safe_save_purchase_record(
-                    project_id, target_date, race_id, "_lock", [], 0, "failed",
-                    f"購入処理中に想定外のエラーが発生したためスキップ: {e}",
-                )
+                # acquired_atがNoneでないときだけロックを更新する（/code-review指摘・
+                # 重大）。try_acquire_purchase_lock()自体が例外を送出したケース
+                # （acquired_at=None）では自分はロックを一切保持していないため、
+                # ここでfinalizeすると並行tickが正当に保持中のロック（in_progress/
+                # success/need_confirmation）を誤って上書きし、二重購入防止という
+                # 本来の目的を破ってしまう。取得できていた場合もfinalize_purchase_lock()
+                # 側のCAS（acquired_atをWHERE句に含める）により、処理が長引く間に
+                # 別tickへロックを奪われていれば更新自体が0行で無視される。
+                #
+                # 更新する場合も、常にfailedで上書きしてはいけない（/code-review
+                # 指摘・重大）。bets_purchased/bets_need_confirmationはtryブロックの
+                # 外で初期化済みのため、この例外が「実際に金銭が動いた後（例えば
+                # 将来の実装変更でfinalize呼び出し前に新たなI/Oが追加された場合）」に
+                # 発生していても、正常系と同じ_purchase_lock_final_status()で
+                # 正しくsuccess/need_confirmationと判定しfailedへの誤った上書きを防ぐ。
+                # 想定外エラーの詳細（purchase_history相当の監査証跡）はログ・LINE
+                # 通知に残るため、purchase_locksには結果ステータスのみ記録する。
+                if acquired_at is not None:
+                    _safe_finalize_purchase_lock(
+                        project_id, target_date, race_id,
+                        _purchase_lock_final_status(bets_need_confirmation, bets_purchased),
+                        acquired_at,
+                    )
+                else:
+                    logger.warning(
+                        f"race_id={race_id}: 購入ロックを取得できていない可能性があるため、"
+                        f"ロックの更新はスキップします（並行tickの状態を保護）"
+                    )
                 _send_line(
                     f"【エラー】{venue_name}{race_number}R の購入処理中に想定外のエラーが発生しました: {e}"
                 )

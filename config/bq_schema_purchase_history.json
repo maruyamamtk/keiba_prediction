@@ -21,7 +21,7 @@
     "name": "bet_type",
     "type": "STRING",
     "mode": "REQUIRED",
-    "description": "馬券種（place/win/wide/umaren/umatan/sanrenpuku）。'_lock'は実在の馬券種ではなく、mark_purchase_attempt_in_progress()等が二重購入防止用マーカー（status='in_progress'/'failed'、horse_numbers=[]、amount=0）を記録する際に使うセンチネル値（Issue #433）"
+    "description": "馬券種（place/win/wide/umaren/umatan/sanrenpuku）。'_lock'は実在の馬券種ではなく、二重購入防止用マーカー（status='in_progress'/'failed'、horse_numbers=[]、amount=0）を記録する際に使っていたセンチネル値（Issue #433）。Issue #435でロック機構をpredictions.purchase_locksテーブルへ分離したため、現在のコードでは新規に書き込まれない（過去データのみに存在）"
   },
   {
     "name": "horse_numbers",
@@ -39,7 +39,7 @@
     "name": "status",
     "type": "STRING",
     "mode": "REQUIRED",
-    "description": "購入ステータス（success / failed / skipped_budget / need_confirmation / in_progress）。need_confirmationは投票送信後にエラーが発生し実際の購入有無が不明なケース（要手動確認）。in_progressは購入処理中を示す一時マーカー（bet_type='_lock'）で、並行tickによる二重購入防止に使用（いずれもIssue #433）"
+    "description": "購入ステータス（success / failed / skipped_budget / need_confirmation）。need_confirmationは投票送信後にエラーが発生し実際の購入有無が不明なケース（要手動確認）。in_progress（bet_type='_lock'、並行tickによる二重購入防止用の一時マーカー）は過去データのみに存在し、Issue #435以降はpredictions.purchase_locksテーブルで管理するため新規に書き込まれない"
   },
   {
     "name": "error_message",

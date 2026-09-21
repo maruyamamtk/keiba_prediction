@@ -517,6 +517,7 @@ keiba_prediction/
 │   ├── create_entity_te_daily_table.py  # features.entity_te_dailyテーブル作成（Issue #352・te-daily-batch実行前提。存在しない場合は run_te_daily() が自動作成する）
 │   ├── create_predictions_table.py   # predictions.daily_predictionsテーブル作成
 │   ├── create_purchase_history_table.py  # predictions.purchase_historyテーブル作成（Issue #213）
+│   ├── create_purchase_locks_table.py  # predictions.purchase_locksテーブル作成（Issue #435・二重購入防止ロック専用）
 │   ├── create_raw_combo_odds_table.py  # raw.combo_oddsテーブル作成（Issue #140）
 │   ├── generate_features.py
 │   ├── run_backtest.py               # CLIバックテスト実行スクリプト
@@ -880,6 +881,7 @@ python3 scripts/create_raw_combo_odds_table.py --project-id <PROJECT_ID>
 | `predictions.daily_odds_combo` | netkeibaリアルタイム組み合わせ馬券オッズ | 実装済み（Issue #134） |
 | `predictions.investment_decisions` | 日次投資判断結果（`horse_numbers` STRING型・カンマ区切り） | 実装済み（Issue #105 / スキーマ変更 Issue #161） |
 | `predictions.purchase_history` | IPAT馬券購入履歴（パーティション: `race_date`） | 実装済み（Issue #213） |
+| `predictions.purchase_locks` | IPAT自動購入の二重購入防止ロック（レース単位・1行、`race_date`+`race_id`。BigQuery MERGE文でアトミックに取得） | 実装済み（Issue #435） |
 
 テーブル作成コマンド:
 
@@ -891,6 +893,7 @@ python3 scripts/create_daily_odds_table.py --project-id <PROJECT_ID>
 python3 scripts/create_daily_odds_combo_table.py --project-id <PROJECT_ID>
 python3 scripts/create_investment_decisions_table.py --project-id <PROJECT_ID>
 python3 scripts/create_purchase_history_table.py --project-id <PROJECT_ID>
+python3 scripts/create_purchase_locks_table.py --project-id <PROJECT_ID>
 ```
 
 各テーブルのスキーマ詳細は `config/bq_schema_*.json` を参照してください。
