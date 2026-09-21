@@ -1713,34 +1713,36 @@ async def _purchase_pipeline_async(
             for b in bets
         )
 
-    def _safe_save_purchase_record(*args, **kwargs) -> None:
+    def _safe_call_with_one_retry(fn, label: str, *args, **kwargs) -> None:
         """
-        save_purchase_record() を例外安全に呼ぶラッパー。
+        BQ書き込み系の関数を例外安全に呼ぶ共通ラッパー（/code-review指摘:
+        _safe_save_purchase_record/_safe_finalize_purchase_lockがほぼ同一の
+        「1回だけ即時リトライ・失敗しても伝播させない」ロジックを重複して
+        持っていたため統合。リトライ方針の変更が片方にだけ反映され両者の挙動が
+        乖離するのを防ぐ）。
 
-        1レースにつき複数回 save_purchase_record を呼ぶ箇所（1馬券ごとに1回）で、
-        そのうちの1回がBQ一時障害等で失敗すると、例外が1レース分の処理を囲む
-        try/exceptまで伝播し、「想定外のエラー」用のfailedマーカーで
+        呼び出し元がここで例外を止める理由: これらの書き込みが1レースの処理
+        全体を囲むtry/exceptまで伝播すると、「想定外のエラー」用の処理で
         上書きされてしまう。しかし実際にはIPATへの投票が既にsuccess/
         need_confirmationとして確定している場合、それをfailed（＝次tickで
         自動再購入してよい）に見せかけてしまうのは二重購入に直結する
-        （/code-review指摘）。個々の保存呼び出しの失敗はログのみに留め、
-        レース全体の処理を止めない。
-
-        1回だけ即時リトライする（/code-review指摘）。完全な保証にはならないが、
-        単発の一時的な書き込みエラーはこれで大半吸収できる。
+        （/code-review指摘）。個々の書き込み失敗はログのみに留め、レース全体の
+        処理を止めない。完全な保証にはならないが、単発の一時的な書き込み
+        エラーは1回だけの即時リトライで大半吸収できる。
         """
         try:
-            save_purchase_record(*args, **kwargs)
+            fn(*args, **kwargs)
             return
         except Exception as e:
-            logger.warning(f"purchase_history への保存に失敗、1回だけ再試行します: {e}")
+            logger.warning(f"{label}に失敗、1回だけ再試行します: {e}")
         try:
-            save_purchase_record(*args, **kwargs)
+            fn(*args, **kwargs)
         except Exception as e:
-            logger.error(
-                f"purchase_history への保存にリトライ後も失敗しました（続行します）: {e}",
-                exc_info=True,
-            )
+            logger.error(f"{label}にリトライ後も失敗しました（続行します）: {e}", exc_info=True)
+
+    def _safe_save_purchase_record(*args, **kwargs) -> None:
+        """save_purchase_record() を例外安全に呼ぶラッパー。"""
+        _safe_call_with_one_retry(save_purchase_record, "purchase_history への保存", *args, **kwargs)
 
     def _safe_finalize_purchase_lock(*args, **kwargs) -> None:
         """
@@ -1750,20 +1752,25 @@ async def _purchase_pipeline_async(
         スキップ・想定外エラー時）であり、ここが無保護のまま失敗すると例外が
         1レース分の処理を止めてしまう上、ロックが有効期限
         （IN_PROGRESS_STALE_MINUTES）まで解放されないままになる。
-        _safe_save_purchase_record() と同様、1回だけ即時リトライする。
         """
-        try:
-            finalize_purchase_lock(*args, **kwargs)
-            return
-        except Exception as e:
-            logger.warning(f"購入ロックの更新に失敗、1回だけ再試行します: {e}")
-        try:
-            finalize_purchase_lock(*args, **kwargs)
-        except Exception as e:
-            logger.error(
-                f"購入ロックの更新にリトライ後も失敗しました（続行します）: {e}",
-                exc_info=True,
-            )
+        _safe_call_with_one_retry(finalize_purchase_lock, "購入ロックの更新", *args, **kwargs)
+
+    def _purchase_lock_final_status(bets_need_confirmation: int, bets_purchased: int) -> str:
+        """
+        購入ロックの最終ステータスを、「実際に金銭が動いた可能性があるか」で
+        判定する（Issue #435・/code-review指摘）。正常完了パス・想定外エラー
+        パスの両方で使う共通ロジック。need_confirmation（投票送信後にエラーが
+        発生し実際の購入有無が不明。サーバに送信済みの可能性がある）は最優先で
+        恒久ブロック、1件でも購入成功していればsuccessとして恒久ブロックする
+        （一部の馬券がskipped_budgetでも同様）。いずれにも該当しなければ
+        （全馬券が失敗/予算超過等、または例外発生時点で未購入）、次tickでの
+        再挑戦を許可する。
+        """
+        if bets_need_confirmation > 0:
+            return "need_confirmation"
+        if bets_purchased > 0:
+            return "success"
+        return "failed"
 
     def _safe_fetch_daily_spent_amount() -> int:
         """
@@ -1945,6 +1952,15 @@ async def _purchase_pipeline_async(
             # 上書き・解放してしまい、二重購入防止という本PRの目的そのものを破ってしまう
             # （/code-review指摘・重大）。取得成功が確定した後だけTrueにする。
             lock_acquired = False
+            # 例外ハンドラ側でもロックの最終ステータスを「実際に金銭が動いた
+            # 可能性があるか」で正しく判定できるよう、tryブロックの外（例外が
+            # どの時点で発生しても必ず定義済みになる位置）で初期化しておく
+            # （/code-review指摘）。将来purchase_bets_for_race()呼び出しの後・
+            # finalize呼び出しの前に新たなI/Oが追加され、その箇所で例外が発生した
+            # 場合でも、既に購入が確定していればexcept節が誤ってfailedで上書きし
+            # 二重購入を招くことがないようにするための安全策。
+            bets_purchased = 0
+            bets_need_confirmation = 0
             try:
                 # 事前チェックからここまでに時間が空くため（ログイン待ち・前レースの
                 # 処理時間）、購入ロックをBigQuery MERGE文でアトミックに取得する
@@ -1967,10 +1983,8 @@ async def _purchase_pipeline_async(
                     _safe_finalize_purchase_lock(project_id, target_date, race_id, "failed")
                     continue
 
-                bets_purchased = 0
                 bets_failed = 0
                 bets_skipped_budget = 0
-                bets_need_confirmation = 0
                 race_amount = 0
                 race_status = "processed"
 
@@ -2081,18 +2095,11 @@ async def _purchase_pipeline_async(
 
                 # 購入ロックの最終ステータスは、レポート用の final_status（"processed"
                 # 等、API応答用のラベル）とは別に、「実際に金銭が動いた可能性が
-                # あるか」で独立に判定する（Issue #435）。need_confirmationは
-                # サーバに送信済みの可能性があるため最優先でブロック、1件でも
-                # 購入成功していればsuccessとして恒久的にブロックする（一部の
-                # 馬券がskipped_budgetでも同様）。いずれにも該当しなければ
-                # （全馬券が失敗/予算超過等）、次tickでの再挑戦を許可する。
-                if bets_need_confirmation > 0:
-                    lock_status = "need_confirmation"
-                elif bets_purchased > 0:
-                    lock_status = "success"
-                else:
-                    lock_status = "failed"
-                _safe_finalize_purchase_lock(project_id, target_date, race_id, lock_status)
+                # あるか」で独立に判定する（Issue #435）。
+                _safe_finalize_purchase_lock(
+                    project_id, target_date, race_id,
+                    _purchase_lock_final_status(bets_need_confirmation, bets_purchased),
+                )
 
                 race_results.append({
                     "race_id": race_id,
@@ -2105,16 +2112,26 @@ async def _purchase_pipeline_async(
                 })
             except Exception as e:
                 logger.error(f"race_id={race_id}: 購入処理中に想定外のエラー: {e}", exc_info=True)
-                # lock_acquired=Trueのときだけfailedで解放する（/code-review指摘・
+                # lock_acquired=Trueのときだけロックを更新する（/code-review指摘・
                 # 重大）。try_acquire_purchase_lock()自体が例外を送出したケース
                 # （lock_acquired=False）では自分はロックを一切保持していないため、
                 # ここでfinalizeすると並行tickが正当に保持中のロック（in_progress/
                 # success/need_confirmation）を誤って上書きし、二重購入防止という
-                # 本来の目的を破ってしまう。想定外エラーの詳細（purchase_history
-                # 相当の監査証跡）はログ・LINE通知に残るため、purchase_locksには
-                # 自分が保持しているときのみ結果ステータスを記録する（Issue #435）。
+                # 本来の目的を破ってしまう。
+                #
+                # 更新する場合も、常にfailedで上書きしてはいけない（/code-review
+                # 指摘・重大）。bets_purchased/bets_need_confirmationはtryブロックの
+                # 外で初期化済みのため、この例外が「実際に金銭が動いた後（例えば
+                # 将来の実装変更でfinalize呼び出し前に新たなI/Oが追加された場合）」に
+                # 発生していても、正常系と同じ_purchase_lock_final_status()で
+                # 正しくsuccess/need_confirmationと判定しfailedへの誤った上書きを防ぐ。
+                # 想定外エラーの詳細（purchase_history相当の監査証跡）はログ・LINE
+                # 通知に残るため、purchase_locksには結果ステータスのみ記録する。
                 if lock_acquired:
-                    _safe_finalize_purchase_lock(project_id, target_date, race_id, "failed")
+                    _safe_finalize_purchase_lock(
+                        project_id, target_date, race_id,
+                        _purchase_lock_final_status(bets_need_confirmation, bets_purchased),
+                    )
                 else:
                     logger.warning(
                         f"race_id={race_id}: 購入ロックを取得できていない可能性があるため、"

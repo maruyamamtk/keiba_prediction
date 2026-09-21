@@ -1103,11 +1103,18 @@ def has_purchase_lock(
               （自動での再購入は禁止）
     """
     client = bigquery.Client(project=project_id)
+    # race_date + race_id は try_acquire_purchase_lock() のMERGE文のON句が
+    # キーとする列であり、本来は1行しか存在しないはずだが、BigQueryには
+    # 一意制約が存在せず将来の手動バックフィル等で重複行が生じても安全なよう、
+    # ORDER BY + LIMIT 1 で最新の1行のみを見る（/code-review指摘）。これは
+    # 本PRが是正した「purchase_historyの最新行判定」と同じ防御的パターン。
     query = """
         SELECT status, updated_at
         FROM `{project}.predictions.purchase_locks`
         WHERE race_date = @race_date
           AND race_id = @race_id
+        ORDER BY updated_at DESC
+        LIMIT 1
     """.format(project=project_id)
 
     job_config = bigquery.QueryJobConfig(
@@ -1187,6 +1194,14 @@ def try_acquire_purchase_lock(
                 )
             return acquired
         except Exception as e:
+            # BigQueryはDML同時実行の競合を構造化されたエラーコード（例外クラスや
+            # errorsのreasonフィールド）で区別せず、常にBadRequest（400）に
+            # "Could not serialize access to table ... due to concurrent update"
+            # という文言を含めて返す。そのため文字列マッチがこの特定エラーを
+            # 検出する唯一現実的な方法である（/code-review指摘: 将来BigQuery側の
+            # 文言が変わればこの判定は静かに効かなくなるが、フェイルセーフ側
+            # ——リトライされず例外がそのまま伝播しこのレースはスキップされる
+            # だけ——に倒れるため、二重購入には直結しない）。
             if "concurrent update" in str(e).lower() and attempt < LOCK_ACQUIRE_MAX_ATTEMPTS:
                 logger.warning(
                     f"race_id={race_id}: 購入ロック取得中に同時更新の衝突"
