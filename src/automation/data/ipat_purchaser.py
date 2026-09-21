@@ -25,6 +25,7 @@ Issue #213: 発走5分前JRA IPAT自動馬券購入パイプラインの実装
 import asyncio
 import datetime
 import logging
+import time
 import uuid
 from zoneinfo import ZoneInfo
 
@@ -82,6 +83,14 @@ IN_PROGRESS_STALE_MINUTES = 15
 # 発走までのリトライ猶予（MIN_MINUTES_BEFORE_START_FOR_RETRY）を無駄に消費して
 # しまうため（/code-review指摘）。
 DEBUG_CAPTURE_TIMEOUT_MS = 5_000
+
+# 購入ロック取得（try_acquire_purchase_lock）のMERGE文がBigQueryの「concurrent
+# update」エラーで失敗した場合の最大試行回数・リトライ間隔（秒）。BigQueryは
+# 同一テーブルへのDML同士が同時実行されると片方を失敗させることがあるため
+# （Issue #435）、短い間隔を空けて再試行する。再試行時点では相手側の書き込みが
+# 確定しているため、正しく「取得できない」と判定できる。
+LOCK_ACQUIRE_MAX_ATTEMPTS = 3
+LOCK_ACQUIRE_RETRY_DELAY_SECONDS = 0.5
 
 
 class IpatLoginError(Exception):
@@ -585,8 +594,9 @@ class IpatPurchaser:
         # 既知の限界（/code-review指摘）: `except Exception` は asyncio.CancelledError
         # （Python 3.8+ではBaseExceptionのサブクラス）を捕捉しない。Cloud Runの
         # SIGTERM等でこのタスクが「投票」ボタン押下後・結果確定前にキャンセルされた
-        # 場合、in_progressマーカーを解消するsuccess/need_confirmation/failedのいずれの
-        # 行も保存されないまま終了しうる。この場合マーカーは
+        # 場合、purchase_locksをsuccess/need_confirmation/failedへ更新する
+        # finalize_purchase_lock() が呼ばれないまま終了しうる（Issue #435）。
+        # この場合ロックは status='in_progress' のまま
         # IN_PROGRESS_STALE_MINUTES経過後に自然失効し、次tickでの再購入を許可して
         # しまう可能性がある。この窓は極めて狭く（tap後の数百ミリ秒〜数秒）、
         # 完全に塞ぐには asyncio.shield() 等によるキャンセル耐性を本番のCloud Run
@@ -871,8 +881,8 @@ class IpatPurchaser:
         # 成功判定（受付番号）を先に見る。ERROR_PATTERNS には「ご確認ください」
         # 「エラーが発生」のような汎用的な文言が含まれており、これらが成功画面の
         # 定型注意書き等に偶然含まれていた場合、判定順が逆だと実際には成立した
-        # 投票を failed と誤判定してしまう。failed は has_purchase_attempt_recorded()
-        # のブロック対象外（次tickで再購入OK）のため、誤判定は実際の二重購入に
+        # 投票を failed と誤判定してしまう。failed は購入ロック（purchase_locks）の
+        # ブロック対象外（次tickで再購入OK）のため、誤判定は実際の二重購入に
         # 直結する（/code-review指摘）。
         if "受付番号" in active_text:
             return {"status": "success", "error_message": None}
@@ -896,8 +906,8 @@ class IpatPurchaser:
 
         # 「投票」ボタンは既に押下済み（サーバに送信済みの可能性がある）にもかかわらず、
         # 成功（受付番号）とも既知の失敗パターンとも判定できない未知の画面。
-        # ここで status="failed" にすると、has_purchase_attempt_recorded() の対象外
-        # となり次tickで同じ馬券が再購入されてしまう（/code-review指摘）。
+        # ここで status="failed" にすると、購入ロック（purchase_locks）の
+        # ブロック対象外となり次tickで同じ馬券が再購入されてしまう（/code-review指摘）。
         # 実際に投票されたか不明なので need_confirmation として手動確認を促す。
         snippet = active_text.strip()[:200]
         debug = await _debug_from_active_text("submit_unrecognized_screen")
@@ -1034,62 +1044,56 @@ def fetch_recommended_bets(
     return result
 
 
-def has_purchase_attempt_recorded(
+def _is_lock_blocking(status: str | None, updated_at: datetime.datetime | None) -> bool:
+    """
+    purchase_locks の1行（status, updated_at）が、自動購入をブロックすべき状態かを判定する。
+
+    success・need_confirmation（投票送信後にエラーが発生し実際の購入有無が不明。
+    サーバに送信済みの可能性がある）は恒久的にブロックする。in_progress は
+    有効期限（IN_PROGRESS_STALE_MINUTES）内のみブロックし、クラッシュ等で
+    放置された期限切れのマーカーは次tickでの再挑戦を許可する。それ以外
+    （failed等）はブロックしない。has_purchase_lock() の読み取り専用判定と
+    try_acquire_purchase_lock() のMERGE文のON句（WHEN MATCHED条件）は、この
+    ブロック条件と同じルールを表している（Issue #435）。
+    """
+    if status is None:
+        return False
+    if status in ("success", "need_confirmation"):
+        return True
+    if status == "in_progress":
+        if updated_at is None:
+            return False
+        age_minutes = (
+            datetime.datetime.now(datetime.timezone.utc) - updated_at
+        ).total_seconds() / 60
+        return age_minutes <= IN_PROGRESS_STALE_MINUTES
+    return False
+
+
+def has_purchase_lock(
     project_id: str,
     target_date: datetime.date,
     race_id: str,
 ) -> bool:
     """
-    対象レースの purchase_history のうち「最も新しい1行」の status を見て、
-    自動での再購入をブロックすべきか判定する。
+    対象レースが購入ロック済み（自動購入をブロックすべき状態）かどうかを
+    読み取り専用で判定する（Issue #435）。
 
-    購入失敗レースを次回tickでも再試行できるようウィンドウを拡張した際（Issue #433）、
-    既に購入成功済み、または投票送信後にエラーが発生し実際の購入有無が不明
-    （need_confirmation。サーバに送信済みの可能性がある）なレースを再度自動購入
-    してしまう二重購入を防ぐために使用する。status='failed'（投票送信前の失敗。
-    サーバには一切送信されていない）のみはブロック対象外とし、次tickでの再挑戦を許可する。
-
-    最新行だけを見る理由（/code-review指摘・重要）: 当初は「ブロック対象の
-    status を持つ行が1件でも存在するか」（COUNT(*) ... status IN (...) OR ...）
-    で判定していたが、これは誤りだった。mark_purchase_attempt_in_progress() が
-    購入試行のたびに status='in_progress' の行を追加でINSERTするため、その後
-    実際の購入結果（success/failed/need_confirmation）を別行として保存しても、
-    最初の in_progress 行はテーブルに残り続け、有効期限（IN_PROGRESS_STALE_MINUTES）
-    が切れるまで判定をブロックし続けてしまう。特に「投票送信前の失敗
-    （status='failed'、次tickで再挑戦してよいはず）」のケースで、本来再挑戦
-    できるはずのレースが最大10分間ブロックされ、-5〜5分の購入ウィンドウを
-    ほぼ使い切ってしまっていた。「最新行」で判定することで、新しく書き込まれた
-    確定ステータス（failed等）が古い in_progress マーカーを正しく上書きする。
-
-    in_progress は、リトライ機構によって1レースあたりの処理時間が数十秒〜数分に
-    伸びたことで、前回tickの処理がまだ完了していないうちに次tick（5分後）が
-    同じレースを重複して購入しにいくリスクへの対策。
-    mark_purchase_attempt_in_progress() で購入処理の開始直前に記録する。
-    有効期限切れの in_progress（＝処理がクラッシュ等で完了しないまま、それ以降
-    どの行も追加されずに放置された）はブロック対象から除外し、再挑戦を許可する。
-
-    重要な限界: これは「チェック→マーカー書き込み」を1つのアトミック操作に
-    できないBigQuery上でのベストエフォートな軽減策であり、完全な排他制御（真の
-    分散ロック）ではない。2つのtickがほぼ同時にこの関数を呼び、両方が
-    in_progressマーカーをまだ見つけられない極めて短いタイミングの重なりが
-    あれば、理論上は二重購入が起こり得る。ただし実装上、マーカー書き込みは
-    ログイン・Playwright操作など時間のかかる処理より前（本チェック直後）に
-    行っているため、実際に重なりうる窓は「連続する2回のBigQueryクエリ」分
-    （通常は数百ミリ秒未満）に絞られている。真にアトミックな排他制御が必要な
-    場合は、Firestoreトランザクション等BigQuery以外の仕組みでの再設計が必要。
+    ログイン前の事前チェック（無駄なログインコストを避けるための best-effort
+    フィルタ）専用。ここでの判定はチェック後に他tickが割り込みうる非アトミックな
+    ものであり、実際の二重購入防止（真の排他制御）は try_acquire_purchase_lock()
+    のMERGE文が担う。
 
     Returns:
-        True: 最新行が購入成功済み・結果不明で要確認、または有効期限内の処理中
+        True: 購入成功済み・結果不明で要確認、または有効期限内の処理中
               （自動での再購入は禁止）
     """
     client = bigquery.Client(project=project_id)
     query = """
-        SELECT status, purchased_at
-        FROM `{project}.predictions.purchase_history`
+        SELECT status, updated_at
+        FROM `{project}.predictions.purchase_locks`
         WHERE race_date = @race_date
           AND race_id = @race_id
-        ORDER BY purchased_at DESC
-        LIMIT 1
     """.format(project=project_id)
 
     job_config = bigquery.QueryJobConfig(
@@ -1101,35 +1105,118 @@ def has_purchase_attempt_recorded(
     rows = list(client.query(query, job_config=job_config).result())
     if not rows:
         return False
-
-    latest_status = rows[0]["status"]
-    if latest_status in ("success", "need_confirmation"):
-        return True
-    if latest_status == "in_progress":
-        purchased_at = rows[0]["purchased_at"]
-        if purchased_at is None:
-            return False
-        age_minutes = (
-            datetime.datetime.now(datetime.timezone.utc) - purchased_at
-        ).total_seconds() / 60
-        return age_minutes <= IN_PROGRESS_STALE_MINUTES
-    return False
+    return _is_lock_blocking(rows[0]["status"], rows[0]["updated_at"])
 
 
-def mark_purchase_attempt_in_progress(
+def try_acquire_purchase_lock(
     project_id: str,
     target_date: datetime.date,
     race_id: str,
+) -> bool:
+    """
+    対象レースの購入ロックを、BigQuery MERGE文でアトミックに取得する（Issue #435）。
+
+    predictions.purchase_locks（レース単位・1行）に対し「未取得または失効済み
+    （failed / 期限切れin_progress / 行が存在しない）なら status='in_progress'
+    で取得、取得済み（success / need_confirmation / 有効期限内のin_progress）
+    ならno-op」を単一のMERGE文で行う。has_purchase_attempt_recorded() +
+    mark_purchase_attempt_in_progress() による従来の「チェック→書き込み」の
+    2クエリ構成（連続する2クエリの間に他tickが割り込める短い窓が理論上残る、
+    真の排他制御ではなかった）を置き換える。
+
+    ブロック対象（WHEN MATCHED に該当しない行）にはUPDATE/INSERTのいずれも
+    行われないため、MERGE文が影響した行数（num_dml_affected_rows）で
+    「取得できたか」を判定できる。
+
+    BigQueryはDML同士が同一テーブルへ同時実行されると「concurrent update」
+    エラーで片方を失敗させることがあるため、その場合は短い間隔を空けて
+    再試行する（LOCK_ACQUIRE_MAX_ATTEMPTS回まで）。再試行時点では相手側の
+    書き込みが確定しているため、正しく「取得できない（False）」と判定できる。
+
+    Returns:
+        True: ロックを取得できた（このtickが購入処理を行ってよい）
+        False: 既に取得済みのためブロック（このtickは購入処理をスキップすべき）
+    """
+    client = bigquery.Client(project=project_id)
+    now = datetime.datetime.now(datetime.timezone.utc)
+    stale_before = now - datetime.timedelta(minutes=IN_PROGRESS_STALE_MINUTES)
+
+    query = """
+        MERGE `{project}.predictions.purchase_locks` AS target
+        USING (SELECT @race_date AS race_date, @race_id AS race_id) AS source
+        ON target.race_date = source.race_date AND target.race_id = source.race_id
+        WHEN MATCHED AND target.status NOT IN ('success', 'need_confirmation')
+             AND NOT (target.status = 'in_progress' AND target.updated_at > @stale_before) THEN
+          UPDATE SET status = 'in_progress', updated_at = @now
+        WHEN NOT MATCHED THEN
+          INSERT (race_date, race_id, status, updated_at)
+          VALUES (source.race_date, source.race_id, 'in_progress', @now)
+    """.format(project=project_id)
+
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("race_date", "DATE", target_date.isoformat()),
+            bigquery.ScalarQueryParameter("race_id", "STRING", race_id),
+            bigquery.ScalarQueryParameter("stale_before", "TIMESTAMP", stale_before.isoformat()),
+            bigquery.ScalarQueryParameter("now", "TIMESTAMP", now.isoformat()),
+        ]
+    )
+
+    for attempt in range(1, LOCK_ACQUIRE_MAX_ATTEMPTS + 1):
+        try:
+            query_job = client.query(query, job_config=job_config)
+            query_job.result()
+            acquired = (query_job.num_dml_affected_rows or 0) > 0
+            if not acquired:
+                logger.info(
+                    f"race_id={race_id}: 購入ロック取得済み（他tick/前回処理） → 取得できず"
+                )
+            return acquired
+        except Exception as e:
+            if "concurrent update" in str(e).lower() and attempt < LOCK_ACQUIRE_MAX_ATTEMPTS:
+                logger.warning(
+                    f"race_id={race_id}: 購入ロック取得中に同時更新の衝突"
+                    f"（{attempt}/{LOCK_ACQUIRE_MAX_ATTEMPTS}回目） → 再試行します: {e}"
+                )
+                time.sleep(LOCK_ACQUIRE_RETRY_DELAY_SECONDS)
+                continue
+            raise
+    raise AssertionError("unreachable")  # pragma: no cover — ループは必ずreturn/raiseする
+
+
+def finalize_purchase_lock(
+    project_id: str,
+    target_date: datetime.date,
+    race_id: str,
+    status: str,
 ) -> None:
     """
-    対象レースの購入処理を開始する直前に、purchase_history へ
-    status='in_progress' のマーカー行を記録する（Issue #433）。
+    購入結果が確定した後、対象レースの購入ロックを最終ステータスへ更新する（Issue #435）。
 
-    ログイン・購入は数十秒〜（リトライ時は）数分かかりうるため、これを記録せずに
-    処理を始めると、処理中に次tick（5分後）が起動した際 has_purchase_attempt_recorded()
-    がまだ何も見つけられず、同じレースを重複して購入しにいってしまう。
+    success・need_confirmationは以後の自動購入を恒久的にブロックし、それ以外
+    （failed等）は次tickでの再挑戦を許可する（_is_lock_blocking()のルールを参照）。
+    try_acquire_purchase_lock() が成功した後は必ずロック行が存在するため、
+    ここではUPDATEのみで足りる。
     """
-    save_purchase_record(project_id, target_date, race_id, "_lock", [], 0, "in_progress")
+    client = bigquery.Client(project=project_id)
+    query = """
+        UPDATE `{project}.predictions.purchase_locks`
+        SET status = @status, updated_at = @now
+        WHERE race_date = @race_date AND race_id = @race_id
+    """.format(project=project_id)
+
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("status", "STRING", status),
+            bigquery.ScalarQueryParameter(
+                "now", "TIMESTAMP", datetime.datetime.now(datetime.timezone.utc).isoformat()
+            ),
+            bigquery.ScalarQueryParameter("race_date", "DATE", target_date.isoformat()),
+            bigquery.ScalarQueryParameter("race_id", "STRING", race_id),
+        ]
+    )
+    client.query(query, job_config=job_config).result()
+    logger.info(f"race_id={race_id}: 購入ロックを status={status} に更新しました")
 
 
 def fetch_daily_spent_amount(

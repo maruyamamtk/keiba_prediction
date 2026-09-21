@@ -1,0 +1,26 @@
+[
+  {
+    "name": "race_date",
+    "type": "DATE",
+    "mode": "REQUIRED",
+    "description": "レース日（パーティションキー）"
+  },
+  {
+    "name": "race_id",
+    "type": "STRING",
+    "mode": "REQUIRED",
+    "description": "JRDBレースID。race_date + race_id で1レース1行（MERGE文のON句キー）"
+  },
+  {
+    "name": "status",
+    "type": "STRING",
+    "mode": "REQUIRED",
+    "description": "購入ロックステータス（in_progress / success / need_confirmation / failed 等）。success・need_confirmationは自動購入を恒久的にブロックし、それ以外（failed等）は次tickでの再挑戦を許可する。try_acquire_purchase_lock() のMERGE文がアトミックに更新する（Issue #435）"
+  },
+  {
+    "name": "updated_at",
+    "type": "TIMESTAMP",
+    "mode": "REQUIRED",
+    "description": "最終更新日時（UTC）。status='in_progress' の有効期限判定（IN_PROGRESS_STALE_MINUTES）に使用"
+  }
+]

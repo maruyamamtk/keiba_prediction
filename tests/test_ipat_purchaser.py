@@ -30,12 +30,15 @@ from src.automation.data.ipat_purchaser import (
     BET_TYPE_MAP,
     DAILY_BUDGET_LIMIT,
     IN_PROGRESS_STALE_MINUTES,
+    LOCK_ACQUIRE_MAX_ATTEMPTS,
     PRE_SUBMIT_MAX_ATTEMPTS,
     IpatLoginError,
     IpatPurchaseError,
     IpatPurchaser,
     fetch_target_races,
-    has_purchase_attempt_recorded,
+    finalize_purchase_lock,
+    has_purchase_lock,
+    try_acquire_purchase_lock,
 )
 
 
@@ -129,67 +132,164 @@ class TestFetchTargetRaces:
 
 
 # ---------------------------------------------------------------------------
-# has_purchase_attempt_recorded() のテスト（BigQuery Client をモック）
+# has_purchase_lock() のテスト（BigQuery Client をモック）
 #
-# /code-reviewで発見: 当初は「ブロック対象のstatusを持つ行が1件でも存在するか」で
-# 判定しており、in_progressマーカー行が後から書かれた確定ステータス行（failed等）に
-# 論理的に上書きされず、有効期限まで誤ってブロックし続けるバグがあった。
-# 「最新行のstatusのみを見る」実装に修正したロジックそのものを検証する。
+# purchase_locks はレース単位・1行のテーブルのため、purchase_history時代の
+# 「最新行のみ見る」ロジック（/code-review指摘で修正した過去のバグ）は不要になった。
+# 行が1件あるかどうか・そのstatus/updated_atだけで判定する（Issue #435）。
 # ---------------------------------------------------------------------------
 
-class TestHasPurchaseAttemptRecorded:
-    """has_purchase_attempt_recorded() の「最新行」判定ロジックのテスト"""
+class TestHasPurchaseLock:
+    """has_purchase_lock() の読み取り専用ブロック判定ロジックのテスト"""
 
     PROJECT_ID = "test-project"
     TARGET_DATE = datetime.date(2026, 9, 19)
     RACE_ID = "06264507"
 
-    def _run(self, latest_row: dict | None) -> bool:
+    def _run(self, lock_row: dict | None) -> bool:
         with patch("google.cloud.bigquery.Client") as mock_bq_cls:
             mock_client = MagicMock()
             mock_bq_cls.return_value = mock_client
             mock_client.query.return_value.result.return_value = (
-                [latest_row] if latest_row is not None else []
+                [lock_row] if lock_row is not None else []
             )
-            return has_purchase_attempt_recorded(self.PROJECT_ID, self.TARGET_DATE, self.RACE_ID)
+            return has_purchase_lock(self.PROJECT_ID, self.TARGET_DATE, self.RACE_ID)
 
-    def test_no_history_is_not_blocked(self):
-        """履歴が1件もなければブロックしないこと"""
+    def test_no_lock_row_is_not_blocked(self):
+        """ロック行が1件もなければブロックしないこと"""
         assert self._run(None) is False
 
-    def test_latest_success_is_blocked(self):
-        """最新行が success ならブロックすること"""
-        assert self._run({"status": "success", "purchased_at": None}) is True
+    def test_success_is_blocked(self):
+        """status=success ならブロックすること"""
+        assert self._run({"status": "success", "updated_at": None}) is True
 
-    def test_latest_need_confirmation_is_blocked(self):
-        """最新行が need_confirmation ならブロックすること"""
-        assert self._run({"status": "need_confirmation", "purchased_at": None}) is True
+    def test_need_confirmation_is_blocked(self):
+        """status=need_confirmation ならブロックすること"""
+        assert self._run({"status": "need_confirmation", "updated_at": None}) is True
 
-    def test_latest_failed_is_not_blocked(self):
-        """最新行が failed（投票送信前の失敗）ならブロックしないこと"""
-        assert self._run({"status": "failed", "purchased_at": None}) is False
+    def test_failed_is_not_blocked(self):
+        """status=failed（投票送信前の失敗等）ならブロックしないこと"""
+        assert self._run({"status": "failed", "updated_at": None}) is False
 
-    def test_latest_fresh_in_progress_is_blocked(self):
-        """最新行が有効期限内の in_progress ならブロックすること"""
+    def test_fresh_in_progress_is_blocked(self):
+        """有効期限内の in_progress ならブロックすること"""
         now_utc = datetime.datetime.now(datetime.timezone.utc)
-        assert self._run({"status": "in_progress", "purchased_at": now_utc}) is True
+        assert self._run({"status": "in_progress", "updated_at": now_utc}) is True
 
-    def test_latest_stale_in_progress_is_not_blocked(self):
-        """最新行が有効期限切れの in_progress（クラッシュ等で放置）ならブロックしないこと"""
+    def test_stale_in_progress_is_not_blocked(self):
+        """有効期限切れの in_progress（クラッシュ等で放置）ならブロックしないこと"""
         now_utc = datetime.datetime.now(datetime.timezone.utc)
         stale_at = now_utc - datetime.timedelta(minutes=IN_PROGRESS_STALE_MINUTES + 1)
-        assert self._run({"status": "in_progress", "purchased_at": stale_at}) is False
+        assert self._run({"status": "in_progress", "updated_at": stale_at}) is False
 
-    def test_failed_after_in_progress_unblocks(self):
+
+# ---------------------------------------------------------------------------
+# try_acquire_purchase_lock() のテスト（BigQuery Client をモック）
+#
+# MERGE文の影響行数（num_dml_affected_rows）で「取得できたか」を判定する
+# アトミックなロック取得ロジックを検証する（Issue #435）。
+# ---------------------------------------------------------------------------
+
+class TestTryAcquirePurchaseLock:
+    """try_acquire_purchase_lock() のアトミック取得ロジックのテスト"""
+
+    PROJECT_ID = "test-project"
+    TARGET_DATE = datetime.date(2026, 9, 19)
+    RACE_ID = "06264507"
+
+    def _run_with_affected_rows(self, num_dml_affected_rows: int) -> bool:
+        with patch("google.cloud.bigquery.Client") as mock_bq_cls:
+            mock_client = MagicMock()
+            mock_bq_cls.return_value = mock_client
+            mock_query_job = MagicMock()
+            mock_query_job.num_dml_affected_rows = num_dml_affected_rows
+            mock_client.query.return_value = mock_query_job
+            return try_acquire_purchase_lock(self.PROJECT_ID, self.TARGET_DATE, self.RACE_ID)
+
+    def test_acquires_when_row_updated(self):
+        """MERGE文が1行更新/挿入した（未取得・失効済みだった）ならTrueを返すこと"""
+        assert self._run_with_affected_rows(1) is True
+
+    def test_blocked_when_no_row_affected(self):
+        """MERGE文がどの行も更新しなかった（取得済みでブロック）ならFalseを返すこと"""
+        assert self._run_with_affected_rows(0) is False
+
+    def test_retries_once_on_concurrent_update_error_then_succeeds(self):
         """
-        in_progressマーカーの後に failed 行が追加で書かれた場合、
-        「最新行」は failed になるため、古い in_progress が残っていてもブロックされないこと。
-        これが今回修正した中核のバグ（/code-review指摘）。
+        BigQueryの「concurrent update」エラーが1回だけ発生した場合、
+        再試行して成功すること（Issue #435の注意事項: 同時実行時の楽観的
+        並行性制御によるエラーへの対応）。
         """
-        now_utc = datetime.datetime.now(datetime.timezone.utc)
-        # ORDER BY purchased_at DESC LIMIT 1 相当なので、テスト側では
-        # 「最新の1行」だけをモックのクエリ結果として渡せば十分
-        assert self._run({"status": "failed", "purchased_at": now_utc}) is False
+        with patch("google.cloud.bigquery.Client") as mock_bq_cls, patch("time.sleep") as mock_sleep:
+            mock_client = MagicMock()
+            mock_bq_cls.return_value = mock_client
+            mock_query_job_ok = MagicMock()
+            mock_query_job_ok.num_dml_affected_rows = 1
+            mock_client.query.side_effect = [
+                RuntimeError("Could not serialize access due to concurrent update"),
+                mock_query_job_ok,
+            ]
+            result = try_acquire_purchase_lock(self.PROJECT_ID, self.TARGET_DATE, self.RACE_ID)
+
+        assert result is True
+        assert mock_client.query.call_count == 2
+        mock_sleep.assert_called_once()
+
+    def test_raises_after_max_retries_exhausted_on_persistent_conflict(self):
+        """
+        「concurrent update」エラーがLOCK_ACQUIRE_MAX_ATTEMPTS回連続で発生した場合、
+        最終的に例外を伝播させること（無限リトライしない）。
+        """
+        with patch("google.cloud.bigquery.Client") as mock_bq_cls, patch("time.sleep"):
+            mock_client = MagicMock()
+            mock_bq_cls.return_value = mock_client
+            mock_client.query.side_effect = RuntimeError(
+                "Could not serialize access due to concurrent update"
+            )
+            with pytest.raises(RuntimeError, match="concurrent update"):
+                try_acquire_purchase_lock(self.PROJECT_ID, self.TARGET_DATE, self.RACE_ID)
+
+        assert mock_client.query.call_count == LOCK_ACQUIRE_MAX_ATTEMPTS
+
+    def test_raises_immediately_on_unrelated_error(self):
+        """concurrent update以外の例外は再試行せず即座に伝播すること"""
+        with patch("google.cloud.bigquery.Client") as mock_bq_cls, patch("time.sleep") as mock_sleep:
+            mock_client = MagicMock()
+            mock_bq_cls.return_value = mock_client
+            mock_client.query.side_effect = RuntimeError("BQ一時障害（無関係のエラー）")
+            with pytest.raises(RuntimeError, match="無関係のエラー"):
+                try_acquire_purchase_lock(self.PROJECT_ID, self.TARGET_DATE, self.RACE_ID)
+
+        assert mock_client.query.call_count == 1
+        mock_sleep.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# finalize_purchase_lock() のテスト（BigQuery Client をモック）
+# ---------------------------------------------------------------------------
+
+class TestFinalizePurchaseLock:
+    """finalize_purchase_lock() が正しいパラメータでUPDATEを発行することのテスト"""
+
+    PROJECT_ID = "test-project"
+    TARGET_DATE = datetime.date(2026, 9, 19)
+    RACE_ID = "06264507"
+
+    def test_updates_lock_status(self):
+        with patch("google.cloud.bigquery.Client") as mock_bq_cls:
+            mock_client = MagicMock()
+            mock_bq_cls.return_value = mock_client
+
+            finalize_purchase_lock(self.PROJECT_ID, self.TARGET_DATE, self.RACE_ID, "success")
+
+            mock_client.query.assert_called_once()
+            query_text = mock_client.query.call_args[0][0]
+            assert "UPDATE" in query_text
+            assert "purchase_locks" in query_text
+            job_config = mock_client.query.call_args[1]["job_config"]
+            params = {p.name: p.value for p in job_config.query_parameters}
+            assert params["status"] == "success"
+            assert params["race_id"] == self.RACE_ID
 
 
 # ---------------------------------------------------------------------------
@@ -476,7 +576,7 @@ class TestIpatPurchaserPurchaseBet:
         """
         「投票」ボタン押下後、既知の成功／失敗パターンのどちらにも一致しない画面文言の場合、
         投票結果が不明なため status=failed ではなく need_confirmation を返すこと（/code-review指摘）。
-        status=failed にすると has_purchase_attempt_recorded() の対象外となり、
+        status=failed にすると購入ロック（purchase_locks）のブロック対象外となり、
         実際には投票が成立していた場合に次tickで二重購入してしまう。
         """
         purchaser = self._make_purchaser("予期しないレイアウト変更後の画面テキスト")
@@ -1297,6 +1397,12 @@ class TestProductionPurchaseFlow:
             "src.automation.api.app._refresh_investment_decisions_for_race": MagicMock(return_value=True),
             "src.automation.data.ipat_purchaser.fetch_daily_spent_amount": MagicMock(return_value=0),
             "src.automation.data.ipat_purchaser.save_purchase_record": MagicMock(),
+            # ロック関連のデフォルトは「未取得でブロックされない・アトミック取得は
+            # 常に成功する」正常系（Issue #435）。ブロック挙動を検証するテストは
+            # extra_patches で個別に上書きする。
+            "src.automation.data.ipat_purchaser.has_purchase_lock": MagicMock(return_value=False),
+            "src.automation.data.ipat_purchaser.try_acquire_purchase_lock": MagicMock(return_value=True),
+            "src.automation.data.ipat_purchaser.finalize_purchase_lock": MagicMock(),
             "src.utils.line_notify.push_messages": MagicMock(),
         }
         base_patches.update(extra_patches)
@@ -1324,7 +1430,7 @@ class TestProductionPurchaseFlow:
         """対象レースが既に購入成功済みなら IPAT へログインしないこと"""
         mock_ipat_cls = MagicMock()
         result = self._run({
-            "src.automation.data.ipat_purchaser.has_purchase_attempt_recorded": MagicMock(return_value=True),
+            "src.automation.data.ipat_purchaser.has_purchase_lock": MagicMock(return_value=True),
             "src.automation.data.ipat_purchaser.IpatPurchaser": mock_ipat_cls,
         })
 
@@ -1337,7 +1443,6 @@ class TestProductionPurchaseFlow:
         mock_ipat_cls = MagicMock()
         mock_refresh = MagicMock(return_value=True)
         result = self._run({
-            "src.automation.data.ipat_purchaser.has_purchase_attempt_recorded": MagicMock(return_value=False),
             "src.automation.api.app._refresh_investment_decisions_for_race": mock_refresh,
             "src.automation.data.ipat_purchaser.fetch_recommended_bets": MagicMock(return_value=[]),
             "src.automation.data.ipat_purchaser.IpatPurchaser": mock_ipat_cls,
@@ -1381,7 +1486,6 @@ class TestProductionPurchaseFlow:
         mock_ipat_cls.return_value.__aexit__ = AsyncMock(return_value=False)
 
         result = self._run({
-            "src.automation.data.ipat_purchaser.has_purchase_attempt_recorded": MagicMock(return_value=False),
             "src.automation.api.app._refresh_investment_decisions_for_race": MagicMock(side_effect=fake_refresh),
             "src.automation.data.ipat_purchaser.fetch_recommended_bets": MagicMock(side_effect=fake_fetch_bets),
             "src.automation.data.ipat_purchaser.IpatPurchaser": mock_ipat_cls,
@@ -1405,7 +1509,6 @@ class TestProductionPurchaseFlow:
         mock_ipat_cls.return_value.__aexit__ = AsyncMock(return_value=False)
 
         result = self._run({
-            "src.automation.data.ipat_purchaser.has_purchase_attempt_recorded": MagicMock(return_value=False),
             "src.automation.data.ipat_purchaser.fetch_recommended_bets": MagicMock(
                 return_value=[{"bet_type": "place", "horse_numbers": [3], "bet_amount": 300}]
             ),
@@ -1419,10 +1522,10 @@ class TestProductionPurchaseFlow:
         _, kwargs = purchaser_instance.purchase_bets_for_race.call_args
         assert kwargs.get("start_time") == "1325"
 
-    def test_marks_in_progress_before_purchasing(self):
+    def test_acquires_lock_before_purchasing(self):
         """
-        実購入直前に purchase_history へ status='in_progress' のマーカーを記録すること
-        （並行tickによる二重購入防止・/code-review指摘）。
+        実購入直前に try_acquire_purchase_lock() でロックをアトミックに取得すること
+        （並行tickによる二重購入防止・Issue #435）。
         """
         purchaser_instance = AsyncMock()
         purchaser_instance.login = AsyncMock(return_value=True)
@@ -1433,41 +1536,63 @@ class TestProductionPurchaseFlow:
         mock_ipat_cls = MagicMock()
         mock_ipat_cls.return_value.__aenter__ = AsyncMock(return_value=purchaser_instance)
         mock_ipat_cls.return_value.__aexit__ = AsyncMock(return_value=False)
-        mock_save_record = MagicMock()
+        mock_acquire = MagicMock(return_value=True)
 
         result = self._run({
-            "src.automation.data.ipat_purchaser.has_purchase_attempt_recorded": MagicMock(return_value=False),
+            "src.automation.data.ipat_purchaser.try_acquire_purchase_lock": mock_acquire,
             "src.automation.data.ipat_purchaser.fetch_recommended_bets": MagicMock(
                 return_value=[{"bet_type": "place", "horse_numbers": [3], "bet_amount": 300}]
             ),
             "src.automation.data.ipat_purchaser.IpatPurchaser": mock_ipat_cls,
-            "src.automation.data.ipat_purchaser.save_purchase_record": mock_save_record,
         })
 
         assert result["status"] == "success"
-        in_progress_calls = [
-            c for c in mock_save_record.call_args_list if c.args[6] == "in_progress"
-        ]
-        assert len(in_progress_calls) == 1
-        assert in_progress_calls[0].args[2] == self.RACE_ID  # race_id
-        assert in_progress_calls[0].args[3] == "_lock"  # bet_type（センチネル）
+        mock_acquire.assert_called_once_with("test-project", self.TARGET_DATE, self.RACE_ID)
 
-    def test_resolves_in_progress_marker_when_bets_vanish_after_refresh(self):
+    def test_finalizes_lock_as_success_after_purchase(self):
+        """
+        購入成功後、finalize_purchase_lock() でロックを status='success' に
+        更新すること（以後の自動購入を恒久的にブロックするため・Issue #435）。
+        """
+        purchaser_instance = AsyncMock()
+        purchaser_instance.login = AsyncMock(return_value=True)
+        purchaser_instance.purchase_bets_for_race = AsyncMock(
+            return_value={"status": "success", "total_amount": 300, "error_message": None}
+        )
+
+        mock_ipat_cls = MagicMock()
+        mock_ipat_cls.return_value.__aenter__ = AsyncMock(return_value=purchaser_instance)
+        mock_ipat_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+        mock_finalize = MagicMock()
+
+        result = self._run({
+            "src.automation.data.ipat_purchaser.fetch_recommended_bets": MagicMock(
+                return_value=[{"bet_type": "place", "horse_numbers": [3], "bet_amount": 300}]
+            ),
+            "src.automation.data.ipat_purchaser.IpatPurchaser": mock_ipat_cls,
+            "src.automation.data.ipat_purchaser.finalize_purchase_lock": mock_finalize,
+        })
+
+        assert result["status"] == "success"
+        mock_finalize.assert_called_once_with(
+            "test-project", self.TARGET_DATE, self.RACE_ID, "success"
+        )
+
+    def test_releases_lock_when_bets_vanish_after_refresh(self):
         """
         事前チェック時点では推奨馬券があったが、購入直前のrefreshで0件になった場合、
-        in_progressマーカーを解消（status='failed'で記録）すること（/code-review指摘）。
-        解消しないと、実際には何も購入していないのに次tickでも
-        has_purchase_attempt_recorded() がブロックし続け、購入ウィンドウを失う。
+        ロックを解放（status='failed'で更新）すること（Issue #435）。
+        解放しないと、実際には何も購入していないのに次tickでもロックが
+        残り続け、購入ウィンドウを失う。
         """
         mock_ipat_cls = MagicMock()
         purchaser_instance = AsyncMock()
         purchaser_instance.login = AsyncMock(return_value=True)
         mock_ipat_cls.return_value.__aenter__ = AsyncMock(return_value=purchaser_instance)
         mock_ipat_cls.return_value.__aexit__ = AsyncMock(return_value=False)
-        mock_save_record = MagicMock()
+        mock_finalize = MagicMock()
 
         result = self._run({
-            "src.automation.data.ipat_purchaser.has_purchase_attempt_recorded": MagicMock(return_value=False),
             # 1回目（事前チェック）は非空、2回目（refresh後の実購入直前）は空
             "src.automation.data.ipat_purchaser.fetch_recommended_bets": MagicMock(
                 side_effect=[
@@ -1476,21 +1601,21 @@ class TestProductionPurchaseFlow:
                 ]
             ),
             "src.automation.data.ipat_purchaser.IpatPurchaser": mock_ipat_cls,
-            "src.automation.data.ipat_purchaser.save_purchase_record": mock_save_record,
+            "src.automation.data.ipat_purchaser.finalize_purchase_lock": mock_finalize,
         })
 
         assert result["status"] == "success"
         assert result["purchased_races"] == 0
         purchaser_instance.purchase_bets_for_race.assert_not_called()
-
-        # in_progress で記録された後、failed で解消されていること
-        statuses = [c.args[6] for c in mock_save_record.call_args_list if c.args[2] == self.RACE_ID]
-        assert statuses == ["in_progress", "failed"]
+        mock_finalize.assert_called_once_with(
+            "test-project", self.TARGET_DATE, self.RACE_ID, "failed"
+        )
 
     def test_skips_purchase_when_concurrent_tick_wins_race(self):
         """
-        事前チェック（ログイン前）通過後、実購入直前の再確認で他tickが既に処理済みと
-        判明した場合は、ログインはしても実際の購入は行わないこと（/code-review指摘）。
+        事前チェック（ログイン前）通過後、実購入直前のアトミックなロック取得に
+        失敗した（他tickが先に取得した）場合は、ログインはしても実際の購入は
+        行わないこと（Issue #435）。
         """
         purchaser_instance = AsyncMock()
         purchaser_instance.login = AsyncMock(return_value=True)
@@ -1503,11 +1628,9 @@ class TestProductionPurchaseFlow:
         mock_ipat_cls.return_value.__aexit__ = AsyncMock(return_value=False)
 
         result = self._run({
-            # 1回目（事前チェック）= False（購入対象と判定）、
-            # 2回目（購入直前の再確認）= True（他tickが先に処理済み）
-            "src.automation.data.ipat_purchaser.has_purchase_attempt_recorded": MagicMock(
-                side_effect=[False, True]
-            ),
+            # 事前チェック（has_purchase_lock）は通過するが、実購入直前の
+            # アトミック取得（try_acquire_purchase_lock）で他tickに敗れる
+            "src.automation.data.ipat_purchaser.try_acquire_purchase_lock": MagicMock(return_value=False),
             "src.automation.data.ipat_purchaser.fetch_recommended_bets": MagicMock(
                 return_value=[{"bet_type": "place", "horse_numbers": [3], "bet_amount": 300}]
             ),
@@ -1538,8 +1661,8 @@ class TestProductionPurchaseFlow:
         mock_ipat_cls.return_value.__aenter__ = AsyncMock(return_value=purchaser_instance)
         mock_ipat_cls.return_value.__aexit__ = AsyncMock(return_value=False)
 
+        mock_finalize = MagicMock()
         result = self._run({
-            "src.automation.data.ipat_purchaser.has_purchase_attempt_recorded": MagicMock(return_value=False),
             "src.automation.data.ipat_purchaser.fetch_recommended_bets": MagicMock(
                 return_value=[
                     {"bet_type": "place", "horse_numbers": [3], "bet_amount": 49900},
@@ -1548,6 +1671,7 @@ class TestProductionPurchaseFlow:
             ),
             "src.automation.data.ipat_purchaser.fetch_daily_spent_amount": MagicMock(return_value=0),
             "src.automation.data.ipat_purchaser.IpatPurchaser": mock_ipat_cls,
+            "src.automation.data.ipat_purchaser.finalize_purchase_lock": mock_finalize,
         })
 
         assert len(result["results"]) == 1
@@ -1559,12 +1683,17 @@ class TestProductionPurchaseFlow:
         # need_confirmationもtotal_amountには実支出の可能性として計上されるため、
         # purchased_races からも除外してはいけない（/code-review指摘）。
         assert result["purchased_races"] == 1
+        # ロックも「実際に送信済みの可能性がある」need_confirmationで恒久的に
+        # ブロックすること（skipped_budgetが混在してもfailedに落ちない・Issue #435）。
+        mock_finalize.assert_called_once_with(
+            "test-project", self.TARGET_DATE, self.RACE_ID, "need_confirmation"
+        )
 
     def test_unexpected_error_in_one_race_does_not_abort_other_races(self):
         """
         1レースの購入処理中に想定外の例外（不正な投資判断データ等）が発生しても、
         tick全体を中断せず、そのレースだけをエラー扱いにして次レースの処理を
-        継続すること（/code-review指摘）。in_progressマーカーも解消されること。
+        継続すること（/code-review指摘）。購入ロックも解放されること（Issue #435）。
         """
         import importlib
 
@@ -1584,6 +1713,7 @@ class TestProductionPurchaseFlow:
         mock_ipat_cls.return_value.__aenter__ = AsyncMock(return_value=purchaser_instance)
         mock_ipat_cls.return_value.__aexit__ = AsyncMock(return_value=False)
         mock_save_record = MagicMock()
+        mock_finalize = MagicMock()
 
         # 呼び出し順: 事前チェック(A), 事前チェック(B), 実購入直前のrefresh後(A)=例外, 実購入直前(B)=正常
         with (
@@ -1608,8 +1738,16 @@ class TestProductionPurchaseFlow:
                 MagicMock(return_value=0),
             ),
             patch(
-                "src.automation.data.ipat_purchaser.has_purchase_attempt_recorded",
+                "src.automation.data.ipat_purchaser.has_purchase_lock",
                 MagicMock(return_value=False),
+            ),
+            patch(
+                "src.automation.data.ipat_purchaser.try_acquire_purchase_lock",
+                MagicMock(return_value=True),
+            ),
+            patch(
+                "src.automation.data.ipat_purchaser.finalize_purchase_lock",
+                mock_finalize,
             ),
             patch(
                 "src.automation.data.ipat_purchaser.fetch_recommended_bets",
@@ -1638,11 +1776,11 @@ class TestProductionPurchaseFlow:
         assert statuses["09264507"] == "processed"  # 後続レースは正常処理された
         purchaser_instance.purchase_bets_for_race.assert_called_once()  # Bのみ購入実行
 
-        # race_aのin_progressマーカーがfailedで解消されていること
-        race_a_statuses = [
-            c.args[6] for c in mock_save_record.call_args_list if c.args[2] == "06264507"
-        ]
-        assert race_a_statuses == ["in_progress", "failed"]
+        # race_aのロックはfailedで解放（次tick再挑戦可）、race_bはsuccessで
+        # 恒久ブロックされていること
+        finalize_calls = {c.args[2]: c.args[3] for c in mock_finalize.call_args_list}
+        assert finalize_calls["06264507"] == "failed"
+        assert finalize_calls["09264507"] == "success"
 
     def test_partial_save_failure_does_not_mask_success_as_error(self):
         """
@@ -1665,7 +1803,6 @@ class TestProductionPurchaseFlow:
         mock_save_record = MagicMock(side_effect=[None, RuntimeError("BQ insert失敗")])
 
         result = self._run({
-            "src.automation.data.ipat_purchaser.has_purchase_attempt_recorded": MagicMock(return_value=False),
             "src.automation.data.ipat_purchaser.fetch_recommended_bets": MagicMock(
                 return_value=[
                     {"bet_type": "place", "horse_numbers": [3], "bet_amount": 300},
@@ -1685,7 +1822,7 @@ class TestProductionPurchaseFlow:
 
     def test_precheck_error_on_one_race_does_not_abort_other_races(self):
         """
-        ログイン前の事前チェック（has_purchase_attempt_recorded/refresh/fetch）で
+        ログイン前の事前チェック（has_purchase_lock/refresh/fetch）で
         1レースだけ想定外の例外が発生しても、tick全体を中断せず、他のレースは
         引き続き事前チェック・購入されること（/code-review指摘）。
         以前は本番購入ループ側だけが例外保護されており、事前チェックループが
@@ -1735,8 +1872,16 @@ class TestProductionPurchaseFlow:
                 MagicMock(return_value=0),
             ),
             patch(
-                "src.automation.data.ipat_purchaser.has_purchase_attempt_recorded",
+                "src.automation.data.ipat_purchaser.has_purchase_lock",
                 MagicMock(side_effect=fake_has_attempt),
+            ),
+            patch(
+                "src.automation.data.ipat_purchaser.try_acquire_purchase_lock",
+                MagicMock(return_value=True),
+            ),
+            patch(
+                "src.automation.data.ipat_purchaser.finalize_purchase_lock",
+                MagicMock(),
             ),
             patch(
                 "src.automation.data.ipat_purchaser.fetch_recommended_bets",
@@ -1790,7 +1935,6 @@ class TestProductionPurchaseFlow:
             raise ValueError("不正な投資判断データ")
 
         result = self._run({
-            "src.automation.data.ipat_purchaser.has_purchase_attempt_recorded": MagicMock(return_value=False),
             "src.automation.data.ipat_purchaser.fetch_recommended_bets": MagicMock(side_effect=fake_fetch_bets),
             "src.automation.data.ipat_purchaser.IpatPurchaser": mock_ipat_cls,
         })
@@ -1810,7 +1954,7 @@ class TestProductionPurchaseFlow:
         mock_ipat_cls = MagicMock()
 
         result = self._run({
-            "src.automation.data.ipat_purchaser.has_purchase_attempt_recorded": MagicMock(
+            "src.automation.data.ipat_purchaser.has_purchase_lock": MagicMock(
                 side_effect=RuntimeError("BQ一時障害")
             ),
             "src.automation.data.ipat_purchaser.IpatPurchaser": mock_ipat_cls,
@@ -1856,7 +2000,7 @@ class TestProductionPurchaseFlow:
                 MagicMock(return_value=True),
             ),
             patch(
-                "src.automation.data.ipat_purchaser.has_purchase_attempt_recorded",
+                "src.automation.data.ipat_purchaser.has_purchase_lock",
                 MagicMock(side_effect=fake_has_attempt),
             ),
             patch(
@@ -1920,7 +2064,7 @@ class TestProductionPurchaseFlow:
                 MagicMock(return_value=True),
             ),
             patch(
-                "src.automation.data.ipat_purchaser.has_purchase_attempt_recorded",
+                "src.automation.data.ipat_purchaser.has_purchase_lock",
                 MagicMock(return_value=False),
             ),
             patch(
@@ -2003,8 +2147,16 @@ class TestProductionPurchaseFlow:
                 MagicMock(return_value=0),
             ),
             patch(
-                "src.automation.data.ipat_purchaser.has_purchase_attempt_recorded",
+                "src.automation.data.ipat_purchaser.has_purchase_lock",
                 MagicMock(return_value=False),
+            ),
+            patch(
+                "src.automation.data.ipat_purchaser.try_acquire_purchase_lock",
+                MagicMock(return_value=True),
+            ),
+            patch(
+                "src.automation.data.ipat_purchaser.finalize_purchase_lock",
+                MagicMock(),
             ),
             patch(
                 "src.automation.data.ipat_purchaser.fetch_recommended_bets",
@@ -2058,7 +2210,6 @@ class TestProductionPurchaseFlow:
         mock_push = MagicMock()
 
         result = self._run({
-            "src.automation.data.ipat_purchaser.has_purchase_attempt_recorded": MagicMock(return_value=False),
             "src.automation.data.ipat_purchaser.fetch_recommended_bets": MagicMock(
                 return_value=[{"bet_type": "place", "horse_numbers": [3], "bet_amount": 300}]
             ),
@@ -2087,7 +2238,6 @@ class TestProductionPurchaseFlow:
         mock_push = MagicMock()
 
         self._run({
-            "src.automation.data.ipat_purchaser.has_purchase_attempt_recorded": MagicMock(return_value=False),
             "src.automation.data.ipat_purchaser.fetch_recommended_bets": MagicMock(
                 return_value=[{"bet_type": "place", "horse_numbers": [3], "bet_amount": 300}]
             ),
@@ -2152,8 +2302,16 @@ class TestProductionPurchaseFlow:
                 MagicMock(return_value=0),
             ),
             patch(
-                "src.automation.data.ipat_purchaser.has_purchase_attempt_recorded",
+                "src.automation.data.ipat_purchaser.has_purchase_lock",
                 MagicMock(return_value=False),
+            ),
+            patch(
+                "src.automation.data.ipat_purchaser.try_acquire_purchase_lock",
+                MagicMock(return_value=True),
+            ),
+            patch(
+                "src.automation.data.ipat_purchaser.finalize_purchase_lock",
+                MagicMock(),
             ),
             patch(
                 "src.automation.data.ipat_purchaser.fetch_recommended_bets",
@@ -2186,7 +2344,7 @@ class TestProductionPurchaseFlow:
         tick開始からの経過時間がTICK_TIME_BUDGET_SECONDSを超えた場合、
         以降のレースには着手せず次tickに委ねること（/code-review指摘:
         Cloud Runの900秒タイムアウトに対するリトライ機構の時間消費対策）。
-        着手していないレースは mark_purchase_attempt_in_progress を呼んで
+        着手していないレースは try_acquire_purchase_lock を呼んで
         いないため、次tickの通常フローで問題なく再評価される。
 
         TICK_TIME_BUDGET_SECONDS をテスト専用に負の値へ差し替えることで、
@@ -2231,7 +2389,7 @@ class TestProductionPurchaseFlow:
                 MagicMock(return_value=0),
             ),
             patch(
-                "src.automation.data.ipat_purchaser.has_purchase_attempt_recorded",
+                "src.automation.data.ipat_purchaser.has_purchase_lock",
                 MagicMock(return_value=False),
             ),
             patch(
@@ -2269,7 +2427,7 @@ class TestProductionPurchaseFlow:
         mock_ipat_cls = MagicMock()
 
         result = self._run({
-            "src.automation.data.ipat_purchaser.has_purchase_attempt_recorded": MagicMock(
+            "src.automation.data.ipat_purchaser.has_purchase_lock": MagicMock(
                 side_effect=RuntimeError("BQ一時障害")
             ),
             "src.automation.data.ipat_purchaser.fetch_daily_spent_amount": MagicMock(
@@ -2309,7 +2467,7 @@ class TestProductionPurchaseFlow:
                 MagicMock(return_value=True),
             ),
             patch(
-                "src.automation.data.ipat_purchaser.has_purchase_attempt_recorded",
+                "src.automation.data.ipat_purchaser.has_purchase_lock",
                 mock_has_attempt,
             ),
             patch(
