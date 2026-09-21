@@ -398,6 +398,14 @@ class TestIpatPurchaserPurchaseBet:
         nav_ctx.__aexit__ = AsyncMock(return_value=False)
         p._page.expect_navigation = MagicMock(return_value=nav_ctx)
 
+        # フェーズ1（投票送信前）失敗時のリトライが _browser.new_page() を呼ぶため
+        # 設定しておく。未設定のままだと AttributeError が _reset_session_for_retry()
+        # 内で握りつぶされ、意図したリトライ枯渇ではなく「再ログイン基盤自体が
+        # 壊れている」別の理由で status=failed になってしまい、リトライロジック
+        # そのものを検証できていなかった（14回目の/code-review指摘）。
+        p._browser = AsyncMock()
+        p._browser.new_page = AsyncMock(return_value=p._page)
+
         return p
 
     def test_purchase_success(self):
@@ -440,14 +448,29 @@ class TestIpatPurchaserPurchaseBet:
             run_async(purchaser.purchase_bet("place", [3], 0, "東京(土)", 7))
 
     def test_purchase_timeout_returns_failed(self):
-        """タイムアウトエラーは status=failed を返すこと"""
+        """
+        「通常投票」クリックが常にタイムアウトする場合、投票送信前フェーズの
+        リトライを PRE_SUBMIT_MAX_ATTEMPTS 回試みた末に status=failed を返す
+        こと。login() を成功させておくことで、_reset_session_for_retry() が
+        毎回本物のリトライを行う経路を検証する（14回目の/code-review指摘:
+        以前は _browser が未設定でAttributeErrorが握りつぶされ、実質1回目の
+        失敗で即座にfailedになっているだけだった）。
+        """
         purchaser = self._make_purchaser()
-        purchaser._page.click = AsyncMock(side_effect=Exception("Timeout exceeded"))
+        # _browser.new_page() は毎回同じモックページを返すため、リトライ全体を
+        # 通じてclick呼び出し回数を追跡できる（後述: リトライ枯渇後は
+        # self._pageがNoneに破棄されるため、参照はここで確保しておく）。
+        original_page = purchaser._page
+        original_page.click = AsyncMock(side_effect=Exception("Timeout exceeded"))
+        purchaser.login = AsyncMock(return_value=True)
 
         result = run_async(purchaser.purchase_bet("place", [3], 300, "東京(土)", 7))
 
         assert result["status"] == "failed"
         assert result["error_message"] is not None
+        assert original_page.click.call_count == PRE_SUBMIT_MAX_ATTEMPTS
+        assert purchaser.login.call_count == PRE_SUBMIT_MAX_ATTEMPTS - 1
+        assert purchaser._page is None
 
     def test_purchase_unrecognized_completion_text_returns_need_confirmation(self):
         """
@@ -486,6 +509,7 @@ class TestIpatPurchaserPurchaseBet:
         """
         purchaser = self._make_purchaser()
         purchaser._page.locator.return_value.count = AsyncMock(return_value=0)
+        original_page = purchaser._page
 
         # purchase_bet()（後方互換ラッパー）は debug を落とすため、本番コード
         # （app.py）が実際に使う purchase_bets_for_race() を直接呼んで検証する。
@@ -501,7 +525,10 @@ class TestIpatPurchaserPurchaseBet:
         # 失敗時の証跡（画面URL等）が記録されていること（/code-review指摘）
         assert result.get("debug") is not None
         # サーバへの送信を試みていないため expect_navigation は呼ばれない
-        purchaser._page.expect_navigation.assert_not_called()
+        original_page.expect_navigation.assert_not_called()
+        # 投票未送信で確定しているとはいえ、途中まで入力された汚れたページを
+        # 次レースへ引き継がせないよう破棄しておくこと（14回目の/code-review指摘）。
+        assert purchaser._page is None
 
     def test_submit_button_count_exception_returns_failed_not_need_confirmation(self):
         """
@@ -515,6 +542,7 @@ class TestIpatPurchaserPurchaseBet:
         purchaser._page.locator.return_value.count = AsyncMock(
             side_effect=Exception("Target page, context or browser has been closed")
         )
+        original_page = purchaser._page
 
         result = run_async(
             purchaser.purchase_bets_for_race(
@@ -525,7 +553,10 @@ class TestIpatPurchaserPurchaseBet:
 
         assert result["status"] == "failed"
         assert result.get("debug") is not None
-        purchaser._page.expect_navigation.assert_not_called()
+        original_page.expect_navigation.assert_not_called()
+        # 途中まで入力された汚れたページを次レースへ引き継がせないこと
+        # （14回目の/code-review指摘）。
+        assert purchaser._page is None
 
     def test_error_pattern_failure_captures_screenshot(self):
         """

@@ -252,12 +252,27 @@ class IpatPurchaser:
                         # PRE_SUBMIT_MAX_ATTEMPTS回のリトライのたびにネットワーク
                         # I/O分だけ他の非同期処理が止まってしまう（/code-review指摘）
                         # ため、別スレッドにオフロードする。
+                        from google.api_core import retry as _retry
                         from google.cloud import storage as _storage
+
+                        # upload_to_gcs.py の GCSUploader.DEFAULT_RETRY（deadline=300s）は
+                        # 日次バッチのバルクアップロード向けであり、そのまま流用すると
+                        # 購入tickのTICK_TIME_BUDGET_SECONDSを圧迫しかねない。この
+                        # スクリーンショットはあくまで「証跡のベストエフォート保存」で
+                        # あり、購入フロー自体をブロックしてはならないため、短い
+                        # deadlineの専用リトライ設定にする（14回目の/code-review指摘:
+                        # 以前は単発試行のみで、一時的なGCS障害でIssue #433の核心である
+                        # 失敗証跡が黙って失われていた）。
+                        screenshot_retry = _retry.Retry(
+                            initial=0.5, maximum=2.0, multiplier=2.0, deadline=5.0
+                        )
 
                         gcs_client = _storage.Client(project=self.project_id)
                         bucket = gcs_client.bucket(f"{self.project_id}-{DEBUG_BUCKET_SUFFIX}")
                         blob = bucket.blob(blob_path)
-                        blob.upload_from_string(png_bytes, content_type="image/png")
+                        blob.upload_from_string(
+                            png_bytes, content_type="image/png", retry=screenshot_retry
+                        )
 
                     await asyncio.to_thread(_upload)
                     debug["screenshot_gcs_path"] = f"gs://{self.project_id}-{DEBUG_BUCKET_SUFFIX}/{blob_path}"
@@ -805,6 +820,13 @@ class IpatPurchaser:
             button_count = await self._page.locator(submit_selector).count()
         except Exception as e:
             debug = await self._capture_failure_state("submit_button_count_error")
+            # ここまでに「入力終了」〜合計金額入力（_prepare_final_confirmation）が
+            # 完了しており、ページは途中まで入力された「汚れた」状態。呼び出し元に
+            # failed（安全にリトライ可能）を返す以上、次レースがこの汚れたページを
+            # 引き継がないよう破棄しておく必要がある（14回目の/code-review指摘。
+            # フェーズ2の他のgive-up分岐は既に破棄していたが、この2つの分岐だけ
+            # 破棄されないまま残っていた）。
+            await self._discard_current_page()
             return {
                 "status": "failed",
                 "error_message": f"投票ボタンの確認中にエラー（サーバへは未送信のため再試行可能）: {e}",
@@ -816,6 +838,9 @@ class IpatPurchaser:
             # ため、ここで明示的に _capture_failure_state() を呼ぶ必要がある
             # （/code-review指摘: 以前は debug が一切付与されていなかった）。
             debug = await self._capture_failure_state("submit_button_not_found")
+            # 上の submit_button_count_error と同じ理由でページを破棄する
+            # （14回目の/code-review指摘）。
+            await self._discard_current_page()
             return {
                 "status": "failed",
                 "error_message": "投票ボタンが見つかりませんでした（サーバへは未送信のため再試行可能）",

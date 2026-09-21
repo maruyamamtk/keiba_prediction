@@ -2023,7 +2023,16 @@ async def _purchase_pipeline_async(
                         # 通知すると、既に終わったレースについて運用担当者に
                         # 「異常が起きた」と誤解させるノイズになる
                         # （/code-review指摘）。BQへの記録は他の失敗と同様に行う。
-                        if error_message in ("締め切られました", "締め切り"):
+                        # フェーズ1（投票送信前）の失敗は「購入画面エラー（3回試行）:
+                        # 締め切られました」のように元エラーを包んだ合成メッセージに
+                        # なるため、完全一致ではなくsubstringで判定する必要がある
+                        # （14回目の/code-review指摘）。完全一致のままだと、発走後の
+                        # 締切がフェーズ1側で先に検知されたケースが素通りし、既に
+                        # 終わったレースへの無駄なリトライ・ノイズアラートを防げて
+                        # いなかった。
+                        if error_message and any(
+                            pat in error_message for pat in ("締め切られました", "締め切り")
+                        ):
                             logger.info(f"[想定内: 発走済みのため締切] {msg}")
                         else:
                             logger.warning(msg)
