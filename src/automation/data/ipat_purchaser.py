@@ -26,6 +26,7 @@ import asyncio
 import datetime
 import logging
 import uuid
+from zoneinfo import ZoneInfo
 
 from google.cloud import bigquery
 
@@ -53,6 +54,35 @@ BET_TYPE_MAP: dict[str, str] = {
 # 1日あたりの購入上限額（円）
 DAILY_BUDGET_LIMIT = 50_000
 
+# 投票送信前フェーズ（通常投票クリック〜合計金額入力）の最大試行回数（初回+リトライ）
+PRE_SUBMIT_MAX_ATTEMPTS = 3
+
+# 発走までの残り時間がこれ未満になったらリトライを打ち切る（分）
+MIN_MINUTES_BEFORE_START_FOR_RETRY = 2
+
+# 失敗時のデバッグ情報（スクリーンショット等）の保存先バケットサフィックス
+DEBUG_BUCKET_SUFFIX = "keiba-predictions"
+
+# in_progress マーカーが「処理中」とみなされる有効期間（分）。
+# Cloud Scheduler は5分おきに次tickを起動するため、それより十分長く取り、
+# クラッシュ等で放置された古いマーカーは次tickでの再挑戦を妨げないようにする。
+#
+# 購入対象ウィンドウ（app.py: window_minutes_before=5, window_minutes_after=-5）は
+# 常に10分幅であり、マーカーは同ウィンドウ内（発走-5分〜+5分）でしか書き込まれない
+# ため、理論上は最も早い書き込み（発走-5分）でもマーカーの失効時刻
+# （書き込み+IN_PROGRESS_STALE_MINUTES）はウィンドウの終端（発走+5分）以降になり、
+# ウィンドウが閉じる前にマーカーだけが先に失効することはない（境界一致のみで
+# 実害はない）はずだが、/code-review指摘を踏まえ、この前提がわずかでも崩れた
+# 場合（例: 発走時刻データの誤差、処理遅延）に備えて安全マージンを確保する。
+IN_PROGRESS_STALE_MINUTES = 15
+
+# 失敗時デバッグ情報キャプチャ（画面文言取得）のタイムアウト（ミリ秒）。
+# あくまでベストエフォートな診断用途のため、他の操作と同じ PURCHASE_TIMEOUT_MS
+# を使わず短めに設定する。ページが応答不能な状態でここが毎回30秒近く粘ると、
+# 発走までのリトライ猶予（MIN_MINUTES_BEFORE_START_FOR_RETRY）を無駄に消費して
+# しまうため（/code-review指摘）。
+DEBUG_CAPTURE_TIMEOUT_MS = 5_000
+
 
 class IpatLoginError(Exception):
     """IPAT ログイン失敗時の例外"""
@@ -74,15 +104,42 @@ class IpatPurchaser:
         async with IpatPurchaser(member_id, pin, pat_number) as purchaser:
             await purchaser.login()
             result = await purchaser.purchase_bet("place", [3], 300)
+
+    Args:
+        project_id: 失敗時のスクリーンショットをGCSに保存する場合のGCPプロジェクトID。
+            None の場合はスクリーンショット保存をスキップする（テキスト情報のみ記録）。
     """
 
-    def __init__(self, member_id: str, pin: str, pat_number: str) -> None:
+    def __init__(
+        self,
+        member_id: str,
+        pin: str,
+        pat_number: str,
+        project_id: str | None = None,
+    ) -> None:
         self.member_id = member_id
         self.pin = pin
         self.pat_number = pat_number
+        self.project_id = project_id
         self._playwright = None
         self._browser = None
         self._page = None
+        # 直近のログイン失敗時にキャプチャしたデバッグ情報（url/画面文言/スクリーンショットパス）
+        self.last_login_debug: dict | None = None
+
+    @property
+    def is_session_alive(self) -> bool:
+        """
+        ブラウザセッション（ページ）が利用可能かどうか。
+
+        _reset_session_for_retry() が再ログインに失敗すると self._page は
+        None にリセットされる。同一インスタンスを1tick内の複数レースで
+        使い回す呼び出し側（app.py）は、これが False になった時点で
+        「以降のレースも同じ理由で確実に失敗する」と判断し、1レースごとに
+        紛らわしいエラーを繰り返す代わりに、tickの残りを明確に打ち切ることができる
+        （/code-review指摘）。
+        """
+        return self._page is not None
 
     async def __aenter__(self) -> "IpatPurchaser":
         from playwright.async_api import async_playwright
@@ -107,19 +164,142 @@ class IpatPurchaser:
         if self._playwright:
             await self._playwright.stop()
 
+    async def _capture_failure_state(self, context: str) -> dict:
+        """
+        失敗時の画面状態（URL・表示テキスト・スクリーンショット）を記録する。
+
+        原因究明用の証跡が一切残らず事後調査が不可能だった問題（Issue #433）への対応。
+        この関数自体の失敗が呼び出し元のエラーハンドリングを妨げないよう、
+        内部で発生した例外はすべて握りつぶし、取得できた範囲の情報のみを返す。
+
+        Args:
+            context: どの処理段階での失敗かを示すラベル（ログ・GCSパスに使用）
+
+        Returns:
+            {"context": str, "url": str|None, "text_snippet": str|None, "screenshot_gcs_path": str|None}
+        """
+        debug: dict = {
+            "context": context,
+            "url": None,
+            "text_snippet": None,
+            "screenshot_gcs_path": None,
+        }
+        if self._page is None:
+            return debug
+
+        try:
+            debug["url"] = self._page.url
+        except Exception:
+            pass
+
+        # .ui-page-active が見つからない（想定外の画面）場合こそ、body 全体への
+        # フォールバックで文言を取れることが重要なので、それぞれ個別に例外を握りつぶす
+        # （1つの try にまとめると前者の失敗でフォールバックごと失われていた。/code-review指摘）。
+        text = ""
+        try:
+            text = await self._page.locator(".ui-page-active").inner_text(
+                timeout=DEBUG_CAPTURE_TIMEOUT_MS
+            )
+        except Exception:
+            text = ""
+        if not text:
+            try:
+                text = await self._page.text_content("body", timeout=DEBUG_CAPTURE_TIMEOUT_MS) or ""
+            except Exception:
+                text = ""
+        if text:
+            debug["text_snippet"] = text.strip()[:500]
+
+        if self.project_id:
+            # 撮影前にログインフォームの入力値を消去する。ログイン失敗
+            # （特に login_url_unchanged: バリデーション等で弾かれ同じ
+            # ログイン画面に留まるケース）では、加入者番号・暗証番号・
+            # PAT番号が入力済みのまま画面に表示されている可能性があり、
+            # スクリーンショットにこれらが平文で写り込むとGCS上の
+            # デバッグ用バケットに認証情報が残ってしまう（/code-review指摘）。
+            # 該当要素が存在しないページでは単に何もしない（JS側でelはnullの
+            # ままスキップ）。
+            #
+            # 重要: 消去自体が失敗した場合はスクリーンショットの撮影自体を
+            # 中止する（フェイルセーフ）。以前は消去失敗を無視してそのまま
+            # 撮影・アップロードしており、「証跡を残す」ことを優先するあまり
+            # 認証情報漏洩防止という本来の目的を無効化してしまっていた
+            # （/code-review指摘: セキュリティ上の欠陥）。
+            redaction_ok = True
+            try:
+                await self._page.evaluate(
+                    "for (const id of ['userid', 'password', 'pars']) {"
+                    "  const el = document.getElementById(id);"
+                    "  if (el) el.value = '';"
+                    "}"
+                )
+            except Exception as e:
+                redaction_ok = False
+                logger.warning(
+                    f"失敗時スクリーンショット用の認証情報消去に失敗したため、"
+                    f"スクリーンショットの撮影をスキップします: {e}"
+                )
+
+            if redaction_ok:
+                try:
+                    png_bytes = await self._page.screenshot(timeout=DEBUG_CAPTURE_TIMEOUT_MS)
+                    timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%S%f")
+                    blob_path = f"ipat_debug/{timestamp}_{context}.png"
+
+                    def _upload() -> None:
+                        # google-cloud-storageクライアントの生成・アップロードは同期API。
+                        # asyncメソッド内で直接呼ぶとイベントループをブロックし、
+                        # PRE_SUBMIT_MAX_ATTEMPTS回のリトライのたびにネットワーク
+                        # I/O分だけ他の非同期処理が止まってしまう（/code-review指摘）
+                        # ため、別スレッドにオフロードする。
+                        from google.api_core import retry as _retry
+                        from google.cloud import storage as _storage
+
+                        # upload_to_gcs.py の GCSUploader.DEFAULT_RETRY（deadline=300s）は
+                        # 日次バッチのバルクアップロード向けであり、そのまま流用すると
+                        # 購入tickのTICK_TIME_BUDGET_SECONDSを圧迫しかねない。この
+                        # スクリーンショットはあくまで「証跡のベストエフォート保存」で
+                        # あり、購入フロー自体をブロックしてはならないため、短い
+                        # deadlineの専用リトライ設定にする（14回目の/code-review指摘:
+                        # 以前は単発試行のみで、一時的なGCS障害でIssue #433の核心である
+                        # 失敗証跡が黙って失われていた）。
+                        screenshot_retry = _retry.Retry(
+                            initial=0.5, maximum=2.0, multiplier=2.0, deadline=5.0
+                        )
+
+                        gcs_client = _storage.Client(project=self.project_id)
+                        bucket = gcs_client.bucket(f"{self.project_id}-{DEBUG_BUCKET_SUFFIX}")
+                        blob = bucket.blob(blob_path)
+                        blob.upload_from_string(
+                            png_bytes, content_type="image/png", retry=screenshot_retry
+                        )
+
+                    await asyncio.to_thread(_upload)
+                    debug["screenshot_gcs_path"] = f"gs://{self.project_id}-{DEBUG_BUCKET_SUFFIX}/{blob_path}"
+                except Exception as e:
+                    logger.warning(f"失敗時スクリーンショットの保存に失敗（無視します）: {e}")
+
+        return debug
+
     async def login(self) -> bool:
         """
         JRA IPAT にログインする。
 
+        ログイン後は「通常投票」リンクが実際に表示されるまで確認する。URL遷移と
+        エラーキーワード判定だけでは、意図しない中間画面（お知らせ・セッション
+        エラー等）が返ってきた場合に誤って成功と判定してしまうため（Issue #433）。
+
         Returns:
             True: ログイン成功
-            False: ログイン失敗
+            False: ログイン失敗（失敗時は self.last_login_debug に画面状態を記録）
 
         Raises:
             IpatLoginError: ログイン処理中に予期しないエラーが発生した場合
         """
         if self._page is None:
             raise IpatLoginError("ブラウザが初期化されていません。コンテキストマネージャー経由で使用してください。")
+
+        self.last_login_debug = None
 
         try:
             logger.info("JRA IPAT ログイン開始")
@@ -159,11 +339,32 @@ class IpatPurchaser:
             has_error = any(kw in page_text for kw in error_keywords)
             if has_error:
                 logger.warning(f"IPAT ログイン失敗: エラーメッセージ検出 URL={current_url}")
+                self.last_login_debug = await self._capture_failure_state("login_error_keyword")
                 return False
 
             # ログインページのままなら失敗（ToSPMenu のバリデーションで弾かれた等）
             if current_url == IPAT_LOGIN_URL:
                 logger.warning(f"IPAT ログイン失敗: ページが遷移していません URL={current_url}")
+                self.last_login_debug = await self._capture_failure_state("login_url_unchanged")
+                return False
+
+            # 「通常投票」リンクが実際に表示されるまで確認する。
+            # ここが確認できないまま先に進むと、購入フェーズで初めて失敗が発覚し
+            # 原因（IPAT側の想定外画面）が分からなくなる（2026-09-19 本番障害）。
+            try:
+                # 他の全画面遷移と同じ PURCHASE_TIMEOUT_MS を使う。ここだけ短いタイムアウトに
+                # すると、IPAT側の描画が遅いだけ（5秒はかかるが30秒以内には表示される）の
+                # ケースまで「ログイン失敗」と誤判定し、tick全体（他レース分も含む）の
+                # 購入を中断させてしまう（/code-review指摘）。
+                await self._page.wait_for_selector(
+                    'a:has-text("通常投票")', state="visible", timeout=PURCHASE_TIMEOUT_MS
+                )
+            except Exception:
+                logger.warning(f"IPAT ログイン失敗: 「通常投票」が表示されません URL={current_url}")
+                self.last_login_debug = await self._capture_failure_state("login_menu_not_visible")
+                snippet = (self.last_login_debug or {}).get("text_snippet")
+                if snippet:
+                    logger.warning(f"IPAT ログイン失敗時の画面文言: {snippet}")
                 return False
 
             logger.info(f"JRA IPAT ログイン成功 URL={current_url}")
@@ -173,11 +374,78 @@ class IpatPurchaser:
             logger.error(f"JRA IPAT ログインエラー: {e}", exc_info=True)
             raise IpatLoginError(f"ログイン処理中にエラーが発生しました: {e}") from e
 
+    async def _discard_current_page(self) -> None:
+        """
+        現在のページ（BrowserContext）を破棄し、self._page を None にする。
+
+        途中まで馬券が入力された「汚れた」ページを、同一インスタンスを使い回す
+        次レースに引き継がせないための共通クリーンアップ処理
+        （/code-review指摘）。_reset_session_for_retry() の前半部分に加え、
+        リトライを諦めて再ログインまではしない場合（試行回数上限・発走間近）
+        にも同じクリーンアップだけを行いたいため、独立したメソッドに切り出す。
+        """
+        try:
+            if self._page is not None:
+                # BrowserContext.close() はそのContext配下の全ページも閉じるため、
+                # page.close() だけでは元のBrowserContextがブラウザプロセス内に
+                # 残り続ける（1レースあたり最大 PRE_SUBMIT_MAX_ATTEMPTS-1 回のリトライ
+                # ×同一tick内の複数レース分、蓄積しうる）。/code-review指摘。
+                await self._page.context.close()
+        except Exception as e:
+            logger.warning(f"ページ/Contextのクローズに失敗（続行します）: {e}")
+        finally:
+            # クローズの成否によらず古いページへの参照は必ず捨てる。捨てないと、
+            # 直後の new_page() が失敗した場合に self._page が閉じたContextの
+            # ページを指したまま残ってしまう（/code-review指摘）。app.py は
+            # 同一IpatPurchaserインスタンスを1tick内の全レースで使い回すため、
+            # 壊れたページを放置すると以降の全レースが同じ理由で失敗し続ける。
+            self._page = None
+
+    async def _reset_session_for_retry(self) -> bool:
+        """
+        投票送信前フェーズのリトライ用にブラウザセッションを作り直す。
+
+        `self._browser.new_page()` は新規 BrowserContext（＝新規Cookie）でページを
+        作成するため、クライアント（ブラウザ）側のCookie/セッションは前回試行と
+        完全に分離される。これにより前回試行で投票一覧に途中まで追加された内容が
+        サーバ側でも破棄されることを期待している（中途半端な一覧が残ったまま次の
+        試行に進むと合計金額がずれる恐れがあるため）。
+
+        既知の限界（/code-review指摘）: これはIPATが「投票一覧」の状態をCookie/
+        ブラウザセッション単位で管理していることを前提としたクライアント側の対策
+        であり、IPATが加入者番号（アカウント）単位でサーバ側に状態を保持している
+        場合はこの前提が成り立たない可能性がある。IPATの内部実装は公開されておらず
+        本コードからは検証できないため、本番投入前に `scripts/test_ipat_e2e.py` 等で
+        実際にリトライを発生させ、合計金額のズレ（「金額が一致しません」等）が
+        起きないことを確認することを強く推奨する。
+
+        Returns:
+            True: 再ログイン成功, False: 再ログイン失敗（これ以上リトライしない）
+        """
+        await self._discard_current_page()
+
+        try:
+            self._page = await self._browser.new_page()
+            logged_in = await self.login()
+            if not logged_in:
+                # ログイン失敗時も再利用不能な状態にしておく（未ログインのページを
+                # 次レースが誤って使い回すのを防ぐ）。new_page()で確保した
+                # BrowserContextを閉じずにself._page=Noneするとそのcontextが
+                # ブラウザプロセス内にリークし続ける（/code-review指摘）ため、
+                # _discard_current_pageと同じ手順でクローズしてから手放す。
+                await self._discard_current_page()
+            return logged_in
+        except Exception as e:
+            logger.error(f"リトライ用セッションの再構築に失敗: {e}", exc_info=True)
+            await self._discard_current_page()
+            return False
+
     async def purchase_bets_for_race(
         self,
         bets: list[dict],
         venue_name: str,
         race_number: int,
+        start_time: str | None = None,
     ) -> dict:
         """
         同一レースの複数馬券を一括購入する。
@@ -185,16 +453,24 @@ class IpatPurchaser:
         投票一覧に全馬券を追加してから1回の「投票」で確定する。
         2件目以降は「場名から続けて入力」で同じウィザードセッションを継続する。
 
+        投票送信（「投票」ボタン押下）**前**のフェーズ（通常投票クリック〜合計金額入力）で
+        失敗した場合は、発走まで余裕がある限りセッションを作り直して最大
+        PRE_SUBMIT_MAX_ATTEMPTS 回まで自動リトライする。
+        投票送信**後**のエラーは二重購入を避けるため絶対にリトライしない
+        （status="need_confirmation" を返し、手動確認を促す）。
+
         Args:
             bets: 馬券リスト [{"bet_type": str, "horse_numbers": list[int], "amount": int}, ...]
             venue_name: 競馬場名（曜日付き、例: "中山(土)"）
             race_number: レース番号（例: 7）
+            start_time: レース発走時刻（"HHMM"形式）。指定するとリトライの締切判定に使う。
 
         Returns:
-            {"status": "success"|"failed", "total_amount": int, "error_message": str|None}
+            {"status": "success"|"failed"|"need_confirmation", "total_amount": int,
+             "error_message": str|None, "debug": dict|None}
 
         Raises:
-            IpatPurchaseError: 予期しないエラーが発生した場合
+            IpatPurchaseError: 入力値が不正な場合
         """
         if self._page is None:
             raise IpatPurchaseError("ブラウザが初期化されていません。")
@@ -215,31 +491,133 @@ class IpatPurchaser:
         )
         logger.info(f"一括購入開始: {venue_name} {race_number}R / {len(bets)}件 合計{total_amount}円 [{summary}]")
 
-        try:
-            await self._navigate_to_top_menu()
+        retry_deadline: datetime.datetime | None = None
+        if start_time and len(start_time) >= 4:
+            try:
+                hour, minute = int(start_time[:2]), int(start_time[2:4])
+                now_jst = datetime.datetime.now(ZoneInfo("Asia/Tokyo"))
+                race_start = now_jst.replace(hour=hour, minute=minute, second=0, microsecond=0)
+                # start_time は常に「本日」の発走時刻のはずだが、日をまたぐレース
+                # （例: now=23:58 で start_time="0002"）では単純な時刻置換だと
+                # 24時間近く過去の時刻になってしまい、リトライ猶予判定が即座に
+                # 「発走間近」と誤判定してしまう（/code-review指摘）。
+                # now より半日以上過去になった場合は翌日の発走とみなす。
+                if race_start < now_jst - datetime.timedelta(hours=12):
+                    race_start += datetime.timedelta(days=1)
+                retry_deadline = race_start - datetime.timedelta(minutes=MIN_MINUTES_BEFORE_START_FOR_RETRY)
+            except ValueError:
+                retry_deadline = None
 
-            for i, bet in enumerate(bets):
-                await self._add_bet_to_list(
-                    bet["bet_type"],
-                    bet["horse_numbers"],
-                    bet["amount"],
-                    venue_name,
-                    race_number,
-                    is_first_bet=(i == 0),
+        def _pre_submit_failed(message: str, debug: dict | None) -> dict:
+            """フェーズ1（投票送信前）を諦める際の統一されたfailed応答を作る。"""
+            return {
+                "status": "failed",
+                "total_amount": total_amount,
+                "error_message": message,
+                "debug": debug,
+            }
+
+        # --- フェーズ1: 投票一覧への追加（投票送信前。失敗時はリトライ可） ---
+        last_error_msg: str | None = None
+        last_debug: dict | None = None
+        for attempt in range(1, PRE_SUBMIT_MAX_ATTEMPTS + 1):
+            try:
+                await self._navigate_to_top_menu()
+                for i, bet in enumerate(bets):
+                    await self._add_bet_to_list(
+                        bet["bet_type"],
+                        bet["horse_numbers"],
+                        bet["amount"],
+                        venue_name,
+                        race_number,
+                        is_first_bet=(i == 0),
+                    )
+                # 「入力終了」〜合計金額入力まではまだサーバに未送信のため、ここまでを
+                # リトライ可能フェーズに含める（「投票」ボタン押下のみをフェーズ2に残す）。
+                await self._prepare_final_confirmation(total_amount)
+                break  # 投票送信の準備が完了 → フェーズ2へ
+            except IpatPurchaseError:
+                raise
+            except Exception as e:
+                last_error_msg = str(e)
+                last_debug = await self._capture_failure_state(f"pre_submit_attempt{attempt}")
+                logger.warning(
+                    f"馬券入力に失敗（試行{attempt}/{PRE_SUBMIT_MAX_ATTEMPTS}）: {last_error_msg}"
                 )
 
-            result = await self._finalize_and_submit(total_amount)
+                if attempt >= PRE_SUBMIT_MAX_ATTEMPTS:
+                    # 諦める前にページを破棄しておく（再ログインまではしない —
+                    # 既にリトライ予算を使い切っているため、ここでさらに
+                    # フルの再ログインを行うのは時間の無駄）。破棄せず諦めると、
+                    # 直前の失敗試行で途中まで入力された馬券情報が残ったままの
+                    # ページを、同一IpatPurchaserインスタンスを使い回す次レースが
+                    # そのまま引き継いでしまう（/code-review指摘）。破棄により
+                    # self._pageはNoneになり、is_session_alive経由で呼び出し側が
+                    # 正しくtickを打ち切れる。
+                    await self._discard_current_page()
+                    return _pre_submit_failed(
+                        f"購入画面エラー（{attempt}回試行）: {last_error_msg}", last_debug
+                    )
+
+                if retry_deadline and datetime.datetime.now(ZoneInfo("Asia/Tokyo")) >= retry_deadline:
+                    logger.warning(
+                        f"発走まで{MIN_MINUTES_BEFORE_START_FOR_RETRY}分未満のためリトライを中止します"
+                    )
+                    # 同上の理由でページを破棄してから諦める（再ログインはしない）。
+                    await self._discard_current_page()
+                    return _pre_submit_failed(
+                        f"購入画面エラー（発走間近のためリトライ中止）: {last_error_msg}", last_debug
+                    )
+
+                reset_ok = await self._reset_session_for_retry()
+                if not reset_ok:
+                    # 再ログイン自体の失敗原因（例: IPAT側の障害・メンテナンス画面）を報告する。
+                    # last_debug は「元の（購入画面での）失敗」のスナップショットであり、
+                    # ここで実際にブロッキング要因になっているのは再ログイン失敗の方なので、
+                    # login() が記録した self.last_login_debug を優先する（/code-review指摘）。
+                    return _pre_submit_failed(
+                        f"リトライ用の再ログインに失敗しました（元エラー: {last_error_msg}）",
+                        self.last_login_debug or last_debug,
+                    )
+                logger.info(f"再ログイン完了。購入を再試行します（試行{attempt + 1}/{PRE_SUBMIT_MAX_ATTEMPTS}）")
+
+        # --- フェーズ2: 投票送信（ここから先は絶対にリトライしない。二重購入防止） ---
+        # 既知の限界（/code-review指摘）: `except Exception` は asyncio.CancelledError
+        # （Python 3.8+ではBaseExceptionのサブクラス）を捕捉しない。Cloud Runの
+        # SIGTERM等でこのタスクが「投票」ボタン押下後・結果確定前にキャンセルされた
+        # 場合、in_progressマーカーを解消するsuccess/need_confirmation/failedのいずれの
+        # 行も保存されないまま終了しうる。この場合マーカーは
+        # IN_PROGRESS_STALE_MINUTES経過後に自然失効し、次tickでの再購入を許可して
+        # しまう可能性がある。この窓は極めて狭く（tap後の数百ミリ秒〜数秒）、
+        # 完全に塞ぐには asyncio.shield() 等によるキャンセル耐性を本番のCloud Run
+        # シャットダウン挙動に対して検証した上で導入する必要があるため、本PRでは
+        # 未対応の既知リスクとして明記するに留める。
+        try:
+            result = await self._submit_and_confirm()
             result["total_amount"] = total_amount
+            result.setdefault("debug", None)
             logger.info(f"一括購入完了: {venue_name} {race_number}R → {result['status']}")
             return result
-
         except IpatPurchaseError:
             raise
         except Exception as e:
-            error_msg = str(e)
-            if "Timeout" in error_msg:
-                return {"status": "failed", "total_amount": total_amount, "error_message": f"購入画面タイムアウト: {error_msg}"}
-            raise IpatPurchaseError(error_msg) from e
+            debug = await self._capture_failure_state("finalize_submit_error")
+            error_msg = (
+                f"投票送信中にエラーが発生しました。実際に購入されているか必ずIPATで確認してください: {e}"
+            )
+            logger.error(error_msg, exc_info=True)
+            # 投票結果が不明なこのページを次レースに引き継がせない。ここで
+            # self._pageを破棄せずに正常returnすると、is_session_aliveがTrueの
+            # ままとなり、app.py側の「セッション断でtickを打ち切る」安全策が
+            # 発動できず、状態不明のページのまま次レースの馬券入力を進めて
+            # しまう恐れがある（/code-review指摘）。
+            await self._discard_current_page()
+            return {
+                "status": "need_confirmation",
+                "total_amount": total_amount,
+                "error_message": error_msg,
+                "debug": debug,
+            }
 
     async def purchase_bet(
         self,
@@ -255,7 +633,14 @@ class IpatPurchaser:
         内部的に purchase_bets_for_race を呼び出す。
 
         Returns:
-            {"status": "success"|"failed", "error_message": str|None}
+            {"status": "success"|"failed"|"need_confirmation", "error_message": str|None}
+
+        重要: status="need_confirmation" は「投票送信後にエラーが発生し、
+        実際に購入されたか不明」を意味し、"failed"（未送信・安全に再試行可能）
+        とは全く異なる（/code-review指摘: 以前のdocstringはこの区別を
+        反映していなかった）。呼び出し側でstatus=="success"以外を一律
+        「失敗として再試行してよい」と扱うと、need_confirmationの場合に
+        二重購入する危険がある。呼び出し側は必ずstatusを個別に判定すること。
         """
         bets = [{"bet_type": bet_type, "horse_numbers": horse_numbers, "amount": amount}]
         result = await self.purchase_bets_for_race(bets, venue_name, race_number)
@@ -387,25 +772,86 @@ class IpatPurchaser:
         await self._wait_for_jqm_ready()
         logger.info(f"投票一覧に追加: {bet_label} {horse_str} {amount}円")
 
-    async def _finalize_and_submit(self, total_amount: int) -> dict:
+    async def _prepare_final_confirmation(self, total_amount: int) -> None:
         """
-        投票一覧から「入力終了」→ 合計金額確認 →「投票」まで処理する。
+        投票一覧の「入力終了」クリック〜合計金額欄への入力までを行う。
 
-        #sum は FORM0 の外にある独立した入力欄。JS の投票ハンドラが #sum を読んで
-        検証し、confirm ダイアログ後に FORM0.submit() する。
+        ここまではまだサーバに投票を送信していない（画面遷移とフォーム入力のみ）ため、
+        失敗しても安全にリトライできる。「投票」ボタン押下（_submit_and_confirm）と
+        意図的に分離している（/code-review指摘: 以前はこの部分の失敗も
+        「投票送信後のエラー」として扱われ、安全にリトライできるケースまで
+        need_confirmation（要手動確認）になってしまっていた）。
         """
         # 「入力終了」→ 合計金額入力へ
         await self._page.click('.ui-page-active a:text-is("入力終了")', timeout=PURCHASE_TIMEOUT_MS)
         await self._wait_for_jqm_ready()
 
-        # 合計金額確認入力 → 「投票」
+        # 合計金額確認入力
         await self._page.wait_for_selector('#sum', state='attached', timeout=PURCHASE_TIMEOUT_MS)
         await self._page.locator('#sum').fill(str(total_amount), timeout=PURCHASE_TIMEOUT_MS)
+
+    async def _submit_and_confirm(self) -> dict:
+        """
+        「投票」ボタン押下〜完了確認。
+
+        #sum は FORM0 の外にある独立した入力欄。JS の投票ハンドラが #sum を読んで
+        検証し、confirm ダイアログ後に FORM0.submit() する。
+
+        「投票」ボタンをクリック（jQuery Mobile の tap イベント）した後は
+        サーバに送信済みの可能性がある（＝投票が成立している可能性がある）ため、
+        呼び出し元は絶対にリトライしてはいけない（二重購入防止）。
+
+        一方、ボタン自体がDOM上に存在しない場合は、クリックもサーバへの送信も
+        一切発生していないことが確定しているため、そのケースだけは呼び出し元が
+        安全にリトライできる status="failed" を明示的に返す（例外を送出しない）。
+        これを区別しないと、単にボタンが見つからなかっただけの純粋にローカルな
+        失敗までneed_confirmation（要手動確認）扱いになってしまう（/code-review指摘）。
+        """
+        submit_selector = ".ui-page-active .btnColor a"
+        # count() 自体（ページクラッシュ・ナビゲーション中断等）が例外を送出しても、
+        # 「投票」タップ（実際の送信操作）はまだ一切行っていない点は同じであり、
+        # 安全にリトライ可能なfailedとして扱うべきである。ここを保護しないと、
+        # count() の例外がそのまま外側（purchase_bets_for_race のフェーズ2
+        # 例外ハンドラ）まで伝播し、何もサーバに送っていないのに
+        # need_confirmation（要手動確認・自動リトライ禁止）にされてしまう
+        # （/code-review指摘: すぐ下の「ボタン0件」ケースと本質的に同じ状況のはず
+        # なのに、例外経由だと扱いが変わってしまっていた）。
+        try:
+            button_count = await self._page.locator(submit_selector).count()
+        except Exception as e:
+            debug = await self._capture_failure_state("submit_button_count_error")
+            # ここまでに「入力終了」〜合計金額入力（_prepare_final_confirmation）が
+            # 完了しており、ページは途中まで入力された「汚れた」状態。呼び出し元に
+            # failed（安全にリトライ可能）を返す以上、次レースがこの汚れたページを
+            # 引き継がないよう破棄しておく必要がある（14回目の/code-review指摘。
+            # フェーズ2の他のgive-up分岐は既に破棄していたが、この2つの分岐だけ
+            # 破棄されないまま残っていた）。
+            await self._discard_current_page()
+            return {
+                "status": "failed",
+                "error_message": f"投票ボタンの確認中にエラー（サーバへは未送信のため再試行可能）: {e}",
+                "debug": debug,
+            }
+        if button_count == 0:
+            # 失敗時の証跡を必ず残す（Issue #433の核心的な目的）。この分岐は
+            # purchase_bets_for_race の例外ハンドラを経由しない（例外を送出しない）
+            # ため、ここで明示的に _capture_failure_state() を呼ぶ必要がある
+            # （/code-review指摘: 以前は debug が一切付与されていなかった）。
+            debug = await self._capture_failure_state("submit_button_not_found")
+            # 上の submit_button_count_error と同じ理由でページを破棄する
+            # （14回目の/code-review指摘）。
+            await self._discard_current_page()
+            return {
+                "status": "failed",
+                "error_message": "投票ボタンが見つかりませんでした（サーバへは未送信のため再試行可能）",
+                "debug": debug,
+            }
+
         async with self._page.expect_navigation(
             wait_until="domcontentloaded", timeout=PURCHASE_TIMEOUT_MS
         ):
             await self._page.evaluate(
-                "window.jQuery('.ui-page-active .btnColor a').trigger('tap')"
+                f"window.jQuery('{submit_selector}').trigger('tap')"
             )
         await self._wait_for_jqm_ready()
 
@@ -413,6 +859,26 @@ class IpatPurchaser:
         active_text = await self._page.locator('.ui-page-active').inner_text() or ""
         logger.info(f"完了確認 active_text: {active_text[:300]}")
 
+        # 以降の分岐はいずれも例外を送出せずdictを返すため、purchase_bets_for_race側の
+        # 例外ハンドラによる自動デバッグ記録が効かない。ここで明示的に
+        # _capture_failure_state() を呼んでスクリーンショットも残す。以前はURL/
+        # 画面文言のみを詰めてscreenshot_gcs_pathを常にNoneにしていたため、
+        # Issue #433の核心である「失敗時の証跡（スクリーンショット含む）」が
+        # 投票送信後の失敗・要確認ケースでは一切残らなかった（/code-review指摘）。
+        async def _debug_from_active_text(context: str) -> dict:
+            return await self._capture_failure_state(context)
+
+        # 成功判定（受付番号）を先に見る。ERROR_PATTERNS には「ご確認ください」
+        # 「エラーが発生」のような汎用的な文言が含まれており、これらが成功画面の
+        # 定型注意書き等に偶然含まれていた場合、判定順が逆だと実際には成立した
+        # 投票を failed と誤判定してしまう。failed は has_purchase_attempt_recorded()
+        # のブロック対象外（次tickで再購入OK）のため、誤判定は実際の二重購入に
+        # 直結する（/code-review指摘）。
+        if "受付番号" in active_text:
+            return {"status": "success", "error_message": None}
+
+        # サーバが明示的に「受け付けなかった」と返しているケースのみ failed とする
+        # （これらは投票不成立が確定しており、次tickで安全に再購入してよい）。
         ERROR_PATTERNS = [
             "残高不足",
             "締め切られました",
@@ -425,13 +891,21 @@ class IpatPurchaser:
         ]
         for pat in ERROR_PATTERNS:
             if pat in active_text:
-                return {"status": "failed", "error_message": pat}
+                debug = await _debug_from_active_text("submit_error_pattern")
+                return {"status": "failed", "error_message": pat, "debug": debug}
 
-        if "受付番号" in active_text:
-            return {"status": "success", "error_message": None}
-
+        # 「投票」ボタンは既に押下済み（サーバに送信済みの可能性がある）にもかかわらず、
+        # 成功（受付番号）とも既知の失敗パターンとも判定できない未知の画面。
+        # ここで status="failed" にすると、has_purchase_attempt_recorded() の対象外
+        # となり次tickで同じ馬券が再購入されてしまう（/code-review指摘）。
+        # 実際に投票されたか不明なので need_confirmation として手動確認を促す。
         snippet = active_text.strip()[:200]
-        return {"status": "failed", "error_message": f"完了確認できず: {snippet}"}
+        debug = await _debug_from_active_text("submit_unrecognized_screen")
+        return {
+            "status": "need_confirmation",
+            "error_message": f"完了確認できず（投票結果不明・要手動確認）: {snippet}",
+            "debug": debug,
+        }
 
     async def logout(self) -> None:
         """IPAT からログアウトする"""
@@ -560,12 +1034,116 @@ def fetch_recommended_bets(
     return result
 
 
+def has_purchase_attempt_recorded(
+    project_id: str,
+    target_date: datetime.date,
+    race_id: str,
+) -> bool:
+    """
+    対象レースの purchase_history のうち「最も新しい1行」の status を見て、
+    自動での再購入をブロックすべきか判定する。
+
+    購入失敗レースを次回tickでも再試行できるようウィンドウを拡張した際（Issue #433）、
+    既に購入成功済み、または投票送信後にエラーが発生し実際の購入有無が不明
+    （need_confirmation。サーバに送信済みの可能性がある）なレースを再度自動購入
+    してしまう二重購入を防ぐために使用する。status='failed'（投票送信前の失敗。
+    サーバには一切送信されていない）のみはブロック対象外とし、次tickでの再挑戦を許可する。
+
+    最新行だけを見る理由（/code-review指摘・重要）: 当初は「ブロック対象の
+    status を持つ行が1件でも存在するか」（COUNT(*) ... status IN (...) OR ...）
+    で判定していたが、これは誤りだった。mark_purchase_attempt_in_progress() が
+    購入試行のたびに status='in_progress' の行を追加でINSERTするため、その後
+    実際の購入結果（success/failed/need_confirmation）を別行として保存しても、
+    最初の in_progress 行はテーブルに残り続け、有効期限（IN_PROGRESS_STALE_MINUTES）
+    が切れるまで判定をブロックし続けてしまう。特に「投票送信前の失敗
+    （status='failed'、次tickで再挑戦してよいはず）」のケースで、本来再挑戦
+    できるはずのレースが最大10分間ブロックされ、-5〜5分の購入ウィンドウを
+    ほぼ使い切ってしまっていた。「最新行」で判定することで、新しく書き込まれた
+    確定ステータス（failed等）が古い in_progress マーカーを正しく上書きする。
+
+    in_progress は、リトライ機構によって1レースあたりの処理時間が数十秒〜数分に
+    伸びたことで、前回tickの処理がまだ完了していないうちに次tick（5分後）が
+    同じレースを重複して購入しにいくリスクへの対策。
+    mark_purchase_attempt_in_progress() で購入処理の開始直前に記録する。
+    有効期限切れの in_progress（＝処理がクラッシュ等で完了しないまま、それ以降
+    どの行も追加されずに放置された）はブロック対象から除外し、再挑戦を許可する。
+
+    重要な限界: これは「チェック→マーカー書き込み」を1つのアトミック操作に
+    できないBigQuery上でのベストエフォートな軽減策であり、完全な排他制御（真の
+    分散ロック）ではない。2つのtickがほぼ同時にこの関数を呼び、両方が
+    in_progressマーカーをまだ見つけられない極めて短いタイミングの重なりが
+    あれば、理論上は二重購入が起こり得る。ただし実装上、マーカー書き込みは
+    ログイン・Playwright操作など時間のかかる処理より前（本チェック直後）に
+    行っているため、実際に重なりうる窓は「連続する2回のBigQueryクエリ」分
+    （通常は数百ミリ秒未満）に絞られている。真にアトミックな排他制御が必要な
+    場合は、Firestoreトランザクション等BigQuery以外の仕組みでの再設計が必要。
+
+    Returns:
+        True: 最新行が購入成功済み・結果不明で要確認、または有効期限内の処理中
+              （自動での再購入は禁止）
+    """
+    client = bigquery.Client(project=project_id)
+    query = """
+        SELECT status, purchased_at
+        FROM `{project}.predictions.purchase_history`
+        WHERE race_date = @race_date
+          AND race_id = @race_id
+        ORDER BY purchased_at DESC
+        LIMIT 1
+    """.format(project=project_id)
+
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("race_date", "DATE", target_date.isoformat()),
+            bigquery.ScalarQueryParameter("race_id", "STRING", race_id),
+        ]
+    )
+    rows = list(client.query(query, job_config=job_config).result())
+    if not rows:
+        return False
+
+    latest_status = rows[0]["status"]
+    if latest_status in ("success", "need_confirmation"):
+        return True
+    if latest_status == "in_progress":
+        purchased_at = rows[0]["purchased_at"]
+        if purchased_at is None:
+            return False
+        age_minutes = (
+            datetime.datetime.now(datetime.timezone.utc) - purchased_at
+        ).total_seconds() / 60
+        return age_minutes <= IN_PROGRESS_STALE_MINUTES
+    return False
+
+
+def mark_purchase_attempt_in_progress(
+    project_id: str,
+    target_date: datetime.date,
+    race_id: str,
+) -> None:
+    """
+    対象レースの購入処理を開始する直前に、purchase_history へ
+    status='in_progress' のマーカー行を記録する（Issue #433）。
+
+    ログイン・購入は数十秒〜（リトライ時は）数分かかりうるため、これを記録せずに
+    処理を始めると、処理中に次tick（5分後）が起動した際 has_purchase_attempt_recorded()
+    がまだ何も見つけられず、同じレースを重複して購入しにいってしまう。
+    """
+    save_purchase_record(project_id, target_date, race_id, "_lock", [], 0, "in_progress")
+
+
 def fetch_daily_spent_amount(
     project_id: str,
     target_date: datetime.date,
 ) -> int:
     """
-    当日の累計購入金額（成功分のみ）を取得する。
+    当日の累計購入金額を取得する。
+
+    status='success'（購入成功）に加え、status='need_confirmation'（投票送信後に
+    エラーが発生し実際に購入されたか不明。サーバに送信済みの可能性がある）も
+    「実際に使われた可能性がある金額」として保守的に合算する。need_confirmation
+    を除外すると、実際には購入済みの金額が1日の購入上限（DAILY_BUDGET_LIMIT）の
+    チェックから漏れ、上限を超過しうる（Issue #433）。
 
     Returns:
         累計購入金額（円）
@@ -575,7 +1153,7 @@ def fetch_daily_spent_amount(
         SELECT COALESCE(SUM(amount), 0) AS total
         FROM `{project}.predictions.purchase_history`
         WHERE race_date = @race_date
-          AND status = 'success'
+          AND status IN ('success', 'need_confirmation')
     """.format(project=project_id)
 
     job_config = bigquery.QueryJobConfig(

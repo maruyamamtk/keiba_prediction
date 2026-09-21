@@ -175,21 +175,45 @@ launchctl list | grep com.keiba.monthly-retrain      # 登録確認
 
 **夏競馬対応（2026-07-25追加）**: 夏場（7〜9月）は暑さを避けるためナイター開催が組まれ、最終レースの発走が19:00頃まで続く。通常スケジュール（〜17:55）のままでは19:00頃発走のレースを取りこぼすため、7〜9月のみ稼働する `race-day-purchase-summer`（〜19:55）を別ジョブとして追加した。処理ロジック・エンドポイントは `race-day-purchase` と完全に同一で、cron式の月フィールド（`1-6,10-12` と `7-9`）のみが異なる。
 
-**概要**: 5分おきに起動し、現在時刻の5〜10分後に発走するレースが存在する場合に以下を実行します。netkeibaで最新オッズをスクレイピングして `daily_odds` を上書きし、投資戦略を再計算して `investment_decisions` を更新した上で、JRA IPAT SP版（`https://www.ipat.jra.go.jp/sp/`）で馬券を自動購入します。
+**概要**: 5分おきに起動し、現在時刻の-5〜5分後に発走するレースが存在する場合に以下を実行します。netkeibaで最新オッズをスクレイピングして `daily_odds` を上書きし、投資戦略を再計算して `investment_decisions` を更新した上で、JRA IPAT SP版（`https://www.ipat.jra.go.jp/sp/`）で馬券を自動購入します。
 
 **対応馬券種**: 単勝・複勝・馬連・ワイド・馬単・三連複
 
 **処理フロー**（両モード共通 → dry_run 分岐）:
 1. `raw.race_info` から当日の発走時刻付きレース一覧を取得
-2. 現在時刻の **5〜10分後**に発走するレースを抽出（`window_minutes_before=10, window_minutes_after=5`）
+2. 現在時刻の **-5〜5分後**に発走するレースを抽出（`window_minutes_before=5, window_minutes_after=-5`）
+   - マイナス側（発走を過ぎたレース）は、直前tickでの購入失敗を次tickで再挑戦するためのウィンドウ（Issue #433）。
+     既に購入成功済み／要確認（need_confirmation）／処理中（in_progress。下記参照）のレースは
+     `has_purchase_attempt_recorded()` で除外し二重購入を防ぐ。
    - 対象レースが0件の場合はそのまま終了（skipped）
 3. 対象レースの最新オッズを netkeiba からリアルタイムスクレイピング → `predictions.daily_odds` に上書き保存
    - 失敗時はフォールバック（既存の `daily_odds` を使用）
-4. `_refresh_investment_decisions_for_race()` で最新オッズを使い投資戦略を再計算 → `predictions.investment_decisions` を上書き保存
-   - 失敗時はフォールバック（既存の `investment_decisions` を使用）
-5. 推奨馬券を取得し、**dry_run に応じて分岐**:
-   - `dry_run=true`: LINE通知のみ（IPATログイン・購入は行わない）
-   - `dry_run=false`: IPAT SP版にログイン → ウィザード形式で馬券購入（`IpatPurchaser`） → `predictions.purchase_history` に保存 → LINE通知
+4. [dry_run=false] 対象レースごとに、既に処理済み・処理中でなく、
+   `_refresh_investment_decisions_for_race()` で最新オッズを反映した上で
+   推奨馬券が1件以上ある場合のみ「購入対象」とする
+   （購入対象が0件ならIPATへのログイン自体を行わない。この事前チェック時点でも
+   オッズ再計算は行う点に注意——investment_decisionsはこの関数でしか書き込まれない
+   ため、事前チェックで一切refreshしないと「まだ一度もrefreshされていないレース」が
+   永久に購入対象と判定されないデッドロックになる。実購入直前（後述5-2-3）でも
+   もう一度refreshし直すため、購入対象レースはrefreshを2回行う）
+5. `dry_run` に応じて分岐:
+   - `dry_run=true`: `_refresh_investment_decisions_for_race()` で最新オッズを反映した上で推奨馬券をLINE通知のみ
+     （IPATログイン・購入は行わない）
+   - `dry_run=false`: IPAT SP版にログイン → 購入対象レースごとに:
+     1. 直前の再確認（他tickが並行して処理済みでないか）
+     2. `predictions.purchase_history` へ `status='in_progress'` のマーカーを記録
+        （ログイン・リトライで処理時間が伸びても、次tick(5分後)が同じレースを
+        重複購入しないようにするための一時ロック。IN_PROGRESS_STALE_MINUTES=15分で自然失効）
+     3. `_refresh_investment_decisions_for_race()` で最新オッズを使い投資戦略を再計算
+        → `predictions.investment_decisions` を上書き保存（失敗時はフォールバック）
+     4. 推奨馬券を取得し直し、予算チェック → ウィザード形式で馬券購入（`IpatPurchaser`）
+        → `predictions.purchase_history` に保存 → LINE通知
+        - 投票送信**前**（通常投票クリック〜合計金額入力）の失敗は、発走まで余裕がある限り
+          再ログインして最大3回まで自動リトライ
+        - 投票送信**後**のエラー、または完了確認画面が既知の成功／失敗パターンに一致しない
+          場合は、二重購入防止のため絶対にリトライせず `status=need_confirmation` として
+          手動確認を促すLINE通知を送信
+        - 失敗時は画面URL・表示文言・スクリーンショット（`gs://{project}-keiba-predictions/ipat_debug/`）を記録
 
 **IPAT SP版購入ウィザード（`src/automation/data/ipat_purchaser.py`）**:
 - ログイン: `https://www.ipat.jra.go.jp/sp/index.cgi`（SP版）

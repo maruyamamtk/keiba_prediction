@@ -57,6 +57,9 @@ async def run_test(venue: str, race: int, bets: list[dict], dry_run: bool):
     member_id = os.environ["IPAT_MEMBER_ID"]
     pin = os.environ["IPAT_PIN"]
     pat_number = os.environ["IPAT_PAT_NUMBER"]
+    # project_id を渡すと失敗/要確認時にスクリーンショットがGCSに保存され、
+    # 実機での挙動確認がしやすくなる（未指定でもテキスト情報は取れる）。
+    project_id = os.environ.get("GCP_PROJECT_ID")
 
     print(f"=== IPAT E2E テスト ===")
     print(f"会場: {venue} / {race}R / {len(bets)}件")
@@ -68,7 +71,7 @@ async def run_test(venue: str, race: int, bets: list[dict], dry_run: bool):
     print(f"dry_run: {dry_run}")
     print()
 
-    async with IpatPurchaser(member_id, pin, pat_number) as purchaser:
+    async with IpatPurchaser(member_id, pin, pat_number, project_id=project_id) as purchaser:
         print("1. ログイン中...")
         ok = await purchaser.login()
         if not ok:
@@ -88,9 +91,23 @@ async def run_test(venue: str, race: int, bets: list[dict], dry_run: bool):
         )
         print(f"   結果: {result}")
 
-        if result["status"] == "success":
+        status = result["status"]
+        if status == "success":
             print("✅ 購入成功")
             return True
+        elif status == "need_confirmation":
+            # 投票送信後にエラーが発生し、実際に購入されたか不明な状態。
+            # 「失敗」として再実行すると本当に成立していた場合に二重購入する
+            # （本番の自動購入がneed_confirmationを自動再購入禁止扱いにしている
+            # のと同じ理由）。ここでは絶対に failed と同一視せず、必ず手動で
+            # IPATの購入履歴を確認するよう促す（/code-review指摘）。
+            print(f"⚠️  投票結果不明（要手動確認）: {result.get('error_message')}")
+            print(
+                "   実際に購入されているか、必ずIPATの購入履歴で確認してから"
+                "再実行してください。再実行前の確認なしに再テストすると"
+                "二重購入する可能性があります。"
+            )
+            return False
         else:
             print(f"❌ 購入失敗: {result.get('error_message')}")
             return False
