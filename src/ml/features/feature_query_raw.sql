@@ -313,6 +313,43 @@ with temp_race_horse_count as (
     )as ema_idm
     ,(SELECT MAX(v) FROM UNNEST([r_r_1.idm, r_r_2.idm, r_r_3.idm, r_r_4.idm, r_r_5.idm]) v WHERE v IS NOT NULL) as max_idm
     ,(SELECT MIN(v) FROM UNNEST([r_r_1.idm, r_r_2.idm, r_r_3.idm, r_r_4.idm, r_r_5.idm]) v WHERE v IS NOT NULL) as min_idm
+    /* 大敗外れ値に頑健な過去5走IDM集約（Issue #442）
+       margin: 1着との着差（秒）。winner_time_diff は1着馬に2着との差が入るため、1着は 0 とする。
+       IDM が NULL の走は IDM 系の分母から、着差が NULL の走は着差系の分母から除外する。
+       temp_past_race_features2 で展開する（_robust_idm.*） */
+    ,(
+      select as struct
+        case
+          when n_idm = 0 then null
+          when mod(n_idm, 2) = 1 then idms[offset(div(n_idm, 2))]
+          else (idms[offset(div(n_idm, 2) - 1)] + idms[offset(div(n_idm, 2))]) / 2
+        end as median_idm
+        ,if(n_idm >= 2, (sum_idm - idms[offset(0)]) / (n_idm - 1), null) as trimmed_mean_idm  -- 最低値1走を除いた平均
+        ,if(n_idm >= 2, (idms[offset(n_idm - 1)] + idms[offset(n_idm - 2)]) / 2, null) as top2_mean_idm
+        ,idm_std
+        ,if(n_margin > 0, n_big_loss, null) as big_loss_count  -- 着差1.5秒以上の走数
+        ,safe_divide(n_big_loss, nullif(n_margin, 0)) as big_loss_rate
+        ,good_run_mean_idm  -- 3着以内 または 着差0.5秒以内 の走のIDM平均
+        ,margin_clipped_mean  -- 着差を [0, 2.0] にクリップした平均
+      from (
+        select
+          array_agg(p.idm ignore nulls order by p.idm) as idms
+          ,countif(p.idm is not null) as n_idm
+          ,sum(p.idm) as sum_idm
+          ,stddev_samp(p.idm) as idm_std
+          ,countif(p.margin is not null) as n_margin
+          ,countif(p.margin >= 1.5) as n_big_loss
+          ,avg(if(p.fp between 1 and 3 or p.margin <= 0.5, p.idm, null)) as good_run_mean_idm
+          ,avg(least(greatest(p.margin, 0.0), 2.0)) as margin_clipped_mean
+        from unnest([
+          struct(r_r_1.idm as idm, IF(r_r_1.finish_position > 0, IF(r_r_1.finish_position = 1, 0.0, r_r_1.winner_time_diff), NULL) as margin, r_r_1.finish_position as fp),
+          struct(r_r_2.idm as idm, IF(r_r_2.finish_position > 0, IF(r_r_2.finish_position = 1, 0.0, r_r_2.winner_time_diff), NULL) as margin, r_r_2.finish_position as fp),
+          struct(r_r_3.idm as idm, IF(r_r_3.finish_position > 0, IF(r_r_3.finish_position = 1, 0.0, r_r_3.winner_time_diff), NULL) as margin, r_r_3.finish_position as fp),
+          struct(r_r_4.idm as idm, IF(r_r_4.finish_position > 0, IF(r_r_4.finish_position = 1, 0.0, r_r_4.winner_time_diff), NULL) as margin, r_r_4.finish_position as fp),
+          struct(r_r_5.idm as idm, IF(r_r_5.finish_position > 0, IF(r_r_5.finish_position = 1, 0.0, r_r_5.winner_time_diff), NULL) as margin, r_r_5.finish_position as fp)
+        ]) as p
+      )
+    ) as _robust_idm
     /* finish_position (着順) -- finish_position=0は無効(失格/取消)のためNULL扱い */
     ,safe_divide(
       (coalesce(IF(r_r_1.finish_position > 0, r_r_1.finish_position, NULL), 0) + coalesce(IF(r_r_2.finish_position > 0, r_r_2.finish_position, NULL), 0) + coalesce(IF(r_r_3.finish_position > 0, r_r_3.finish_position, NULL), 0) + coalesce(IF(r_r_4.finish_position > 0, r_r_4.finish_position, NULL), 0) + coalesce(IF(r_r_5.finish_position > 0, r_r_5.finish_position, NULL), 0))
@@ -581,7 +618,8 @@ with temp_race_horse_count as (
 
 ,temp_past_race_features2 as (
   select
-    t_p_r_f.*
+    t_p_r_f.* except(_robust_idm)
+    ,t_p_r_f._robust_idm.*
     -- 馬齢ごとのセグメントに対して、指数の大小を計算
     ,row_number() over (partition by t_p_r_f.race_id, t_p_r_f.horse_age_segment order by t_p_r_f.idm) as age_segment_idm
     ,row_number() over (partition by t_p_r_f.race_id, t_p_r_f.horse_age_segment order by t_p_r_f.mean_idm) as age_segment_mean_idm
@@ -592,6 +630,12 @@ with temp_race_horse_count as (
     ,t_p_r_f.mean_idm - max(t_p_r_f.mean_idm) over (partition by t_p_r_f.race_id) as mean_idm_diff
     ,t_p_r_f.ema_idm - max(t_p_r_f.ema_idm) over (partition by t_p_r_f.race_id) as ema_idm_diff
     ,t_p_r_f.max_idm - max(t_p_r_f.max_idm) over (partition by t_p_r_f.race_id) as max_idm_diff
+    /* 頑健IDM集約のレース内相対化・上振れ余地（Issue #442） */
+    ,t_p_r_f.max_idm - t_p_r_f._robust_idm.median_idm as max_minus_median_idm
+    ,t_p_r_f._robust_idm.median_idm - max(t_p_r_f._robust_idm.median_idm) over (partition by t_p_r_f.race_id) as median_idm_diff
+    ,t_p_r_f._robust_idm.trimmed_mean_idm - max(t_p_r_f._robust_idm.trimmed_mean_idm) over (partition by t_p_r_f.race_id) as trimmed_mean_idm_diff
+    ,t_p_r_f._robust_idm.top2_mean_idm - max(t_p_r_f._robust_idm.top2_mean_idm) over (partition by t_p_r_f.race_id) as top2_mean_idm_diff
+    ,t_p_r_f._robust_idm.good_run_mean_idm - max(t_p_r_f._robust_idm.good_run_mean_idm) over (partition by t_p_r_f.race_id) as good_run_mean_idm_diff
     /* finish_position_rate (着順率) */
     ,safe_divide(
       (coalesce(finish_position_rate_1, 0) + coalesce(finish_position_rate_2, 0) + coalesce(finish_position_rate_3, 0) + coalesce(finish_position_rate_4, 0) + coalesce(finish_position_rate_5, 0))
@@ -4341,6 +4385,19 @@ from
     ,percentile_cont(mean_idm_diff, 0.5) over (partition by race_id) as _mean_idm_diff_med
     ,percentile_cont(ema_idm_diff, 0.5) over (partition by race_id) as _ema_idm_diff_med
     ,percentile_cont(max_idm_diff, 0.5) over (partition by race_id) as _max_idm_diff_med
+    ,percentile_cont(median_idm, 0.5) over (partition by race_id) as _median_idm_med
+    ,percentile_cont(trimmed_mean_idm, 0.5) over (partition by race_id) as _trimmed_mean_idm_med
+    ,percentile_cont(top2_mean_idm, 0.5) over (partition by race_id) as _top2_mean_idm_med
+    ,percentile_cont(idm_std, 0.5) over (partition by race_id) as _idm_std_med
+    ,percentile_cont(big_loss_count, 0.5) over (partition by race_id) as _big_loss_count_med
+    ,percentile_cont(big_loss_rate, 0.5) over (partition by race_id) as _big_loss_rate_med
+    ,percentile_cont(good_run_mean_idm, 0.5) over (partition by race_id) as _good_run_mean_idm_med
+    ,percentile_cont(margin_clipped_mean, 0.5) over (partition by race_id) as _margin_clipped_mean_med
+    ,percentile_cont(max_minus_median_idm, 0.5) over (partition by race_id) as _max_minus_median_idm_med
+    ,percentile_cont(median_idm_diff, 0.5) over (partition by race_id) as _median_idm_diff_med
+    ,percentile_cont(trimmed_mean_idm_diff, 0.5) over (partition by race_id) as _trimmed_mean_idm_diff_med
+    ,percentile_cont(top2_mean_idm_diff, 0.5) over (partition by race_id) as _top2_mean_idm_diff_med
+    ,percentile_cont(good_run_mean_idm_diff, 0.5) over (partition by race_id) as _good_run_mean_idm_diff_med
     ,percentile_cont(mean_finish_position_rate, 0.5) over (partition by race_id) as _mean_finish_position_rate_med
     ,percentile_cont(ema_finish_position_rate, 0.5) over (partition by race_id) as _ema_finish_position_rate_med
     ,percentile_cont(max_finish_position_rate, 0.5) over (partition by race_id) as _max_finish_position_rate_med
@@ -4599,6 +4656,19 @@ from
     _mean_idm_diff_med,
     _ema_idm_diff_med,
     _max_idm_diff_med,
+    _median_idm_med,
+    _trimmed_mean_idm_med,
+    _top2_mean_idm_med,
+    _idm_std_med,
+    _big_loss_count_med,
+    _big_loss_rate_med,
+    _good_run_mean_idm_med,
+    _margin_clipped_mean_med,
+    _max_minus_median_idm_med,
+    _median_idm_diff_med,
+    _trimmed_mean_idm_diff_med,
+    _top2_mean_idm_diff_med,
+    _good_run_mean_idm_diff_med,
     _mean_finish_position_rate_med,
     _ema_finish_position_rate_med,
     _max_finish_position_rate_med,
@@ -4859,6 +4929,19 @@ from
   coalesce(mean_idm_diff, _mean_idm_diff_med, 0) as mean_idm_diff,
   coalesce(ema_idm_diff, _ema_idm_diff_med, 0) as ema_idm_diff,
   coalesce(max_idm_diff, _max_idm_diff_med, 0) as max_idm_diff,
+  coalesce(median_idm, _median_idm_med, 0) as median_idm,
+  coalesce(trimmed_mean_idm, _trimmed_mean_idm_med, 0) as trimmed_mean_idm,
+  coalesce(top2_mean_idm, _top2_mean_idm_med, 0) as top2_mean_idm,
+  coalesce(idm_std, _idm_std_med, 0) as idm_std,
+  coalesce(big_loss_count, _big_loss_count_med, 0) as big_loss_count,
+  coalesce(big_loss_rate, _big_loss_rate_med, 0) as big_loss_rate,
+  coalesce(good_run_mean_idm, _good_run_mean_idm_med, 0) as good_run_mean_idm,
+  coalesce(margin_clipped_mean, _margin_clipped_mean_med, 0) as margin_clipped_mean,
+  coalesce(max_minus_median_idm, _max_minus_median_idm_med, 0) as max_minus_median_idm,
+  coalesce(median_idm_diff, _median_idm_diff_med, 0) as median_idm_diff,
+  coalesce(trimmed_mean_idm_diff, _trimmed_mean_idm_diff_med, 0) as trimmed_mean_idm_diff,
+  coalesce(top2_mean_idm_diff, _top2_mean_idm_diff_med, 0) as top2_mean_idm_diff,
+  coalesce(good_run_mean_idm_diff, _good_run_mean_idm_diff_med, 0) as good_run_mean_idm_diff,
   coalesce(mean_finish_position_rate, _mean_finish_position_rate_med, 0) as mean_finish_position_rate,
   coalesce(ema_finish_position_rate, _ema_finish_position_rate_med, 0) as ema_finish_position_rate,
   coalesce(max_finish_position_rate, _max_finish_position_rate_med, 0) as max_finish_position_rate,

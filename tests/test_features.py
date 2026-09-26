@@ -3434,3 +3434,58 @@ class TestHorseMasterDedupJoin:
         content = (SQL_TEMPLATE_PATH.parent / sql_name).read_text(encoding="utf-8")
         assert "join `{project_id}`.raw.horse_master as h_m" not in content
         assert "partition by horse_id order by data_date desc" in content
+
+
+class TestRobustIdmAggregation:
+    """Issue #442: 大敗外れ値に頑健な過去5走IDM集約特徴量"""
+
+    NEW_COLUMNS = [
+        "median_idm", "trimmed_mean_idm", "top2_mean_idm", "idm_std",
+        "big_loss_count", "big_loss_rate", "good_run_mean_idm", "margin_clipped_mean",
+        "max_minus_median_idm", "median_idm_diff", "trimmed_mean_idm_diff",
+        "top2_mean_idm_diff", "good_run_mean_idm_diff",
+    ]
+
+    @staticmethod
+    def _robust_block(content: str) -> str:
+        start = content.index("大敗外れ値に頑健な過去5走IDM集約（Issue #442）")
+        return content[start:content.index(") as _robust_idm", start)]
+
+    def test_uses_all_five_past_races(self):
+        """過去1〜5走すべての IDM・着差・着順を集約対象にしていること"""
+        block = self._robust_block(SQL_TEMPLATE_PATH.read_text(encoding="utf-8"))
+        for k in range(1, 6):
+            assert f"struct(r_r_{k}.idm as idm" in block
+            assert f"r_r_{k}.winner_time_diff" in block
+
+    def test_winner_margin_is_zero(self):
+        """1着馬の winner_time_diff（2着との差）を着差として使わず 0 とすること"""
+        block = self._robust_block(SQL_TEMPLATE_PATH.read_text(encoding="utf-8"))
+        assert "IF(r_r_1.finish_position = 1, 0.0, r_r_1.winner_time_diff)" in block
+
+    def test_thresholds(self):
+        """大敗=着差1.5秒以上、好走=3着以内または着差0.5秒以内、クリップ上限2.0秒"""
+        block = self._robust_block(SQL_TEMPLATE_PATH.read_text(encoding="utf-8"))
+        assert "p.margin >= 1.5" in block
+        assert "p.fp between 1 and 3 or p.margin <= 0.5" in block
+        assert "least(greatest(p.margin, 0.0), 2.0)" in block
+
+    def test_null_idm_excluded(self):
+        """IDM が NULL の走を IDM 系の分母から除外すること"""
+        block = self._robust_block(SQL_TEMPLATE_PATH.read_text(encoding="utf-8"))
+        assert "array_agg(p.idm ignore nulls order by p.idm)" in block
+        assert "countif(p.idm is not null) as n_idm" in block
+
+    def test_struct_expanded_and_not_leaked(self):
+        """中間 STRUCT 列 _robust_idm は temp_past_race_features2 で展開し、そのまま残さないこと"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        assert "t_p_r_f.* except(_robust_idm)" in content
+        assert "t_p_r_f._robust_idm.*" in content
+
+    @pytest.mark.parametrize("col", NEW_COLUMNS)
+    def test_null_filled(self, col):
+        """新規列がレース内中央値 → 0 で NULL 補完されること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        assert f"percentile_cont({col}, 0.5) over (partition by race_id) as _{col}_med" in content
+        assert f"    _{col}_med,\n" in content
+        assert f"coalesce({col}, _{col}_med, 0) as {col}," in content
