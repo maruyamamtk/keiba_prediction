@@ -11,7 +11,7 @@ JRDB の SEC（成績データ）は開催当日に速報版が公開され、ID
 
 import logging
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime
 from typing import TYPE_CHECKING
 
 from google.cloud import bigquery
@@ -59,6 +59,7 @@ class RefetchResult:
     reloaded: list[str] = field(default_factory=list)  # 再ロードに成功した yymmdd
     failed: list[str] = field(default_factory=list)  # 取得・アップロード・ロードのいずれかに失敗した yymmdd
     unavailable: list[str] = field(default_factory=list)  # JRDBにSECが公開されていない yymmdd（開催中止等）
+    remaining: list[IncompleteResultDate] = field(default_factory=list)  # 再ロード後も不完全な開催日
     records: int = 0
 
 
@@ -145,7 +146,7 @@ def refetch_sec_files(
 
     ダウンロード先は downloader.output_dir（ローカル運用なら downloaded_files/ の
     速報版ファイルもこのとき確定版に置き換わる）。BigQuery へは MERGE UPSERT のため
-    既存行は更新、欠落行は追加される。
+    既存行は更新、欠落行は追加される。再ロードした日は再検査し、なお不完全な日を remaining に返す。
 
     Args:
         downloader: JRDB ダウンローダー
@@ -171,13 +172,13 @@ def refetch_sec_files(
             result.unavailable.append(yymmdd)
             continue
 
-        file_name = f"{SEC_DATATYPE}{yymmdd}.csv"
-        blob_name = f"{folder}/{file_name}"
+        local_path = downloader.local_csv_path(SEC_DATATYPE, yymmdd)
+        blob_name = f"{folder}/{local_path.name}"
         # 1日分の失敗（GCSの一時エラー等の例外を含む）で残りの日の再取得を止めない
         try:
             if not downloader.download_single(SEC_DATATYPE, yymmdd, force=True):
                 raise RuntimeError("ダウンロード失敗")
-            if not uploader.upload_file(downloader.get_output_dir() / folder / file_name, blob_name):
+            if not uploader.upload_file(local_path, blob_name):
                 raise RuntimeError("GCSアップロード失敗")
             load_result = loader.load_file(blob_name)
             if load_result.status != "success":
@@ -191,4 +192,16 @@ def refetch_sec_files(
         result.reloaded.append(yymmdd)
         result.records += load_result.records_processed
 
+    reloaded_dates = {datetime.strptime(d, "%y%m%d").date() for d in result.reloaded}
+    if reloaded_dates:
+        result.remaining = [
+            d
+            for d in find_incomplete_result_dates(
+                loader.bq_client, loader.project_id, min(reloaded_dates), max(reloaded_dates),
+                dataset_id=loader.dataset_id,
+            )
+            if d.race_date in reloaded_dates
+        ]
+        for d in result.remaining:
+            logger.warning(f"SEC再取得後も不完全（JRDB側のデータの可能性）: {d.to_dict()}")
     return result

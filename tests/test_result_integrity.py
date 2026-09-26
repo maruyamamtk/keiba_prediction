@@ -91,19 +91,22 @@ class TestIsPreliminarySecFile:
         # 取消・競走中止などで数%は NULL になる
         assert self._run(tmp_path, [None] + [50.0] * 19) is False
 
-    def test_empty_file_is_preliminary(self, tmp_path):
-        assert self._run(tmp_path, []) is True
+    def test_empty_file_is_not_preliminary(self, tmp_path):
+        """解析できる行がないファイルは判定できないため取り直し対象にしない（毎回の403再試行を防ぐ）"""
+        assert self._run(tmp_path, []) is False
 
 
 def _make_mocks(tmp_path: Path):
     downloader = MagicMock()
     downloader.datatype_to_folder.side_effect = JRDBDownloader.datatype_to_folder
     downloader.get_output_dir.return_value = tmp_path
+    downloader.local_csv_path.side_effect = lambda dt, d: tmp_path / "Sec" / f"{dt}{d}.csv"
     downloader.download_single.return_value = True
     downloader.get_available_dates.return_value = ["260124", "260125"]
     uploader = MagicMock()
     uploader.upload_file.return_value = True
     loader = MagicMock()
+    loader.bq_client.query.return_value.result.return_value = []
     loader.load_file.side_effect = lambda blob: LoadResult(
         file_name=blob, status="success", records_processed=500
     )
@@ -153,6 +156,32 @@ class TestRefetchSecFiles:
         assert result.failed == ["260124"]
         assert result.reloaded == []
         assert result.records == 0
+
+    def test_rechecks_only_reloaded_dates(self, tmp_path):
+        """再ロードした日だけを再検査し、なお不完全な日を remaining に返す"""
+        downloader, uploader, loader = _make_mocks(tmp_path)
+        downloader.get_available_dates.return_value = ["260124", "260131"]
+        loader.bq_client.query.return_value.result.return_value = [
+            SimpleNamespace(race_date=date(2026, 1, 24), expected_rows=500, actual_rows=500, idm_null_rows=400),
+            SimpleNamespace(race_date=date(2026, 1, 25), expected_rows=500, actual_rows=500, idm_null_rows=400),
+        ]
+
+        result = refetch_sec_files(downloader, uploader, loader, ["260124", "260131", "260208"])
+
+        assert result.unavailable == ["260208"]
+        # 1/25 は再ロード対象外なので remaining に含めない
+        assert result.remaining == [IncompleteResultDate(date(2026, 1, 24), 500, 500, 400)]
+        params = {p.name: p.value for p in loader.bq_client.query.call_args.kwargs["job_config"].query_parameters}
+        assert (params["start_date"], params["end_date"]) == (date(2026, 1, 24), date(2026, 1, 31))
+
+    def test_no_recheck_when_nothing_reloaded(self, tmp_path):
+        downloader, uploader, loader = _make_mocks(tmp_path)
+        downloader.download_single.return_value = False
+
+        result = refetch_sec_files(downloader, uploader, loader, ["260124"])
+
+        assert result.failed == ["260124"]
+        loader.bq_client.query.assert_not_called()
 
     def test_exception_does_not_stop_remaining_dates(self, tmp_path):
         """1日分の例外（GCSの一時エラー等）で残りの日の再取得を止めない"""
@@ -239,35 +268,31 @@ class TestRefetchSecArgs:
 class TestRefetchSecMain:
     """scripts/refetch_sec.py の終了コード"""
 
-    def _run(self, refetch_result, remaining):
+    def _run(self, refetch_result):
         from unittest.mock import patch
 
         from scripts import refetch_sec
 
-        loader = MagicMock()
         with patch.object(refetch_sec, "load_dotenv"), \
-                patch.object(refetch_sec, "create_loader_from_env", return_value=loader), \
+                patch.object(refetch_sec, "create_loader_from_env", return_value=MagicMock()), \
                 patch.object(refetch_sec, "create_downloader_from_env", return_value=MagicMock()), \
                 patch.object(refetch_sec, "create_uploader_from_env", return_value=MagicMock()), \
-                patch.object(refetch_sec, "refetch_sec_files", return_value=refetch_result), \
-                patch.object(refetch_sec, "find_incomplete_result_dates", return_value=remaining) as mock_find:
-            code = refetch_sec.main(["--dates", "2026-01-24,2026-02-08"])
-        return code, mock_find
+                patch.object(refetch_sec, "refetch_sec_files", return_value=refetch_result):
+            return refetch_sec.main(["--dates", "2026-01-24,2026-02-08"])
 
     def test_unavailable_is_not_failure(self):
-        """JRDBに公開がない日は再検査せず、終了コード0"""
+        """JRDBに公開がない日だけなら終了コード0"""
         from src.automation.data.result_integrity import RefetchResult
 
-        code, mock_find = self._run(
-            RefetchResult(reloaded=["260124"], unavailable=["260208"]), remaining=[]
-        )
-        assert code == 0
-        _, _, start, end = mock_find.call_args.args
-        assert (start, end) == (date(2026, 1, 24), date(2026, 1, 24))
+        assert self._run(RefetchResult(reloaded=["260124"], unavailable=["260208"])) == 0
 
     def test_remaining_after_reload_is_failure(self):
         from src.automation.data.result_integrity import RefetchResult
 
         still = IncompleteResultDate(date(2026, 1, 24), 500, 500, 450)
-        code, _ = self._run(RefetchResult(reloaded=["260124"], unavailable=["260208"]), remaining=[still])
-        assert code == 1
+        assert self._run(RefetchResult(reloaded=["260124"], remaining=[still])) == 1
+
+    def test_failed_is_failure(self):
+        from src.automation.data.result_integrity import RefetchResult
+
+        assert self._run(RefetchResult(failed=["260124"])) == 1

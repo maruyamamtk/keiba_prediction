@@ -627,7 +627,7 @@ class TestDailyPipelineStepRepairResults:
         pipeline = DailyPipeline(downloader=downloader, uploader=uploader, bq_loader=bq_loader)
         with patch(
             f"{self.MODULE}.find_incomplete_result_dates",
-            side_effect=[[self._incomplete(date(2026, 2, 14))], []],
+            return_value=[self._incomplete(date(2026, 2, 14))],
         ), patch(
             f"{self.MODULE}.refetch_sec_files",
             return_value=RefetchResult(reloaded=["260214"], records=539),
@@ -640,37 +640,20 @@ class TestDailyPipelineStepRepairResults:
         assert result.details["remaining"] == []
 
     def test_remaining_after_successful_refetch_is_success(self):
-        """再取得に成功しても残る日（JRDB側にも成績がない日）は警告のみで success"""
+        """再取得に成功しても残る日（JRDB側にも成績がない日）は記録のみで success"""
         from src.automation.data.result_integrity import RefetchResult
 
         still = self._incomplete(date(2026, 2, 14))
-        other = self._incomplete(date(2026, 2, 21))
         pipeline = DailyPipeline(downloader=MagicMock(), uploader=MagicMock(), bq_loader=MagicMock())
-        with patch(
-            f"{self.MODULE}.find_incomplete_result_dates", side_effect=[[still, other], [still]]
-        ) as mock_find, patch(
-            f"{self.MODULE}.refetch_sec_files",
-            return_value=RefetchResult(reloaded=["260214", "260221"]),
-        ):
+        with patch(f"{self.MODULE}.find_incomplete_result_dates", return_value=[still]), \
+                patch(
+                    f"{self.MODULE}.refetch_sec_files",
+                    return_value=RefetchResult(reloaded=["260214"], remaining=[still]),
+                ):
             result = pipeline._step_repair_results(date(2026, 3, 15))
 
         assert result.status == "success"
         assert result.details["remaining"] == [still.to_dict()]
-        # 再検査は再取得した日の範囲に限定する
-        _, _, start, end = mock_find.call_args_list[1].args
-        assert (start, end) == (date(2026, 2, 14), date(2026, 2, 21))
-
-    def test_no_recheck_when_nothing_reloaded(self):
-        """再ロードした日がなければ再検査クエリを実行しない"""
-        from src.automation.data.result_integrity import RefetchResult
-
-        still = self._incomplete(date(2026, 2, 14))
-        pipeline = DailyPipeline(downloader=MagicMock(), uploader=MagicMock(), bq_loader=MagicMock())
-        with patch(f"{self.MODULE}.find_incomplete_result_dates", return_value=[still]) as mock_find, \
-                patch(f"{self.MODULE}.refetch_sec_files", return_value=RefetchResult(failed=["260214"])):
-            pipeline._step_repair_results(date(2026, 3, 15))
-
-        assert mock_find.call_count == 1
 
     def test_refetch_failure_is_partial(self):
         """再取得に失敗した日があれば partial"""
@@ -678,7 +661,7 @@ class TestDailyPipelineStepRepairResults:
 
         still = self._incomplete(date(2026, 2, 14))
         pipeline = DailyPipeline(downloader=MagicMock(), uploader=MagicMock(), bq_loader=MagicMock())
-        with patch(f"{self.MODULE}.find_incomplete_result_dates", side_effect=[[still], [still]]), \
+        with patch(f"{self.MODULE}.find_incomplete_result_dates", return_value=[still]), \
                 patch(f"{self.MODULE}.refetch_sec_files", return_value=RefetchResult(failed=["260214"])):
             result = pipeline._step_repair_results(date(2026, 3, 15))
 
@@ -691,7 +674,7 @@ class TestDailyPipelineStepRepairResults:
 
         still = self._incomplete(date(2026, 2, 8))
         pipeline = DailyPipeline(downloader=MagicMock(), uploader=MagicMock(), bq_loader=MagicMock())
-        with patch(f"{self.MODULE}.find_incomplete_result_dates", side_effect=[[still], [still]]), \
+        with patch(f"{self.MODULE}.find_incomplete_result_dates", return_value=[still]), \
                 patch(f"{self.MODULE}.refetch_sec_files", return_value=RefetchResult(unavailable=["260208"])):
             result = pipeline._step_repair_results(date(2026, 3, 15))
 

@@ -446,12 +446,9 @@ class DailyPipeline:
             # target_date は Cloud Run では UTC 基準（JST の前日）になり、ロード範囲（JST 基準）と
             # 1日ずれるため、ロード範囲の最古日（target-7）と重ねて隙間をなくす
             window_end = target_date - timedelta(days=DOWNLOAD_LOOKBACK_DAYS)
-            client = self.bq_loader.bq_client
-            project_id = self.bq_loader.project_id
-            dataset_id = self.bq_loader.dataset_id
-
             incomplete = find_incomplete_result_dates(
-                client, project_id, window_start, window_end, dataset_id=dataset_id
+                self.bq_loader.bq_client, self.bq_loader.project_id, window_start, window_end,
+                dataset_id=self.bq_loader.dataset_id,
             )
             details["incomplete_dates"] = [d.to_dict() for d in incomplete]
 
@@ -461,24 +458,11 @@ class DailyPipeline:
                     self.downloader, self.uploader, self.bq_loader, [d.yymmdd for d in incomplete]
                 )
                 details.update(
-                    reloaded=refetch.reloaded, failed=refetch.failed, unavailable=refetch.unavailable
+                    reloaded=refetch.reloaded,
+                    failed=refetch.failed,
+                    unavailable=refetch.unavailable,
+                    remaining=[d.to_dict() for d in refetch.remaining],
                 )
-                # 再ロードした日だけを再検査する
-                if refetch.reloaded:
-                    reloaded_dates = {d.race_date for d in incomplete if d.yymmdd in refetch.reloaded}
-                    remaining = [
-                        d
-                        for d in find_incomplete_result_dates(
-                            client, project_id, min(reloaded_dates), max(reloaded_dates),
-                            dataset_id=dataset_id,
-                        )
-                        if d.race_date in reloaded_dates
-                    ]
-                    if remaining:
-                        logger.warning(
-                            f"SEC再取得後も不完全な開催日が残っています: {[d.to_dict() for d in remaining]}"
-                        )
-                    details["remaining"] = [d.to_dict() for d in remaining]
 
             return StepResult(
                 step_name=step_name,

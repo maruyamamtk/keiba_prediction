@@ -124,23 +124,7 @@ def main(argv: list[str] | None = None) -> int:
         f"JRDBに公開なし: {result.unavailable} / {result.records}行"
     )
 
-    # 再取得後の検証（再ロードした日だけを再検査。JRDBに公開がない日は unavailable として別に報告済み）
-    reloaded_dates = [d for d in target_dates if d.strftime("%y%m%d") in result.reloaded]
-    remaining = []
-    if reloaded_dates:
-        reloaded_set = set(reloaded_dates)
-        remaining = [
-            d
-            for d in find_incomplete_result_dates(
-                loader.bq_client, loader.project_id, min(reloaded_dates), max(reloaded_dates),
-                dataset_id=loader.dataset_id,
-            )
-            if d.race_date in reloaded_set
-        ]
-    for d in remaining:
-        logger.warning(f"再取得後も不完全（JRDB側のデータの可能性）: {d.to_dict()}")
-
-    return 1 if result.failed or remaining else 0
+    return 1 if result.failed or result.remaining else 0
 
 
 if __name__ == "__main__":

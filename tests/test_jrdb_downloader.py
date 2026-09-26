@@ -423,3 +423,24 @@ class TestPreliminaryRefetch:
 
         assert downloader.download_single("SEC", "260124") is False
         assert not lzh.exists()
+
+    @patch.object(JRDBDownloader, "_process_downloaded_file", return_value=True)
+    @patch.object(JRDBDownloader, "_download_file")
+    def test_package_type_new_fetch_is_success(self, mock_download, _mock_process, tmp_path):
+        """JRDBパッケージのように別名ファイルへ展開されるタイプは、同名CSVがなくても新規取得成功"""
+        downloader = JRDBDownloader("user", "pass", tmp_path)
+        mock_download.return_value = tmp_path / "Jrdb" / "JRDB260124.lzh"
+
+        assert downloader.download_single("JRDB", "260124") is True
+
+    def test_stale_with_new_csv_is_removed(self, tmp_path):
+        """新しいCSV生成後・退避ファイル削除前に中断された場合は、退避ファイルを削除する"""
+        downloader = JRDBDownloader("user", "pass", tmp_path)
+        (tmp_path / "Sec").mkdir()
+        (tmp_path / "Sec" / "SEC260124.csv").write_text("確定版")
+        (tmp_path / "Sec" / "SEC260124.csv.stale").write_text("速報版")
+
+        path = downloader.local_csv_path("SEC", "260124")
+
+        assert path.read_text() == "確定版"
+        assert not (tmp_path / "Sec" / "SEC260124.csv.stale").exists()

@@ -20,6 +20,8 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
+from src.automation.data.jrdb_parser import JRDBParser
+
 logger = logging.getLogger(__name__)
 
 # CSA/KSAはCSVファイルとして直接ダウンロード可能
@@ -50,13 +52,12 @@ def is_preliminary_sec_file(csv_path: Path) -> bool:
 
     Returns:
         IDM が空の行の割合が IDM_NULL_RATE_THRESHOLD を超える場合 True
+        （解析できる行がないファイルは判定できないため False。成績行の欠落は BQ 側の検知で扱う）
     """
-    from src.automation.data.jrdb_parser import JRDBParser
-
     with open(csv_path, encoding="utf-8", errors="replace") as f:
         rows = [r for line in f if line.strip() and (r := JRDBParser.parse_sec_line(line))]
     if not rows:
-        return True
+        return False
     return sum(r["idm"] is None for r in rows) / len(rows) > IDM_NULL_RATE_THRESHOLD
 
 
@@ -333,17 +334,21 @@ class JRDBDownloader:
             return True
         return datatype == SEC_DATATYPE and is_preliminary_sec_file(csv_path)
 
-    def _csv_path(self, datatype: str, filedate: str) -> Path:
+    def local_csv_path(self, datatype: str, filedate: str) -> Path:
         """
-        出力CSVのパスを返す
+        出力CSVのパスを返す（前回中断された再取得の後始末も行う）
 
-        前回の再取得が中断（プロセス強制終了等）されて退避ファイル（.stale）だけが残っている場合は、
-        ここで元に戻してから返す。
+        再取得が中断（プロセス強制終了等）されて退避ファイル（.stale）が残っている場合:
+        - CSV がない → 退避ファイルを元に戻す（取得前に中断）
+        - CSV もある → 新しい CSV は rename で一括生成されるため完成品とみなし、退避ファイルを削除
         """
         csv_path = self.output_dir / self.datatype_to_folder(datatype) / f"{datatype}{filedate}.csv"
         stale_path = csv_path.with_name(csv_path.name + ".stale")
-        if stale_path.exists() and not csv_path.exists():
-            stale_path.replace(csv_path)
+        if stale_path.exists():
+            if csv_path.exists():
+                stale_path.unlink()
+            else:
+                stale_path.replace(csv_path)
         return csv_path
 
     def _fetch(self, datatype: str, filedate: str, csv_path: Path) -> bool:
@@ -352,6 +357,8 @@ class JRDBDownloader:
 
         既存ファイルがある場合は退避してから取り直し、新しいCSVが生成された場合のみ置き換える。
         失敗・例外時は既存ファイルを戻す。
+        新規取得では CSV 名の生成までは確認しない（JRDB パッケージのように別名の複数ファイルに
+        展開されるデータタイプがあるため）。
         """
         stale_path = csv_path.with_name(csv_path.name + ".stale")
         had_existing = csv_path.exists()
@@ -364,7 +371,7 @@ class JRDBDownloader:
             ok = (
                 downloaded_path is not None
                 and self._process_downloaded_file(datatype, filedate, downloaded_path)
-                and csv_path.exists()
+                and (csv_path.exists() or not had_existing)
             )
         finally:
             if downloaded_path is not None and downloaded_path != csv_path:
@@ -388,7 +395,7 @@ class JRDBDownloader:
         Returns:
             成功した場合True
         """
-        csv_path = self._csv_path(datatype, filedate)
+        csv_path = self.local_csv_path(datatype, filedate)
 
         if not force and not self._needs_download(datatype, csv_path):
             logger.info(f"スキップ（既存）: {datatype}{filedate}")
@@ -447,7 +454,7 @@ class JRDBDownloader:
         logger.info(f"ダウンロード対象: {total}ファイル ({datatype})")
 
         for date in target_dates:
-            csv_path = self._csv_path(datatype, date)
+            csv_path = self.local_csv_path(datatype, date)
 
             if not self._needs_download(datatype, csv_path):
                 skipped += 1
