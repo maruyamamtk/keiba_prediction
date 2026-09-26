@@ -121,3 +121,47 @@ class TestRefetchSecFiles:
         assert result.failed == ["260124"]
         assert result.reloaded == []
         assert result.records == 0
+
+    def test_exception_does_not_stop_remaining_dates(self, tmp_path):
+        """1日分の例外（GCSの一時エラー等）で残りの日の再取得を止めない"""
+        downloader, uploader, loader = _make_mocks(tmp_path)
+        uploader.upload_file.side_effect = [Exception("503"), True]
+
+        result = refetch_sec_files(downloader, uploader, loader, ["260124", "260125"])
+
+        assert result.failed == ["260124"]
+        assert result.reloaded == ["260125"]
+
+
+class TestRefetchSecArgs:
+    """scripts/refetch_sec.py の引数解析"""
+
+    def test_dates_ignores_empty_segments(self):
+        from scripts.refetch_sec import parse_args
+
+        args = parse_args(["--dates", "2026-01-24, 2026-01-25,"])
+        assert args.dates == [date(2026, 1, 24), date(2026, 1, 25)]
+
+    def test_invalid_date_is_parser_error(self):
+        import pytest
+
+        from scripts.refetch_sec import parse_args
+
+        with pytest.raises(SystemExit):
+            parse_args(["--dates", "2026/01/24"])
+
+    def test_detect_requires_start_date(self):
+        import pytest
+
+        from scripts.refetch_sec import parse_args
+
+        with pytest.raises(SystemExit):
+            parse_args(["--detect"])
+
+    def test_dates_with_start_date_is_error(self):
+        import pytest
+
+        from scripts.refetch_sec import parse_args
+
+        with pytest.raises(SystemExit):
+            parse_args(["--dates", "2026-01-24", "--start-date", "2026-01-01"])

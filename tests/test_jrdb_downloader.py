@@ -194,6 +194,42 @@ class TestJRDBDownloaderDownload:
             mock_urlretrieve.assert_called_once()
             assert existing.read_text(encoding="utf-8") == "確定版"
 
+    @patch("urllib.request.urlretrieve")
+    def test_download_single_force_keeps_existing_on_failure(self, mock_urlretrieve):
+        """force=True で取得に失敗した場合は既存ファイルを残して False を返す"""
+        import urllib.error
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            downloader = JRDBDownloader("user", "pass", Path(tmpdir))
+            folder = Path(tmpdir) / "Cs"
+            folder.mkdir()
+            existing = folder / "CSA240101.csv"
+            existing.write_text("速報版")
+            mock_urlretrieve.side_effect = urllib.error.HTTPError("url", 403, "Forbidden", {}, None)
+
+            result = downloader.download_single("CSA", "240101", force=True)
+
+            assert result is False
+            assert existing.read_text() == "速報版"
+            assert list(folder.iterdir()) == [existing]
+
+    @patch.object(JRDBDownloader, "_process_downloaded_file", return_value=True)
+    @patch.object(JRDBDownloader, "_download_file")
+    def test_download_single_force_fails_when_no_csv_produced(self, mock_download, _mock_process):
+        """force=True で解凍後にCSVが生成されなければ失敗扱いにし、既存ファイルを戻す"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            downloader = JRDBDownloader("user", "pass", Path(tmpdir))
+            folder = Path(tmpdir) / "Sec"
+            folder.mkdir()
+            existing = folder / "SEC260124.csv"
+            existing.write_text("速報版")
+            mock_download.return_value = folder / "SEC260124.lzh"
+
+            result = downloader.download_single("SEC", "260124", force=True)
+
+            assert result is False
+            assert existing.read_text() == "速報版"
+
 
 class TestDownloadFromDateWithEndDate:
     """download_from_date の end_date フィルタのテスト"""

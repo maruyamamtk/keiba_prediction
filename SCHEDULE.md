@@ -41,7 +41,7 @@
 1. JRDBから当日データをダウンロード（lzh解凍・CP932→UTF-8変換）
 2. GCSへアップロード（MD5重複チェック）
 3. BigQueryへMERGE/UPSERTロード（`raw.load_history` で重複スキップ）
-4. 成績欠損チェック（Issue #440）: 8〜35日前の開催日で `race_results` が不完全（IDM NULL率20%超、または出走表の90%未満の行数）な日を検知し、SECをJRDBから再取得→再ロード。再取得後も残れば `partial`
+4. 成績欠損チェック（Issue #440）: 8〜35日前の開催日で `race_results` が不完全（IDM NULL率20%超、または出走表の90%未満の行数）な日を検知し、SECをJRDBから再取得→再ロード。再取得に失敗した日があれば `partial`（再取得後もJRDB側で不完全な日はWARNINGログのみ）。修復した日を参照する `features.training_data` は自動再生成しないため、再学習前に再生成すること
 5. 特徴量生成（`features.training_data` 更新）
 
 **リクエストボディ**: `{}` （空ボディ、当日日付を自動使用）

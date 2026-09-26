@@ -166,22 +166,18 @@ def refetch_sec_files(
 
     for yymmdd in yymmdd_list:
         file_name = f"{SEC_DATATYPE}{yymmdd}.csv"
-        local_path = downloader.get_output_dir() / folder / file_name
         blob_name = f"{folder}/{file_name}"
-
-        if not downloader.download_single(SEC_DATATYPE, yymmdd, force=True):
-            logger.error(f"SEC再取得失敗（ダウンロード）: {file_name}")
-            result.failed.append(yymmdd)
-            continue
-
-        if not uploader.upload_file(local_path, blob_name):
-            logger.error(f"SEC再取得失敗（GCSアップロード）: {blob_name}")
-            result.failed.append(yymmdd)
-            continue
-
-        load_result = loader.load_file(blob_name)
-        if load_result.status != "success":
-            logger.error(f"SEC再取得失敗（BQロード）: {blob_name}: {load_result.error}")
+        # 1日分の失敗（GCSの一時エラー等の例外を含む）で残りの日の再取得を止めない
+        try:
+            if not downloader.download_single(SEC_DATATYPE, yymmdd, force=True):
+                raise RuntimeError("ダウンロード失敗")
+            if not uploader.upload_file(downloader.get_output_dir() / folder / file_name, blob_name):
+                raise RuntimeError("GCSアップロード失敗")
+            load_result = loader.load_file(blob_name)
+            if load_result.status != "success":
+                raise RuntimeError(f"BQロード失敗: {load_result.error}")
+        except Exception as e:
+            logger.error(f"SEC再取得失敗: {blob_name}: {e}")
             result.failed.append(yymmdd)
             continue
 

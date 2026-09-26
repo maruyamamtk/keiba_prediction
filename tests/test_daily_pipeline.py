@@ -639,18 +639,39 @@ class TestDailyPipelineStepRepairResults:
         assert result.details["reloaded"] == ["260214"]
         assert result.details["remaining"] == []
 
-    def test_remaining_incomplete_is_partial(self):
-        """再取得後も欠損が残れば partial"""
+    def test_remaining_after_successful_refetch_is_success(self):
+        """再取得に成功しても残る日（JRDB側にも成績がない日）は警告のみで success"""
+        from src.automation.data.result_integrity import RefetchResult
+
+        still = self._incomplete(date(2026, 2, 14))
+        other = self._incomplete(date(2026, 2, 21))
+        pipeline = DailyPipeline(downloader=MagicMock(), uploader=MagicMock(), bq_loader=MagicMock())
+        with patch(
+            f"{self.MODULE}.find_incomplete_result_dates", side_effect=[[still, other], [still]]
+        ) as mock_find, patch(
+            f"{self.MODULE}.refetch_sec_files",
+            return_value=RefetchResult(reloaded=["260214", "260221"]),
+        ):
+            result = pipeline._step_repair_results(date(2026, 3, 15))
+
+        assert result.status == "success"
+        assert result.details["remaining"] == [still.to_dict()]
+        # 再検査は再取得した日の範囲に限定する
+        _, _, start, end = mock_find.call_args_list[1].args
+        assert (start, end) == (date(2026, 2, 14), date(2026, 2, 21))
+
+    def test_refetch_failure_is_partial(self):
+        """再取得に失敗した日があれば partial"""
         from src.automation.data.result_integrity import RefetchResult
 
         still = self._incomplete(date(2026, 2, 14))
         pipeline = DailyPipeline(downloader=MagicMock(), uploader=MagicMock(), bq_loader=MagicMock())
         with patch(f"{self.MODULE}.find_incomplete_result_dates", side_effect=[[still], [still]]), \
-                patch(f"{self.MODULE}.refetch_sec_files", return_value=RefetchResult(reloaded=["260214"])):
+                patch(f"{self.MODULE}.refetch_sec_files", return_value=RefetchResult(failed=["260214"])):
             result = pipeline._step_repair_results(date(2026, 3, 15))
 
         assert result.status == "partial"
-        assert result.details["remaining"] == [still.to_dict()]
+        assert result.details["failed"] == ["260214"]
 
     def test_error_is_partial(self):
         """チェック自体のエラーはパイプラインを止めず partial"""

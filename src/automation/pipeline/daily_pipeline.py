@@ -327,7 +327,7 @@ class DailyPipeline:
             # 日次パイプラインは直近7日間（当日含む）のみを対象とする
             supported_types = list(TABLE_MAPPING.keys())
             csv_files = self.bq_loader.list_csv_files(
-                prefix="", data_types=supported_types, within_days=7
+                prefix="", data_types=supported_types, within_days=DOWNLOAD_LOOKBACK_DAYS
             )
 
             if not csv_files:
@@ -427,7 +427,13 @@ class DailyPipeline:
             target_date: 対象日付
 
         Returns:
-            StepResult（再取得後も不完全な日が残る場合は partial）
+            StepResult（再取得に失敗した日がある場合は partial）
+
+        Note:
+            再取得に成功しても不完全なまま残る日（開催途中の中止など、JRDB側でも成績がない日）は
+            WARNING ログに記録するのみで success とする（毎日 partial になり信号が埋もれるのを防ぐ）。
+            修復した日の成績を参照する features.training_data は自動では再生成しないため、
+            再学習前に training_data を再生成すること。
         """
         step_name = "repair_results"
         start_time = time.time()
@@ -444,7 +450,7 @@ class DailyPipeline:
                     step_name=step_name,
                     status="success",
                     duration_seconds=time.time() - start_time,
-                    details={"incomplete_dates": [], "reloaded": [], "failed": []},
+                    details={"incomplete_dates": [], "reloaded": [], "failed": [], "remaining": []},
                 )
 
             logger.warning(
@@ -453,7 +459,10 @@ class DailyPipeline:
             refetch = refetch_sec_files(
                 self.downloader, self.uploader, self.bq_loader, [d.yymmdd for d in incomplete]
             )
-            remaining = find_incomplete_result_dates(client, project_id, window_start, window_end)
+            # 再検査は再取得した日の範囲に限定する
+            remaining = find_incomplete_result_dates(
+                client, project_id, incomplete[0].race_date, incomplete[-1].race_date
+            )
             if remaining:
                 logger.warning(
                     f"SEC再取得後も不完全な開催日が残っています: {[d.to_dict() for d in remaining]}"
@@ -461,7 +470,7 @@ class DailyPipeline:
 
             return StepResult(
                 step_name=step_name,
-                status="partial" if remaining else "success",
+                status="partial" if refetch.failed else "success",
                 duration_seconds=time.time() - start_time,
                 details={
                     "incomplete_dates": [d.to_dict() for d in incomplete],

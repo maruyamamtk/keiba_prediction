@@ -67,6 +67,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     args = parser.parse_args(argv)
     if args.detect and not args.start_date:
         parser.error("--detect には --start-date が必要です")
+    if args.dates and (args.start_date or args.end_date):
+        parser.error("--start-date / --end-date は --detect と併用してください")
+    if args.dates:
+        try:
+            args.dates = [date.fromisoformat(s.strip()) for s in args.dates.split(",") if s.strip()]
+        except ValueError as e:
+            parser.error(f"--dates の日付形式が不正です（YYYY-MM-DD）: {e}")
     return args
 
 
@@ -91,7 +98,7 @@ def main(argv: list[str] | None = None) -> int:
             logger.info(f"不完全: {d.to_dict()}")
         target_dates = [d.race_date for d in incomplete]
     else:
-        target_dates = [date.fromisoformat(s.strip()) for s in args.dates.split(",")]
+        target_dates = args.dates
 
     if not target_dates:
         logger.info("再取得対象の開催日はありません")
@@ -120,11 +127,12 @@ def main(argv: list[str] | None = None) -> int:
     remaining = find_incomplete_result_dates(
         loader.bq_client, loader.project_id, min(target_dates), max(target_dates)
     )
-    remaining = [d for d in remaining if d.race_date in set(target_dates)]
+    target_set = set(target_dates)
+    remaining = [d for d in remaining if d.race_date in target_set]
     for d in remaining:
         logger.warning(f"再取得後も不完全（JRDB側のデータの可能性）: {d.to_dict()}")
 
-    return 1 if result.failed else 0
+    return 1 if result.failed or remaining else 0
 
 
 if __name__ == "__main__":

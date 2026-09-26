@@ -319,13 +319,27 @@ class JRDBDownloader:
             logger.info(f"スキップ（既存）: {datatype}{filedate}")
             return True
 
-        # ダウンロード
-        downloaded_path = self._download_file(datatype, filedate)
-        if downloaded_path is None:
-            return False
+        if not force or not csv_path.exists():
+            downloaded_path = self._download_file(datatype, filedate)
+            if downloaded_path is None:
+                return False
+            return self._process_downloaded_file(datatype, filedate, downloaded_path)
 
-        # 処理（解凍、エンコーディング変換）
-        return self._process_downloaded_file(datatype, filedate, downloaded_path)
+        # 強制再取得: 既存ファイルを退避し、新しいCSVが生成された場合のみ置き換える
+        # （取得・解凍に失敗して古いファイルが残ったまま「成功」と扱われるのを防ぐ）
+        stale_path = csv_path.with_name(csv_path.name + ".stale")
+        csv_path.replace(stale_path)
+        downloaded_path = self._download_file(datatype, filedate)
+        ok = (
+            downloaded_path is not None
+            and self._process_downloaded_file(datatype, filedate, downloaded_path)
+            and csv_path.exists()
+        )
+        if ok:
+            stale_path.unlink()
+        else:
+            stale_path.replace(csv_path)
+        return ok
 
     def download_from_date(
         self,
