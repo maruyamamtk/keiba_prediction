@@ -573,6 +573,29 @@ class TestBigQueryLoaderMerge:
         mock_client.delete_table.assert_called()
 
     @patch("google.cloud.bigquery.Client")
+    def test_temp_table_unique_within_same_second(self, mock_bq_client):
+        """Issue #449: 同じ秒に同じテーブルをロードしても一時テーブル名が衝突しないこと"""
+        from google.cloud import bigquery as bq_module
+
+        loader = BigQueryLoader(project_id="test-project")
+        mock_client = MagicMock()
+        mock_bq_client.return_value = mock_client
+        mock_table = MagicMock()
+        mock_table.schema = [bq_module.SchemaField("horse_id", "STRING")]
+        mock_client.get_table.return_value = mock_table
+        mock_client.load_table_from_json.return_value = MagicMock(errors=None)
+
+        fixed_now = datetime(2026, 1, 25, 14, 52, 30, tzinfo=timezone.utc)
+        with patch("src.automation.data.load_to_bq.datetime") as mock_dt:
+            mock_dt.now.return_value = fixed_now
+            loader._load_to_bigquery("horse_master", [{"horse_id": "09101989"}], "UKC")
+            loader._load_to_bigquery("horse_master", [{"horse_id": "09101989"}], "UKC")
+
+        temp_refs = [c.args[1] for c in mock_client.load_table_from_json.call_args_list]
+        assert len(set(temp_refs)) == 2
+        assert all("._temp_horse_master_20260125145230_" in ref for ref in temp_refs)
+
+    @patch("google.cloud.bigquery.Client")
     def test_load_to_bigquery_insert_error(self, mock_bq_client):
         loader = BigQueryLoader(project_id="test-project")
 

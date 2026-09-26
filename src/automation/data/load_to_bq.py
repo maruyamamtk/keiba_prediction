@@ -18,6 +18,7 @@ import os
 import re
 import sys
 import time
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -402,9 +403,11 @@ class BigQueryLoader:
             GoogleCloudError: BigQueryエラー
         """
         table_ref = f"{self.project_id}.{self.dataset_id}.{table_id}"
+        # 同じ秒に別プロセスが同じテーブルをロードすると一時テーブルが衝突し（WRITE_TRUNCATE で上書き）、
+        # 同じ行が2回 MERGE されて重複 INSERT される（Issue #449）。uuid で一意にする
         temp_table_ref = (
             f"{self.project_id}.{self.dataset_id}._temp_{table_id}_"
-            f"{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
+            f"{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex[:8]}"
         )
 
         from google.api_core.exceptions import NotFound

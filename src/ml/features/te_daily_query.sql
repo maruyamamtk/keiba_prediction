@@ -45,7 +45,11 @@ with history_all as (
   from `{project_id}`.raw.horse_results as h_r
     inner join `{project_id}`.raw.race_info as r_i
       on h_r.race_id = r_i.race_id
-    inner join `{project_id}`.raw.horse_master as h_m
+    inner join (
+      -- horse_master に同一 horse_id が複数行存在する場合、最新 data_date の1行に絞る（Issue #449）
+      select * from `{project_id}`.raw.horse_master
+      qualify row_number() over (partition by horse_id order by data_date desc, updated_at desc) = 1
+    ) as h_m
       on h_r.horse_id = h_m.horse_id
     left join `{project_id}`.raw.race_results as r_r
       on h_r.race_id = r_r.race_id
