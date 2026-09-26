@@ -230,11 +230,11 @@ class TestDailyPipelineStepLoadToBq:
         assert result.status == "success"
         assert result.details["files"] == 2
         assert result.details["records"] == 100
-        # data_typesフィルタと within_days=7 が渡されていることを確認
+        # data_typesフィルタと within_days=8（ダウンロード対象の target-7 まで） が渡されていることを確認
         call_args = bq_loader.list_csv_files.call_args
         assert "data_types" in call_args[1]
         assert "BAA" in call_args[1]["data_types"]
-        assert call_args[1].get("within_days") == 7
+        assert call_args[1].get("within_days") == 8
         # skip_loadedが有効で全ファイルがバッチに渡されることを確認
         batch_call_args = bq_loader.load_files_batch.call_args
         assert len(batch_call_args[0][0]) == 3
@@ -614,10 +614,10 @@ class TestDailyPipelineStepRepairResults:
 
         assert result.status == "success"
         mock_refetch.assert_not_called()
-        # ロード対象（当日含む直近7日）より古い 7〜35日前を検査する
+        # ロード対象（target-7 まで）より古い 8〜35日前を検査する
         _, _, start, end = mock_find.call_args.args
         assert start == date(2026, 2, 8)
-        assert end == date(2026, 3, 8)
+        assert end == date(2026, 3, 7)
 
     def test_refetch_repairs_incomplete_dates(self):
         """欠損日を再取得し、解消すれば success"""
@@ -672,6 +672,19 @@ class TestDailyPipelineStepRepairResults:
 
         assert result.status == "partial"
         assert result.details["failed"] == ["260214"]
+
+    def test_finalized_dates_are_not_refetched(self):
+        """確定版ロード済みでも不完全な日（JRDB側で成績がない日）は再取得しない"""
+        known = self._incomplete(date(2026, 2, 14))
+        pipeline = DailyPipeline(downloader=MagicMock(), uploader=MagicMock(), bq_loader=MagicMock())
+        with patch(f"{self.MODULE}.find_incomplete_result_dates", return_value=[known]), \
+                patch(f"{self.MODULE}.find_finalized_sec_dates", return_value={date(2026, 2, 14)}), \
+                patch(f"{self.MODULE}.refetch_sec_files") as mock_refetch:
+            result = pipeline._step_repair_results(date(2026, 3, 15))
+
+        assert result.status == "success"
+        mock_refetch.assert_not_called()
+        assert result.details["known_incomplete"] == [known.to_dict()]
 
     def test_unavailable_on_jrdb_is_success(self):
         """JRDBにSECがない日（開催中止）は失敗扱いにしない"""

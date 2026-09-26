@@ -363,3 +363,48 @@ class TestCSVDatatypes:
     def test_csv_datatypes_does_not_contain_kaa(self):
         """CSV_DATATYPESにKAAが含まれない"""
         assert "KAA" not in CSV_DATATYPES
+
+
+class TestPreliminaryRefetch:
+    """確定前に取得したSECの取り直し（Issue #440）"""
+
+    @staticmethod
+    def _write(path: Path, text: str, fetched: str) -> None:
+        from datetime import datetime
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+        ts = datetime.fromisoformat(fetched).timestamp()
+        os.utime(path, (ts, ts))
+
+    def test_is_possibly_preliminary(self, tmp_path):
+        p = tmp_path / "SEC260124.csv"
+        self._write(p, "x", "2026-01-25T10:00:00")
+        assert JRDBDownloader.is_possibly_preliminary("SEC", "260124", p) is True
+        self._write(p, "x", "2026-01-31T10:00:00")
+        assert JRDBDownloader.is_possibly_preliminary("SEC", "260124", p) is False
+        # SEC以外は対象外
+        assert JRDBDownloader.is_possibly_preliminary("KYF", "260124", p) is False
+
+    @patch.object(JRDBDownloader, "get_available_dates", return_value=["260124", "260125"])
+    @patch.object(JRDBDownloader, "download_single", return_value=True)
+    def test_download_from_date_refetches_preliminary_sec(self, mock_single, _mock_dates, tmp_path):
+        """download_from_date は確定前に取得したSECを既存でもスキップしない"""
+        downloader = JRDBDownloader("user", "pass", tmp_path)
+        self._write(tmp_path / "Sec" / "SEC260124.csv", "速報版", "2026-01-25T10:00:00")
+        self._write(tmp_path / "Sec" / "SEC260125.csv", "確定版", "2026-02-05T10:00:00")
+
+        result = downloader.download_from_date("SEC", "260124", "260125")
+
+        mock_single.assert_called_once_with("SEC", "260124")
+        assert (result.downloaded_files, result.skipped_files) == (1, 1)
+
+    @patch.object(JRDBDownloader, "_download_file", return_value=None)
+    def test_orphan_stale_is_restored(self, _mock_download, tmp_path):
+        """前回の強制再取得が中断されて残った .stale は次回呼び出しで元に戻す"""
+        downloader = JRDBDownloader("user", "pass", tmp_path)
+        self._write(tmp_path / "Sec" / "SEC260124.csv.stale", "確定版", "2026-02-05T10:00:00")
+
+        assert downloader.download_single("SEC", "260124") is True
+        assert (tmp_path / "Sec" / "SEC260124.csv").read_text() == "確定版"
+        assert not (tmp_path / "Sec" / "SEC260124.csv.stale").exists()

@@ -11,6 +11,7 @@ from src.automation.data.jrdb_downloader import JRDBDownloader
 from src.automation.data.load_to_bq import LoadResult
 from src.automation.data.result_integrity import (
     IncompleteResultDate,
+    find_finalized_sec_dates,
     find_incomplete_result_dates,
     refetch_sec_files,
 )
@@ -71,6 +72,33 @@ class TestFindIncompleteResultDates:
         client = MagicMock()
         client.query.return_value.result.return_value = []
         assert find_incomplete_result_dates(client, "proj", date(2026, 1, 1), date(2026, 1, 31)) == []
+
+
+class TestFindFinalizedSecDates:
+    def test_loaded_after_finalization_is_finalized(self):
+        """開催日から7日以上たってロード済みなら確定版扱い、7日未満なら対象外"""
+        from datetime import datetime, timezone
+
+        client = MagicMock()
+        client.query.return_value.result.return_value = [
+            SimpleNamespace(file_name="Sec/SEC260124.csv", last_loaded_at=datetime(2026, 1, 31, tzinfo=timezone.utc)),
+            SimpleNamespace(file_name="Sec/SEC260125.csv", last_loaded_at=datetime(2026, 1, 26, tzinfo=timezone.utc)),
+        ]
+
+        result = find_finalized_sec_dates(
+            client, "proj", [date(2026, 1, 24), date(2026, 1, 25), date(2026, 1, 31)], dataset_id="raw_test"
+        )
+
+        assert result == {date(2026, 1, 24)}
+        query, = client.query.call_args.args
+        assert "`proj.raw_test.load_history`" in query
+        params = client.query.call_args.kwargs["job_config"].query_parameters
+        assert params[0].values == ["Sec/SEC260124.csv", "Sec/SEC260125.csv", "Sec/SEC260131.csv"]
+
+    def test_empty_dates_skip_query(self):
+        client = MagicMock()
+        assert find_finalized_sec_dates(client, "proj", []) == set()
+        client.query.assert_not_called()
 
 
 def _make_mocks(tmp_path: Path):

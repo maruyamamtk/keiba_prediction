@@ -11,7 +11,7 @@ JRDB の SEC（成績データ）は開催当日に速報版が公開され、ID
 
 import logging
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
 from google.cloud import bigquery
@@ -140,6 +140,54 @@ def find_incomplete_result_dates(
         )
         for row in rows
     ]
+
+
+def find_finalized_sec_dates(
+    client: bigquery.Client,
+    project_id: str,
+    race_dates: list[date],
+    dataset_id: str = "raw",
+) -> set[date]:
+    """
+    確定版（開催日から PRELIMINARY_DAYS 日以降に取得した SEC）をロード済みの開催日を返す
+
+    確定版をロードしても不完全な日は、開催途中の中止など JRDB 側でも成績がない日なので
+    毎日の再取得対象から外す（load_history を試行済みの記録として使う）。
+
+    Args:
+        client: BigQuery クライアント
+        project_id: GCP プロジェクトID
+        race_dates: 判定する開催日
+        dataset_id: load_history のあるデータセットID
+
+    Returns:
+        確定版ロード済みの開催日の集合
+    """
+    from src.automation.data.jrdb_downloader import PRELIMINARY_DAYS
+
+    if not race_dates:
+        return set()
+    by_file = {f"Sec/{SEC_DATATYPE}{d.strftime('%y%m%d')}.csv": d for d in race_dates}
+    query = f"""
+        select file_name, max(loaded_at) as last_loaded_at
+        from `{project_id}.{dataset_id}.load_history`
+        where status = 'success' and file_name in unnest(@file_names)
+        group by 1
+    """
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ArrayQueryParameter("file_names", "STRING", list(by_file)),
+        ]
+    )
+    finalized = set()
+    for row in client.query(query, job_config=job_config).result():
+        race_date = by_file[row.file_name]
+        finalized_from = datetime.combine(
+            race_date + timedelta(days=PRELIMINARY_DAYS), datetime.min.time(), tzinfo=timezone.utc
+        )
+        if row.last_loaded_at >= finalized_from:
+            finalized.add(race_date)
+    return finalized
 
 
 def refetch_sec_files(

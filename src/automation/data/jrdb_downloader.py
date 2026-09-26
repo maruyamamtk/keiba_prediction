@@ -18,12 +18,18 @@ import http
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 # CSA/KSAはCSVファイルとして直接ダウンロード可能
 CSV_DATATYPES = {"CSA", "KSA"}
+
+# 公開後に確定版で内容が更新されるデータタイプ（SEC: 速報版ではIDM未確定。Issue #440）
+FINALIZED_LATER_DATATYPES = {"SEC"}
+# 開催日からこの日数未満に取得したファイルは速報版の可能性がある（確定版は木曜頃に公開）
+PRELIMINARY_DAYS = 7
 
 
 @dataclass
@@ -298,9 +304,30 @@ class JRDBDownloader:
 
         return True
 
+    @staticmethod
+    def is_possibly_preliminary(datatype: str, filedate: str, csv_path: Path) -> bool:
+        """
+        ローカルファイルが確定前（速報版）に取得された可能性があるか
+
+        SEC（成績）は開催当日に速報版が公開され、IDM等は後日（木曜頃）の確定版で埋まる。
+        開催日から PRELIMINARY_DAYS 日未満に取得したファイルは速報版の可能性があるため、
+        既存ファイルでも取り直す（Issue #440）。
+        """
+        if datatype not in FINALIZED_LATER_DATATYPES:
+            return False
+        try:
+            file_date = datetime.strptime(filedate, "%y%m%d").date()
+        except ValueError:
+            return False
+        fetched_date = datetime.fromtimestamp(csv_path.stat().st_mtime).date()
+        return fetched_date < file_date + timedelta(days=PRELIMINARY_DAYS)
+
     def download_single(self, datatype: str, filedate: str, force: bool = False) -> bool:
         """
         単一ファイルをダウンロード・処理
+
+        既存ファイルがあればスキップする。ただし確定前に取得した可能性のあるファイル
+        （is_possibly_preliminary）は取り直す。
 
         Args:
             datatype: データタイプ
@@ -313,22 +340,26 @@ class JRDBDownloader:
         """
         folder = self.datatype_to_folder(datatype)
         csv_path = self.output_dir / folder / f"{datatype}{filedate}.csv"
+        stale_path = csv_path.with_name(csv_path.name + ".stale")
 
-        # 既にダウンロード済みならスキップ
-        if csv_path.exists() and not force:
-            logger.info(f"スキップ（既存）: {datatype}{filedate}")
-            return True
+        # 前回の強制再取得が中断された（プロセス強制終了等）場合は退避ファイルを戻す
+        if stale_path.exists() and not csv_path.exists():
+            stale_path.replace(csv_path)
 
-        if not force or not csv_path.exists():
+        if not csv_path.exists():
             downloaded_path = self._download_file(datatype, filedate)
             if downloaded_path is None:
                 return False
             return self._process_downloaded_file(datatype, filedate, downloaded_path)
 
-        # 強制再取得: 既存ファイルを退避し、新しいCSVが生成された場合のみ置き換える
-        # （取得・解凍に失敗して古いファイルが残ったまま「成功」と扱われるのを防ぐ）
-        stale_path = csv_path.with_name(csv_path.name + ".stale")
+        if not force and not self.is_possibly_preliminary(datatype, filedate, csv_path):
+            logger.info(f"スキップ（既存）: {datatype}{filedate}")
+            return True
+
+        # 再取得: 既存ファイルを退避し、新しいCSVが生成された場合のみ置き換える。
+        # 失敗・例外時は既存ファイルを戻す（プロセス強制終了時は次回呼び出し時に上で復元）
         csv_path.replace(stale_path)
+        downloaded_path = None
         ok = False
         try:
             downloaded_path = self._download_file(datatype, filedate)
@@ -338,7 +369,8 @@ class JRDBDownloader:
                 and csv_path.exists()
             )
         finally:
-            # 例外時も含め、新しいCSVができなかった場合は既存ファイルを戻す
+            if downloaded_path is not None and downloaded_path != csv_path:
+                downloaded_path.unlink(missing_ok=True)  # 解凍失敗時に残る .lzh
             if ok:
                 stale_path.unlink()
             else:
@@ -400,17 +432,11 @@ class JRDBDownloader:
         for date in target_dates:
             csv_path = self.output_dir / folder / f"{datatype}{date}.csv"
 
-            if csv_path.exists():
+            if csv_path.exists() and not self.is_possibly_preliminary(datatype, date, csv_path):
                 skipped += 1
                 continue
 
-            # download_singleはスキップ判定済みなので直接ダウンロード処理を呼ぶ
-            downloaded_path = self._download_file(datatype, date)
-            if downloaded_path is None:
-                failed += 1
-                continue
-
-            if self._process_downloaded_file(datatype, date, downloaded_path):
+            if self.download_single(datatype, date):
                 downloaded += 1
             else:
                 failed += 1
