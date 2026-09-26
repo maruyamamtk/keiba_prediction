@@ -250,7 +250,7 @@ class JRDBParser:
         KYF (競走馬データ) を解析 - KYIスキーマ準拠
 
         UTF-8デコード後の文字位置に基づいて各フィールドを抽出します。
-        実際のTXTファイル分析に基づいて位置を修正済み。
+        位置は JRDB KYI仕様（第11版）のバイト位置から算出（Issue #452）。
 
         Args:
             line: 固定長レコード文字列 (UTF-8変換済み)
@@ -273,171 +273,148 @@ class JRDBParser:
             # 全角スペースも除去
             horse_name = horse_name.replace('　', '').strip()
 
-            # === 各種指数 (位置36以降) ===
-            # IDM (5文字: 36-41) → " 20.0"
-            idm = JRDBParser.safe_float(line[36:41])
-            # 騎手指数 (5文字: 41-46) → "  0.2"
-            jockey_index = JRDBParser.safe_float(line[41:46])
-            # 情報指数 (5文字: 46-51) → " -1.0"
-            info_index = JRDBParser.safe_float(line[46:51])
-            # 予備フィールド (51-67)
-            # 総合指数 (5文字: 67-72) → "19.23"
-            total_index = JRDBParser.safe_float(line[67:72])
+            # === 文字位置の対応（Issue #452） ===
+            # JRDB KYI仕様（第11版）のバイト位置 b(1始まり) → UTF-8 デコード後の文字位置は、
+            # 手前の全角フィールドの圧縮量（2バイト→1文字）を引いて求める:
+            #   馬名(19-54)以降: b-19 / 騎手名(172-183)以降: b-25 / 調教師名(188-199)以降: b-31
+            #   調教師所属(200-203)以降: b-33 / 馬主名(405-444)以降: b-53
+            # 以下のコメントは「仕様バイト位置 → 文字位置」
 
-            # === 脚質・距離適性 (位置72以降) ===
-            running_style = JRDBParser.safe_int(line[73:74])  # 脚質 (1文字: 73-74) → "3"
-            distance_aptitude = JRDBParser.safe_int(line[76:77])  # 距離適性 (1文字: 76-77) → "8"
-            improvement = None  # 上昇度は別位置
+            # === 各種指数 ===
+            idm = JRDBParser.safe_float(line[36:41])           # IDM 55 → 36:41
+            jockey_index = JRDBParser.safe_float(line[41:46])  # 騎手指数 60 → 41:46
+            info_index = JRDBParser.safe_float(line[46:51])    # 情報指数 65 → 46:51
+            # 予備1〜3 (70/75/80 → 51:66)
+            total_index = JRDBParser.safe_float(line[66:71])   # 総合指数 85 → 66:71
 
-            # === 基準オッズ・人気 (位置77以降) ===
-            # 実データ検証による正しいフィールドレイアウト:
-            # [78:82]=基準オッズ(4文字"XX.X"), [82:84]=基準人気(2文字), スペース[84],
-            # [85:89]=基準複勝オッズ(4文字), [89:91]=基準複勝人気(2文字)
-            base_odds = JRDBParser.safe_float(line[78:82])         # 基準オッズ (4文字: 78-82) → "84.0"
-            base_popularity = JRDBParser.safe_int(line[82:84])     # 人気順位 (2文字: 82-84) → " 3" or "10"
-            base_place_odds = JRDBParser.safe_float(line[85:89])   # 基準複勝オッズ (4文字: 85-89) → "31.4"
-            base_place_popularity = JRDBParser.safe_int(line[89:91])  # 複勝人気 (2文字: 89-91) → "16"
+            # === 脚質・距離適性・上昇度・ローテーション ===
+            running_style = JRDBParser.safe_int(line[71:72])      # 脚質 90 → 71
+            distance_aptitude = JRDBParser.safe_int(line[72:73])  # 距離適性 91 → 72
+            improvement = JRDBParser.safe_int(line[73:74])        # 上昇度 92 → 73
+            rotation = JRDBParser.safe_int(line[74:77])           # ローテーション 93 → 74:77（初出走は空白）
 
-            # === 特定情報マーク (位置93以降) ===
-            specific_mark_circle = JRDBParser.safe_int(line[93:94]) if len(line) > 94 else None
-            specific_mark_circle2 = JRDBParser.safe_int(line[94:95]) if len(line) > 95 else None
-            specific_mark_triangle = JRDBParser.safe_int(line[95:96]) if len(line) > 96 else None
-            specific_mark_triangle2 = JRDBParser.safe_int(line[96:97]) if len(line) > 97 else None
-            specific_mark_x = JRDBParser.safe_int(line[97:98]) if len(line) > 98 else None
+            # === 基準オッズ・人気 ===
+            base_odds = JRDBParser.safe_float(line[77:82])              # 基準オッズ 96 → 77:82
+            base_popularity = JRDBParser.safe_int(line[82:84])          # 基準人気順位 101 → 82:84
+            base_place_odds = JRDBParser.safe_float(line[84:89])        # 基準複勝オッズ 103 → 84:89
+            base_place_popularity = JRDBParser.safe_int(line[89:91])    # 基準複勝人気順位 108 → 89:91
 
-            # === 総合情報マーク (位置98以降) ===
-            total_mark_circle = JRDBParser.safe_int(line[98:99]) if len(line) > 99 else None
-            total_mark_circle2 = JRDBParser.safe_int(line[99:100]) if len(line) > 100 else None
-            total_mark_triangle = JRDBParser.safe_int(line[100:101]) if len(line) > 101 else None
-            total_mark_triangle2 = JRDBParser.safe_int(line[101:102]) if len(line) > 102 else None
-            total_mark_x = JRDBParser.safe_int(line[102:103]) if len(line) > 103 else None
+            # === 特定情報◎○▲△×（各3桁の印数: 110〜 → 91:106） ===
+            specific_mark_circle = JRDBParser.safe_int(line[91:94])
+            specific_mark_circle2 = JRDBParser.safe_int(line[94:97])
+            specific_mark_triangle = JRDBParser.safe_int(line[97:100])
+            specific_mark_triangle2 = JRDBParser.safe_int(line[100:103])
+            specific_mark_x = JRDBParser.safe_int(line[103:106])
+
+            # === 総合情報◎○▲△×（各3桁の印数: 125〜 → 106:121） ===
+            total_mark_circle = JRDBParser.safe_int(line[106:109])
+            total_mark_circle2 = JRDBParser.safe_int(line[109:112])
+            total_mark_triangle = JRDBParser.safe_int(line[112:115])
+            total_mark_triangle2 = JRDBParser.safe_int(line[115:118])
+            total_mark_x = JRDBParser.safe_int(line[118:121])
 
             # === 人気指数・調教指数・厩舎指数 ===
-            popularity_index = JRDBParser.safe_int(line[103:106]) if len(line) > 106 else None
-            training_index = JRDBParser.safe_float(line[106:111]) if len(line) > 111 else None
-            stable_index = JRDBParser.safe_float(line[111:116]) if len(line) > 116 else None
+            popularity_index = JRDBParser.safe_int(line[121:126])   # 人気指数 140 → 121:126
+            training_index = JRDBParser.safe_float(line[126:131])   # 調教指数 145 → 126:131
+            stable_index = JRDBParser.safe_float(line[131:136])     # 厩舎指数 150 → 131:136
 
-            # === 調教矢印・厩舎評価 ===
-            training_arrow_code = JRDBParser.safe_int(line[116:117]) if len(line) > 117 else None
-            stable_eval_code = JRDBParser.safe_int(line[117:118]) if len(line) > 118 else None
+            # === 調教矢印・厩舎評価・騎手期待連対率・激走指数 ===
+            training_arrow_code = JRDBParser.safe_int(line[136:137])         # 調教矢印コード 155 → 136
+            stable_eval_code = JRDBParser.safe_int(line[137:138])            # 厩舎評価コード 156 → 137
+            jockey_expected_win_rate = JRDBParser.safe_float(line[138:142])  # 騎手期待連対率 157 → 138:142
+            surge_index = JRDBParser.safe_int(line[142:145])                 # 激走指数 161 → 142:145
 
-            # === 騎手期待連対率 ===
-            jockey_expected_win_rate = JRDBParser.safe_float(line[118:123]) if len(line) > 123 else None
-
-            # === 激走指数 ===
-            surge_index = JRDBParser.safe_int(line[123:126]) if len(line) > 126 else None
-
-            # === 蹄・重適正・クラス ===
-            hoof_code = JRDBParser.safe_int(line[126:128]) if len(line) > 128 else None
-            heavy_aptitude_code = JRDBParser.safe_int(line[128:129]) if len(line) > 129 else None
-            class_code = JRDBParser.safe_int(line[129:131]) if len(line) > 131 else None
+            # === 蹄・重適性・クラス ===
+            hoof_code = JRDBParser.safe_int(line[145:147])            # 蹄コード 164 → 145:147
+            heavy_aptitude_code = JRDBParser.safe_int(line[147:148])  # 重適性コード 166 → 147
+            class_code = JRDBParser.safe_int(line[148:150])           # クラスコード 167 → 148:150
 
             # === ブリンカー (1文字: 152) ===
             # JRDB仕様のバイト位置171（馬名36バイト=全角18文字のため文字位置152、騎手名の直前）
             # 1:初装着, 2:再装着, 3:ブリンカ（継続）、空白=非装着（Issue #441）
             blinker = line[152:153].strip()
 
-            # === 騎手名 (全角6文字 = 位置153-159) ===
-            jockey_name = ''
-            if len(line) > 159:
-                jockey_name = line[153:159].strip().replace('　', '')
+            # === 騎手名 (全角6文字: 172 → 153:159) ===
+            jockey_name = line[153:159].strip().replace('　', '')
 
-            # === 負担重量 (3桁、0.1kg単位: 159-162) → "550" → 55.0 ===
+            # === 負担重量 (3桁、0.1kg単位: 184 → 159:162) → "550" → 55.0 ===
             weight_carried = None
-            if len(line) > 162:
-                weight_raw = JRDBParser.safe_int(line[159:162])
-                if weight_raw:
-                    weight_carried = weight_raw / 10.0
+            weight_raw = JRDBParser.safe_int(line[159:162])
+            if weight_raw:
+                weight_carried = weight_raw / 10.0
 
-            # === 見習い区分 ===
-            apprentice_class = None
-            if len(line) > 163:
-                apprentice_class = JRDBParser.safe_int(line[162:163])
+            # === 見習い区分 (187 → 162) ===
+            apprentice_class = JRDBParser.safe_int(line[162:163])
 
-            # === 調教師名 (全角6文字: 163-169) → "田中勝春" ===
-            trainer_name = ''
-            if len(line) > 169:
-                trainer_name = line[163:169].strip().replace('　', '')
+            # === 調教師名 (全角6文字: 188 → 163:169) / 調教師所属 (全角2文字: 200 → 169:171) ===
+            trainer_name = line[163:169].strip().replace('　', '')
+            trainer_affiliation = line[169:171].strip().replace('　', '')
 
-            # === 調教師所属 (位置169-171) → "美浦" ===
-            trainer_affiliation = ''
-            if len(line) > 171:
-                trainer_affiliation = line[169:171].strip().replace('　', '')
-
-            # === 前走レースキー (各16文字、位置171から開始) ===
+            # === 前走1〜5 競走成績キー (各16文字: 204 → 171:251) ===
             # フォーマット: 血統登録番号(8) + 年月日(8) = 16文字
-            prev_race_key_1 = line[171:187].strip() if len(line) > 187 else ''
-            prev_race_key_2 = line[187:203].strip() if len(line) > 203 else ''
-            prev_race_key_3 = line[203:219].strip() if len(line) > 219 else ''
-            prev_race_key_4 = line[219:235].strip() if len(line) > 235 else ''
-            prev_race_key_5 = line[235:251].strip() if len(line) > 251 else ''
+            # （続く前走1〜5 レースキー 各8文字 284 → 251:291 は未取得）
+            prev_race_key_1 = line[171:187].strip()
+            prev_race_key_2 = line[187:203].strip()
+            prev_race_key_3 = line[203:219].strip()
+            prev_race_key_4 = line[219:235].strip()
+            prev_race_key_5 = line[235:251].strip()
 
-            # === 枠番 ===
-            bracket_number = JRDBParser.safe_int(line[251:252]) if len(line) > 252 else None
+            # === 枠番 (324 → 291) ===
+            bracket_number = JRDBParser.safe_int(line[291:292])
 
-            # === 各種印 ===
-            overall_mark = JRDBParser.safe_int(line[286:287]) if len(line) > 287 else None
-            idm_mark = JRDBParser.safe_int(line[287:288]) if len(line) > 288 else None
-            info_mark = JRDBParser.safe_int(line[288:289]) if len(line) > 289 else None
-            jockey_mark = JRDBParser.safe_int(line[289:290]) if len(line) > 290 else None
-            stable_mark = JRDBParser.safe_int(line[290:291]) if len(line) > 291 else None
-            training_mark = JRDBParser.safe_int(line[291:292]) if len(line) > 292 else None
-            surge_mark = JRDBParser.safe_int(line[292:293]) if len(line) > 293 else None
+            # === 印コード (327〜333 → 294:301) ===
+            overall_mark = JRDBParser.safe_int(line[294:295])   # 総合印
+            idm_mark = JRDBParser.safe_int(line[295:296])       # IDM印
+            info_mark = JRDBParser.safe_int(line[296:297])      # 情報印
+            jockey_mark = JRDBParser.safe_int(line[297:298])    # 騎手印
+            stable_mark = JRDBParser.safe_int(line[298:299])    # 厩舎印
+            training_mark = JRDBParser.safe_int(line[299:300])  # 調教印
+            surge_mark = JRDBParser.safe_int(line[300:301])     # 激走印
 
-            # === 芝・ダ適性 ===
-            turf_aptitude = line[293:294].strip() if len(line) > 294 else ''
-            dirt_aptitude = line[294:295].strip() if len(line) > 295 else ''
+            # === 芝・ダ適性 (334/335 → 301/302) ===
+            turf_aptitude = line[301:302].strip()
+            dirt_aptitude = line[302:303].strip()
 
             # === 騎手コード・調教師コード ===
             # KYI仕様書第11版: 騎手コード CP932 byte 336-340 → UTF-8 pos 303:308
             #                  調教師コード CP932 byte 341-345 → UTF-8 pos 308:313
             # 旧コード(295:300, 300:305)はCP932オフセット計算誤りによる誤位置（Issue #324）
-            jockey_code = line[303:308].strip() if len(line) > 308 else ''
-            trainer_code = line[308:313].strip() if len(line) > 313 else ''
+            jockey_code = line[303:308].strip()
+            trainer_code = line[308:313].strip()
 
             # === 賞金 ===
             # KYI仕様書: 獲得賞金 CP932 347-352 → UTF-8 314:320 (prize_money)
             #            収得賞金 CP932 353-357 → UTF-8 320:325 (earned_prize)
             #            条件クラス CP932 358 → UTF-8 325
-            prize_money = JRDBParser.safe_int(line[314:320]) if len(line) > 320 else None
-            earned_prize = JRDBParser.safe_int(line[320:325]) if len(line) > 325 else None
-            condition_class = JRDBParser.safe_int(line[325:326]) if len(line) > 326 else None
+            prize_money = JRDBParser.safe_int(line[314:320])
+            earned_prize = JRDBParser.safe_int(line[320:325])
+            condition_class = JRDBParser.safe_int(line[325:326])
 
-            # === 展開予測指数 (位置326以降) ===
-            # 分析結果: "-19.9-10.6-19.6 -8.0" at position 326
-            ten_index = JRDBParser.safe_float(line[326:331]) if len(line) > 331 else None  # -19.9
-            pace_index = JRDBParser.safe_float(line[331:336]) if len(line) > 336 else None  # -10.6
-            agari_index = JRDBParser.safe_float(line[336:341]) if len(line) > 341 else None  # -19.6
-            position_index = JRDBParser.safe_float(line[342:346]) if len(line) > 346 else None  # -8.0
+            # === 展開予想データ (359〜 → 326:363) ===
+            ten_index = JRDBParser.safe_float(line[326:331])       # テン指数 359 → 326:331
+            pace_index = JRDBParser.safe_float(line[331:336])      # ペース指数 364 → 331:336
+            agari_index = JRDBParser.safe_float(line[336:341])     # 上がり指数 369 → 336:341
+            position_index = JRDBParser.safe_float(line[341:346])  # 位置指数 374 → 341:346
+            pace_forecast = line[346:347].strip()                  # ペース予想 379 → 346 (H/M/S)
 
-            # === ペース予想 ===
-            pace_forecast = line[346:347].strip() if len(line) > 347 else ''
+            mid_position = JRDBParser.safe_int(line[347:349])            # 道中順位 380 → 347:349
+            mid_gap = JRDBParser.safe_int(line[349:351])                 # 道中差 382 → 349:351
+            mid_inside_outside = JRDBParser.safe_int(line[351:352])      # 道中内外 384 → 351
+            last_3f_position = JRDBParser.safe_int(line[352:354])        # 後3F順位 385 → 352:354
+            last_3f_gap = JRDBParser.safe_int(line[354:356])             # 後3F差 387 → 354:356
+            last_3f_inside_outside = JRDBParser.safe_int(line[356:357])  # 後3F内外 389 → 356
+            goal_position = JRDBParser.safe_int(line[357:359])           # ゴール順位 390 → 357:359
+            goal_gap = JRDBParser.safe_int(line[359:361])                # ゴール差 392 → 359:361
+            goal_inside_outside = JRDBParser.safe_int(line[361:362])     # ゴール内外 394 → 361
+            development_code = line[362:363].strip()                     # 展開記号 395 → 362
 
-            # === 道中順位・差・内外 ===
-            mid_position = JRDBParser.safe_int(line[348:350]) if len(line) > 350 else None
-            mid_gap = JRDBParser.safe_int(line[350:352]) if len(line) > 352 else None
-            mid_inside_outside = JRDBParser.safe_int(line[352:353]) if len(line) > 353 else None
+            # === 確定馬体重 (397 → 364:367) / 増減 (400 → 367:370、"+ 4" のように符号と数字の間に空白) ===
+            confirmed_weight = JRDBParser.safe_int(line[364:367])
+            confirmed_weight_diff = JRDBParser.safe_int(line[367:370].replace(' ', ''))
 
-            # === 後3F順位・差・内外 ===
-            last_3f_position = JRDBParser.safe_int(line[353:355]) if len(line) > 355 else None
-            last_3f_gap = JRDBParser.safe_int(line[355:357]) if len(line) > 357 else None
-            last_3f_inside_outside = JRDBParser.safe_int(line[357:358]) if len(line) > 358 else None
-
-            # === ゴール順位・差・内外 ===
-            goal_position = JRDBParser.safe_int(line[358:360]) if len(line) > 360 else None
-            goal_gap = JRDBParser.safe_int(line[360:362]) if len(line) > 362 else None
-            goal_inside_outside = JRDBParser.safe_int(line[362:363]) if len(line) > 363 else None
-
-            # === 展開記号 ===
-            development_code = line[363:364].strip() if len(line) > 364 else ''
-
-            # === 馬体重 (位置364以降) ===
-            confirmed_weight = JRDBParser.safe_int(line[373:376]) if len(line) > 376 else None
-            confirmed_weight_diff = JRDBParser.safe_int(line[376:379]) if len(line) > 379 else None
-
-            # === 性別・馬主・馬記号 ===
-            sex_code = JRDBParser.safe_int(line[363:364]) if len(line) > 364 else None
-            owner_name = line[379:399].strip().replace('　', '') if len(line) > 399 else ''
+            # === 性別コード (404 → 371) / 馬主名 (全角20文字: 405 → 372:392) ===
+            sex_code = JRDBParser.safe_int(line[371:372])
+            owner_name = line[372:392].strip().replace('　', '')
 
             return {
                 'race_id': race_key,
@@ -451,7 +428,7 @@ class JRDBParser:
                 'running_style': running_style,
                 'distance_aptitude': distance_aptitude,
                 'improvement': improvement,
-                'rotation': None,
+                'rotation': rotation,
                 'base_odds': base_odds,
                 'base_popularity': base_popularity,
                 'base_place_odds': base_place_odds,

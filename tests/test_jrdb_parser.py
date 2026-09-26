@@ -6,6 +6,7 @@ Issue #272: parse_cha_line が調教本追切データを正しく解析する�
 Issue #290: parse_kyf_line が base_popularity を10+人気でも正しく返すことを検証する。
 Issue #446: parse_sec_line が corner_position_1〜4 を正しく返し、他フィールドを変えないことを検証する。
 Issue #441: parse_kyf_line が blinker を仕様位置（文字位置152）から読むことを検証する。
+Issue #452: parse_kyf_line の各フィールドが JRDB KYI仕様のバイト位置どおりに読まれることを検証する。
 """
 
 import sys
@@ -251,11 +252,10 @@ def _make_kyf_line(odds_section: str = " 2.3 1  1.3 1  5 ") -> str:
       [8:10]  馬番
       [10:18] 血統登録番号
       [18:36] 馬名 (全角18文字スロット)
-      [36:78] 各種指数・脚質など (42文字)
-      [78:82] 基準オッズ (4文字 "XX.X")
+      [36:77] 各種指数・脚質など
+      [77:82] 基準オッズ (5文字 "ZZ9.9"。ここでは先頭1文字を指数側の空白で埋める)
       [82:84] 基準人気 (2文字 " N" or "NN")
-      [84:85] セパレータ (スペース)
-      [85:89] 基準複勝オッズ (4文字)
+      [84:89] 基準複勝オッズ (5文字)
       [89:91] 基準複勝人気 (2文字)
       [91:]   残余
     """
@@ -947,3 +947,98 @@ class TestParseKyfLineBlinker:
                 result.pop(key)
         assert changed == base
         assert base["jockey_name"] == "横山武史"
+
+
+# 実データ KYF170521 の26行目（1番人気・印あり・距離適性あり）
+_KYF_LINE_REAL_2017 = '041718021014101964グロワールシチー\u3000\u3000\u3000\u3000\u3000\u3000\u3000\u3000\u3000\u3000 44.0  3.1  4.0  0.0  0.0  0.0 51.1213  2  2.5 1  1.3 1  5  2  0  0    33 25  4  3     796 19.8 21.72352.318122337   義英真\u3000\u3000\u30005501岡田稲男\u3000\u3000栗東141019642017043014101964201704091410196420170211                                041712050917260208172504                6  111111  21057510376    365    00  4.8  9.5-12.3 -1.0H 2 12 1 02 1 010        1㈱友駿ホースクラブ\u3000\u3000\u3000\u3000\u3000\u3000\u3000\u3000\u3000\u3000\u30000700 1 1 1 1 5 131.166.23         '
+
+# 仕様（kyi_doc.txt 第11版）のバイト位置どおりに切り出した期待値
+_KYF_EXPECTED_REAL = {
+    "total_index": 20.7, "running_style": 2, "distance_aptitude": None, "improvement": 3, "rotation": 11,
+    "base_odds": 6.9, "base_popularity": 3, "base_place_odds": 1.9, "base_place_popularity": 3,
+    "specific_mark_circle": 0, "specific_mark_circle2": 1, "specific_mark_triangle": 1,
+    "specific_mark_triangle2": 5, "specific_mark_x": None,
+    "total_mark_circle": 6, "total_mark_circle2": 8, "total_mark_triangle": 14,
+    "total_mark_triangle2": 55, "total_mark_x": None,
+    "popularity_index": 235, "training_index": 12.1, "stable_index": 4.1,
+    "training_arrow_code": 3, "stable_eval_code": 3, "jockey_expected_win_rate": 24.0, "surge_index": 149,
+    "hoof_code": 24, "heavy_aptitude_code": 2, "class_code": 18, "blinker": None,
+    "jockey_name": "横山武史", "weight_carried": 55.0, "apprentice_class": None,
+    "trainer_name": "尾形和幸", "trainer_affiliation": "美浦",
+    "prev_race_key_1": "2210345020241019", "prev_race_key_2": "2210345020241006", "prev_race_key_3": None,
+    "bracket_number": 1,
+    "overall_mark": None, "idm_mark": None, "info_mark": 5, "jockey_mark": 3, "stable_mark": 6,
+    "training_mark": 3, "surge_mark": None, "turf_aptitude": "3", "dirt_aptitude": None,
+    "jockey_code": "10590", "trainer_code": "10450",
+    "prize_money": 0, "earned_prize": 0, "condition_class": 0,
+    "ten_index": -21.6, "pace_index": -15.0, "agari_index": -27.3, "position_index": -3.3, "pace_forecast": "H",
+    "mid_position": 6, "mid_gap": 13, "mid_inside_outside": 2,
+    "last_3f_position": 6, "last_3f_gap": 10, "last_3f_inside_outside": 4,
+    "goal_position": 10, "goal_gap": 27, "goal_inside_outside": 3, "development_code": "4",
+    "confirmed_weight": None, "confirmed_weight_diff": None, "sex_code": 2, "owner_name": "久米田正平氏",
+}
+
+_KYF_EXPECTED_REAL_2017 = {
+    "total_index": 51.1, "running_style": 2, "distance_aptitude": 1, "improvement": 3, "rotation": 2,
+    "base_odds": 2.5, "base_popularity": 1, "base_place_odds": 1.3, "base_place_popularity": 1,
+    "specific_mark_circle": 5, "specific_mark_circle2": 2, "specific_mark_triangle": 0,
+    "specific_mark_triangle2": 0, "specific_mark_x": None,
+    "total_mark_circle": 33, "total_mark_circle2": 25, "total_mark_triangle": 4,
+    "total_mark_triangle2": 3, "total_mark_x": None,
+    "popularity_index": 796, "training_index": 19.8, "stable_index": 21.7,
+    "training_arrow_code": 2, "stable_eval_code": 3, "jockey_expected_win_rate": 52.3, "surge_index": 181,
+    "hoof_code": 22, "heavy_aptitude_code": 3, "class_code": 37, "blinker": None,
+    "jockey_name": "義英真", "weight_carried": 55.0, "apprentice_class": 1,
+    "trainer_name": "岡田稲男", "trainer_affiliation": "栗東",
+    "prev_race_key_1": "1410196420170430", "prev_race_key_2": "1410196420170409",
+    "prev_race_key_3": "1410196420170211", "prev_race_key_4": None,
+    "bracket_number": 6,
+    "overall_mark": 1, "idm_mark": 1, "info_mark": 1, "jockey_mark": 1, "stable_mark": 1,
+    "training_mark": 1, "surge_mark": None, "turf_aptitude": None, "dirt_aptitude": "2",
+    "jockey_code": "10575", "trainer_code": "10376",
+    "prize_money": 365, "earned_prize": 0, "condition_class": 0,
+    "ten_index": 4.8, "pace_index": 9.5, "agari_index": -12.3, "position_index": -1.0, "pace_forecast": "H",
+    "mid_position": 2, "mid_gap": 1, "mid_inside_outside": 2,
+    "last_3f_position": 1, "last_3f_gap": 0, "last_3f_inside_outside": 2,
+    "goal_position": 1, "goal_gap": 0, "goal_inside_outside": 1, "development_code": "0",
+    "confirmed_weight": None, "confirmed_weight_diff": None, "sex_code": 1, "owner_name": "㈱友駿ホースクラブ",
+}
+
+
+class TestParseKyfLineSpecPositions:
+    """parse_kyf_line の各フィールドが仕様位置どおりに読まれること (Issue #452)"""
+
+    @pytest.mark.parametrize(
+        "line, expected",
+        [(_KYF_LINE_REAL, _KYF_EXPECTED_REAL), (_KYF_LINE_REAL_2017, _KYF_EXPECTED_REAL_2017)],
+        ids=["KYF250113", "KYF170521"],
+    )
+    def test_real_line_all_fields(self, line, expected):
+        """実データ行で、仕様位置から切り出した値と全フィールドが一致すること"""
+        result = JRDBParser.parse_kyf_line(line)
+        assert {k: result[k] for k in expected} == expected
+
+    def test_key_and_head_fields_unchanged(self):
+        """レースキー〜情報指数（修正対象外の先頭部）が従来どおりであること"""
+        result = JRDBParser.parse_kyf_line(_KYF_LINE_REAL_2017)
+        assert (result["race_id"], result["horse_number"], result["horse_id"], result["horse_name"]) == (
+            "04171802", 10, "14101964", "グロワールシチー"
+        )
+        assert (result["idm"], result["jockey_index"], result["info_index"]) == (44.0, 3.1, 4.0)
+
+    def test_position_index_two_digit_negative(self):
+        """位置指数が -10.0 以下でも先頭の符号を落とさないこと（旧実装は 342:346 で '-12.3' → 12.3）"""
+        line = _KYF_LINE_REAL[:341] + "-12.3" + _KYF_LINE_REAL[346:]
+        assert JRDBParser.parse_kyf_line(line)["position_index"] == -12.3
+
+    @pytest.mark.parametrize(
+        "weight, diff, expected_diff",
+        [("486", "+ 4", 4), ("450", "-12", -12), ("502", "  0", 0)],
+    )
+    def test_confirmed_weight(self, weight, diff, expected_diff):
+        """確定馬体重（文字位置364:367）と増減（367:370、符号+数字）が読まれること"""
+        line = _KYF_LINE_REAL[:364] + weight + diff + _KYF_LINE_REAL[370:]
+        result = JRDBParser.parse_kyf_line(line)
+        assert result["confirmed_weight"] == int(weight)
+        assert result["confirmed_weight_diff"] == expected_diff
+        assert result["sex_code"] == 2
