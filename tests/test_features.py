@@ -1135,7 +1135,7 @@ class TestRaceExclusionFilter:
         """temp_base_race_entries / temp_horse_master_feature / temp_mare_race_base に除外フィルタが含まれること"""
         content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
         assert content.count("race_class != 'A1'") == 2, "新馬戦除外が2箇所にあるべき"
-        assert content.count("!= 'obstacle'") == 4, "障害戦除外が4箇所にあるべき（base/horse_master/mare_race_base/te_history_raw）"
+        assert content.count("!= 'obstacle'") == 5, "障害戦除外が5箇所にあるべき（base/horse_master/mare_race_base/te_history_raw/blinker_base）"
         assert content.count("num_horses) > 7") == 2, "少頭数除外が2箇所にあるべき"
         assert content.count("venue_code = '04' and r_i.distance = 1000 and r_i.direction = 'straight'") == 2, "新潟直線除外が2箇所にあるべき"
 
@@ -3434,3 +3434,72 @@ class TestHorseMasterDedupJoin:
         content = (SQL_TEMPLATE_PATH.parent / sql_name).read_text(encoding="utf-8")
         assert "join `{project_id}`.raw.horse_master as h_m" not in content
         assert "partition by horse_id order by data_date desc" in content
+
+
+class TestBlinkerFeature:
+    """Issue #445: ブリンカー装着状況特徴量"""
+
+    NEW_FEATURES = [
+        "blinker_code",
+        "blinker_first_flag",
+        "blinker_on_flag",
+        "blinker_off_flag",
+        "blinker_change_flag",
+        "blinker_race_count",
+        "blinker_perf_diff",
+        "blinker_first_x_prev_loss",
+        "trainer_first_blinker_te",
+    ]
+
+    @staticmethod
+    def _section(content: str) -> str:
+        start = content.find(",temp_blinker_base as (")
+        end = content.find("\n,temp_training as (", start)
+        assert start != -1 and end != -1, "ブリンカーCTEが見つかりません"
+        return content[start:end]
+
+    def test_sql_windows_exclude_current_row(self):
+        """集計ウィンドウが当該レース（同日）を含まないこと"""
+        section = self._section(SQL_TEMPLATE_PATH.read_text(encoding="utf-8"))
+        assert "current row" not in section.lower()
+        assert section.count("range between unbounded preceding and 1 preceding") == 5
+        assert section.count("range between 1826 preceding and 1 preceding") == 3
+        assert "lag(" not in section, "前走参照は取消を飛ばす last_value(... ignore nulls) を使う"
+
+    def test_sql_scratched_runs_kept_but_excluded_from_history(self):
+        """取消馬の行は残し（NULL で結果が漏れない）、履歴の集計・前走参照からは外すこと"""
+        section = self._section(SQL_TEMPLATE_PATH.read_text(encoding="utf-8"))
+        assert "if(coalesce(r_r.finish_position, -1) = 0, 0, 1) as is_valid_run" in section
+        assert "r_r.finish_position > 0 or r_r.race_id is null" not in section
+        assert "last_value(if(is_valid_run = 1, blinker_on, null) ignore nulls)" in section
+        assert "sum(if(is_valid_run = 1, blinker_on, 0))" in section
+
+    def test_sql_has_no_date_filter(self):
+        """全期間の過去走から計算し、予測時の単日置換の対象にならないこと"""
+        section = self._section(SQL_TEMPLATE_PATH.read_text(encoding="utf-8"))
+        assert "{start_date}" not in section and "{end_date}" not in section
+
+    def test_sql_trainer_te_smoothing_and_mask(self):
+        section = self._section(SQL_TEMPLATE_PATH.read_text(encoding="utf-8"))
+        assert "+ 10 * g.global_top3_rate" in section
+        assert "trainer_first_blinker_count >= 5" in section
+
+    def test_sql_final_select_has_all_features(self):
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        final = content[content.find(",temp_final_raw as ("):content.find(",temp_null_fill_med as (")]
+        for feature in self.NEW_FEATURES:
+            assert f"as {feature}" in final or f"t_blk.{feature}" in final, f"最終 SELECT に {feature} がありません"
+        assert "left join temp_blinker_features as t_blk" in final
+
+    def test_sql_current_blinker_flags_from_current_row(self):
+        """当該レースの装着状態は当日の blinker から作る（取消馬の行も NULL にしない）"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        assert "cast(t_p_r_f.blinker as int64) else 0 end as blinker_code" in content
+        assert "if(t_p_r_f.blinker = '1', 1, 0) as blinker_first_flag" in content
+
+    @patch("src.ml.features.feature_pipeline.bigquery.Client")
+    def test_predict_query_keeps_blinker_ctes(self, mock_bq):
+        """予測クエリ（TEブロック差し替え後）にもブリンカーCTEが残ること"""
+        sql = FeaturePipeline("test-project").generate_predict_query("2026-06-14")
+        assert ",temp_blinker_features as (" in sql
+        assert "left join temp_blinker_features as t_blk" in sql
