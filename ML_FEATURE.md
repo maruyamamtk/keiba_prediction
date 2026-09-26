@@ -201,6 +201,22 @@
 |---|---|
 | `total_diff_sum` | 全差分の合計（条件適性の総合スコア＝激走フラグの代替） |
 
+### 1.13 メンバーレベル補正（派生、Issue #443）
+
+メンバーレベル = そのレースの出走馬の**発走前IDM（`raw.horse_results.idm`）上位5頭平均**。発走前情報のみで構成するため、今回レースにも過去走にも同じ定義で計算できる。
+過去走は `raw.race_results` から horse_id で直近10走（`race_date < 対象レース日`）を取得。好走 = 3着以内 or 着差0.5秒以内（1着の着差は0扱い）。
+
+| カラム名 | 説明 |
+|---|---|
+| `current_member_level` | 今回レースのメンバーレベル |
+| `past_member_level_mean` | 過去10走のメンバーレベル平均（普段戦っている相手の強さ） |
+| `member_level_diff` | 今回 − 過去平均（正=格上挑戦、負=格下戦） |
+| `max_level_good_run` | 好走したレースの最大メンバーレベル |
+| `max_level_good_run_diff` | `max_level_good_run − current_member_level`（今回以上の相手に好走歴があるか） |
+| `strong_field_good_run_count` | メンバーレベル ≥ 今回 のレースでの好走回数（過去走なしは0） |
+| `strong_field_best_finish_rate` | メンバーレベル ≥ 今回 のレースでの最良着順率（着順/頭数の最小値） |
+| `level_perf_corr` | 過去走の corr(メンバーレベル, −着差)。有効5走以上・分散0は NULL |
+
 ---
 
 ## 2. 今後追加で実装すると精度向上が期待できる特徴量
