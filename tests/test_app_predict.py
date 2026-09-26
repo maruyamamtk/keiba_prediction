@@ -128,12 +128,13 @@ class TestRunPredictModelPathDelegation:
 class TestRunPredictTrackConditionFreshness:
     """_run_predict の馬場状態予報(KAA)鮮度チェック統合のテスト（Issue #437）"""
 
+    @patch("src.automation.api.app._today_jst", return_value=datetime.date(2026, 6, 1))
     @patch("src.models.train.load_config", return_value={})
     @patch("src.models.predict.predict_pipeline", return_value=_sample_result_df())
     @patch("src.models.predict.check_track_condition_freshness")
     @patch("src.utils.line_notify.push_messages")
     def test_notifies_line_when_stale(
-        self, mock_push, mock_check, mock_pipeline, _mock_config, monkeypatch
+        self, mock_push, mock_check, mock_pipeline, _mock_config, _mock_today, monkeypatch
     ):
         """欠損率が閾値を超えた場合、LINE通知が送られること"""
         mock_check.return_value = (0.5, ["race_1"])
@@ -149,12 +150,13 @@ class TestRunPredictTrackConditionFreshness:
 
         mock_push.assert_called_once()
 
+    @patch("src.automation.api.app._today_jst", return_value=datetime.date(2026, 6, 1))
     @patch("src.models.train.load_config", return_value={})
     @patch("src.models.predict.predict_pipeline", return_value=_sample_result_df())
     @patch("src.models.predict.check_track_condition_freshness")
     @patch("src.utils.line_notify.push_messages")
     def test_no_notification_when_fresh(
-        self, mock_push, mock_check, mock_pipeline, _mock_config, monkeypatch
+        self, mock_push, mock_check, mock_pipeline, _mock_config, _mock_today, monkeypatch
     ):
         """欠損率が閾値以下の場合、LINE通知は送られないこと"""
         mock_check.return_value = (0.0, [])
@@ -170,12 +172,13 @@ class TestRunPredictTrackConditionFreshness:
 
         mock_push.assert_not_called()
 
+    @patch("src.automation.api.app._today_jst", return_value=datetime.date(2026, 6, 1))
     @patch("src.models.train.load_config", return_value={})
     @patch("src.models.predict.predict_pipeline", return_value=_sample_result_df())
     @patch("src.models.predict.check_track_condition_freshness")
     @patch("src.utils.line_notify.push_messages")
     def test_no_notification_without_env_vars(
-        self, mock_push, mock_check, mock_pipeline, _mock_config, monkeypatch
+        self, mock_push, mock_check, mock_pipeline, _mock_config, _mock_today, monkeypatch
     ):
         """LINE環境変数が未設定の場合は通知をスキップし、予測処理は継続すること"""
         mock_check.return_value = (0.9, ["race_1"])
@@ -192,12 +195,13 @@ class TestRunPredictTrackConditionFreshness:
         mock_push.assert_not_called()
         assert result["num_races"] == 1
 
+    @patch("src.automation.api.app._today_jst", return_value=datetime.date(2026, 6, 1))
     @patch("src.models.train.load_config", return_value={})
     @patch("src.models.predict.predict_pipeline", return_value=_sample_result_df())
     @patch("src.models.predict.check_track_condition_freshness")
     @patch("src.utils.line_notify.push_messages", side_effect=Exception("LINE API error"))
     def test_line_failure_does_not_raise(
-        self, mock_push, mock_check, mock_pipeline, _mock_config, monkeypatch
+        self, mock_push, mock_check, mock_pipeline, _mock_config, _mock_today, monkeypatch
     ):
         """LINE通知が失敗しても例外が伝播せず予測処理が継続すること"""
         mock_check.return_value = (0.9, ["race_1"])
@@ -213,6 +217,7 @@ class TestRunPredictTrackConditionFreshness:
 
         assert result["num_races"] == 1
 
+    @patch("src.automation.api.app._today_jst", return_value=datetime.date(2026, 6, 1))
     @patch("src.models.train.load_config", return_value={})
     @patch("src.models.predict.predict_pipeline", return_value=_sample_result_df())
     @patch(
@@ -221,7 +226,7 @@ class TestRunPredictTrackConditionFreshness:
     )
     @patch("src.utils.line_notify.push_messages")
     def test_freshness_check_failure_does_not_abort_prediction(
-        self, mock_push, mock_check, mock_pipeline, _mock_config
+        self, mock_push, mock_check, mock_pipeline, _mock_config, _mock_today
     ):
         """鮮度チェック自体が例外を送出しても予測結果は正常に返ること（保存処理を巻き込まない）"""
         result = _run_predict(
@@ -233,3 +238,21 @@ class TestRunPredictTrackConditionFreshness:
 
         assert result["num_races"] == 1
         mock_push.assert_not_called()
+
+    @patch("src.automation.api.app._today_jst", return_value=datetime.date(2026, 7, 1))
+    @patch("src.models.train.load_config", return_value={})
+    @patch("src.models.predict.predict_pipeline", return_value=_sample_result_df())
+    @patch("src.models.predict.check_track_condition_freshness")
+    def test_skips_check_for_historical_target_dates(
+        self, mock_check, mock_pipeline, _mock_config, _mock_today
+    ):
+        """対象日がすべて過去（バックテスト・過去日付on-demand）の場合は鮮度チェック自体を呼ばないこと"""
+        # _sample_result_df の race_date は 2026-06-28 で、モックした「今日」(2026-07-01) より過去
+        _run_predict(
+            model_path="gs://bucket/model.txt",
+            target_dates=[datetime.date(2026, 6, 28)],
+            save_to_bq=False,
+            project_id="my-project",
+        )
+
+        mock_check.assert_not_called()

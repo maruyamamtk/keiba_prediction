@@ -227,9 +227,10 @@ def check_track_condition_freshness(
     """
     required_columns = {"race_id", "race_date", "venue_code", "course_type"}
     if len(result_df) == 0 or not required_columns.issubset(result_df.columns):
-        logger.debug(
+        logger.warning(
             "check_track_condition_freshness: 必須カラムが揃っていないためチェックを"
-            f"スキップします（columns={list(result_df.columns)}）"
+            f"スキップします（columns={list(result_df.columns)}）。"
+            "馬場状態予報の欠損監視が機能していません。"
         )
         return 0.0, []
 
@@ -238,6 +239,7 @@ def check_track_condition_freshness(
     if not dates:
         return 0.0, []
     dates_sql = ", ".join(f"DATE '{d.isoformat()}'" for d in dates)
+    venue_codes_sql = ", ".join(f"'{v}'" for v in sorted(races["venue_code"].unique()))
 
     # 「最新段階(data_category最大値)を優先」のデデュープロジックは
     # feature_query_raw.sql の venue_info JOIN と揃える必要がある（同ファイル内の
@@ -251,6 +253,7 @@ def check_track_condition_freshness(
           dirt_condition_code
         FROM `{project_id}.raw.venue_info`
         WHERE race_date IN ({dates_sql})
+          AND venue_code IN ({venue_codes_sql})
         QUALIFY ROW_NUMBER() OVER (
             PARTITION BY venue_code, race_date
             ORDER BY COALESCE(data_category, 0) DESC

@@ -773,7 +773,12 @@ def _run_predict(
     num_races = int(result_df["race_id"].nunique()) if len(result_df) > 0 else 0
     num_horses = len(result_df)
 
-    if len(result_df) > 0:
+    # 対象日がすべて過去（バックテスト・過去日付のon-demand実行）の場合は鮮度チェックを
+    # 行わない。過去日は venue_info が既に確定・入れ替わっている場合があり、
+    # 「当日分未ロード」を検知するための本チェックの対象外（誤アラート防止）。
+    has_upcoming_target = any(d >= _today_jst() for d in target_dates)
+
+    if len(result_df) > 0 and has_upcoming_target:
         # 鮮度チェック自体の失敗（BigQuery一時障害・権限エラー等）で予測保存まで
         # 巻き込んで失敗させない（このIssueの目的はアラート追加であり、予測処理の
         # 可用性を下げないことが前提のため、Issue #437）。
