@@ -257,7 +257,11 @@
         safe_divide(coalesce(ste_dist.cnt, 0), nullif(coalesce(ste_base.cnt, 0), 0)), null) as sire_distance_run_ratio
   from `{project_id}`.raw.horse_results as h_r
     inner join `{project_id}`.raw.race_info as r_i on h_r.race_id = r_i.race_id
-    inner join `{project_id}`.raw.horse_master as h_m on h_r.horse_id = h_m.horse_id
+    inner join (
+      -- horse_master に同一 horse_id が複数行存在する場合、最新 data_date の1行に絞る（Issue #449）
+      select * from `{project_id}`.raw.horse_master
+      qualify row_number() over (partition by horse_id order by data_date desc, updated_at desc) = 1
+    ) as h_m on h_r.horse_id = h_m.horse_id
     cross join temp_global_mean_te as g
     left join (select entity_id, cnt, sum_top3 from temp_entity_te
                where entity_type = 'sire' and condition_type = 'base') as ste_base
@@ -367,7 +371,11 @@
         safe_divide(coalesce(mte_dist.cnt, 0), nullif(coalesce(mte_base.cnt, 0), 0)), null) as mare_distance_run_ratio
   from `{project_id}`.raw.horse_results as h_r
     inner join `{project_id}`.raw.race_info as r_i on h_r.race_id = r_i.race_id
-    inner join `{project_id}`.raw.horse_master as h_m on h_r.horse_id = h_m.horse_id
+    inner join (
+      -- horse_master に同一 horse_id が複数行存在する場合、最新 data_date の1行に絞る（Issue #449）
+      select * from `{project_id}`.raw.horse_master
+      qualify row_number() over (partition by horse_id order by data_date desc, updated_at desc) = 1
+    ) as h_m on h_r.horse_id = h_m.horse_id
     cross join temp_global_mean_te as g
     left join (select entity_id, cnt, sum_top3 from temp_entity_te
                where entity_type = 'mare' and condition_type = 'base') as mte_base

@@ -3421,3 +3421,16 @@ class TestGradeTEFeature:
         content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
         assert "left join temp_grade_te as t_g_te" in content, \
             "最終 SELECT に temp_grade_te の LEFT JOIN がありません"
+
+
+class TestHorseMasterDedupJoin:
+    """Issue #449: horse_master を直接 JOIN せず、horse_id ごとに1行へ絞ってから JOIN すること"""
+
+    @pytest.mark.parametrize(
+        "sql_name",
+        ["feature_query_raw.sql", "te_daily_query.sql", "feature_query_predict_te.sql"],
+    )
+    def test_no_direct_join_to_horse_master(self, sql_name):
+        content = (SQL_TEMPLATE_PATH.parent / sql_name).read_text(encoding="utf-8")
+        assert "join `{project_id}`.raw.horse_master as h_m" not in content
+        assert "partition by horse_id order by data_date desc" in content
