@@ -760,6 +760,14 @@ class JRDBParser:
                 # 10時複勝オッズ (仕様書 相対303, UTF-8文字位置 231-237)
                 odds_10am_place = JRDBParser.safe_float(line[231 + o:237 + o]) if len(line) > 237 + o else None
 
+            # === コーナー順位1〜4 (仕様書 相対309/311/313/315・各2桁, UTF-8文字位置 237-245) ===
+            # "00"（そのコーナーを通過しない距離）・空白は欠損として None
+            if len(line) >= 245 + o:
+                corner_position_1, corner_position_2, corner_position_3, corner_position_4 = (
+                    JRDBParser.safe_int(line[start + o:start + 2 + o]) or None
+                    for start in (237, 239, 241, 243)
+                )
+
             return {
                 'race_id': race_key,
                 'horse_number': horse_number,
