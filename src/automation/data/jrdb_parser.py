@@ -332,8 +332,10 @@ class JRDBParser:
             heavy_aptitude_code = JRDBParser.safe_int(line[128:129]) if len(line) > 129 else None
             class_code = JRDBParser.safe_int(line[129:131]) if len(line) > 131 else None
 
-            # === ブリンカー ===
-            blinker = line[131:132].strip() if len(line) > 132 else ''
+            # === ブリンカー (1文字: 152) ===
+            # JRDB仕様のバイト位置171（馬名36バイト=全角18文字のため文字位置152、騎手名の直前）
+            # 1:初装着, 2:再装着, 3:ブリンカ（継続）、空白=非装着（Issue #441）
+            blinker = line[152:153].strip()
 
             # === 騎手名 (全角6文字 = 位置153-159) ===
             jockey_name = ''
