@@ -703,8 +703,8 @@ class JRDBParser:
                 # 馬体重増減 (位置264-267、符号付き)
                 weight_diff_str = line[264 + o:267 + o].strip()
                 if weight_diff_str:
-                    # 符号を処理 (+10, -5, など)
-                    weight_diff_str = weight_diff_str.replace('+', '')
+                    # 符号を処理 (+10, -12, "+ 2", "- 2" など)。1桁は符号と数字の間に空白が入るため除去する（Issue #450）
+                    weight_diff_str = weight_diff_str.replace('+', '').replace(' ', '')
                     horse_weight_diff = JRDBParser.safe_int(weight_diff_str)
 
                 # 天候コード (位置267)
