@@ -124,6 +124,21 @@
 
 > EMA は 1走前 × 1.5、2走前 × 1.25、3走前 × 1.0、4走前 × 0.75、5走前 × 0.5 の加重平均
 
+#### 大敗外れ値に頑健な IDM 集約（Issue #442）
+
+1回の大敗で平均系の IDM が大きく下がるのを補うための列です。着差（margin）には `race_results.winner_time_diff` を使い、1着は 0 とします（1着馬の winner_time_diff には2着との差が入っているため）。IDM が NULL の走は IDM 系の分母から、着差が NULL の走は着差系の分母から除きます。
+
+| カラム名 | 説明 |
+|---|---|
+| `median_idm` | 過去5走 IDM の中央値 |
+| `trimmed_mean_idm` | 最低値の1走を除いた IDM 平均（IDM が2走以上あるとき） |
+| `top2_mean_idm` | IDM 上位2走の平均（2走以上あるとき） |
+| `idm_std` | IDM の標準偏差（不偏、2走以上） |
+| `big_loss_count` / `big_loss_rate` | 着差1.5秒以上の走数・比率（1着以外の走の約40%が該当） |
+| `good_run_mean_idm` | 3着以内または着差0.5秒以内の走の IDM 平均 |
+| `margin_clipped_mean` | 着差を [0, 2.0] 秒にクリップした平均 |
+| `max_minus_median_idm` | `max_idm - median_idm`（上振れの余地） |
+
 ### 1.7 レース内相対指標（派生）
 
 | カラム名 | 説明 |
@@ -137,6 +152,7 @@
 | `mean_idm_diff` | レース内TOP との mean_idm 差分 |
 | `ema_idm_diff` | レース内TOP との ema_idm 差分 |
 | `max_idm_diff` | レース内TOP との max_idm 差分 |
+| `median_idm_diff` / `trimmed_mean_idm_diff` / `top2_mean_idm_diff` / `good_run_mean_idm_diff` | レース内TOP との差分（Issue #442） |
 
 ### 1.8 馬場情報（`raw.venue_info` より）
 
