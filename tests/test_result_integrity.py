@@ -11,7 +11,7 @@ from src.automation.data.jrdb_downloader import JRDBDownloader
 from src.automation.data.load_to_bq import LoadResult
 from src.automation.data.result_integrity import (
     IncompleteResultDate,
-    find_finalized_sec_dates,
+    is_preliminary_sec_file,
     find_incomplete_result_dates,
     refetch_sec_files,
 )
@@ -42,10 +42,7 @@ class TestFindIncompleteResultDates:
             SimpleNamespace(race_date=date(2026, 2, 14), expected_rows=539, actual_rows=248, idm_null_rows=248),
         ]
 
-        result = find_incomplete_result_dates(
-            client, "proj", date(2026, 1, 1), date(2026, 3, 31),
-            idm_null_rate_threshold=0.3, min_row_ratio=0.8,
-        )
+        result = find_incomplete_result_dates(client, "proj", date(2026, 1, 1), date(2026, 3, 31))
 
         assert result == [IncompleteResultDate(date(2026, 2, 14), 539, 248, 248)]
         query, = client.query.call_args.args
@@ -55,8 +52,7 @@ class TestFindIncompleteResultDates:
         assert params == {
             "start_date": date(2026, 1, 1),
             "end_date": date(2026, 3, 31),
-            "min_row_ratio": 0.8,
-            "idm_null_rate_threshold": 0.3,
+            "idm_null_rate_threshold": 0.2,
         }
 
     def test_dataset_id(self):
@@ -74,31 +70,30 @@ class TestFindIncompleteResultDates:
         assert find_incomplete_result_dates(client, "proj", date(2026, 1, 1), date(2026, 1, 31)) == []
 
 
-class TestFindFinalizedSecDates:
-    def test_loaded_after_finalization_is_finalized(self):
-        """開催日から7日以上たってロード済みなら確定版扱い、7日未満なら対象外"""
-        from datetime import datetime, timezone
+class TestIsPreliminarySecFile:
+    """SECファイルの中身（IDM NULL率）で速報版を判定する"""
 
-        client = MagicMock()
-        client.query.return_value.result.return_value = [
-            SimpleNamespace(file_name="Sec/SEC260124.csv", last_loaded_at=datetime(2026, 1, 31, tzinfo=timezone.utc)),
-            SimpleNamespace(file_name="Sec/SEC260125.csv", last_loaded_at=datetime(2026, 1, 26, tzinfo=timezone.utc)),
-        ]
+    @staticmethod
+    def _run(tmp_path, idms):
+        from unittest.mock import patch
 
-        result = find_finalized_sec_dates(
-            client, "proj", [date(2026, 1, 24), date(2026, 1, 25), date(2026, 1, 31)], dataset_id="raw_test"
-        )
+        path = tmp_path / "SEC260124.csv"
+        path.write_text("".join(f"{i}\n" for i in range(len(idms))), encoding="utf-8")
+        with patch(
+            "src.automation.data.result_integrity.JRDBParser.parse_sec_line",
+            side_effect=lambda line: {"idm": idms[int(line)]},
+        ):
+            return is_preliminary_sec_file(path)
 
-        assert result == {date(2026, 1, 24)}
-        query, = client.query.call_args.args
-        assert "`proj.raw_test.load_history`" in query
-        params = client.query.call_args.kwargs["job_config"].query_parameters
-        assert params[0].values == ["Sec/SEC260124.csv", "Sec/SEC260125.csv", "Sec/SEC260131.csv"]
+    def test_mostly_null_is_preliminary(self, tmp_path):
+        assert self._run(tmp_path, [None] * 9 + [50.0]) is True
 
-    def test_empty_dates_skip_query(self):
-        client = MagicMock()
-        assert find_finalized_sec_dates(client, "proj", []) == set()
-        client.query.assert_not_called()
+    def test_normal_null_rate_is_final(self, tmp_path):
+        # 取消・競走中止などで数%は NULL になる
+        assert self._run(tmp_path, [None] + [50.0] * 19) is False
+
+    def test_empty_file_is_preliminary(self, tmp_path):
+        assert self._run(tmp_path, []) is True
 
 
 def _make_mocks(tmp_path: Path):

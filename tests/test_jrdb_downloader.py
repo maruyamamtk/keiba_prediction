@@ -366,45 +366,47 @@ class TestCSVDatatypes:
 
 
 class TestPreliminaryRefetch:
-    """確定前に取得したSECの取り直し（Issue #440）"""
+    """速報版のまま残ったSECの取り直し（Issue #440）"""
 
-    @staticmethod
-    def _write(path: Path, text: str, fetched: str) -> None:
-        from datetime import datetime
-
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text)
-        ts = datetime.fromisoformat(fetched).timestamp()
-        os.utime(path, (ts, ts))
-
-    def test_is_possibly_preliminary(self, tmp_path):
-        p = tmp_path / "SEC260124.csv"
-        self._write(p, "x", "2026-01-25T10:00:00")
-        assert JRDBDownloader.is_possibly_preliminary("SEC", "260124", p) is True
-        self._write(p, "x", "2026-01-31T10:00:00")
-        assert JRDBDownloader.is_possibly_preliminary("SEC", "260124", p) is False
-        # SEC以外は対象外
-        assert JRDBDownloader.is_possibly_preliminary("KYF", "260124", p) is False
+    PRELIM = "src.automation.data.result_integrity.is_preliminary_sec_file"
 
     @patch.object(JRDBDownloader, "get_available_dates", return_value=["260124", "260125"])
-    @patch.object(JRDBDownloader, "download_single", return_value=True)
-    def test_download_from_date_refetches_preliminary_sec(self, mock_single, _mock_dates, tmp_path):
-        """download_from_date は確定前に取得したSECを既存でもスキップしない"""
+    @patch.object(JRDBDownloader, "_fetch", return_value=True)
+    def test_download_from_date_refetches_preliminary_sec(self, mock_fetch, _mock_dates, tmp_path):
+        """download_from_date は中身が速報版のSECを既存でもスキップしない"""
         downloader = JRDBDownloader("user", "pass", tmp_path)
-        self._write(tmp_path / "Sec" / "SEC260124.csv", "速報版", "2026-01-25T10:00:00")
-        self._write(tmp_path / "Sec" / "SEC260125.csv", "確定版", "2026-02-05T10:00:00")
+        folder = tmp_path / "Sec"
+        folder.mkdir()
+        (folder / "SEC260124.csv").write_text("速報版")
+        (folder / "SEC260125.csv").write_text("確定版")
 
-        result = downloader.download_from_date("SEC", "260124", "260125")
+        with patch(self.PRELIM, side_effect=lambda p: p.name == "SEC260124.csv"):
+            result = downloader.download_from_date("SEC", "260124", "260125")
 
-        mock_single.assert_called_once_with("SEC", "260124")
+        mock_fetch.assert_called_once_with("SEC", "260124", folder / "SEC260124.csv")
         assert (result.downloaded_files, result.skipped_files) == (1, 1)
+
+    @patch.object(JRDBDownloader, "_fetch")
+    def test_non_sec_existing_is_skipped_without_content_check(self, mock_fetch, tmp_path):
+        """SEC以外の既存ファイルは中身を読まずにスキップ"""
+        downloader = JRDBDownloader("user", "pass", tmp_path)
+        (tmp_path / "Kaa").mkdir()
+        (tmp_path / "Kaa" / "KAA260124.csv").write_text("x")
+
+        with patch(self.PRELIM) as mock_prelim:
+            assert downloader.download_single("KAA", "260124") is True
+
+        mock_prelim.assert_not_called()
+        mock_fetch.assert_not_called()
 
     @patch.object(JRDBDownloader, "_download_file", return_value=None)
     def test_orphan_stale_is_restored(self, _mock_download, tmp_path):
-        """前回の強制再取得が中断されて残った .stale は次回呼び出しで元に戻す"""
+        """前回の再取得が中断されて残った .stale は次回呼び出しで元に戻す"""
         downloader = JRDBDownloader("user", "pass", tmp_path)
-        self._write(tmp_path / "Sec" / "SEC260124.csv.stale", "確定版", "2026-02-05T10:00:00")
+        (tmp_path / "Sec").mkdir()
+        (tmp_path / "Sec" / "SEC260124.csv.stale").write_text("確定版")
 
-        assert downloader.download_single("SEC", "260124") is True
+        with patch(self.PRELIM, return_value=False):
+            assert downloader.download_single("SEC", "260124") is True
         assert (tmp_path / "Sec" / "SEC260124.csv").read_text() == "確定版"
         assert not (tmp_path / "Sec" / "SEC260124.csv.stale").exists()

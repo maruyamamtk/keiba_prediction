@@ -10,8 +10,6 @@ Issue #440: ルックバック期間外の成績欠損（速報版SECの残留�
 """
 
 import logging
-import os
-import tempfile
 import time
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
@@ -20,11 +18,7 @@ from typing import TYPE_CHECKING
 
 from src.automation.data.jrdb_downloader import JRDBDownloader, create_downloader_from_env
 from src.automation.data.load_to_bq import BigQueryLoader
-from src.automation.data.result_integrity import (
-    find_finalized_sec_dates,
-    find_incomplete_result_dates,
-    refetch_sec_files,
-)
+from src.automation.data.result_integrity import find_incomplete_result_dates, refetch_sec_files
 from src.automation.data.upload_to_gcs import GCSUploader, create_uploader_from_env
 
 if TYPE_CHECKING:
@@ -123,20 +117,10 @@ class DailyPipeline:
 
     @property
     def downloader(self) -> JRDBDownloader:
-        """JRDBダウンローダー（遅延初期化）
-
-        出力先は一時ディレクトリ（run() 終了時に cleanup() で削除）。コンテナ再利用時に前回の
-        ファイル（例: IDM未確定の速報版SEC）が残ると、既存ファイルとしてスキップされ確定版に
-        置き換わらないため、毎回空のディレクトリから取り直す（Issue #440）。
-        """
+        """JRDBダウンローダー（遅延初期化）"""
         if self._downloader is None:
-            temp_dir = None
-            if not os.environ.get("JRDB_OUTPUT_DIR"):
-                temp_dir = Path(tempfile.mkdtemp(prefix="jrdb_daily_"))
-            self._downloader = create_downloader_from_env(default_output_dir=temp_dir)
+            self._downloader = create_downloader_from_env()
             if self._downloader is None:
-                if temp_dir is not None:
-                    temp_dir.rmdir()
                 raise RuntimeError("JRDBダウンローダーの初期化に失敗しました")
         return self._downloader
 
@@ -446,8 +430,6 @@ class DailyPipeline:
             StepResult（再取得に失敗した日がある場合は partial）
 
         Note:
-            - 確定版をロード済みでも不完全な日（開催途中の中止など JRDB 側でも成績がない日）は
-              再取得せず known_incomplete として記録する（毎日の無駄な再取得を防ぐ）
             - JRDBにSECが公開されていない日（開催中止）は unavailable として記録し失敗扱いにしない
             - 修復した日を参照する features.training_data は月次再学習（monthly_retrain.py）の
               全期間再生成で反映される
@@ -455,7 +437,7 @@ class DailyPipeline:
         step_name = "repair_results"
         start_time = time.time()
         details: dict = {
-            "incomplete_dates": [], "known_incomplete": [], "reloaded": [],
+            "incomplete_dates": [], "reloaded": [],
             "failed": [], "unavailable": [], "remaining": [],
         }
 
@@ -469,37 +451,32 @@ class DailyPipeline:
             incomplete = find_incomplete_result_dates(
                 client, project_id, window_start, window_end, dataset_id=dataset_id
             )
-            finalized = find_finalized_sec_dates(
-                client, project_id, [d.race_date for d in incomplete], dataset_id=dataset_id
-            )
-            targets = [d for d in incomplete if d.race_date not in finalized]
             details["incomplete_dates"] = [d.to_dict() for d in incomplete]
-            details["known_incomplete"] = [d.to_dict() for d in incomplete if d.race_date in finalized]
 
-            if targets:
-                logger.warning(f"成績データが不完全な開催日を検出: {[d.to_dict() for d in targets]}")
+            if incomplete:
+                logger.warning(f"成績データが不完全な開催日を検出: {details['incomplete_dates']}")
                 refetch = refetch_sec_files(
-                    self.downloader, self.uploader, self.bq_loader, [d.yymmdd for d in targets]
+                    self.downloader, self.uploader, self.bq_loader, [d.yymmdd for d in incomplete]
                 )
-                target_dates = {d.race_date for d in targets}
-                remaining = [
-                    d
-                    for d in find_incomplete_result_dates(
-                        client, project_id, min(target_dates), max(target_dates),
-                        dataset_id=dataset_id,
-                    )
-                    if d.race_date in target_dates
-                ]
-                if remaining:
-                    logger.warning(
-                        f"SEC再取得後も不完全な開催日が残っています: {[d.to_dict() for d in remaining]}"
-                    )
                 details.update(
-                    reloaded=refetch.reloaded,
-                    failed=refetch.failed,
-                    unavailable=refetch.unavailable,
-                    remaining=[d.to_dict() for d in remaining],
+                    reloaded=refetch.reloaded, failed=refetch.failed, unavailable=refetch.unavailable
                 )
+                # 再ロードした日だけを再検査する
+                if refetch.reloaded:
+                    reloaded_dates = {d.race_date for d in incomplete if d.yymmdd in refetch.reloaded}
+                    remaining = [
+                        d
+                        for d in find_incomplete_result_dates(
+                            client, project_id, min(reloaded_dates), max(reloaded_dates),
+                            dataset_id=dataset_id,
+                        )
+                        if d.race_date in reloaded_dates
+                    ]
+                    if remaining:
+                        logger.warning(
+                            f"SEC再取得後も不完全な開催日が残っています: {[d.to_dict() for d in remaining]}"
+                        )
+                    details["remaining"] = [d.to_dict() for d in remaining]
 
             return StepResult(
                 step_name=step_name,

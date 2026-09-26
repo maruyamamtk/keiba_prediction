@@ -5,16 +5,21 @@ JRDB の SEC（成績データ）は開催当日に速報版が公開され、ID
 確定版で埋まる。速報版のままロードされた日は IDM が大半 NULL・行数不足のまま残るため
 （Issue #440: 2026-01〜02 の9開催日で発生）、以下を提供する:
 
-- find_incomplete_result_dates: horse_results（出走表）と比較して成績が不完全な開催日を検知
+- is_preliminary_sec_file: ローカルの SEC ファイルが速報版（IDM の大半が空）か判定
+- find_incomplete_result_dates: 成績が不完全（IDM の大半が NULL、または成績行なし）な開催日を検知
 - refetch_sec_files: 指定日の SEC を JRDB から強制再取得 → GCS 上書き → BigQuery 再ロード
 """
 
 import logging
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta, timezone
+from datetime import date
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from google.cloud import bigquery
+
+from src.automation.data.jrdb_downloader import SEC_DATATYPE
+from src.automation.data.jrdb_parser import JRDBParser
 
 if TYPE_CHECKING:
     from src.automation.data.jrdb_downloader import JRDBDownloader
@@ -23,12 +28,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-SEC_DATATYPE = "SEC"
-
-# 平常時の IDM NULL 率は 3〜5%（取消・除外・競走中止）。確定版未反映の日は 90% 前後になる
-DEFAULT_IDM_NULL_RATE_THRESHOLD = 0.2
-# 平常時の race_results / horse_results の行数比は ≈1.0（取消等で数行差）
-DEFAULT_MIN_ROW_RATIO = 0.9
+# 平常時の IDM NULL 率は 3〜5%（取消・除外・競走中止）。速報版のままの日は 90% 前後になる
+IDM_NULL_RATE_THRESHOLD = 0.2
 
 
 @dataclass
@@ -67,29 +68,46 @@ class RefetchResult:
     records: int = 0
 
 
+def is_preliminary_sec_file(csv_path: Path) -> bool:
+    """
+    SEC ファイルが速報版（IDM 未確定）か判定する
+
+    取得日時ではなく中身で判定する（コピーや復元で mtime が変わっても誤判定しない）。
+
+    Args:
+        csv_path: SEC ファイル（UTF-8 変換済みの固定長）
+
+    Returns:
+        IDM が空の行の割合が IDM_NULL_RATE_THRESHOLD を超える場合 True
+    """
+    with open(csv_path, encoding="utf-8", errors="replace") as f:
+        rows = [r for line in f if line.strip() and (r := JRDBParser.parse_sec_line(line))]
+    if not rows:
+        return True
+    return sum(r["idm"] is None for r in rows) / len(rows) > IDM_NULL_RATE_THRESHOLD
+
+
 def find_incomplete_result_dates(
     client: bigquery.Client,
     project_id: str,
     start_date: date,
     end_date: date,
-    idm_null_rate_threshold: float = DEFAULT_IDM_NULL_RATE_THRESHOLD,
-    min_row_ratio: float = DEFAULT_MIN_ROW_RATIO,
     dataset_id: str = "raw",
 ) -> list[IncompleteResultDate]:
     """
-    horse_results（出走表）を基準に、成績が不完全な開催日を検出する
+    成績が不完全な開催日を検出する
 
-    以下のいずれかに該当する開催日を返す:
-    - race_results の行数が出走表の min_row_ratio 未満（成績行の欠落・未ロード）
-    - race_results の IDM NULL 率が idm_null_rate_threshold 超（速報版のまま）
+    horse_results（出走表）がある開催日のうち、以下のいずれかに該当する日を返す:
+    - race_results の成績行がない（未ロード）
+    - race_results の IDM NULL 率が IDM_NULL_RATE_THRESHOLD 超（速報版のまま）
+
+    行数の不足だけでは判定しない（開催途中の中止など JRDB 側でも成績がない日を毎日取り直さないため）。
 
     Args:
         client: BigQuery クライアント
         project_id: GCP プロジェクトID
         start_date: 検査開始日（含む）
         end_date: 検査終了日（含む）
-        idm_null_rate_threshold: IDM NULL 率の閾値
-        min_row_ratio: 出走表に対する成績行数の下限比
         dataset_id: rawデータのデータセットID（再ロード先の BigQueryLoader.dataset_id と揃える）
 
     Returns:
@@ -116,17 +134,16 @@ def find_incomplete_result_dates(
           coalesce(r.idm_null_rows, 0) as idm_null_rows
         from entries as e
         left join results as r using (race_date)
-        where coalesce(r.actual_rows, 0) < e.expected_rows * @min_row_ratio
-           or safe_divide(r.idm_null_rows, r.actual_rows) > @idm_null_rate_threshold
+        where r.actual_rows is null
+           or r.idm_null_rows / r.actual_rows > @idm_null_rate_threshold
         order by e.race_date
     """
     job_config = bigquery.QueryJobConfig(
         query_parameters=[
             bigquery.ScalarQueryParameter("start_date", "DATE", start_date),
             bigquery.ScalarQueryParameter("end_date", "DATE", end_date),
-            bigquery.ScalarQueryParameter("min_row_ratio", "FLOAT64", min_row_ratio),
             bigquery.ScalarQueryParameter(
-                "idm_null_rate_threshold", "FLOAT64", idm_null_rate_threshold
+                "idm_null_rate_threshold", "FLOAT64", IDM_NULL_RATE_THRESHOLD
             ),
         ]
     )
@@ -140,54 +157,6 @@ def find_incomplete_result_dates(
         )
         for row in rows
     ]
-
-
-def find_finalized_sec_dates(
-    client: bigquery.Client,
-    project_id: str,
-    race_dates: list[date],
-    dataset_id: str = "raw",
-) -> set[date]:
-    """
-    確定版（開催日から PRELIMINARY_DAYS 日以降に取得した SEC）をロード済みの開催日を返す
-
-    確定版をロードしても不完全な日は、開催途中の中止など JRDB 側でも成績がない日なので
-    毎日の再取得対象から外す（load_history を試行済みの記録として使う）。
-
-    Args:
-        client: BigQuery クライアント
-        project_id: GCP プロジェクトID
-        race_dates: 判定する開催日
-        dataset_id: load_history のあるデータセットID
-
-    Returns:
-        確定版ロード済みの開催日の集合
-    """
-    from src.automation.data.jrdb_downloader import PRELIMINARY_DAYS
-
-    if not race_dates:
-        return set()
-    by_file = {f"Sec/{SEC_DATATYPE}{d.strftime('%y%m%d')}.csv": d for d in race_dates}
-    query = f"""
-        select file_name, max(loaded_at) as last_loaded_at
-        from `{project_id}.{dataset_id}.load_history`
-        where status = 'success' and file_name in unnest(@file_names)
-        group by 1
-    """
-    job_config = bigquery.QueryJobConfig(
-        query_parameters=[
-            bigquery.ArrayQueryParameter("file_names", "STRING", list(by_file)),
-        ]
-    )
-    finalized = set()
-    for row in client.query(query, job_config=job_config).result():
-        race_date = by_file[row.file_name]
-        finalized_from = datetime.combine(
-            race_date + timedelta(days=PRELIMINARY_DAYS), datetime.min.time(), tzinfo=timezone.utc
-        )
-        if row.last_loaded_at >= finalized_from:
-            finalized.add(race_date)
-    return finalized
 
 
 def refetch_sec_files(

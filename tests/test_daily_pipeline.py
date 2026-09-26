@@ -660,6 +660,18 @@ class TestDailyPipelineStepRepairResults:
         _, _, start, end = mock_find.call_args_list[1].args
         assert (start, end) == (date(2026, 2, 14), date(2026, 2, 21))
 
+    def test_no_recheck_when_nothing_reloaded(self):
+        """再ロードした日がなければ再検査クエリを実行しない"""
+        from src.automation.data.result_integrity import RefetchResult
+
+        still = self._incomplete(date(2026, 2, 14))
+        pipeline = DailyPipeline(downloader=MagicMock(), uploader=MagicMock(), bq_loader=MagicMock())
+        with patch(f"{self.MODULE}.find_incomplete_result_dates", return_value=[still]) as mock_find, \
+                patch(f"{self.MODULE}.refetch_sec_files", return_value=RefetchResult(failed=["260214"])):
+            pipeline._step_repair_results(date(2026, 3, 15))
+
+        assert mock_find.call_count == 1
+
     def test_refetch_failure_is_partial(self):
         """再取得に失敗した日があれば partial"""
         from src.automation.data.result_integrity import RefetchResult
@@ -672,19 +684,6 @@ class TestDailyPipelineStepRepairResults:
 
         assert result.status == "partial"
         assert result.details["failed"] == ["260214"]
-
-    def test_finalized_dates_are_not_refetched(self):
-        """確定版ロード済みでも不完全な日（JRDB側で成績がない日）は再取得しない"""
-        known = self._incomplete(date(2026, 2, 14))
-        pipeline = DailyPipeline(downloader=MagicMock(), uploader=MagicMock(), bq_loader=MagicMock())
-        with patch(f"{self.MODULE}.find_incomplete_result_dates", return_value=[known]), \
-                patch(f"{self.MODULE}.find_finalized_sec_dates", return_value={date(2026, 2, 14)}), \
-                patch(f"{self.MODULE}.refetch_sec_files") as mock_refetch:
-            result = pipeline._step_repair_results(date(2026, 3, 15))
-
-        assert result.status == "success"
-        mock_refetch.assert_not_called()
-        assert result.details["known_incomplete"] == [known.to_dict()]
 
     def test_unavailable_on_jrdb_is_success(self):
         """JRDBにSECがない日（開催中止）は失敗扱いにしない"""
@@ -707,19 +706,6 @@ class TestDailyPipelineStepRepairResults:
         with patch(f"{self.MODULE}.find_incomplete_result_dates", return_value=[]) as mock_find:
             pipeline._step_repair_results(date(2026, 3, 15))
         assert mock_find.call_args.kwargs["dataset_id"] == "raw_test"
-
-    def test_downloader_uses_fresh_temp_dir(self, monkeypatch):
-        """JRDB_OUTPUT_DIR 未設定時は一時ディレクトリに出力し、cleanup で削除される（速報版の残留防止）"""
-        import tempfile
-
-        monkeypatch.setenv("JRDB_USER", "u")
-        monkeypatch.setenv("JRDB_PASSWORD", "p")
-        monkeypatch.delenv("JRDB_OUTPUT_DIR", raising=False)
-        downloader = DailyPipeline().downloader
-        out = downloader.get_output_dir()
-        assert str(out).startswith(tempfile.gettempdir())
-        downloader.cleanup()
-        assert not out.exists()
 
     def test_error_is_partial(self):
         """チェック自体のエラーはパイプラインを止めず partial"""

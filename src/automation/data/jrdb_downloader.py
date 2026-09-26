@@ -18,18 +18,13 @@ import http
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
-from datetime import datetime, timedelta
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 # CSA/KSAはCSVファイルとして直接ダウンロード可能
 CSV_DATATYPES = {"CSA", "KSA"}
-
-# 公開後に確定版で内容が更新されるデータタイプ（SEC: 速報版ではIDM未確定。Issue #440）
-FINALIZED_LATER_DATATYPES = {"SEC"}
-# 開催日からこの日数未満に取得したファイルは速報版の可能性がある（確定版は木曜頃に公開）
-PRELIMINARY_DAYS = 7
+SEC_DATATYPE = "SEC"
 
 
 @dataclass
@@ -304,60 +299,43 @@ class JRDBDownloader:
 
         return True
 
+    def _needs_download(self, datatype: str, csv_path: Path) -> bool:
+        """
+        ダウンロードが必要か（未取得、または速報版のまま残っている）
+
+        SEC（成績）は開催当日の速報版ではIDMが未確定で、確定版（木曜頃）で埋まる。
+        既存ファイルでも中身が速報版なら取り直す（Issue #440）。
+        """
+        self._restore_interrupted(csv_path)
+        if not csv_path.exists():
+            return True
+        if datatype == SEC_DATATYPE:
+            from src.automation.data.result_integrity import is_preliminary_sec_file
+
+            return is_preliminary_sec_file(csv_path)
+        return False
+
     @staticmethod
-    def is_possibly_preliminary(datatype: str, filedate: str, csv_path: Path) -> bool:
-        """
-        ローカルファイルが確定前（速報版）に取得された可能性があるか
-
-        SEC（成績）は開催当日に速報版が公開され、IDM等は後日（木曜頃）の確定版で埋まる。
-        開催日から PRELIMINARY_DAYS 日未満に取得したファイルは速報版の可能性があるため、
-        既存ファイルでも取り直す（Issue #440）。
-        """
-        if datatype not in FINALIZED_LATER_DATATYPES:
-            return False
-        try:
-            file_date = datetime.strptime(filedate, "%y%m%d").date()
-        except ValueError:
-            return False
-        fetched_date = datetime.fromtimestamp(csv_path.stat().st_mtime).date()
-        return fetched_date < file_date + timedelta(days=PRELIMINARY_DAYS)
-
-    def download_single(self, datatype: str, filedate: str, force: bool = False) -> bool:
-        """
-        単一ファイルをダウンロード・処理
-
-        既存ファイルがあればスキップする。ただし確定前に取得した可能性のあるファイル
-        （is_possibly_preliminary）は取り直す。
-
-        Args:
-            datatype: データタイプ
-            filedate: ファイル日付（yymmdd）
-            force: Trueの場合、既存ファイルがあっても再ダウンロードして上書きする
-                （速報版のまま残ったファイルを確定版に置き換える用途。Issue #440）
-
-        Returns:
-            成功した場合True
-        """
-        folder = self.datatype_to_folder(datatype)
-        csv_path = self.output_dir / folder / f"{datatype}{filedate}.csv"
+    def _restore_interrupted(csv_path: Path) -> None:
+        """前回の再取得が中断（プロセス強制終了等）されて残った退避ファイルを戻す"""
         stale_path = csv_path.with_name(csv_path.name + ".stale")
-
-        # 前回の強制再取得が中断された（プロセス強制終了等）場合は退避ファイルを戻す
         if stale_path.exists() and not csv_path.exists():
             stale_path.replace(csv_path)
 
+    def _fetch(self, datatype: str, filedate: str, csv_path: Path) -> bool:
+        """
+        ダウンロード・処理（解凍、エンコーディング変換）
+
+        既存ファイルがある場合は退避してから取り直し、新しいCSVが生成された場合のみ置き換える。
+        失敗・例外時は既存ファイルを戻す。
+        """
         if not csv_path.exists():
             downloaded_path = self._download_file(datatype, filedate)
             if downloaded_path is None:
                 return False
             return self._process_downloaded_file(datatype, filedate, downloaded_path)
 
-        if not force and not self.is_possibly_preliminary(datatype, filedate, csv_path):
-            logger.info(f"スキップ（既存）: {datatype}{filedate}")
-            return True
-
-        # 再取得: 既存ファイルを退避し、新しいCSVが生成された場合のみ置き換える。
-        # 失敗・例外時は既存ファイルを戻す（プロセス強制終了時は次回呼び出し時に上で復元）
+        stale_path = csv_path.with_name(csv_path.name + ".stale")
         csv_path.replace(stale_path)
         downloaded_path = None
         ok = False
@@ -376,6 +354,27 @@ class JRDBDownloader:
             else:
                 stale_path.replace(csv_path)
         return ok
+
+    def download_single(self, datatype: str, filedate: str, force: bool = False) -> bool:
+        """
+        単一ファイルをダウンロード・処理
+
+        Args:
+            datatype: データタイプ
+            filedate: ファイル日付（yymmdd）
+            force: Trueの場合、既存ファイルがあっても再ダウンロードして上書きする
+
+        Returns:
+            成功した場合True
+        """
+        folder = self.datatype_to_folder(datatype)
+        csv_path = self.output_dir / folder / f"{datatype}{filedate}.csv"
+
+        self._restore_interrupted(csv_path)
+        if not force and not self._needs_download(datatype, csv_path):
+            logger.info(f"スキップ（既存）: {datatype}{filedate}")
+            return True
+        return self._fetch(datatype, filedate, csv_path)
 
     def download_from_date(
         self,
@@ -432,11 +431,11 @@ class JRDBDownloader:
         for date in target_dates:
             csv_path = self.output_dir / folder / f"{datatype}{date}.csv"
 
-            if csv_path.exists() and not self.is_possibly_preliminary(datatype, date, csv_path):
+            if not self._needs_download(datatype, csv_path):
                 skipped += 1
                 continue
 
-            if self.download_single(datatype, date):
+            if self._fetch(datatype, date, csv_path):
                 downloaded += 1
             else:
                 failed += 1
@@ -490,7 +489,7 @@ class JRDBDownloader:
             logger.info(f"一時ディレクトリを削除: {self.output_dir}")
 
 
-def create_downloader_from_env(default_output_dir: Path | None = None) -> JRDBDownloader | None:
+def create_downloader_from_env() -> JRDBDownloader | None:
     """
     環境変数からJRDBDownloaderを作成
 
@@ -498,9 +497,6 @@ def create_downloader_from_env(default_output_dir: Path | None = None) -> JRDBDo
         JRDB_USER: JRDBユーザー名
         JRDB_PASSWORD: JRDBパスワード
         JRDB_OUTPUT_DIR: 出力ディレクトリ（オプション）
-
-    Args:
-        default_output_dir: JRDB_OUTPUT_DIR 未設定時の出力先（省略時は downloaded_files/）
 
     Returns:
         JRDBDownloaderインスタンス（認証情報がない場合はNone）
@@ -517,7 +513,7 @@ def create_downloader_from_env(default_output_dir: Path | None = None) -> JRDBDo
         output_path = Path(output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
     else:
-        output_path = default_output_dir
+        output_path = None
 
     return JRDBDownloader(username, password, output_path)
 

@@ -18,7 +18,7 @@ SEC（成績データ）再取得スクリプト（Issue #440）
     # 日付を指定して再取得
     .venv/bin/python scripts/refetch_sec.py --dates 2026-01-24,2026-01-25
 
-環境変数: GCP_PROJECT_ID, JRDB_USER, JRDB_PASSWORD（.env から読み込み）。JRDB_OUTPUT_DIR 設定時は --output-dir より優先
+環境変数: GCP_PROJECT_ID, JRDB_USER, JRDB_PASSWORD（.env から読み込み）
 """
 
 import argparse
@@ -60,8 +60,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--dry-run", action="store_true", help="対象日の表示のみ行う")
     parser.add_argument(
         "--output-dir",
-        default=str(PROJECT_ROOT / "downloaded_files"),
-        help="ダウンロード先（既存の速報版ファイルを上書きする）",
+        help="ダウンロード先（既存の速報版ファイルを上書きする。省略時は JRDB_OUTPUT_DIR、"
+        "未設定なら downloaded_files/）",
     )
     args = parser.parse_args(argv)
     if args.detect and not args.start_date:
@@ -109,10 +109,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.dry_run:
         return 0
 
-    downloader = create_downloader_from_env(default_output_dir=Path(args.output_dir))
+    downloader = create_downloader_from_env()
     uploader = create_uploader_from_env()
     if downloader is None or uploader is None:
         return 1
+    if args.output_dir:
+        downloader.output_dir = Path(args.output_dir)
 
     result = refetch_sec_files(
         downloader, uploader, loader, [d.strftime("%y%m%d") for d in target_dates]
