@@ -7,6 +7,7 @@ Issue #290: parse_kyf_line が base_popularity を10+人気でも正しく返す
 Issue #446: parse_sec_line が corner_position_1〜4 を正しく返し、他フィールドを変えないことを検証する。
 Issue #441: parse_kyf_line が blinker を仕様位置（文字位置152）から読むことを検証する。
 Issue #452: parse_kyf_line の各フィールドが JRDB KYI仕様のバイト位置どおりに読まれることを検証する。
+Issue #450: parse_sec_line が馬体重増減の「- 2」形式（符号と数字の間に空白）を負の値として読むことを検証する。
 """
 
 import sys
@@ -778,7 +779,7 @@ _SEC_LINE_1800M_EXPECTED = {
     'jockey_code': None,
     'trainer_code': None,
     'horse_weight': 476,
-    'horse_weight_diff': None,
+    'horse_weight_diff': -2,  # 実データは "- 2"（Issue #450 以前は NULL）
     'weather_code': 1,
     'course_code': None,
     'race_running_style': '4',
@@ -846,7 +847,7 @@ _SEC_LINE_1000M_EXPECTED = {
     'jockey_code': None,
     'trainer_code': None,
     'horse_weight': 442,
-    'horse_weight_diff': None,
+    'horse_weight_diff': -4,  # 実データは "- 4"（Issue #450 以前は NULL）
     'weather_code': 1,
     'course_code': '1',
     'race_running_style': '4',
@@ -1042,3 +1043,32 @@ class TestParseKyfLineSpecPositions:
         assert result["confirmed_weight"] == int(weight)
         assert result["confirmed_weight_diff"] == expected_diff
         assert result["sex_code"] == 2
+def _with_weight_diff(line: str, diff: str) -> str:
+    """SEC 行の馬体重増減（UTF-8文字位置 264-267、この行は略称オフセット o=0）を差し替える。"""
+    return line[:264] + diff + line[267:]
+
+
+class TestParseSecLineWeightDiff:
+    """parse_sec_line の horse_weight_diff に関するテスト (Issue #450)"""
+
+    def test_real_line_position(self):
+        """実データ行で馬体重の直後が増減であること（位置の前提確認）"""
+        assert _SEC_LINE_1800M[261:267] == "476- 2"
+
+    @pytest.mark.parametrize(
+        "diff, expected",
+        [("- 2", -2), ("+ 2", 2), ("-10", -10), ("+12", 12), ("  0", 0), ("   ", None)],
+    )
+    def test_weight_diff_formats(self, diff, expected):
+        """符号と数字の間に空白がある1桁・2桁・0・空白が正しく読まれること"""
+        result = JRDBParser.parse_sec_line(_with_weight_diff(_SEC_LINE_1800M, diff))
+        assert result["horse_weight_diff"] == expected
+
+    def test_other_fields_unchanged(self):
+        """増減を差し替えても他のフィールドは変わらないこと"""
+        base = JRDBParser.parse_sec_line(_SEC_LINE_1800M)
+        changed = JRDBParser.parse_sec_line(_with_weight_diff(_SEC_LINE_1800M, "+ 8"))
+        for result in (base, changed):
+            for key in ("horse_weight_diff", "created_at", "updated_at"):
+                result.pop(key, None)
+        assert changed == base
