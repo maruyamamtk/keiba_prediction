@@ -815,3 +815,40 @@ class TestCheckTrackConditionFreshness:
     def test_threshold_constant_is_reasonable(self):
         """閾値定数が0〜1の範囲であること"""
         assert 0.0 < TRACK_CONDITION_FRESHNESS_THRESHOLD < 1.0
+
+    @patch("src.models.predict.bigquery.Client")
+    def test_null_race_date_does_not_raise(self, mock_client_cls):
+        """race_dateにNaTが混入していてもTypeErrorにならず処理できること"""
+        df = self._make_result_df()
+        df.loc[0, "race_date"] = pd.NaT
+        venue_df = pd.DataFrame({
+            "venue_code": ["05", "06"],
+            "race_date": [datetime.date(2026, 5, 17)] * 2,
+            "turf_condition_code": [1, 2],
+            "dirt_condition_code": [3, 1],
+        })
+        mock_client_cls.return_value.query.return_value.to_dataframe.return_value = venue_df
+
+        # 例外を送出しないこと
+        ratio, missing = check_track_condition_freshness("test-project", df)
+
+        # race_1(NaT)はvenue_infoとマッチしないため欠損扱いになる
+        assert "race_1" in missing
+        assert 0.0 < ratio <= 1.0
+
+    @patch("src.models.predict.bigquery.Client")
+    def test_unexpected_course_type_flagged_as_missing(self, mock_client_cls):
+        """course_typeがdirt/turf以外・NULLの場合は判定不能として欠損扱いにすること"""
+        df = self._make_result_df()
+        df.loc[df["race_id"] == "race_1", "course_type"] = "jump"  # 障害など想定外の値
+        venue_df = pd.DataFrame({
+            "venue_code": ["05", "06"],
+            "race_date": [datetime.date(2026, 5, 17)] * 2,
+            "turf_condition_code": [1, 2],
+            "dirt_condition_code": [3, 1],
+        })
+        mock_client_cls.return_value.query.return_value.to_dataframe.return_value = venue_df
+
+        ratio, missing = check_track_condition_freshness("test-project", df)
+
+        assert "race_1" in missing

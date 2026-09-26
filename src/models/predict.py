@@ -227,12 +227,21 @@ def check_track_condition_freshness(
     """
     required_columns = {"race_id", "race_date", "venue_code", "course_type"}
     if len(result_df) == 0 or not required_columns.issubset(result_df.columns):
+        logger.debug(
+            "check_track_condition_freshness: 必須カラムが揃っていないためチェックを"
+            f"スキップします（columns={list(result_df.columns)}）"
+        )
         return 0.0, []
 
     races = result_df[list(required_columns)].drop_duplicates()
-    dates = sorted({pd.Timestamp(d).date() for d in races["race_date"]})
+    dates = sorted({d for d in (pd.Timestamp(v).date() for v in races["race_date"]) if pd.notna(d)})
+    if not dates:
+        return 0.0, []
     dates_sql = ", ".join(f"DATE '{d.isoformat()}'" for d in dates)
 
+    # 「最新段階(data_category最大値)を優先」のデデュープロジックは
+    # feature_query_raw.sql の venue_info JOIN と揃える必要がある（同ファイル内の
+    # 複数箇所と同一パターン）。本体側のロジックを変更した場合はここも追随すること。
     client = bigquery.Client(project=project_id)
     query = f"""
         SELECT
@@ -256,10 +265,12 @@ def check_track_condition_freshness(
         )
 
     merged = races.merge(venue_df, on=["venue_code", "race_date"], how="left")
-    condition_code = np.where(
-        merged["course_type"] == "dirt",
-        merged["dirt_condition_code"],
-        merged["turf_condition_code"],
+    # course_type が 'dirt'/'turf' のいずれでもない（NULL・想定外値）行は判定不能として
+    # 欠損扱いにする（安全側に倒す。何も分からないより過検知の方が害が少ない）。
+    condition_code = np.select(
+        [merged["course_type"] == "dirt", merged["course_type"] == "turf"],
+        [merged["dirt_condition_code"], merged["turf_condition_code"]],
+        default=np.nan,
     )
     missing_mask = pd.isna(condition_code)
     missing_race_ids = merged.loc[missing_mask, "race_id"].tolist()

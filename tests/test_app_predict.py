@@ -212,3 +212,24 @@ class TestRunPredictTrackConditionFreshness:
         )
 
         assert result["num_races"] == 1
+
+    @patch("src.models.train.load_config", return_value={})
+    @patch("src.models.predict.predict_pipeline", return_value=_sample_result_df())
+    @patch(
+        "src.models.predict.check_track_condition_freshness",
+        side_effect=Exception("BigQuery一時障害"),
+    )
+    @patch("src.utils.line_notify.push_messages")
+    def test_freshness_check_failure_does_not_abort_prediction(
+        self, mock_push, mock_check, mock_pipeline, _mock_config
+    ):
+        """鮮度チェック自体が例外を送出しても予測結果は正常に返ること（保存処理を巻き込まない）"""
+        result = _run_predict(
+            model_path="gs://bucket/model.txt",
+            target_dates=[datetime.date(2026, 6, 28)],
+            save_to_bq=False,
+            project_id="my-project",
+        )
+
+        assert result["num_races"] == 1
+        mock_push.assert_not_called()

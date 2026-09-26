@@ -774,28 +774,28 @@ def _run_predict(
     num_horses = len(result_df)
 
     if len(result_df) > 0:
-        missing_ratio, missing_race_ids = check_track_condition_freshness(project_id, result_df)
+        # 鮮度チェック自体の失敗（BigQuery一時障害・権限エラー等）で予測保存まで
+        # 巻き込んで失敗させない（このIssueの目的はアラート追加であり、予測処理の
+        # 可用性を下げないことが前提のため、Issue #437）。
+        try:
+            missing_ratio, missing_race_ids = check_track_condition_freshness(project_id, result_df)
+        except Exception as e:
+            logger.warning(f"馬場状態予報(KAA)の鮮度チェックに失敗しました（無視します）: {e}")
+            missing_ratio, missing_race_ids = 0.0, []
+
         if missing_ratio > TRACK_CONDITION_FRESHNESS_THRESHOLD:
             logger.warning(
                 f"馬場状態予報(KAA)が欠損しているレースが{missing_ratio:.0%}存在します: "
                 f"race_ids={missing_race_ids}"
             )
-            channel_access_token = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN", "")
-            line_user_id = os.environ.get("LINE_USER_ID", "")
-            if channel_access_token and line_user_id:
-                try:
-                    from src.utils.line_notify import push_messages, text_message
-                    push_messages(
-                        channel_access_token,
-                        line_user_id,
-                        [text_message(
-                            f"[警告] 馬場状態予報(KAA)が未反映のレースが"
-                            f"{missing_ratio:.0%}あります。"
-                            f"対象race_id: {', '.join(missing_race_ids[:10])}"
-                        )],
-                    )
-                except Exception as e:
-                    logger.warning(f"LINE通知失敗（無視します）: {e}")
+            from src.utils.line_notify import send_notification
+            send_notification(
+                os.environ.get("LINE_CHANNEL_ACCESS_TOKEN", ""),
+                os.environ.get("LINE_USER_ID", ""),
+                f"[警告] 馬場状態予報(KAA)が未反映のレースが"
+                f"{missing_ratio:.0%}あります。"
+                f"対象race_id: {', '.join(missing_race_ids[:10])}",
+            )
 
     bq_saved = False
     saved_rows = 0
@@ -1569,14 +1569,10 @@ async def _purchase_pipeline_async(
         DAILY_BUDGET_LIMIT,
     )
     from src.automation.data.netkeiba_scraper import scrape_odds_for_race
-    from src.utils.line_notify import push_messages, text_message
+    from src.utils.line_notify import send_notification
 
     def _send_line(msg: str) -> None:
-        if channel_access_token and line_user_id:
-            try:
-                push_messages(channel_access_token, line_user_id, [text_message(msg)])
-            except Exception as e:
-                logger.warning(f"LINE通知失敗（無視します）: {e}")
+        send_notification(channel_access_token, line_user_id, msg)
 
     def _refresh_and_fetch_bets(race_id: str, log_prefix: str = "") -> list[dict]:
         """
