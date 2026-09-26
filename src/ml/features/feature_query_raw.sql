@@ -2899,13 +2899,16 @@ with temp_race_horse_count as (
 )
 
 /* 開催条件別・脚質グループ別 TE（出走数 < 10 は NULL マスク、Issue #349）
-   「差し馬がこのコース・距離で過去どれくらい複勝圏に入っているか」を表す */
+   「差し馬がこのコース・距離で過去どれくらい複勝圏に入っているか」を表す
+   temp_past_race_features2 は horse_master の horse_id 重複で同一キーが複数行になり得るため、
+   1キー1行に絞って最終 JOIN で行数を増やさない（同一キーの行は同じ値。Issue #446） */
 ,temp_gate_style_te as (
   select
     race_id
     ,horse_number
     ,IF(gs_course_count >= 10, gate_style_course_te, NULL) as gate_style_course_te
   from temp_gate_style_te_pre
+  qualify row_number() over (partition by race_id, horse_number) = 1
 )
 
 /* 調教本追切データ (raw.cha_data から) */

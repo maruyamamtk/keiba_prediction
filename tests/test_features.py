@@ -2731,6 +2731,14 @@ class TestCoursePaceAndGateStyleTEFeature:
         assert "gs_course_count >= 10" in te_section, \
             "gate_style_te に出走数 >= 10 のマスクがありません"
 
+    def test_sql_gate_style_te_one_row_per_key(self):
+        """Issue #446: gate_style_te が (race_id, horse_number) ごとに1行へ絞られ、最終 JOIN で行数を増やさないこと"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        te_start = content.find("temp_gate_style_te as (")
+        training_start = content.find("temp_training as (")
+        te_section = content[te_start:training_start]
+        assert "qualify row_number() over (partition by race_id, horse_number) = 1" in te_section
+
     def test_sql_gate_style_te_base_excludes_null_avg_gate_style(self):
         """temp_gate_style_te_base が avg_gate_style_score IS NULL の行を除外すること"""
         content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
