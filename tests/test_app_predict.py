@@ -16,6 +16,16 @@ from src.automation.api.app import (
 )
 
 
+def _sample_result_df() -> pd.DataFrame:
+    return pd.DataFrame({
+        "race_id": ["race_1"],
+        "race_date": [datetime.date(2026, 6, 28)],
+        "venue_code": ["05"],
+        "course_type": ["turf"],
+        "horse_id": ["h1"],
+    })
+
+
 def _make_blob(name: str, updated: datetime.datetime) -> MagicMock:
     blob = MagicMock()
     blob.name = name
@@ -113,3 +123,92 @@ class TestRunPredictModelPathDelegation:
 
         mock_latest.assert_called_once_with("my-project")
         assert mock_pipeline.call_args.kwargs["model_path"] == latest_uri
+
+
+class TestRunPredictTrackConditionFreshness:
+    """_run_predict の馬場状態予報(KAA)鮮度チェック統合のテスト（Issue #437）"""
+
+    @patch("src.models.train.load_config", return_value={})
+    @patch("src.models.predict.predict_pipeline", return_value=_sample_result_df())
+    @patch("src.models.predict.check_track_condition_freshness")
+    @patch("src.utils.line_notify.push_messages")
+    def test_notifies_line_when_stale(
+        self, mock_push, mock_check, mock_pipeline, _mock_config, monkeypatch
+    ):
+        """欠損率が閾値を超えた場合、LINE通知が送られること"""
+        mock_check.return_value = (0.5, ["race_1"])
+        monkeypatch.setenv("LINE_CHANNEL_ACCESS_TOKEN", "dummy-token")
+        monkeypatch.setenv("LINE_USER_ID", "dummy-user")
+
+        _run_predict(
+            model_path="gs://bucket/model.txt",
+            target_dates=[datetime.date(2026, 6, 28)],
+            save_to_bq=False,
+            project_id="my-project",
+        )
+
+        mock_push.assert_called_once()
+
+    @patch("src.models.train.load_config", return_value={})
+    @patch("src.models.predict.predict_pipeline", return_value=_sample_result_df())
+    @patch("src.models.predict.check_track_condition_freshness")
+    @patch("src.utils.line_notify.push_messages")
+    def test_no_notification_when_fresh(
+        self, mock_push, mock_check, mock_pipeline, _mock_config, monkeypatch
+    ):
+        """欠損率が閾値以下の場合、LINE通知は送られないこと"""
+        mock_check.return_value = (0.0, [])
+        monkeypatch.setenv("LINE_CHANNEL_ACCESS_TOKEN", "dummy-token")
+        monkeypatch.setenv("LINE_USER_ID", "dummy-user")
+
+        _run_predict(
+            model_path="gs://bucket/model.txt",
+            target_dates=[datetime.date(2026, 6, 28)],
+            save_to_bq=False,
+            project_id="my-project",
+        )
+
+        mock_push.assert_not_called()
+
+    @patch("src.models.train.load_config", return_value={})
+    @patch("src.models.predict.predict_pipeline", return_value=_sample_result_df())
+    @patch("src.models.predict.check_track_condition_freshness")
+    @patch("src.utils.line_notify.push_messages")
+    def test_no_notification_without_env_vars(
+        self, mock_push, mock_check, mock_pipeline, _mock_config, monkeypatch
+    ):
+        """LINE環境変数が未設定の場合は通知をスキップし、予測処理は継続すること"""
+        mock_check.return_value = (0.9, ["race_1"])
+        monkeypatch.delenv("LINE_CHANNEL_ACCESS_TOKEN", raising=False)
+        monkeypatch.delenv("LINE_USER_ID", raising=False)
+
+        result = _run_predict(
+            model_path="gs://bucket/model.txt",
+            target_dates=[datetime.date(2026, 6, 28)],
+            save_to_bq=False,
+            project_id="my-project",
+        )
+
+        mock_push.assert_not_called()
+        assert result["num_races"] == 1
+
+    @patch("src.models.train.load_config", return_value={})
+    @patch("src.models.predict.predict_pipeline", return_value=_sample_result_df())
+    @patch("src.models.predict.check_track_condition_freshness")
+    @patch("src.utils.line_notify.push_messages", side_effect=Exception("LINE API error"))
+    def test_line_failure_does_not_raise(
+        self, mock_push, mock_check, mock_pipeline, _mock_config, monkeypatch
+    ):
+        """LINE通知が失敗しても例外が伝播せず予測処理が継続すること"""
+        mock_check.return_value = (0.9, ["race_1"])
+        monkeypatch.setenv("LINE_CHANNEL_ACCESS_TOKEN", "dummy-token")
+        monkeypatch.setenv("LINE_USER_ID", "dummy-user")
+
+        result = _run_predict(
+            model_path="gs://bucket/model.txt",
+            target_dates=[datetime.date(2026, 6, 28)],
+            save_to_bq=False,
+            project_id="my-project",
+        )
+
+        assert result["num_races"] == 1

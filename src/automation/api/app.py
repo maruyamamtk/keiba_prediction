@@ -736,8 +736,19 @@ def _run_predict(
 
     Returns:
         予測結果の辞書（num_races, num_horses, saved_to_bq, saved_rows, saved_to_gcs, gcs_uri）
+
+    Note:
+        馬場状態予報(KAA)が当日未ロードで欠損しているレースが一定割合を超えた場合、
+        LINE_CHANNEL_ACCESS_TOKEN / LINE_USER_ID が設定されていれば警告を通知する
+        （予測処理自体は継続する、Issue #437）。
     """
-    from src.models.predict import predict_pipeline, save_predictions_to_bq, save_predictions_to_gcs
+    from src.models.predict import (
+        TRACK_CONDITION_FRESHNESS_THRESHOLD,
+        check_track_condition_freshness,
+        predict_pipeline,
+        save_predictions_to_bq,
+        save_predictions_to_gcs,
+    )
     from src.models.train import load_config
 
     # model_path が None の場合のみ GCS から最新モデルの gs:// URI を解決する。
@@ -761,6 +772,31 @@ def _run_predict(
 
     num_races = int(result_df["race_id"].nunique()) if len(result_df) > 0 else 0
     num_horses = len(result_df)
+
+    if len(result_df) > 0:
+        missing_ratio, missing_race_ids = check_track_condition_freshness(project_id, result_df)
+        if missing_ratio > TRACK_CONDITION_FRESHNESS_THRESHOLD:
+            logger.warning(
+                f"馬場状態予報(KAA)が欠損しているレースが{missing_ratio:.0%}存在します: "
+                f"race_ids={missing_race_ids}"
+            )
+            channel_access_token = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN", "")
+            line_user_id = os.environ.get("LINE_USER_ID", "")
+            if channel_access_token and line_user_id:
+                try:
+                    from src.utils.line_notify import push_messages, text_message
+                    push_messages(
+                        channel_access_token,
+                        line_user_id,
+                        [text_message(
+                            f"[警告] 馬場状態予報(KAA)が未反映のレースが"
+                            f"{missing_ratio:.0%}あります。"
+                            f"対象race_id: {', '.join(missing_race_ids[:10])}"
+                        )],
+                    )
+                except Exception as e:
+                    logger.warning(f"LINE通知失敗（無視します）: {e}")
+
     bq_saved = False
     saved_rows = 0
     gcs_saved = False
@@ -798,6 +834,10 @@ async def predict_daily(request: PredictDailyRequest):
 
     実行日を基準に当週の土日を予測対象とする。
     Cloud Schedulerから当日 AM 8:00 JST に呼び出されることを想定。
+
+    環境変数（任意、馬場状態予報の欠損アラート用。Issue #437）:
+      LINE_CHANNEL_ACCESS_TOKEN : LINE プッシュ通知用アクセストークン
+      LINE_USER_ID              : LINE 通知先ユーザーID
 
     Args:
         request: リクエストボディ
