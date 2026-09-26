@@ -443,7 +443,9 @@ class DailyPipeline:
 
         try:
             window_start = target_date - timedelta(days=RESULT_REPAIR_WINDOW_DAYS)
-            window_end = target_date - timedelta(days=DOWNLOAD_LOOKBACK_DAYS + 1)
+            # target_date は Cloud Run では UTC 基準（JST の前日）になり、ロード範囲（JST 基準）と
+            # 1日ずれるため、ロード範囲の最古日（target-7）と重ねて隙間をなくす
+            window_end = target_date - timedelta(days=DOWNLOAD_LOOKBACK_DAYS)
             client = self.bq_loader.bq_client
             project_id = self.bq_loader.project_id
             dataset_id = self.bq_loader.dataset_id

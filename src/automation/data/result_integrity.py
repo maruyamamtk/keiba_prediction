@@ -5,7 +5,6 @@ JRDB の SEC（成績データ）は開催当日に速報版が公開され、ID
 確定版で埋まる。速報版のままロードされた日は IDM が大半 NULL・行数不足のまま残るため
 （Issue #440: 2026-01〜02 の9開催日で発生）、以下を提供する:
 
-- is_preliminary_sec_file: ローカルの SEC ファイルが速報版（IDM の大半が空）か判定
 - find_incomplete_result_dates: 成績が不完全（IDM の大半が NULL、または成績行なし）な開催日を検知
 - refetch_sec_files: 指定日の SEC を JRDB から強制再取得 → GCS 上書き → BigQuery 再ロード
 """
@@ -13,13 +12,11 @@ JRDB の SEC（成績データ）は開催当日に速報版が公開され、ID
 import logging
 from dataclasses import dataclass, field
 from datetime import date
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from google.cloud import bigquery
 
-from src.automation.data.jrdb_downloader import SEC_DATATYPE
-from src.automation.data.jrdb_parser import JRDBParser
+from src.automation.data.jrdb_downloader import IDM_NULL_RATE_THRESHOLD, SEC_DATATYPE
 
 if TYPE_CHECKING:
     from src.automation.data.jrdb_downloader import JRDBDownloader
@@ -27,9 +24,6 @@ if TYPE_CHECKING:
     from src.automation.data.upload_to_gcs import GCSUploader
 
 logger = logging.getLogger(__name__)
-
-# 平常時の IDM NULL 率は 3〜5%（取消・除外・競走中止）。速報版のままの日は 90% 前後になる
-IDM_NULL_RATE_THRESHOLD = 0.2
 
 
 @dataclass
@@ -66,25 +60,6 @@ class RefetchResult:
     failed: list[str] = field(default_factory=list)  # 取得・アップロード・ロードのいずれかに失敗した yymmdd
     unavailable: list[str] = field(default_factory=list)  # JRDBにSECが公開されていない yymmdd（開催中止等）
     records: int = 0
-
-
-def is_preliminary_sec_file(csv_path: Path) -> bool:
-    """
-    SEC ファイルが速報版（IDM 未確定）か判定する
-
-    取得日時ではなく中身で判定する（コピーや復元で mtime が変わっても誤判定しない）。
-
-    Args:
-        csv_path: SEC ファイル（UTF-8 変換済みの固定長）
-
-    Returns:
-        IDM が空の行の割合が IDM_NULL_RATE_THRESHOLD を超える場合 True
-    """
-    with open(csv_path, encoding="utf-8", errors="replace") as f:
-        rows = [r for line in f if line.strip() and (r := JRDBParser.parse_sec_line(line))]
-    if not rows:
-        return True
-    return sum(r["idm"] is None for r in rows) / len(rows) > IDM_NULL_RATE_THRESHOLD
 
 
 def find_incomplete_result_dates(

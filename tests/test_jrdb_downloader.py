@@ -368,7 +368,7 @@ class TestCSVDatatypes:
 class TestPreliminaryRefetch:
     """速報版のまま残ったSECの取り直し（Issue #440）"""
 
-    PRELIM = "src.automation.data.result_integrity.is_preliminary_sec_file"
+    PRELIM = "src.automation.data.jrdb_downloader.is_preliminary_sec_file"
 
     @patch.object(JRDBDownloader, "get_available_dates", return_value=["260124", "260125"])
     @patch.object(JRDBDownloader, "_fetch", return_value=True)
@@ -410,3 +410,16 @@ class TestPreliminaryRefetch:
             assert downloader.download_single("SEC", "260124") is True
         assert (tmp_path / "Sec" / "SEC260124.csv").read_text() == "確定版"
         assert not (tmp_path / "Sec" / "SEC260124.csv.stale").exists()
+
+    @patch.object(JRDBDownloader, "_process_downloaded_file", return_value=False)
+    @patch.object(JRDBDownloader, "_download_file")
+    def test_new_fetch_failure_removes_lzh(self, mock_download, _mock_process, tmp_path):
+        """新規取得で解凍に失敗した .lzh は残さない（GCSへの誤アップロード防止）"""
+        downloader = JRDBDownloader("user", "pass", tmp_path)
+        (tmp_path / "Sec").mkdir()
+        lzh = tmp_path / "Sec" / "SEC260124.lzh"
+        lzh.write_bytes(b"broken")
+        mock_download.return_value = lzh
+
+        assert downloader.download_single("SEC", "260124") is False
+        assert not lzh.exists()

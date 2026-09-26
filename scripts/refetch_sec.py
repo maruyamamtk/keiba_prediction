@@ -55,7 +55,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     target.add_argument("--detect", action="store_true", help="成績が不完全な開催日を自動検知する")
     parser.add_argument("--start-date", help="--detect の検査開始日（YYYY-MM-DD）")
     parser.add_argument(
-        "--end-date", help="--detect の検査終了日（YYYY-MM-DD、省略時は8日前）"
+        "--end-date", help="--detect の検査終了日（YYYY-MM-DD、省略時は7日前）"
     )
     parser.add_argument("--dry-run", action="store_true", help="対象日の表示のみ行う")
     parser.add_argument(
@@ -90,7 +90,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     if args.detect:
-        end_date = args.end_date or date.today() - timedelta(days=8)
+        end_date = args.end_date or date.today() - timedelta(days=7)
         incomplete = find_incomplete_result_dates(
             loader.bq_client, loader.project_id, args.start_date, end_date,
             dataset_id=loader.dataset_id,
@@ -124,13 +124,19 @@ def main(argv: list[str] | None = None) -> int:
         f"JRDBに公開なし: {result.unavailable} / {result.records}行"
     )
 
-    # 再取得後の検証（対象期間を再検査）
-    remaining = find_incomplete_result_dates(
-        loader.bq_client, loader.project_id, min(target_dates), max(target_dates),
-        dataset_id=loader.dataset_id,
-    )
-    target_set = set(target_dates)
-    remaining = [d for d in remaining if d.race_date in target_set]
+    # 再取得後の検証（再ロードした日だけを再検査。JRDBに公開がない日は unavailable として別に報告済み）
+    reloaded_dates = [d for d in target_dates if d.strftime("%y%m%d") in result.reloaded]
+    remaining = []
+    if reloaded_dates:
+        reloaded_set = set(reloaded_dates)
+        remaining = [
+            d
+            for d in find_incomplete_result_dates(
+                loader.bq_client, loader.project_id, min(reloaded_dates), max(reloaded_dates),
+                dataset_id=loader.dataset_id,
+            )
+            if d.race_date in reloaded_set
+        ]
     for d in remaining:
         logger.warning(f"再取得後も不完全（JRDB側のデータの可能性）: {d.to_dict()}")
 

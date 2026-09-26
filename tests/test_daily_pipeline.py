@@ -614,10 +614,10 @@ class TestDailyPipelineStepRepairResults:
 
         assert result.status == "success"
         mock_refetch.assert_not_called()
-        # ロード対象（target-7 まで）より古い 8〜35日前を検査する
+        # 7〜35日前を検査する（UTC/JSTのずれでロード範囲と隙間ができないよう target-7 と重ねる）
         _, _, start, end = mock_find.call_args.args
         assert start == date(2026, 2, 8)
-        assert end == date(2026, 3, 7)
+        assert end == date(2026, 3, 8)
 
     def test_refetch_repairs_incomplete_dates(self):
         """欠損日を再取得し、解消すれば success"""

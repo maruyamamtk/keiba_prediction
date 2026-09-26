@@ -7,11 +7,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from src.automation.data.jrdb_downloader import JRDBDownloader
+from src.automation.data.jrdb_downloader import JRDBDownloader, is_preliminary_sec_file
 from src.automation.data.load_to_bq import LoadResult
 from src.automation.data.result_integrity import (
     IncompleteResultDate,
-    is_preliminary_sec_file,
     find_incomplete_result_dates,
     refetch_sec_files,
 )
@@ -80,7 +79,7 @@ class TestIsPreliminarySecFile:
         path = tmp_path / "SEC260124.csv"
         path.write_text("".join(f"{i}\n" for i in range(len(idms))), encoding="utf-8")
         with patch(
-            "src.automation.data.result_integrity.JRDBParser.parse_sec_line",
+            "src.automation.data.jrdb_parser.JRDBParser.parse_sec_line",
             side_effect=lambda line: {"idm": idms[int(line)]},
         ):
             return is_preliminary_sec_file(path)
@@ -235,3 +234,40 @@ class TestRefetchSecArgs:
 
         args = parse_args(["--detect", "--start-date", "2016-01-01", "--end-date", "2026-09-18"])
         assert (args.start_date, args.end_date) == (date(2016, 1, 1), date(2026, 9, 18))
+
+
+class TestRefetchSecMain:
+    """scripts/refetch_sec.py の終了コード"""
+
+    def _run(self, refetch_result, remaining):
+        from unittest.mock import patch
+
+        from scripts import refetch_sec
+
+        loader = MagicMock()
+        with patch.object(refetch_sec, "load_dotenv"), \
+                patch.object(refetch_sec, "create_loader_from_env", return_value=loader), \
+                patch.object(refetch_sec, "create_downloader_from_env", return_value=MagicMock()), \
+                patch.object(refetch_sec, "create_uploader_from_env", return_value=MagicMock()), \
+                patch.object(refetch_sec, "refetch_sec_files", return_value=refetch_result), \
+                patch.object(refetch_sec, "find_incomplete_result_dates", return_value=remaining) as mock_find:
+            code = refetch_sec.main(["--dates", "2026-01-24,2026-02-08"])
+        return code, mock_find
+
+    def test_unavailable_is_not_failure(self):
+        """JRDBに公開がない日は再検査せず、終了コード0"""
+        from src.automation.data.result_integrity import RefetchResult
+
+        code, mock_find = self._run(
+            RefetchResult(reloaded=["260124"], unavailable=["260208"]), remaining=[]
+        )
+        assert code == 0
+        _, _, start, end = mock_find.call_args.args
+        assert (start, end) == (date(2026, 1, 24), date(2026, 1, 24))
+
+    def test_remaining_after_reload_is_failure(self):
+        from src.automation.data.result_integrity import RefetchResult
+
+        still = IncompleteResultDate(date(2026, 1, 24), 500, 500, 450)
+        code, _ = self._run(RefetchResult(reloaded=["260124"], unavailable=["260208"]), remaining=[still])
+        assert code == 1
