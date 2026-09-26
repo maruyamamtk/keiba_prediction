@@ -433,14 +433,23 @@ class TestPreliminaryRefetch:
 
         assert downloader.download_single("JRDB", "260124") is True
 
-    def test_stale_with_new_csv_is_removed(self, tmp_path):
-        """新しいCSV生成後・退避ファイル削除前に中断された場合は、退避ファイルを削除する"""
+    def test_stale_wins_over_possibly_partial_csv(self, tmp_path):
+        """中断時に退避ファイルとCSVが両方残った場合、CSVは書きかけの可能性があるため退避ファイルを戻す"""
+        downloader = JRDBDownloader("user", "pass", tmp_path)
+        (tmp_path / "Cs").mkdir()
+        (tmp_path / "Cs" / "CSA260124.csv").write_text("書きかけ")
+        (tmp_path / "Cs" / "CSA260124.csv.stale").write_text("既存")
+
+        path = downloader.local_csv_path("CSA", "260124")
+
+        assert path.read_text() == "既存"
+        assert not (tmp_path / "Cs" / "CSA260124.csv.stale").exists()
+
+    def test_unreadable_sec_does_not_stop_download(self, tmp_path):
+        """内容確認で OSError が出ても例外を外に出さず、既存ファイルとして扱う"""
         downloader = JRDBDownloader("user", "pass", tmp_path)
         (tmp_path / "Sec").mkdir()
-        (tmp_path / "Sec" / "SEC260124.csv").write_text("確定版")
-        (tmp_path / "Sec" / "SEC260124.csv.stale").write_text("速報版")
+        (tmp_path / "Sec" / "SEC260124.csv").write_text("x")
 
-        path = downloader.local_csv_path("SEC", "260124")
-
-        assert path.read_text() == "確定版"
-        assert not (tmp_path / "Sec" / "SEC260124.csv.stale").exists()
+        with patch(self.PRELIM, side_effect=PermissionError("denied")):
+            assert downloader.download_single("SEC", "260124") is True

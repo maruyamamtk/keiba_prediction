@@ -332,23 +332,27 @@ class JRDBDownloader:
         """
         if not csv_path.exists():
             return True
-        return datatype == SEC_DATATYPE and is_preliminary_sec_file(csv_path)
+        if datatype != SEC_DATATYPE:
+            return False
+        try:
+            return is_preliminary_sec_file(csv_path)
+        except OSError as e:
+            # 読めないファイル1件でダウンロード全体を止めない（従来どおり既存扱い）
+            logger.warning(f"SECの内容確認に失敗（既存ファイルとして扱う）: {csv_path}: {e}")
+            return False
 
     def local_csv_path(self, datatype: str, filedate: str) -> Path:
         """
         出力CSVのパスを返す（前回中断された再取得の後始末も行う）
 
-        再取得が中断（プロセス強制終了等）されて退避ファイル（.stale）が残っている場合:
-        - CSV がない → 退避ファイルを元に戻す（取得前に中断）
-        - CSV もある → 新しい CSV は rename で一括生成されるため完成品とみなし、退避ファイルを削除
+        再取得が中断（プロセス強制終了等）されて退避ファイル（.stale）が残っている場合は、
+        退避ファイル（中断前の既存ファイル）を元に戻す。新しい CSV が残っていても、CSV 形式の
+        データタイプは直接書き込まれるため途中までの内容の可能性があり、完成品とみなさない。
         """
         csv_path = self.output_dir / self.datatype_to_folder(datatype) / f"{datatype}{filedate}.csv"
         stale_path = csv_path.with_name(csv_path.name + ".stale")
         if stale_path.exists():
-            if csv_path.exists():
-                stale_path.unlink()
-            else:
-                stale_path.replace(csv_path)
+            stale_path.replace(csv_path)
         return csv_path
 
     def _fetch(self, datatype: str, filedate: str, csv_path: Path) -> bool:

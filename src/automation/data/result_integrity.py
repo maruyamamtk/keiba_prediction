@@ -194,14 +194,18 @@ def refetch_sec_files(
 
     reloaded_dates = {datetime.strptime(d, "%y%m%d").date() for d in result.reloaded}
     if reloaded_dates:
-        result.remaining = [
-            d
-            for d in find_incomplete_result_dates(
-                loader.bq_client, loader.project_id, min(reloaded_dates), max(reloaded_dates),
-                dataset_id=loader.dataset_id,
-            )
-            if d.race_date in reloaded_dates
-        ]
+        try:
+            result.remaining = [
+                d
+                for d in find_incomplete_result_dates(
+                    loader.bq_client, loader.project_id, min(reloaded_dates), max(reloaded_dates),
+                    dataset_id=loader.dataset_id,
+                )
+                if d.race_date in reloaded_dates
+            ]
+        except Exception as e:
+            # 再ロード自体は完了しているため、検証の失敗で結果を失わない（翌日の検知で再確認される）
+            logger.error(f"SEC再ロード後の検証に失敗: {e}")
         for d in result.remaining:
             logger.warning(f"SEC再取得後も不完全（JRDB側のデータの可能性）: {d.to_dict()}")
     return result

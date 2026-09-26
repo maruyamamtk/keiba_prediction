@@ -174,6 +174,16 @@ class TestRefetchSecFiles:
         params = {p.name: p.value for p in loader.bq_client.query.call_args.kwargs["job_config"].query_parameters}
         assert (params["start_date"], params["end_date"]) == (date(2026, 1, 24), date(2026, 1, 31))
 
+    def test_verification_error_keeps_result(self, tmp_path):
+        """再ロード後の検証クエリが失敗しても、再ロード結果は失わない"""
+        downloader, uploader, loader = _make_mocks(tmp_path)
+        loader.bq_client.query.side_effect = Exception("BQ quota")
+
+        result = refetch_sec_files(downloader, uploader, loader, ["260124"])
+
+        assert result.reloaded == ["260124"]
+        assert result.remaining == []
+
     def test_no_recheck_when_nothing_reloaded(self, tmp_path):
         downloader, uploader, loader = _make_mocks(tmp_path)
         downloader.download_single.return_value = False

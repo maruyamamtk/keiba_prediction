@@ -30,6 +30,9 @@ logger = logging.getLogger(__name__)
 DOWNLOAD_LOOKBACK_DAYS = 7
 # 成績欠損の検査で遡る日数（ロード対象期間より古い開催日を対象にする）
 RESULT_REPAIR_WINDOW_DAYS = 35
+# 1回の実行で再取得する開催日の上限（長期停止後の大量修復で Cloud Run のタイムアウトを超え、
+# 後続の特徴量生成が実行されなくなるのを防ぐ。残りは翌日以降に古い順に修復される）
+MAX_REPAIR_DATES_PER_RUN = 5
 
 
 @dataclass
@@ -454,8 +457,10 @@ class DailyPipeline:
 
             if incomplete:
                 logger.warning(f"成績データが不完全な開催日を検出: {details['incomplete_dates']}")
+                # 古い日（窓から先に外れる日）から上限まで修復する
+                targets = incomplete[:MAX_REPAIR_DATES_PER_RUN]
                 refetch = refetch_sec_files(
-                    self.downloader, self.uploader, self.bq_loader, [d.yymmdd for d in incomplete]
+                    self.downloader, self.uploader, self.bq_loader, [d.yymmdd for d in targets]
                 )
                 details.update(
                     reloaded=refetch.reloaded,

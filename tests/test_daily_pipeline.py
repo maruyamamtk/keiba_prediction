@@ -655,6 +655,20 @@ class TestDailyPipelineStepRepairResults:
         assert result.status == "success"
         assert result.details["remaining"] == [still.to_dict()]
 
+    def test_refetch_is_capped_per_run(self):
+        """1回の実行で修復する日数には上限があり、古い日から修復する"""
+        from src.automation.data.result_integrity import RefetchResult
+        from src.automation.pipeline.daily_pipeline import MAX_REPAIR_DATES_PER_RUN
+
+        incomplete = [self._incomplete(date(2026, 2, 8 + i)) for i in range(MAX_REPAIR_DATES_PER_RUN + 3)]
+        pipeline = DailyPipeline(downloader=MagicMock(), uploader=MagicMock(), bq_loader=MagicMock())
+        with patch(f"{self.MODULE}.find_incomplete_result_dates", return_value=incomplete), \
+                patch(f"{self.MODULE}.refetch_sec_files", return_value=RefetchResult()) as mock_refetch:
+            pipeline._step_repair_results(date(2026, 3, 15))
+
+        yymmdd_list = mock_refetch.call_args.args[3]
+        assert yymmdd_list == [d.yymmdd for d in incomplete[:MAX_REPAIR_DATES_PER_RUN]]
+
     def test_refetch_failure_is_partial(self):
         """再取得に失敗した日があれば partial"""
         from src.automation.data.result_integrity import RefetchResult
