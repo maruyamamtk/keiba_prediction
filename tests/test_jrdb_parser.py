@@ -4,6 +4,7 @@ JRDBParser のユニットテスト
 Issue #214: parse_baa_line が start_time を正しく返すことを検証する。
 Issue #272: parse_cha_line が調教本追切データを正しく解析することを検証する。
 Issue #290: parse_kyf_line が base_popularity を10+人気でも正しく返すことを検証する。
+Issue #446: parse_sec_line が corner_position_1〜4 を正しく返し、他フィールドを変えないことを検証する。
 """
 
 import sys
@@ -702,3 +703,209 @@ class TestParseKyfLineJockeyTrainerCode:
             assert len(names) == 1, f"jockey_code={code} に複数の騎手名: {names}"
         for code, names in trainers_by_code.items():
             assert len(names) == 1, f"trainer_code={code} に複数の調教師名: {names}"
+
+
+# ===================================================================
+# Issue #446: SEC コーナー順位1〜4 の解析
+# ===================================================================
+
+# downloaded_files/Sec/SEC250210.csv の1行目（実データ）
+_SEC_LINE_1800M = '08251301012210299020250210ベイストラトラ\u3000\u3000\u3000\u3000\u3000\u3000\u3000\u3000\u3000\u3000\u300018002111012A30023 \u3000\u3000\u3000\u3000\u3000\u3000\u3000\u3000\u3000\u3000\u3000\u3000\u3000\u3000\u3000\u3000\u3000\u3000\u3000\u3000\u3000\u3000\u3000\u3000\u300012\u3000\u3000\u3000\u30000601573560高杉吏麒\u3000\u3000鮫島一歩\u3000\u3000  20.305 18 18 -3                        333832MS-30.1-29.7 -9.3  4.5スーパージョ028398405\u3000\u3000\u3000\u3000\u3000\u3000                 2.9  14.2   2.510100806-28-161063310357476- 21 4   '
+
+# downloaded_files/Sec/SEC170805.csv の1行目（実データ）
+_SEC_LINE_1000M = '01171301011510179620170805レベルスリー\u3000\u3000\u3000\u3000\u3000\u3000\u3000\u3000\u3000\u3000\u3000\u300010002111111A30023 \u3000\u3000\u3000\u3000\u3000\u3000\u3000\u3000\u3000\u3000\u3000\u3000\u3000\u3000\u3000\u3000\u3000\u3000\u3000\u3000\u3000\u3000\u3000\u3000\u300008\u3000\u3000\u3000\u30000401006540中井裕二\u3000\u3000松永康利\u3000\u3000  14.406 31 25-12  5  1                  433823SS-20.5-13.0-15.0-10.0サニーダンサ007365359\u3000\u3000\u3000\u3000\u3000\u3000                 2.4  13.2   2.800070705    -61056110403442- 4114   '
+
+_SEC_LINE_1800M_EXPECTED = {
+    'race_id': '08251301',
+    'horse_number': 1,
+    'horse_id': '22102990',
+    'race_date': '2025-02-10',
+    'horse_name': 'ベイストラトラ',
+    'distance': 1800,
+    'course_type': 'dirt',
+    'direction': 'right',
+    'track_condition': '良',
+    'race_type': '12',
+    'race_condition': 'A3',
+    'grade': None,
+    'race_name': None,
+    'num_horses': 12,
+    'finish_position': 6,
+    'abnormal_code': 0,
+    'finish_time': 157.3,
+    'weight_carried': 56.0,
+    'jockey_name': '高杉吏麒',
+    'trainer_name': '鮫島一歩',
+    'win_odds': 20.3,
+    'win_popularity': 5,
+    'idm': 18.0,
+    'raw_score': 18.0,
+    'track_bias': -3.0,
+    'pace': None,
+    'late_start': None,
+    'position_fault': None,
+    'disadvantage': None,
+    'front_disadvantage': None,
+    'mid_disadvantage': None,
+    'back_disadvantage': None,
+    'race_score': None,
+    'course_position': 3,
+    'improvement_code': 3,
+    'class_code': 38,
+    'body_code': 3,
+    'condition_code': 2,
+    'race_pace': 'M',
+    'horse_pace': 'S',
+    'ten_index': -30.1,
+    'agari_index': -29.7,
+    'pace_index': -9.3,
+    'race_pace_index': 4.5,
+    'winner_name': 'スーパージョ',
+    'winner_time_diff': 2.8,
+    'front_3f_time': 39.8,
+    'last_3f_time': 40.5,
+    'remarks': None,
+    'place_odds': 2.9,
+    'odds_10am_win': 14.2,
+    'odds_10am_place': 2.5,
+    'corner_position_1': 10,
+    'corner_position_2': 10,
+    'corner_position_3': 8,
+    'corner_position_4': 6,
+    'front_3f_lead_diff': None,
+    'last_3f_lead_diff': None,
+    'jockey_code': None,
+    'trainer_code': None,
+    'horse_weight': 476,
+    'horse_weight_diff': None,
+    'weather_code': 1,
+    'course_code': None,
+    'race_running_style': '4',
+}
+
+_SEC_LINE_1000M_EXPECTED = {
+    'race_id': '01171301',
+    'horse_number': 1,
+    'horse_id': '15101796',
+    'race_date': '2017-08-05',
+    'horse_name': 'レベルスリー',
+    'distance': 1000,
+    'course_type': 'dirt',
+    'direction': 'right',
+    'track_condition': '速良',
+    'race_type': '11',
+    'race_condition': 'A3',
+    'grade': None,
+    'race_name': None,
+    'num_horses': 8,
+    'finish_position': 4,
+    'abnormal_code': 0,
+    'finish_time': 100.6,
+    'weight_carried': 54.0,
+    'jockey_name': '中井裕二',
+    'trainer_name': '松永康利',
+    'win_odds': 14.4,
+    'win_popularity': 6,
+    'idm': 31.0,
+    'raw_score': 25.0,
+    'track_bias': -12.0,
+    'pace': 5.0,
+    'late_start': 1.0,
+    'position_fault': None,
+    'disadvantage': None,
+    'front_disadvantage': None,
+    'mid_disadvantage': None,
+    'back_disadvantage': None,
+    'race_score': None,
+    'course_position': 4,
+    'improvement_code': 3,
+    'class_code': 38,
+    'body_code': 2,
+    'condition_code': 3,
+    'race_pace': 'S',
+    'horse_pace': 'S',
+    'ten_index': -20.5,
+    'agari_index': -13.0,
+    'pace_index': -15.0,
+    'race_pace_index': -10.0,
+    'winner_name': 'サニーダンサ',
+    'winner_time_diff': 0.7,
+    'front_3f_time': 36.5,
+    'last_3f_time': 35.9,
+    'remarks': None,
+    'place_odds': 2.4,
+    'odds_10am_win': 13.2,
+    'odds_10am_place': 2.8,
+    'corner_position_1': None,
+    'corner_position_2': 7,
+    'corner_position_3': 7,
+    'corner_position_4': 5,
+    'front_3f_lead_diff': None,
+    'last_3f_lead_diff': None,
+    'jockey_code': None,
+    'trainer_code': None,
+    'horse_weight': 442,
+    'horse_weight_diff': None,
+    'weather_code': 1,
+    'course_code': '1',
+    'race_running_style': '4',
+}
+
+
+def _with_corners(line: str, corners: str, o: int = 0) -> str:
+    """SEC 行のコーナー順位1〜4（UTF-8文字位置 237-245 + o）を差し替える。"""
+    return line[:237 + o] + corners + line[245 + o:]
+
+
+class TestParseSecLineCornerPosition:
+    """parse_sec_line の corner_position_1〜4 に関するテスト"""
+
+    @pytest.mark.parametrize(
+        "line, expected",
+        [
+            (_SEC_LINE_1800M, _SEC_LINE_1800M_EXPECTED),
+            (_SEC_LINE_1000M, _SEC_LINE_1000M_EXPECTED),
+        ],
+    )
+    def test_real_line_all_fields(self, line, expected):
+        """実データ行の全フィールドが期待値と一致すること（コーナー以外は修正前の出力と同一）"""
+        result = JRDBParser.parse_sec_line(line)
+        result.pop("created_at")
+        result.pop("updated_at")
+        assert result == expected
+
+    def test_zero_corner_is_none(self):
+        """通過しないコーナー（"00"）は None になること"""
+        result = JRDBParser.parse_sec_line(_SEC_LINE_1000M)
+        assert result["corner_position_1"] is None
+        assert (result["corner_position_2"], result["corner_position_3"], result["corner_position_4"]) == (7, 7, 5)
+
+    def test_blank_corner_is_none(self):
+        """空白のコーナー順位は None になること"""
+        result = JRDBParser.parse_sec_line(_with_corners(_SEC_LINE_1800M, "        "))
+        assert [result[f"corner_position_{i}"] for i in range(1, 5)] == [None] * 4
+
+    def test_corner_change_does_not_affect_other_fields(self):
+        """コーナー順位の値が変わっても他フィールドは変わらないこと"""
+        result = JRDBParser.parse_sec_line(_with_corners(_SEC_LINE_1800M, "18011203"))
+        assert [result[f"corner_position_{i}"] for i in range(1, 5)] == [18, 1, 12, 3]
+        for key, value in _SEC_LINE_1800M_EXPECTED.items():
+            if not key.startswith("corner_position_"):
+                assert result[key] == value, key
+
+    def test_abbreviation_offset_applied(self):
+        """略称に半角文字が混在する場合もオフセット補正後の位置から取得すること"""
+        # 全角4文字の略称を「全角3文字+半角2文字」に置き換える（CP932 8バイトのまま o=1）
+        line = _SEC_LINE_1800M[:89] + "　　　  " + _SEC_LINE_1800M[93:]
+        result = JRDBParser.parse_sec_line(line)
+        assert [result[f"corner_position_{i}"] for i in range(1, 5)] == [10, 10, 8, 6]
+        assert result["place_odds"] == 2.9
+        assert result["horse_weight"] == 476
+
+    def test_short_line_corner_none_other_fields_kept(self):
+        """コーナー順位まで届かない短い行は corner が None で、既存フィールドは従来どおり取得されること"""
+        result = JRDBParser.parse_sec_line(_SEC_LINE_1800M[:240])
+        assert [result[f"corner_position_{i}"] for i in range(1, 5)] == [None] * 4
+        assert result["place_odds"] == 2.9
+        assert result["odds_10am_place"] == 2.5
+        assert result["finish_position"] == 6
