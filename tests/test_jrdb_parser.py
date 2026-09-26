@@ -5,6 +5,7 @@ Issue #214: parse_baa_line が start_time を正しく返すことを検証す�
 Issue #272: parse_cha_line が調教本追切データを正しく解析することを検証する。
 Issue #290: parse_kyf_line が base_popularity を10+人気でも正しく返すことを検証する。
 Issue #446: parse_sec_line が corner_position_1〜4 を正しく返し、他フィールドを変えないことを検証する。
+Issue #441: parse_kyf_line が blinker を仕様位置（文字位置152）から読むことを検証する。
 """
 
 import sys
@@ -909,3 +910,40 @@ class TestParseSecLineCornerPosition:
         assert result["place_odds"] == 2.9
         assert result["odds_10am_place"] == 2.5
         assert result["finish_position"] == 6
+
+
+# 実データ KYF250113 の1行目（ブリンカー非装着・文字位置152は空白）
+_KYF_LINE_REAL = '062515010122103450ロジステート\u3000\u3000\u3000\u3000\u3000\u3000\u3000\u3000\u3000\u3000\u3000\u3000 17.8  1.4  1.5  0.0  0.0  0.0 20.72 3 11  6.9 3  1.9 3  0  1  1  5     6  8 14 55     235 12.1  4.13324.014924218   横山武史\u3000\u3000550 尾形和幸\u3000\u3000美浦22103450202410192210345020241006                                                0524450205244204                        1    5363 3 1059010450      0    00-21.6-15.0-27.3 -3.3H 6132 6104102734        2久米田\u3000正平氏\u3000\u3000\u3000\u3000\u3000\u3000\u3000\u3000\u3000\u3000\u3000\u3000\u30000600 2 4 91015 511.436.42         '
+
+
+def _with_blinker(line: str, code: str) -> str:
+    """KYF 行のブリンカー（UTF-8文字位置152、騎手名の直前）を差し替える。"""
+    return line[:152] + code + line[153:]
+
+
+class TestParseKyfLineBlinker:
+    """parse_kyf_line の blinker に関するテスト (Issue #441)"""
+
+    def test_real_line_position(self):
+        """実データ行でブリンカー位置の直後が騎手名であること（位置の前提確認）"""
+        assert _KYF_LINE_REAL[152] == " "
+        assert _KYF_LINE_REAL[153:157] == "横山武史"
+
+    @pytest.mark.parametrize(
+        "code, expected",
+        [("1", "1"), ("2", "2"), ("3", "3"), (" ", None)],
+    )
+    def test_blinker_codes(self, code, expected):
+        """1:初装着 / 2:再装着 / 3:ブリンカ / 空白=None が格納されること"""
+        result = JRDBParser.parse_kyf_line(_with_blinker(_KYF_LINE_REAL, code))
+        assert result["blinker"] == expected
+
+    def test_other_fields_unchanged(self):
+        """ブリンカーを差し替えても他のフィールドは変わらないこと"""
+        base = JRDBParser.parse_kyf_line(_KYF_LINE_REAL)
+        changed = JRDBParser.parse_kyf_line(_with_blinker(_KYF_LINE_REAL, "1"))
+        for result in (base, changed):
+            for key in ("blinker", "created_at", "updated_at"):
+                result.pop(key)
+        assert changed == base
+        assert base["jockey_name"] == "横山武史"
