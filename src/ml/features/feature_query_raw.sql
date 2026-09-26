@@ -2937,6 +2937,113 @@ with temp_race_horse_count as (
   where training_index is not null and training_index > 0
 )
 
+/* メンバーレベル（Issue #443）: レース出走馬の発走前IDM（raw.horse_results.idm）上位5頭平均。
+   発走前情報のみで構成されるため、今回レースにも過去走にも同じ定義で計算できる（結果に依存しない）。
+   上位5頭平均は未勝利 < 1勝 < 2勝 < L < G3 < G2 < G1 の順に単調増加することを確認済み。 */
+,temp_member_level as (
+  select
+    race_id
+    ,avg(idm) as member_level
+  from (
+    select
+      race_id
+      ,idm
+      ,row_number() over (partition by race_id order by idm desc, horse_number) as rn
+    from `{project_id}`.raw.horse_results
+    where idm is not null
+  )
+  where rn <= 5
+  group by race_id
+)
+
+/* 馬ごとの過去走履歴 + そのレースのメンバーレベル（Issue #443）
+   着差 margin: winner_time_diff は1着馬に2着との差（正値）が入るため 1着=0 とする。
+   2着の NULL は着差0.0（同タイム）として 0 扱い、それ以外の NULL は不明のまま残す。
+   好走 is_good_run: 3着以内 or 着差0.5秒以内 */
+,temp_member_level_history as (
+  select
+    r_r.horse_id
+    ,r_r.race_id
+    ,r_r.race_date
+    ,m_l.member_level
+    ,safe_divide(r_r.finish_position, r_r.num_horses) as finish_rate
+    ,case
+      when r_r.finish_position = 1 then 0.0
+      when r_r.finish_position = 2 then coalesce(r_r.winner_time_diff, 0.0)
+      else r_r.winner_time_diff
+    end as margin
+    ,r_r.finish_position <= 3 or coalesce(r_r.winner_time_diff <= 0.5, false) as is_good_run
+  from `{project_id}`.raw.race_results as r_r
+    inner join temp_member_level as m_l
+      on r_r.race_id = m_l.race_id
+  where
+    r_r.finish_position > 0
+    and r_r.race_date is not null
+)
+
+/* 対象レースの過去10走（race_date < 対象レース日のみ＝同日・未来のレースを含まない、Issue #443） */
+,temp_member_level_past10 as (
+  select
+    t_b_r_e.race_id
+    ,t_b_r_e.horse_number
+    ,m_l_h.member_level
+    ,m_l_h.finish_rate
+    ,m_l_h.margin
+    ,m_l_h.is_good_run
+  from temp_base_race_entries as t_b_r_e
+    inner join temp_member_level_history as m_l_h
+      on t_b_r_e.horse_id = m_l_h.horse_id
+      and m_l_h.race_date < t_b_r_e.race_date
+  qualify row_number() over (
+    partition by t_b_r_e.race_id, t_b_r_e.horse_number
+    order by m_l_h.race_date desc, m_l_h.race_id desc
+  ) <= 10
+)
+
+/* メンバーレベル補正特徴量（Issue #443）
+   過去走がない馬は past_* / max_* / strong_field_best_finish_rate / level_perf_corr が NULL、
+   strong_field_good_run_count は 0 */
+,temp_member_level_feature as (
+  select
+    t_b_r_e.race_id
+    ,t_b_r_e.horse_number
+    ,cur.member_level as current_member_level
+    ,agg.past_member_level_mean
+    ,cur.member_level - agg.past_member_level_mean as member_level_diff
+    ,agg.max_level_good_run
+    ,agg.max_level_good_run - cur.member_level as max_level_good_run_diff
+    ,coalesce(agg.strong_field_good_run_count, 0) as strong_field_good_run_count
+    ,agg.strong_field_best_finish_rate
+    ,agg.level_perf_corr
+  from temp_base_race_entries as t_b_r_e
+    left join temp_member_level as cur
+      on t_b_r_e.race_id = cur.race_id
+    left join (
+      select
+        p.race_id
+        ,p.horse_number
+        ,avg(p.member_level) as past_member_level_mean
+        ,max(if(p.is_good_run, p.member_level, null)) as max_level_good_run
+        ,countif(p.is_good_run and p.member_level >= c.member_level) as strong_field_good_run_count
+        -- 今回以上のメンバーレベルのレースでの最良着順率（着順/頭数の最小値、小さいほど良い）
+        ,min(if(p.member_level >= c.member_level, p.finish_rate, null)) as strong_field_best_finish_rate
+        -- 強い相手ほど走るタイプか: corr(メンバーレベル, −着差)。有効5走以上・分散0は NULL
+        ,if(
+          countif(p.margin is not null) >= 5
+            and stddev_samp(if(p.margin is not null, p.member_level, null)) > 0
+            and stddev_samp(p.margin) > 0,
+          corr(p.member_level, -p.margin),
+          null
+        ) as level_perf_corr
+      from temp_member_level_past10 as p
+        inner join temp_member_level as c
+          on p.race_id = c.race_id
+      group by p.race_id, p.horse_number
+    ) as agg
+      on t_b_r_e.race_id = agg.race_id
+      and t_b_r_e.horse_number = agg.horse_number
+)
+
 ,temp_final_raw as (
 select
   t_p_r_f.* except(
@@ -4100,6 +4207,15 @@ select
   ,t_g_te.grade_step_up_flag
   ,t_g_te.g1_experience_flag
   ,t_g_te.best_grade_achieved
+  /* メンバーレベル補正特徴量（Issue #443） */
+  ,t_m_l_f.current_member_level
+  ,t_m_l_f.past_member_level_mean
+  ,t_m_l_f.member_level_diff
+  ,t_m_l_f.max_level_good_run
+  ,t_m_l_f.max_level_good_run_diff
+  ,t_m_l_f.strong_field_good_run_count
+  ,t_m_l_f.strong_field_best_finish_rate
+  ,t_m_l_f.level_perf_corr
 from
   temp_past_race_features2 as t_p_r_f
   left join temp_horse_master_feature2 as t_h_m_f
@@ -4172,6 +4288,9 @@ from
   left join temp_grade_te as t_g_te
     on t_p_r_f.race_id = t_g_te.race_id
     and t_p_r_f.horse_number = t_g_te.horse_number
+  left join temp_member_level_feature as t_m_l_f
+    on t_p_r_f.race_id = t_m_l_f.race_id
+    and t_p_r_f.horse_number = t_m_l_f.horse_number
 )
 
 -- NULL補完: 同一レース内の中央値で補完し、全員NULLの場合はフォールバック値を使用（Issue #330）

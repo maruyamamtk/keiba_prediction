@@ -3434,3 +3434,72 @@ class TestHorseMasterDedupJoin:
         content = (SQL_TEMPLATE_PATH.parent / sql_name).read_text(encoding="utf-8")
         assert "join `{project_id}`.raw.horse_master as h_m" not in content
         assert "partition by horse_id order by data_date desc" in content
+
+
+class TestMemberLevelFeature:
+    """メンバーレベル補正特徴量のテスト（Issue #443）"""
+
+    NEW_FEATURES = [
+        "current_member_level",
+        "past_member_level_mean",
+        "member_level_diff",
+        "max_level_good_run",
+        "max_level_good_run_diff",
+        "strong_field_good_run_count",
+        "strong_field_best_finish_rate",
+        "level_perf_corr",
+    ]
+
+    @staticmethod
+    def _section(content: str, start: str, end: str) -> str:
+        s = content.find(start)
+        assert s != -1, f"{start} が見つかりません"
+        return content[s:content.find(end, s)]
+
+    def test_member_level_uses_pre_race_idm_top5(self):
+        """メンバーレベルは発走前IDM（raw.horse_results）の上位5頭平均で、結果IDM（race_results）を使わないこと"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        section = self._section(content, "temp_member_level as (", "temp_member_level_history as (")
+        assert "raw.horse_results" in section
+        assert "raw.race_results" not in section
+        assert "order by idm desc" in section
+        assert "rn <= 5" in section
+
+    def test_past_runs_are_strictly_before_race_date(self):
+        """過去10走は対象レース日より前（同日・未来を含まない）に限定されること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        section = self._section(content, "temp_member_level_past10 as (", "temp_member_level_feature as (")
+        assert "m_l_h.race_date < t_b_r_e.race_date" in section
+        assert "<= 10" in section
+
+    def test_winner_margin_is_zero_for_winner(self):
+        """1着馬の着差（winner_time_diff は2着との差が正値）を 0 扱いすること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        section = self._section(content, "temp_member_level_history as (", "temp_member_level_past10 as (")
+        assert "when r_r.finish_position = 1 then 0.0" in section
+
+    def test_level_perf_corr_requires_5_runs(self):
+        """level_perf_corr は有効5走以上でのみ計算すること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        section = self._section(content, "temp_member_level_feature as (", "\n,temp_final_raw as (")
+        assert "countif(p.margin is not null) >= 5" in section
+
+    def test_final_select_has_all_features_and_join(self):
+        """最終 SELECT に8特徴量があり、temp_member_level_feature を LEFT JOIN していること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        final = self._section(content, "\n,temp_final_raw as (", "\n,temp_null_fill_med as (")
+        for feature in self.NEW_FEATURES:
+            assert f"t_m_l_f.{feature}" in final, f"最終 SELECT に {feature} がありません"
+        assert "left join temp_member_level_feature as t_m_l_f" in final
+
+    def test_member_level_ctes_are_outside_te_block(self):
+        """TE ブロック外に置き、予測パス（entity_te_daily 版）でも同じ計算が残ること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        te_start, te_end = content.find(_TE_BLOCK_START), content.find(_TE_BLOCK_END)
+        assert not te_start < content.find("temp_member_level as (") < te_end
+
+    @patch("src.ml.features.feature_pipeline.bigquery.Client")
+    def test_predict_query_keeps_member_level(self, mock_bq):
+        sql = FeaturePipeline("test-project").generate_predict_query("2026-06-14")
+        assert "temp_member_level_feature as (" in sql
+        assert "t_m_l_f.level_perf_corr" in sql
