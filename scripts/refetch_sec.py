@@ -18,12 +18,11 @@ SEC（成績データ）再取得スクリプト（Issue #440）
     # 日付を指定して再取得
     .venv/bin/python scripts/refetch_sec.py --dates 2026-01-24,2026-01-25
 
-環境変数: GCP_PROJECT_ID, JRDB_USER, JRDB_PASSWORD（.env から読み込み）
+環境変数: GCP_PROJECT_ID, JRDB_USER, JRDB_PASSWORD（.env から読み込み）。JRDB_OUTPUT_DIR 設定時は --output-dir より優先
 """
 
 import argparse
 import logging
-import os
 import sys
 from datetime import date, timedelta
 from pathlib import Path
@@ -34,7 +33,7 @@ from dotenv import load_dotenv
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.automation.data.jrdb_downloader import JRDBDownloader  # noqa: E402
+from src.automation.data.jrdb_downloader import create_downloader_from_env  # noqa: E402
 from src.automation.data.load_to_bq import create_loader_from_env  # noqa: E402
 from src.automation.data.result_integrity import (  # noqa: E402
     find_incomplete_result_dates,
@@ -69,6 +68,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         parser.error("--detect には --start-date が必要です")
     if args.dates and (args.start_date or args.end_date):
         parser.error("--start-date / --end-date は --detect と併用してください")
+    try:
+        args.start_date = date.fromisoformat(args.start_date) if args.start_date else None
+        args.end_date = date.fromisoformat(args.end_date) if args.end_date else None
+    except ValueError as e:
+        parser.error(f"--start-date / --end-date の日付形式が不正です（YYYY-MM-DD）: {e}")
     if args.dates:
         try:
             args.dates = [date.fromisoformat(s.strip()) for s in args.dates.split(",") if s.strip()]
@@ -86,13 +90,10 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     if args.detect:
-        end_date = (
-            date.fromisoformat(args.end_date)
-            if args.end_date
-            else date.today() - timedelta(days=8)
-        )
+        end_date = args.end_date or date.today() - timedelta(days=8)
         incomplete = find_incomplete_result_dates(
-            loader.bq_client, loader.project_id, date.fromisoformat(args.start_date), end_date
+            loader.bq_client, loader.project_id, args.start_date, end_date,
+            dataset_id=loader.dataset_id,
         )
         for d in incomplete:
             logger.info(f"不完全: {d.to_dict()}")
@@ -108,24 +109,23 @@ def main(argv: list[str] | None = None) -> int:
     if args.dry_run:
         return 0
 
-    username = os.environ.get("JRDB_USER")
-    password = os.environ.get("JRDB_PASSWORD")
+    downloader = create_downloader_from_env(default_output_dir=Path(args.output_dir))
     uploader = create_uploader_from_env()
-    if not username or not password or uploader is None:
-        logger.error("JRDB_USER / JRDB_PASSWORD / GCP_PROJECT_ID を設定してください")
+    if downloader is None or uploader is None:
         return 1
-    downloader = JRDBDownloader(username, password, Path(args.output_dir))
 
     result = refetch_sec_files(
         downloader, uploader, loader, [d.strftime("%y%m%d") for d in target_dates]
     )
     logger.info(
-        f"再ロード完了: {len(result.reloaded)}件 / 失敗: {result.failed} / {result.records}行"
+        f"再ロード完了: {len(result.reloaded)}件 / 失敗: {result.failed} / "
+        f"JRDBに公開なし: {result.unavailable} / {result.records}行"
     )
 
     # 再取得後の検証（対象期間を再検査）
     remaining = find_incomplete_result_dates(
-        loader.bq_client, loader.project_id, min(target_dates), max(target_dates)
+        loader.bq_client, loader.project_id, min(target_dates), max(target_dates),
+        dataset_id=loader.dataset_id,
     )
     target_set = set(target_dates)
     remaining = [d for d in remaining if d.race_date in target_set]

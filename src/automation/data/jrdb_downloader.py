@@ -329,16 +329,20 @@ class JRDBDownloader:
         # （取得・解凍に失敗して古いファイルが残ったまま「成功」と扱われるのを防ぐ）
         stale_path = csv_path.with_name(csv_path.name + ".stale")
         csv_path.replace(stale_path)
-        downloaded_path = self._download_file(datatype, filedate)
-        ok = (
-            downloaded_path is not None
-            and self._process_downloaded_file(datatype, filedate, downloaded_path)
-            and csv_path.exists()
-        )
-        if ok:
-            stale_path.unlink()
-        else:
-            stale_path.replace(csv_path)
+        ok = False
+        try:
+            downloaded_path = self._download_file(datatype, filedate)
+            ok = (
+                downloaded_path is not None
+                and self._process_downloaded_file(datatype, filedate, downloaded_path)
+                and csv_path.exists()
+            )
+        finally:
+            # 例外時も含め、新しいCSVができなかった場合は既存ファイルを戻す
+            if ok:
+                stale_path.unlink()
+            else:
+                stale_path.replace(csv_path)
         return ok
 
     def download_from_date(
@@ -460,7 +464,7 @@ class JRDBDownloader:
             logger.info(f"一時ディレクトリを削除: {self.output_dir}")
 
 
-def create_downloader_from_env() -> JRDBDownloader | None:
+def create_downloader_from_env(default_output_dir: Path | None = None) -> JRDBDownloader | None:
     """
     環境変数からJRDBDownloaderを作成
 
@@ -468,6 +472,9 @@ def create_downloader_from_env() -> JRDBDownloader | None:
         JRDB_USER: JRDBユーザー名
         JRDB_PASSWORD: JRDBパスワード
         JRDB_OUTPUT_DIR: 出力ディレクトリ（オプション）
+
+    Args:
+        default_output_dir: JRDB_OUTPUT_DIR 未設定時の出力先（省略時は downloaded_files/）
 
     Returns:
         JRDBDownloaderインスタンス（認証情報がない場合はNone）
@@ -484,7 +491,7 @@ def create_downloader_from_env() -> JRDBDownloader | None:
         output_path = Path(output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
     else:
-        output_path = None
+        output_path = default_output_dir
 
     return JRDBDownloader(username, password, output_path)
 

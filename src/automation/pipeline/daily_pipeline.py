@@ -10,6 +10,7 @@ Issue #440: ルックバック期間外の成績欠損（速報版SECの残留�
 """
 
 import logging
+import tempfile
 import time
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
@@ -28,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 # 日次ダウンロードで遡る日数（この期間内のファイルは毎日JRDBから取り直される）
 DOWNLOAD_LOOKBACK_DAYS = 7
-# 成績欠損の検査で遡る日数（ルックバック期間より古い開催日を対象にする）
+# 成績欠損の検査で遡る日数（ロード対象（当日含む直近7日）より古い開催日を対象にする）
 RESULT_REPAIR_WINDOW_DAYS = 35
 
 
@@ -117,9 +118,16 @@ class DailyPipeline:
 
     @property
     def downloader(self) -> JRDBDownloader:
-        """JRDBダウンローダー（遅延初期化）"""
+        """JRDBダウンローダー（遅延初期化）
+
+        出力先は一時ディレクトリ（run() 終了時に cleanup() で削除）。コンテナ再利用時に前回の
+        ファイル（例: IDM未確定の速報版SEC）が残ると、既存ファイルとしてスキップされ確定版に
+        置き換わらないため、毎回空のディレクトリから取り直す（Issue #440）。
+        """
         if self._downloader is None:
-            self._downloader = create_downloader_from_env()
+            self._downloader = create_downloader_from_env(
+                default_output_dir=Path(tempfile.mkdtemp(prefix="jrdb_daily_"))
+            )
             if self._downloader is None:
                 raise RuntimeError("JRDBダウンローダーの初期化に失敗しました")
         return self._downloader
@@ -327,7 +335,7 @@ class DailyPipeline:
             # 日次パイプラインは直近7日間（当日含む）のみを対象とする
             supported_types = list(TABLE_MAPPING.keys())
             csv_files = self.bq_loader.list_csv_files(
-                prefix="", data_types=supported_types, within_days=DOWNLOAD_LOOKBACK_DAYS
+                prefix="", data_types=supported_types, within_days=7
             )
 
             if not csv_files:
@@ -430,7 +438,8 @@ class DailyPipeline:
             StepResult（再取得に失敗した日がある場合は partial）
 
         Note:
-            再取得に成功しても不完全なまま残る日（開催途中の中止など、JRDB側でも成績がない日）は
+            JRDBにSECが公開されていない日（開催中止）や、再取得に成功しても不完全なまま残る日
+            （開催途中の中止など、JRDB側でも成績がない日）は
             WARNING ログに記録するのみで success とする（毎日 partial になり信号が埋もれるのを防ぐ）。
             修復した日の成績を参照する features.training_data は自動では再生成しないため、
             再学習前に training_data を再生成すること。
@@ -440,17 +449,24 @@ class DailyPipeline:
 
         try:
             window_start = target_date - timedelta(days=RESULT_REPAIR_WINDOW_DAYS)
-            window_end = target_date - timedelta(days=DOWNLOAD_LOOKBACK_DAYS + 1)
+            window_end = target_date - timedelta(days=DOWNLOAD_LOOKBACK_DAYS)
             client = self.bq_loader.bq_client
             project_id = self.bq_loader.project_id
 
-            incomplete = find_incomplete_result_dates(client, project_id, window_start, window_end)
+            dataset_id = self.bq_loader.dataset_id
+
+            incomplete = find_incomplete_result_dates(
+                client, project_id, window_start, window_end, dataset_id=dataset_id
+            )
             if not incomplete:
                 return StepResult(
                     step_name=step_name,
                     status="success",
                     duration_seconds=time.time() - start_time,
-                    details={"incomplete_dates": [], "reloaded": [], "failed": [], "remaining": []},
+                    details={
+                        "incomplete_dates": [], "reloaded": [], "failed": [],
+                        "unavailable": [], "remaining": [],
+                    },
                 )
 
             logger.warning(
@@ -461,7 +477,8 @@ class DailyPipeline:
             )
             # 再検査は再取得した日の範囲に限定する
             remaining = find_incomplete_result_dates(
-                client, project_id, incomplete[0].race_date, incomplete[-1].race_date
+                client, project_id, incomplete[0].race_date, incomplete[-1].race_date,
+                dataset_id=dataset_id,
             )
             if remaining:
                 logger.warning(
@@ -476,6 +493,7 @@ class DailyPipeline:
                     "incomplete_dates": [d.to_dict() for d in incomplete],
                     "reloaded": refetch.reloaded,
                     "failed": refetch.failed,
+                    "unavailable": refetch.unavailable,
                     "remaining": [d.to_dict() for d in remaining],
                 },
             )

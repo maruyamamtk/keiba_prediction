@@ -63,6 +63,7 @@ class RefetchResult:
 
     reloaded: list[str] = field(default_factory=list)  # 再ロードに成功した yymmdd
     failed: list[str] = field(default_factory=list)  # 取得・アップロード・ロードのいずれかに失敗した yymmdd
+    unavailable: list[str] = field(default_factory=list)  # JRDBにSECが公開されていない yymmdd（開催中止等）
     records: int = 0
 
 
@@ -73,6 +74,7 @@ def find_incomplete_result_dates(
     end_date: date,
     idm_null_rate_threshold: float = DEFAULT_IDM_NULL_RATE_THRESHOLD,
     min_row_ratio: float = DEFAULT_MIN_ROW_RATIO,
+    dataset_id: str = "raw",
 ) -> list[IncompleteResultDate]:
     """
     horse_results（出走表）を基準に、成績が不完全な開催日を検出する
@@ -88,6 +90,7 @@ def find_incomplete_result_dates(
         end_date: 検査終了日（含む）
         idm_null_rate_threshold: IDM NULL 率の閾値
         min_row_ratio: 出走表に対する成績行数の下限比
+        dataset_id: rawデータのデータセットID（再ロード先の BigQueryLoader.dataset_id と揃える）
 
     Returns:
         不完全な開催日のリスト（日付昇順）
@@ -95,14 +98,14 @@ def find_incomplete_result_dates(
     query = f"""
         with entries as (
           select r_i.race_date, count(*) as expected_rows
-          from `{project_id}.raw.horse_results` as h_r
-          join `{project_id}.raw.race_info` as r_i using (race_id)
+          from `{project_id}.{dataset_id}.horse_results` as h_r
+          join `{project_id}.{dataset_id}.race_info` as r_i using (race_id)
           where r_i.race_date between @start_date and @end_date
           group by 1
         ),
         results as (
           select race_date, count(*) as actual_rows, countif(idm is null) as idm_null_rows
-          from `{project_id}.raw.race_results`
+          from `{project_id}.{dataset_id}.race_results`
           where race_date between @start_date and @end_date
           group by 1
         )
@@ -163,8 +166,19 @@ def refetch_sec_files(
     """
     result = RefetchResult()
     folder = downloader.datatype_to_folder(SEC_DATATYPE)
+    available = set(downloader.get_available_dates(SEC_DATATYPE))
+    if not available:
+        # 一覧ページの取得失敗（認証・通信エラー）を「全日公開なし」と誤判定しない
+        logger.error("JRDBのSEC公開日一覧を取得できませんでした")
+        result.failed.extend(yymmdd_list)
+        return result
 
     for yymmdd in yymmdd_list:
+        if yymmdd not in available:
+            logger.warning(f"JRDBにSECが公開されていません（開催中止等）: {SEC_DATATYPE}{yymmdd}")
+            result.unavailable.append(yymmdd)
+            continue
+
         file_name = f"{SEC_DATATYPE}{yymmdd}.csv"
         blob_name = f"{folder}/{file_name}"
         # 1日分の失敗（GCSの一時エラー等の例外を含む）で残りの日の再取得を止めない

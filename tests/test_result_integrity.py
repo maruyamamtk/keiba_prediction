@@ -58,6 +58,15 @@ class TestFindIncompleteResultDates:
             "idm_null_rate_threshold": 0.3,
         }
 
+    def test_dataset_id(self):
+        """検知は再ロード先と同じデータセットを参照する"""
+        client = MagicMock()
+        client.query.return_value.result.return_value = []
+        find_incomplete_result_dates(client, "proj", date(2026, 1, 1), date(2026, 1, 31), dataset_id="raw_test")
+        query, = client.query.call_args.args
+        assert "`proj.raw_test.race_results`" in query
+        assert "`proj.raw.`" not in query and ".raw." not in query
+
     def test_no_incomplete_dates(self):
         client = MagicMock()
         client.query.return_value.result.return_value = []
@@ -69,6 +78,7 @@ def _make_mocks(tmp_path: Path):
     downloader.datatype_to_folder.side_effect = JRDBDownloader.datatype_to_folder
     downloader.get_output_dir.return_value = tmp_path
     downloader.download_single.return_value = True
+    downloader.get_available_dates.return_value = ["260124", "260125"]
     uploader = MagicMock()
     uploader.upload_file.return_value = True
     loader = MagicMock()
@@ -133,6 +143,29 @@ class TestRefetchSecFiles:
         assert result.reloaded == ["260125"]
 
 
+    def test_unavailable_on_jrdb_is_not_failure(self, tmp_path):
+        """JRDBにSECが公開されていない日（開催中止等）は failed ではなく unavailable"""
+        downloader, uploader, loader = _make_mocks(tmp_path)
+
+        result = refetch_sec_files(downloader, uploader, loader, ["260124", "260208"])
+
+        assert result.unavailable == ["260208"]
+        assert result.failed == []
+        assert result.reloaded == ["260124"]
+        downloader.download_single.assert_called_once_with("SEC", "260124", force=True)
+
+    def test_index_fetch_failure_marks_all_failed(self, tmp_path):
+        """公開日一覧の取得失敗を「全日公開なし」と誤判定せず failed にする"""
+        downloader, uploader, loader = _make_mocks(tmp_path)
+        downloader.get_available_dates.return_value = []
+
+        result = refetch_sec_files(downloader, uploader, loader, ["260124", "260125"])
+
+        assert result.failed == ["260124", "260125"]
+        assert result.unavailable == []
+        downloader.download_single.assert_not_called()
+
+
 class TestRefetchSecArgs:
     """scripts/refetch_sec.py の引数解析"""
 
@@ -165,3 +198,17 @@ class TestRefetchSecArgs:
 
         with pytest.raises(SystemExit):
             parse_args(["--dates", "2026-01-24", "--start-date", "2026-01-01"])
+
+    def test_invalid_start_date_is_parser_error(self):
+        import pytest
+
+        from scripts.refetch_sec import parse_args
+
+        with pytest.raises(SystemExit):
+            parse_args(["--detect", "--start-date", "2026/01/01"])
+
+    def test_detect_dates_are_parsed(self):
+        from scripts.refetch_sec import parse_args
+
+        args = parse_args(["--detect", "--start-date", "2016-01-01", "--end-date", "2026-09-18"])
+        assert (args.start_date, args.end_date) == (date(2016, 1, 1), date(2026, 9, 18))

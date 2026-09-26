@@ -614,10 +614,10 @@ class TestDailyPipelineStepRepairResults:
 
         assert result.status == "success"
         mock_refetch.assert_not_called()
-        # ルックバック期間（7日）より古い 8〜35日前を検査する
+        # ロード対象（当日含む直近7日）より古い 7〜35日前を検査する
         _, _, start, end = mock_find.call_args.args
         assert start == date(2026, 2, 8)
-        assert end == date(2026, 3, 7)
+        assert end == date(2026, 3, 8)
 
     def test_refetch_repairs_incomplete_dates(self):
         """欠損日を再取得し、解消すれば success"""
@@ -672,6 +672,41 @@ class TestDailyPipelineStepRepairResults:
 
         assert result.status == "partial"
         assert result.details["failed"] == ["260214"]
+
+    def test_unavailable_on_jrdb_is_success(self):
+        """JRDBにSECがない日（開催中止）は失敗扱いにしない"""
+        from src.automation.data.result_integrity import RefetchResult
+
+        still = self._incomplete(date(2026, 2, 8))
+        pipeline = DailyPipeline(downloader=MagicMock(), uploader=MagicMock(), bq_loader=MagicMock())
+        with patch(f"{self.MODULE}.find_incomplete_result_dates", side_effect=[[still], [still]]), \
+                patch(f"{self.MODULE}.refetch_sec_files", return_value=RefetchResult(unavailable=["260208"])):
+            result = pipeline._step_repair_results(date(2026, 3, 15))
+
+        assert result.status == "success"
+        assert result.details["unavailable"] == ["260208"]
+
+    def test_uses_loader_dataset(self):
+        """検知クエリは bq_loader と同じデータセットを参照する"""
+        bq_loader = MagicMock()
+        bq_loader.dataset_id = "raw_test"
+        pipeline = DailyPipeline(downloader=MagicMock(), uploader=MagicMock(), bq_loader=bq_loader)
+        with patch(f"{self.MODULE}.find_incomplete_result_dates", return_value=[]) as mock_find:
+            pipeline._step_repair_results(date(2026, 3, 15))
+        assert mock_find.call_args.kwargs["dataset_id"] == "raw_test"
+
+    def test_downloader_uses_fresh_temp_dir(self, monkeypatch):
+        """JRDB_OUTPUT_DIR 未設定時は一時ディレクトリに出力し、cleanup で削除される（速報版の残留防止）"""
+        import tempfile
+
+        monkeypatch.setenv("JRDB_USER", "u")
+        monkeypatch.setenv("JRDB_PASSWORD", "p")
+        monkeypatch.delenv("JRDB_OUTPUT_DIR", raising=False)
+        downloader = DailyPipeline().downloader
+        out = downloader.get_output_dir()
+        assert str(out).startswith(tempfile.gettempdir())
+        downloader.cleanup()
+        assert not out.exists()
 
     def test_error_is_partial(self):
         """チェック自体のエラーはパイプラインを止めず partial"""

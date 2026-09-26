@@ -213,6 +213,24 @@ class TestJRDBDownloaderDownload:
             assert existing.read_text() == "速報版"
             assert list(folder.iterdir()) == [existing]
 
+    @patch.object(JRDBDownloader, "_process_downloaded_file", side_effect=OSError("disk full"))
+    @patch.object(JRDBDownloader, "_download_file")
+    def test_download_single_force_restores_existing_on_exception(self, mock_download, _mock_process):
+        """force=True で処理中に例外が出ても既存ファイルを戻す"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            downloader = JRDBDownloader("user", "pass", Path(tmpdir))
+            folder = Path(tmpdir) / "Sec"
+            folder.mkdir()
+            existing = folder / "SEC260124.csv"
+            existing.write_text("速報版")
+            mock_download.return_value = folder / "SEC260124.lzh"
+
+            with pytest.raises(OSError):
+                downloader.download_single("SEC", "260124", force=True)
+
+            assert existing.read_text() == "速報版"
+            assert not (folder / "SEC260124.csv.stale").exists()
+
     @patch.object(JRDBDownloader, "_process_downloaded_file", return_value=True)
     @patch.object(JRDBDownloader, "_download_file")
     def test_download_single_force_fails_when_no_csv_produced(self, mock_download, _mock_process):
