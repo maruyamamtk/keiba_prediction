@@ -483,7 +483,7 @@ class TestDailyPipelineRun:
         assert result.files_loaded == 1
         assert result.records_loaded == 100
         assert result.features_inserted == 50
-        assert len(result.steps) == 5
+        assert len(result.steps) == 6
         downloader.cleanup.assert_called_once()
         feature_pipeline.run.assert_called_once_with(
             start_date="2024-01-15", end_date="2024-01-16"
@@ -591,7 +591,75 @@ class TestDailyPipelineStepGenerateFeatures:
         assert "特徴量生成失敗" in result.error_message
         assert result.files_loaded == 1
         assert result.records_loaded == 100
-        assert len(result.steps) == 5
+        assert len(result.steps) == 6
+
+
+class TestDailyPipelineStepRepairResults:
+    """_step_repair_results のテスト（Issue #440）"""
+
+    MODULE = "src.automation.pipeline.daily_pipeline"
+
+    @staticmethod
+    def _incomplete(d: date):
+        from src.automation.data.result_integrity import IncompleteResultDate
+
+        return IncompleteResultDate(d, expected_rows=500, actual_rows=500, idm_null_rows=450)
+
+    def test_no_incomplete_dates(self):
+        """欠損がなければ再取得しない"""
+        pipeline = DailyPipeline(downloader=MagicMock(), uploader=MagicMock(), bq_loader=MagicMock())
+        with patch(f"{self.MODULE}.find_incomplete_result_dates", return_value=[]) as mock_find, \
+                patch(f"{self.MODULE}.refetch_sec_files") as mock_refetch:
+            result = pipeline._step_repair_results(date(2026, 3, 15))
+
+        assert result.status == "success"
+        mock_refetch.assert_not_called()
+        # ルックバック期間（7日）より古い 8〜35日前を検査する
+        _, _, start, end = mock_find.call_args.args
+        assert start == date(2026, 2, 8)
+        assert end == date(2026, 3, 7)
+
+    def test_refetch_repairs_incomplete_dates(self):
+        """欠損日を再取得し、解消すれば success"""
+        from src.automation.data.result_integrity import RefetchResult
+
+        downloader, uploader, bq_loader = MagicMock(), MagicMock(), MagicMock()
+        pipeline = DailyPipeline(downloader=downloader, uploader=uploader, bq_loader=bq_loader)
+        with patch(
+            f"{self.MODULE}.find_incomplete_result_dates",
+            side_effect=[[self._incomplete(date(2026, 2, 14))], []],
+        ), patch(
+            f"{self.MODULE}.refetch_sec_files",
+            return_value=RefetchResult(reloaded=["260214"], records=539),
+        ) as mock_refetch:
+            result = pipeline._step_repair_results(date(2026, 3, 15))
+
+        assert result.status == "success"
+        mock_refetch.assert_called_once_with(downloader, uploader, bq_loader, ["260214"])
+        assert result.details["reloaded"] == ["260214"]
+        assert result.details["remaining"] == []
+
+    def test_remaining_incomplete_is_partial(self):
+        """再取得後も欠損が残れば partial"""
+        from src.automation.data.result_integrity import RefetchResult
+
+        still = self._incomplete(date(2026, 2, 14))
+        pipeline = DailyPipeline(downloader=MagicMock(), uploader=MagicMock(), bq_loader=MagicMock())
+        with patch(f"{self.MODULE}.find_incomplete_result_dates", side_effect=[[still], [still]]), \
+                patch(f"{self.MODULE}.refetch_sec_files", return_value=RefetchResult(reloaded=["260214"])):
+            result = pipeline._step_repair_results(date(2026, 3, 15))
+
+        assert result.status == "partial"
+        assert result.details["remaining"] == [still.to_dict()]
+
+    def test_error_is_partial(self):
+        """チェック自体のエラーはパイプラインを止めず partial"""
+        pipeline = DailyPipeline(downloader=MagicMock(), uploader=MagicMock(), bq_loader=MagicMock())
+        with patch(f"{self.MODULE}.find_incomplete_result_dates", side_effect=Exception("BQエラー")):
+            result = pipeline._step_repair_results(date(2026, 3, 15))
+
+        assert result.status == "partial"
+        assert "BQエラー" in result.error_message
 
 
 class TestPipelineResultToDict:

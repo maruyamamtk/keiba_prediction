@@ -298,13 +298,15 @@ class JRDBDownloader:
 
         return True
 
-    def download_single(self, datatype: str, filedate: str) -> bool:
+    def download_single(self, datatype: str, filedate: str, force: bool = False) -> bool:
         """
         単一ファイルをダウンロード・処理
 
         Args:
             datatype: データタイプ
             filedate: ファイル日付（yymmdd）
+            force: Trueの場合、既存ファイルがあっても再ダウンロードして上書きする
+                （速報版のまま残ったファイルを確定版に置き換える用途。Issue #440）
 
         Returns:
             成功した場合True
@@ -313,7 +315,7 @@ class JRDBDownloader:
         csv_path = self.output_dir / folder / f"{datatype}{filedate}.csv"
 
         # 既にダウンロード済みならスキップ
-        if csv_path.exists():
+        if csv_path.exists() and not force:
             logger.info(f"スキップ（既存）: {datatype}{filedate}")
             return True
 

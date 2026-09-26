@@ -173,6 +173,27 @@ class TestJRDBDownloaderDownload:
             assert result is True
             mock_urlretrieve.assert_called_once()
 
+    @patch("urllib.request.urlretrieve")
+    def test_download_single_force_overwrites_existing(self, mock_urlretrieve):
+        """force=True なら既存ファイルがあっても再ダウンロードして上書きする（Issue #440）"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            downloader = JRDBDownloader("user", "pass", Path(tmpdir))
+            folder = Path(tmpdir) / "Cs"
+            folder.mkdir()
+            existing = folder / "CSA240101.csv"
+            existing.write_text("速報版")
+
+            def fake_download(url, path):
+                Path(path).write_bytes("確定版".encode("cp932"))
+
+            mock_urlretrieve.side_effect = fake_download
+
+            result = downloader.download_single("CSA", "240101", force=True)
+
+            assert result is True
+            mock_urlretrieve.assert_called_once()
+            assert existing.read_text(encoding="utf-8") == "確定版"
+
 
 class TestDownloadFromDateWithEndDate:
     """download_from_date の end_date フィルタのテスト"""

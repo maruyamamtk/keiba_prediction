@@ -6,6 +6,7 @@ Cloud Schedulerからトリガーされ、Cloud Run内で完結する。
 
 Issue #57: 日次パイプラインの実装
 Issue #59: 特徴量生成パイプラインのCloud Run統合
+Issue #440: ルックバック期間外の成績欠損（速報版SECの残留）を検知・自動再取得
 """
 
 import logging
@@ -17,12 +18,18 @@ from typing import TYPE_CHECKING
 
 from src.automation.data.jrdb_downloader import JRDBDownloader, create_downloader_from_env
 from src.automation.data.load_to_bq import BigQueryLoader
+from src.automation.data.result_integrity import find_incomplete_result_dates, refetch_sec_files
 from src.automation.data.upload_to_gcs import GCSUploader, create_uploader_from_env
 
 if TYPE_CHECKING:
     from src.ml.features.feature_pipeline import FeaturePipeline
 
 logger = logging.getLogger(__name__)
+
+# 日次ダウンロードで遡る日数（この期間内のファイルは毎日JRDBから取り直される）
+DOWNLOAD_LOOKBACK_DAYS = 7
+# 成績欠損の検査で遡る日数（ルックバック期間より古い開催日を対象にする）
+RESULT_REPAIR_WINDOW_DAYS = 35
 
 
 @dataclass
@@ -191,7 +198,6 @@ class DailyPipeline:
         start_time = time.time()
 
         try:
-            DOWNLOAD_LOOKBACK_DAYS = 7
             lookback_date = target_date - timedelta(days=DOWNLOAD_LOOKBACK_DAYS)
             start_yymmdd = self.date_to_yymmdd(lookback_date)
             # 翌日分（翌日のレースデータ）までダウンロード
@@ -409,6 +415,71 @@ class DailyPipeline:
                 error_message=str(e),
             )
 
+    def _step_repair_results(self, target_date: date) -> StepResult:
+        """
+        Step 3.2: ルックバック期間外の成績欠損を検知し、SECを再取得する
+
+        SECは開催当日の速報版ではIDMが未確定で、確定版（木曜頃）で埋まる。ルックバック期間内なら
+        日次ダウンロードで自動的に確定版へ置き換わるが、その間にパイプラインが止まると速報版のまま
+        残る（Issue #440）。そこでルックバック期間より古い開催日を検査し、不完全な日のSECを再取得する。
+
+        Args:
+            target_date: 対象日付
+
+        Returns:
+            StepResult（再取得後も不完全な日が残る場合は partial）
+        """
+        step_name = "repair_results"
+        start_time = time.time()
+
+        try:
+            window_start = target_date - timedelta(days=RESULT_REPAIR_WINDOW_DAYS)
+            window_end = target_date - timedelta(days=DOWNLOAD_LOOKBACK_DAYS + 1)
+            client = self.bq_loader.bq_client
+            project_id = self.bq_loader.project_id
+
+            incomplete = find_incomplete_result_dates(client, project_id, window_start, window_end)
+            if not incomplete:
+                return StepResult(
+                    step_name=step_name,
+                    status="success",
+                    duration_seconds=time.time() - start_time,
+                    details={"incomplete_dates": [], "reloaded": [], "failed": []},
+                )
+
+            logger.warning(
+                f"成績データが不完全な開催日を検出: {[d.to_dict() for d in incomplete]}"
+            )
+            refetch = refetch_sec_files(
+                self.downloader, self.uploader, self.bq_loader, [d.yymmdd for d in incomplete]
+            )
+            remaining = find_incomplete_result_dates(client, project_id, window_start, window_end)
+            if remaining:
+                logger.warning(
+                    f"SEC再取得後も不完全な開催日が残っています: {[d.to_dict() for d in remaining]}"
+                )
+
+            return StepResult(
+                step_name=step_name,
+                status="partial" if remaining else "success",
+                duration_seconds=time.time() - start_time,
+                details={
+                    "incomplete_dates": [d.to_dict() for d in incomplete],
+                    "reloaded": refetch.reloaded,
+                    "failed": refetch.failed,
+                    "remaining": [d.to_dict() for d in remaining],
+                },
+            )
+
+        except Exception as e:
+            logger.error(f"成績欠損チェックエラー: {e}")
+            return StepResult(
+                step_name=step_name,
+                status="partial",
+                duration_seconds=time.time() - start_time,
+                error_message=str(e),
+            )
+
     def _step_rebuild_pedigree(self) -> StepResult:
         """
         Step 3.5: raw.pedigree 再構築
@@ -611,6 +682,11 @@ class DailyPipeline:
 
             result.files_loaded = bq_result.details.get("files", 0)
             result.records_loaded = bq_result.details.get("records", 0)
+
+            # Step 3.2: ルックバック期間外の成績欠損チェック・SEC再取得
+            repair_result = self._step_repair_results(parsed_date)
+            result.steps.append(repair_result)
+            # 失敗しても継続（partial として記録し、当日データのロードは成功扱い）
 
             # Step 3.5: raw.pedigree 再構築（UKCロード後に dam_id を最新化）
             pedigree_result = self._step_rebuild_pedigree()
