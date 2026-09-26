@@ -15,6 +15,7 @@ from src.automation.data.jrdb_downloader import DownloadResult
 from src.automation.data.load_to_bq import BatchLoadResult, LoadResult
 from src.automation.data.upload_to_gcs import UploadResult
 from src.automation.pipeline.daily_pipeline import (
+    MAX_REPAIR_DATES_PER_RUN,
     DailyPipeline,
     PipelineResult,
     StepResult,
@@ -230,11 +231,11 @@ class TestDailyPipelineStepLoadToBq:
         assert result.status == "success"
         assert result.details["files"] == 2
         assert result.details["records"] == 100
-        # data_typesフィルタと within_days=7 が渡されていることを確認
+        # data_typesフィルタと within_days=8（ダウンロード対象の target-7 まで） が渡されていることを確認
         call_args = bq_loader.list_csv_files.call_args
         assert "data_types" in call_args[1]
         assert "BAA" in call_args[1]["data_types"]
-        assert call_args[1].get("within_days") == 7
+        assert call_args[1].get("within_days") == 8
         # skip_loadedが有効で全ファイルがバッチに渡されることを確認
         batch_call_args = bq_loader.load_files_batch.call_args
         assert len(batch_call_args[0][0]) == 3
@@ -483,7 +484,7 @@ class TestDailyPipelineRun:
         assert result.files_loaded == 1
         assert result.records_loaded == 100
         assert result.features_inserted == 50
-        assert len(result.steps) == 5
+        assert len(result.steps) == 6
         downloader.cleanup.assert_called_once()
         feature_pipeline.run.assert_called_once_with(
             start_date="2024-01-15", end_date="2024-01-16"
@@ -591,7 +592,132 @@ class TestDailyPipelineStepGenerateFeatures:
         assert "特徴量生成失敗" in result.error_message
         assert result.files_loaded == 1
         assert result.records_loaded == 100
-        assert len(result.steps) == 5
+        assert len(result.steps) == 6
+
+
+class TestDailyPipelineStepRepairResults:
+    """_step_repair_results のテスト（Issue #440）"""
+
+    MODULE = "src.automation.pipeline.daily_pipeline"
+
+    @staticmethod
+    def _incomplete(d: date):
+        from src.automation.data.result_integrity import IncompleteResultDate
+
+        return IncompleteResultDate(d, expected_rows=500, actual_rows=500, idm_null_rows=450)
+
+    def test_no_incomplete_dates(self):
+        """欠損がなければ再取得しない"""
+        pipeline = DailyPipeline(downloader=MagicMock(), uploader=MagicMock(), bq_loader=MagicMock())
+        with patch(f"{self.MODULE}.find_incomplete_result_dates", return_value=[]) as mock_find, \
+                patch(f"{self.MODULE}.refetch_sec_files") as mock_refetch:
+            result = pipeline._step_repair_results(date(2026, 3, 15))
+
+        assert result.status == "success"
+        mock_refetch.assert_not_called()
+        # 7〜35日前を検査する（UTC/JSTのずれでロード範囲と隙間ができないよう target-7 と重ねる）
+        _, _, start, end = mock_find.call_args.args
+        assert start == date(2026, 2, 8)
+        assert end == date(2026, 3, 8)
+
+    def test_refetch_repairs_incomplete_dates(self):
+        """欠損日を再取得し、解消すれば success"""
+        from src.automation.data.result_integrity import RefetchResult
+
+        downloader, uploader, bq_loader = MagicMock(), MagicMock(), MagicMock()
+        pipeline = DailyPipeline(downloader=downloader, uploader=uploader, bq_loader=bq_loader)
+        with patch(
+            f"{self.MODULE}.find_incomplete_result_dates",
+            return_value=[self._incomplete(date(2026, 2, 14))],
+        ), patch(
+            f"{self.MODULE}.refetch_sec_files",
+            return_value=RefetchResult(reloaded=["260214"], records=539),
+        ) as mock_refetch:
+            result = pipeline._step_repair_results(date(2026, 3, 15))
+
+        assert result.status == "success"
+        mock_refetch.assert_called_once_with(
+            downloader, uploader, bq_loader, ["260214"], max_fetch=MAX_REPAIR_DATES_PER_RUN
+        )
+        assert result.details["reloaded"] == ["260214"]
+        assert result.details["remaining"] == []
+
+    def test_remaining_after_successful_refetch_is_success(self):
+        """再取得に成功しても残る日（JRDB側にも成績がない日）は記録のみで success"""
+        from src.automation.data.result_integrity import RefetchResult
+
+        still = self._incomplete(date(2026, 2, 14))
+        pipeline = DailyPipeline(downloader=MagicMock(), uploader=MagicMock(), bq_loader=MagicMock())
+        with patch(f"{self.MODULE}.find_incomplete_result_dates", return_value=[still]), \
+                patch(
+                    f"{self.MODULE}.refetch_sec_files",
+                    return_value=RefetchResult(reloaded=["260214"], remaining=[still]),
+                ):
+            result = pipeline._step_repair_results(date(2026, 3, 15))
+
+        assert result.status == "success"
+        assert result.details["remaining"] == [still.to_dict()]
+
+    def test_refetch_is_capped_per_run(self):
+        """1回の実行でダウンロードする日数には上限がある（古い日から修復する）"""
+        from src.automation.data.result_integrity import RefetchResult
+        from src.automation.pipeline.daily_pipeline import MAX_REPAIR_DATES_PER_RUN
+
+        incomplete = [self._incomplete(date(2026, 2, 8 + i)) for i in range(3)]
+        pipeline = DailyPipeline(downloader=MagicMock(), uploader=MagicMock(), bq_loader=MagicMock())
+        with patch(f"{self.MODULE}.find_incomplete_result_dates", return_value=incomplete), \
+                patch(
+                    f"{self.MODULE}.refetch_sec_files", return_value=RefetchResult(deferred=["260210"])
+                ) as mock_refetch:
+            result = pipeline._step_repair_results(date(2026, 3, 15))
+
+        assert mock_refetch.call_args.args[3] == [d.yymmdd for d in incomplete]
+        assert mock_refetch.call_args.kwargs["max_fetch"] == MAX_REPAIR_DATES_PER_RUN
+        assert result.details["deferred"] == ["260210"]
+
+    def test_refetch_failure_is_partial(self):
+        """再取得に失敗した日があれば partial"""
+        from src.automation.data.result_integrity import RefetchResult
+
+        still = self._incomplete(date(2026, 2, 14))
+        pipeline = DailyPipeline(downloader=MagicMock(), uploader=MagicMock(), bq_loader=MagicMock())
+        with patch(f"{self.MODULE}.find_incomplete_result_dates", return_value=[still]), \
+                patch(f"{self.MODULE}.refetch_sec_files", return_value=RefetchResult(failed=["260214"])):
+            result = pipeline._step_repair_results(date(2026, 3, 15))
+
+        assert result.status == "partial"
+        assert result.details["failed"] == ["260214"]
+
+    def test_unavailable_on_jrdb_is_success(self):
+        """JRDBにSECがない日（開催中止）は失敗扱いにしない"""
+        from src.automation.data.result_integrity import RefetchResult
+
+        still = self._incomplete(date(2026, 2, 8))
+        pipeline = DailyPipeline(downloader=MagicMock(), uploader=MagicMock(), bq_loader=MagicMock())
+        with patch(f"{self.MODULE}.find_incomplete_result_dates", return_value=[still]), \
+                patch(f"{self.MODULE}.refetch_sec_files", return_value=RefetchResult(unavailable=["260208"])):
+            result = pipeline._step_repair_results(date(2026, 3, 15))
+
+        assert result.status == "success"
+        assert result.details["unavailable"] == ["260208"]
+
+    def test_uses_loader_dataset(self):
+        """検知クエリは bq_loader と同じデータセットを参照する"""
+        bq_loader = MagicMock()
+        bq_loader.dataset_id = "raw_test"
+        pipeline = DailyPipeline(downloader=MagicMock(), uploader=MagicMock(), bq_loader=bq_loader)
+        with patch(f"{self.MODULE}.find_incomplete_result_dates", return_value=[]) as mock_find:
+            pipeline._step_repair_results(date(2026, 3, 15))
+        assert mock_find.call_args.kwargs["dataset_id"] == "raw_test"
+
+    def test_error_is_partial(self):
+        """チェック自体のエラーはパイプラインを止めず partial"""
+        pipeline = DailyPipeline(downloader=MagicMock(), uploader=MagicMock(), bq_loader=MagicMock())
+        with patch(f"{self.MODULE}.find_incomplete_result_dates", side_effect=Exception("BQエラー")):
+            result = pipeline._step_repair_results(date(2026, 3, 15))
+
+        assert result.status == "partial"
+        assert "BQエラー" in result.error_message
 
 
 class TestPipelineResultToDict:

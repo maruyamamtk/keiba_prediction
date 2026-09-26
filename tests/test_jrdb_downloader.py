@@ -173,6 +173,81 @@ class TestJRDBDownloaderDownload:
             assert result is True
             mock_urlretrieve.assert_called_once()
 
+    @patch("urllib.request.urlretrieve")
+    def test_download_single_force_overwrites_existing(self, mock_urlretrieve):
+        """force=True なら既存ファイルがあっても再ダウンロードして上書きする（Issue #440）"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            downloader = JRDBDownloader("user", "pass", Path(tmpdir))
+            folder = Path(tmpdir) / "Cs"
+            folder.mkdir()
+            existing = folder / "CSA240101.csv"
+            existing.write_text("速報版")
+
+            def fake_download(url, path):
+                Path(path).write_bytes("確定版".encode("cp932"))
+
+            mock_urlretrieve.side_effect = fake_download
+
+            result = downloader.download_single("CSA", "240101", force=True)
+
+            assert result is True
+            mock_urlretrieve.assert_called_once()
+            assert existing.read_text(encoding="utf-8") == "確定版"
+
+    @patch("urllib.request.urlretrieve")
+    def test_download_single_force_keeps_existing_on_failure(self, mock_urlretrieve):
+        """force=True で取得に失敗した場合は既存ファイルを残して False を返す"""
+        import urllib.error
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            downloader = JRDBDownloader("user", "pass", Path(tmpdir))
+            folder = Path(tmpdir) / "Cs"
+            folder.mkdir()
+            existing = folder / "CSA240101.csv"
+            existing.write_text("速報版")
+            mock_urlretrieve.side_effect = urllib.error.HTTPError("url", 403, "Forbidden", {}, None)
+
+            result = downloader.download_single("CSA", "240101", force=True)
+
+            assert result is False
+            assert existing.read_text() == "速報版"
+            assert list(folder.iterdir()) == [existing]
+
+    @patch.object(JRDBDownloader, "_process_downloaded_file", side_effect=OSError("disk full"))
+    @patch.object(JRDBDownloader, "_download_file")
+    def test_download_single_force_restores_existing_on_exception(self, mock_download, _mock_process):
+        """force=True で処理中に例外が出ても既存ファイルを戻す"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            downloader = JRDBDownloader("user", "pass", Path(tmpdir))
+            folder = Path(tmpdir) / "Sec"
+            folder.mkdir()
+            existing = folder / "SEC260124.csv"
+            existing.write_text("速報版")
+            mock_download.return_value = folder / "SEC260124.lzh"
+
+            with pytest.raises(OSError):
+                downloader.download_single("SEC", "260124", force=True)
+
+            assert existing.read_text() == "速報版"
+            assert not (folder / "SEC260124.csv.stale").exists()
+
+    @patch.object(JRDBDownloader, "_process_downloaded_file", return_value=True)
+    @patch.object(JRDBDownloader, "_download_file")
+    def test_download_single_force_fails_when_no_csv_produced(self, mock_download, _mock_process):
+        """force=True で解凍後にCSVが生成されなければ失敗扱いにし、既存ファイルを戻す"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            downloader = JRDBDownloader("user", "pass", Path(tmpdir))
+            folder = Path(tmpdir) / "Sec"
+            folder.mkdir()
+            existing = folder / "SEC260124.csv"
+            existing.write_text("速報版")
+            mock_download.return_value = folder / "SEC260124.lzh"
+
+            result = downloader.download_single("SEC", "260124", force=True)
+
+            assert result is False
+            assert existing.read_text() == "速報版"
+
 
 class TestDownloadFromDateWithEndDate:
     """download_from_date の end_date フィルタのテスト"""
@@ -288,3 +363,93 @@ class TestCSVDatatypes:
     def test_csv_datatypes_does_not_contain_kaa(self):
         """CSV_DATATYPESにKAAが含まれない"""
         assert "KAA" not in CSV_DATATYPES
+
+
+class TestPreliminaryRefetch:
+    """速報版のまま残ったSECの取り直し（Issue #440）"""
+
+    PRELIM = "src.automation.data.jrdb_downloader.is_preliminary_sec_file"
+
+    @patch.object(JRDBDownloader, "get_available_dates", return_value=["260124", "260125"])
+    @patch.object(JRDBDownloader, "_fetch", return_value=True)
+    def test_download_from_date_refetches_preliminary_sec(self, mock_fetch, _mock_dates, tmp_path):
+        """download_from_date は中身が速報版のSECを既存でもスキップしない"""
+        downloader = JRDBDownloader("user", "pass", tmp_path)
+        folder = tmp_path / "Sec"
+        folder.mkdir()
+        (folder / "SEC260124.csv").write_text("速報版")
+        (folder / "SEC260125.csv").write_text("確定版")
+
+        with patch(self.PRELIM, side_effect=lambda p: p.name == "SEC260124.csv"):
+            result = downloader.download_from_date("SEC", "260124", "260125")
+
+        mock_fetch.assert_called_once_with("SEC", "260124", folder / "SEC260124.csv")
+        assert (result.downloaded_files, result.skipped_files) == (1, 1)
+
+    @patch.object(JRDBDownloader, "_fetch")
+    def test_non_sec_existing_is_skipped_without_content_check(self, mock_fetch, tmp_path):
+        """SEC以外の既存ファイルは中身を読まずにスキップ"""
+        downloader = JRDBDownloader("user", "pass", tmp_path)
+        (tmp_path / "Kaa").mkdir()
+        (tmp_path / "Kaa" / "KAA260124.csv").write_text("x")
+
+        with patch(self.PRELIM) as mock_prelim:
+            assert downloader.download_single("KAA", "260124") is True
+
+        mock_prelim.assert_not_called()
+        mock_fetch.assert_not_called()
+
+    @patch.object(JRDBDownloader, "_download_file", return_value=None)
+    def test_orphan_stale_is_restored(self, _mock_download, tmp_path):
+        """前回の再取得が中断されて残った .stale は次回呼び出しで元に戻す"""
+        downloader = JRDBDownloader("user", "pass", tmp_path)
+        (tmp_path / "Sec").mkdir()
+        (tmp_path / "Sec" / "SEC260124.csv.stale").write_text("確定版")
+
+        with patch(self.PRELIM, return_value=False):
+            assert downloader.download_single("SEC", "260124") is True
+        assert (tmp_path / "Sec" / "SEC260124.csv").read_text() == "確定版"
+        assert not (tmp_path / "Sec" / "SEC260124.csv.stale").exists()
+
+    @patch.object(JRDBDownloader, "_process_downloaded_file", return_value=False)
+    @patch.object(JRDBDownloader, "_download_file")
+    def test_new_fetch_failure_removes_lzh(self, mock_download, _mock_process, tmp_path):
+        """新規取得で解凍に失敗した .lzh は残さない（GCSへの誤アップロード防止）"""
+        downloader = JRDBDownloader("user", "pass", tmp_path)
+        (tmp_path / "Sec").mkdir()
+        lzh = tmp_path / "Sec" / "SEC260124.lzh"
+        lzh.write_bytes(b"broken")
+        mock_download.return_value = lzh
+
+        assert downloader.download_single("SEC", "260124") is False
+        assert not lzh.exists()
+
+    @patch.object(JRDBDownloader, "_process_downloaded_file", return_value=True)
+    @patch.object(JRDBDownloader, "_download_file")
+    def test_package_type_new_fetch_is_success(self, mock_download, _mock_process, tmp_path):
+        """JRDBパッケージのように別名ファイルへ展開されるタイプは、同名CSVがなくても新規取得成功"""
+        downloader = JRDBDownloader("user", "pass", tmp_path)
+        mock_download.return_value = tmp_path / "Jrdb" / "JRDB260124.lzh"
+
+        assert downloader.download_single("JRDB", "260124") is True
+
+    def test_stale_wins_over_possibly_partial_csv(self, tmp_path):
+        """中断時に退避ファイルとCSVが両方残った場合、CSVは書きかけの可能性があるため退避ファイルを戻す"""
+        downloader = JRDBDownloader("user", "pass", tmp_path)
+        (tmp_path / "Cs").mkdir()
+        (tmp_path / "Cs" / "CSA260124.csv").write_text("書きかけ")
+        (tmp_path / "Cs" / "CSA260124.csv.stale").write_text("既存")
+
+        path = downloader.local_csv_path("CSA", "260124")
+
+        assert path.read_text() == "既存"
+        assert not (tmp_path / "Cs" / "CSA260124.csv.stale").exists()
+
+    def test_unreadable_sec_does_not_stop_download(self, tmp_path):
+        """内容確認で OSError が出ても例外を外に出さず、既存ファイルとして扱う"""
+        downloader = JRDBDownloader("user", "pass", tmp_path)
+        (tmp_path / "Sec").mkdir()
+        (tmp_path / "Sec" / "SEC260124.csv").write_text("x")
+
+        with patch(self.PRELIM, side_effect=PermissionError("denied")):
+            assert downloader.download_single("SEC", "260124") is True

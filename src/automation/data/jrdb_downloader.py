@@ -20,10 +20,15 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
+from src.automation.data.jrdb_parser import JRDBParser
+
 logger = logging.getLogger(__name__)
 
 # CSA/KSAはCSVファイルとして直接ダウンロード可能
 CSV_DATATYPES = {"CSA", "KSA"}
+SEC_DATATYPE = "SEC"
+# 平常時の IDM NULL 率は 3〜5%（取消・除外・競走中止）。速報版のままの SEC は 90% 前後になる（Issue #440）
+IDM_NULL_RATE_THRESHOLD = 0.2
 
 
 @dataclass
@@ -34,6 +39,26 @@ class DownloadResult:
     downloaded_files: int
     skipped_files: int
     failed_files: int
+
+
+def is_preliminary_sec_file(csv_path: Path) -> bool:
+    """
+    SEC ファイルが速報版（IDM 未確定）か判定する
+
+    取得日時ではなく中身で判定する（コピーや復元で mtime が変わっても誤判定しない）。
+
+    Args:
+        csv_path: SEC ファイル（UTF-8 変換済みの固定長）
+
+    Returns:
+        IDM が空の行の割合が IDM_NULL_RATE_THRESHOLD を超える場合 True
+        （解析できる行がないファイルは判定できないため False。成績行の欠落は BQ 側の検知で扱う）
+    """
+    with open(csv_path, encoding="utf-8", errors="replace") as f:
+        rows = [r for line in f if line.strip() and (r := JRDBParser.parse_sec_line(line))]
+    if not rows:
+        return False
+    return sum(r["idm"] is None for r in rows) / len(rows) > IDM_NULL_RATE_THRESHOLD
 
 
 class JRDBDownloader:
@@ -298,32 +323,88 @@ class JRDBDownloader:
 
         return True
 
-    def download_single(self, datatype: str, filedate: str) -> bool:
+    def _needs_download(self, datatype: str, csv_path: Path) -> bool:
+        """
+        ダウンロードが必要か（未取得、または速報版のまま残っている）
+
+        SEC（成績）は開催当日の速報版ではIDMが未確定で、確定版（木曜頃）で埋まる。
+        既存ファイルでも中身が速報版なら取り直す（Issue #440）。
+        """
+        if not csv_path.exists():
+            return True
+        if datatype != SEC_DATATYPE:
+            return False
+        try:
+            return is_preliminary_sec_file(csv_path)
+        except OSError as e:
+            # 読めないファイル1件でダウンロード全体を止めない（従来どおり既存扱い）
+            logger.warning(f"SECの内容確認に失敗（既存ファイルとして扱う）: {csv_path}: {e}")
+            return False
+
+    def local_csv_path(self, datatype: str, filedate: str) -> Path:
+        """
+        出力CSVのパスを返す（前回中断された再取得の後始末も行う）
+
+        再取得が中断（プロセス強制終了等）されて退避ファイル（.stale）が残っている場合は、
+        退避ファイル（中断前の既存ファイル）を元に戻す。新しい CSV が残っていても、CSV 形式の
+        データタイプは直接書き込まれるため途中までの内容の可能性があり、完成品とみなさない。
+        """
+        csv_path = self.output_dir / self.datatype_to_folder(datatype) / f"{datatype}{filedate}.csv"
+        stale_path = csv_path.with_name(csv_path.name + ".stale")
+        if stale_path.exists():
+            stale_path.replace(csv_path)
+        return csv_path
+
+    def _fetch(self, datatype: str, filedate: str, csv_path: Path) -> bool:
+        """
+        ダウンロード・処理（解凍、エンコーディング変換）
+
+        既存ファイルがある場合は退避してから取り直し、新しいCSVが生成された場合のみ置き換える。
+        失敗・例外時は既存ファイルを戻す。
+        新規取得では CSV 名の生成までは確認しない（JRDB パッケージのように別名の複数ファイルに
+        展開されるデータタイプがあるため）。
+        """
+        stale_path = csv_path.with_name(csv_path.name + ".stale")
+        had_existing = csv_path.exists()
+        if had_existing:
+            csv_path.replace(stale_path)
+        downloaded_path = None
+        ok = False
+        try:
+            downloaded_path = self._download_file(datatype, filedate)
+            ok = (
+                downloaded_path is not None
+                and self._process_downloaded_file(datatype, filedate, downloaded_path)
+                and (csv_path.exists() or not had_existing)
+            )
+        finally:
+            if downloaded_path is not None and downloaded_path != csv_path:
+                downloaded_path.unlink(missing_ok=True)  # 解凍失敗時に残る .lzh
+            if had_existing:
+                if ok:
+                    stale_path.unlink(missing_ok=True)
+                else:
+                    stale_path.replace(csv_path)
+        return ok
+
+    def download_single(self, datatype: str, filedate: str, force: bool = False) -> bool:
         """
         単一ファイルをダウンロード・処理
 
         Args:
             datatype: データタイプ
             filedate: ファイル日付（yymmdd）
+            force: Trueの場合、既存ファイルがあっても再ダウンロードして上書きする
 
         Returns:
             成功した場合True
         """
-        folder = self.datatype_to_folder(datatype)
-        csv_path = self.output_dir / folder / f"{datatype}{filedate}.csv"
+        csv_path = self.local_csv_path(datatype, filedate)
 
-        # 既にダウンロード済みならスキップ
-        if csv_path.exists():
+        if not force and not self._needs_download(datatype, csv_path):
             logger.info(f"スキップ（既存）: {datatype}{filedate}")
             return True
-
-        # ダウンロード
-        downloaded_path = self._download_file(datatype, filedate)
-        if downloaded_path is None:
-            return False
-
-        # 処理（解凍、エンコーディング変換）
-        return self._process_downloaded_file(datatype, filedate, downloaded_path)
+        return self._fetch(datatype, filedate, csv_path)
 
     def download_from_date(
         self,
@@ -376,21 +457,14 @@ class JRDBDownloader:
 
         logger.info(f"ダウンロード対象: {total}ファイル ({datatype})")
 
-        folder = self.datatype_to_folder(datatype)
         for date in target_dates:
-            csv_path = self.output_dir / folder / f"{datatype}{date}.csv"
+            csv_path = self.local_csv_path(datatype, date)
 
-            if csv_path.exists():
+            if not self._needs_download(datatype, csv_path):
                 skipped += 1
                 continue
 
-            # download_singleはスキップ判定済みなので直接ダウンロード処理を呼ぶ
-            downloaded_path = self._download_file(datatype, date)
-            if downloaded_path is None:
-                failed += 1
-                continue
-
-            if self._process_downloaded_file(datatype, date, downloaded_path):
+            if self._fetch(datatype, date, csv_path):
                 downloaded += 1
             else:
                 failed += 1

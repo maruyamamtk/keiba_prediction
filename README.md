@@ -356,6 +356,28 @@ python scripts/generate_features.py \
 
 ---
 
+### `scripts/refetch_sec.py` — 成績データ（SEC）の再取得（Issue #440）
+
+SECは開催当日の速報版ではIDMが未確定で、確定版（木曜頃）で埋まります。速報版のまま残った開催日を検知し、JRDBから取り直して `downloaded_files/Sec/`・GCS・`raw.race_results` を上書きします。
+ローカルの速報版を残すと全件ロード時に不完全なデータが再投入されるため、ローカルファイルも置き換えます。
+
+```bash
+# 不完全な開催日の検知のみ
+.venv/bin/python scripts/refetch_sec.py --detect --start-date 2016-01-01 --dry-run
+# 検知した日を再取得
+.venv/bin/python scripts/refetch_sec.py --detect --start-date 2016-01-01
+# 日付指定
+.venv/bin/python scripts/refetch_sec.py --dates 2026-01-24,2026-01-25
+```
+
+- 日次パイプラインでも 7〜35日前を毎日自動チェック・再取得しています（`repair_results` ステップ）
+- 再取得した日の成績は後続レースの過去走特徴量に使われるため、手動で再取得した後は `features.training_data` を再生成してから再学習してください（月次再学習は全期間を再生成するため自動で反映されます）
+- `JRDBDownloader` は既存のSECでも中身が速報版（IDM NULL率20%超）なら取り直します（全件ロード・ローカル運用でも速報版が再投入されない）
+- 終了コード: 再取得失敗または再取得後も不完全な日が残った場合は 1
+- JRDBの日別ファイルは古い年度（例: 2019年）だと 403 で取得できない場合があります
+
+---
+
 ### `scripts/build_pedigree_table.py` — 血統テーブル（raw.pedigree）再構築
 
 `raw.horse_master` を自己JOINして `raw.pedigree` テーブルを再構築します。
@@ -472,6 +494,7 @@ keiba_prediction/
 │   │   │   ├── ipat_purchaser.py     # JRA IPAT SP版自動馬券購入（Playwright + jQuery Mobile）
 │   │   │   ├── load_to_bq.py         # BigQueryロード（MERGE+重複スキップ）
 │   │   │   ├── netkeiba_scraper.py   # netkeibaリアルタイムオッズスクレイパー
+│   │   │   ├── result_integrity.py   # 成績（SEC）欠損検知・再取得（Issue #440）
 │   │   │   └── upload_to_gcs.py      # GCSアップロード
 │   │   └── pipeline/
 │   │       ├── __init__.py
