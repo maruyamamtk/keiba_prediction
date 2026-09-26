@@ -200,6 +200,87 @@ def fetch_race_results(
     return df
 
 
+TRACK_CONDITION_FRESHNESS_THRESHOLD = 0.3  # この割合を超えて欠損していたら要通知（Issue #437）
+
+
+def check_track_condition_freshness(
+    project_id: str,
+    result_df: pd.DataFrame,
+) -> tuple[float, list[str]]:
+    """
+    予測対象レースの馬場状態予報（KAA由来, raw.venue_info）が読み込まれているかを検証する。
+
+    feature_query_raw.sql の venue_info との結合は LEFT JOIN のため、当日分が
+    未ロードでも特徴量生成・予測はエラーにならず、turf_condition_code/
+    dirt_condition_code が欠損したまま静かに完走してしまう（Issue #437）。
+    この関数はその欠損状況を raw.venue_info に対する直接クエリで検知する
+    （training_data の派生特徴量は生コードが除外・NULL補完されており当てに
+    できないため、送り出し元テーブルを直接見る）。
+
+    Args:
+        project_id: GCPプロジェクトID
+        result_df: race_id, race_date, venue_code, course_type を含むDataFrame
+                   （predict_pipeline の出力）
+
+    Returns:
+        (欠損しているレースの割合, 欠損しているrace_idのリスト)
+    """
+    required_columns = {"race_id", "race_date", "venue_code", "course_type"}
+    if len(result_df) == 0 or not required_columns.issubset(result_df.columns):
+        logger.warning(
+            "check_track_condition_freshness: 必須カラムが揃っていないためチェックを"
+            f"スキップします（columns={list(result_df.columns)}）。"
+            "馬場状態予報の欠損監視が機能していません。"
+        )
+        return 0.0, []
+
+    races = result_df[list(required_columns)].drop_duplicates()
+    dates = sorted({d for d in (pd.Timestamp(v).date() for v in races["race_date"]) if pd.notna(d)})
+    if not dates:
+        return 0.0, []
+    dates_sql = ", ".join(f"DATE '{d.isoformat()}'" for d in dates)
+    venue_codes_sql = ", ".join(f"'{v}'" for v in sorted(races["venue_code"].unique()))
+
+    # 「最新段階(data_category最大値)を優先」のデデュープロジックは
+    # feature_query_raw.sql の venue_info JOIN と揃える必要がある（同ファイル内の
+    # 複数箇所と同一パターン）。本体側のロジックを変更した場合はここも追随すること。
+    client = bigquery.Client(project=project_id)
+    query = f"""
+        SELECT
+          venue_code,
+          race_date,
+          turf_condition_code,
+          dirt_condition_code
+        FROM `{project_id}.raw.venue_info`
+        WHERE race_date IN ({dates_sql})
+          AND venue_code IN ({venue_codes_sql})
+        QUALIFY ROW_NUMBER() OVER (
+            PARTITION BY venue_code, race_date
+            ORDER BY COALESCE(data_category, 0) DESC
+        ) = 1
+    """
+    venue_df = client.query(query).to_dataframe()
+    if len(venue_df) > 0:
+        venue_df["race_date"] = pd.to_datetime(venue_df["race_date"]).dt.date
+    else:
+        venue_df = pd.DataFrame(
+            columns=["venue_code", "race_date", "turf_condition_code", "dirt_condition_code"]
+        )
+
+    merged = races.merge(venue_df, on=["venue_code", "race_date"], how="left")
+    # course_type が 'dirt'/'turf' のいずれでもない（NULL・想定外値）行は判定不能として
+    # 欠損扱いにする（安全側に倒す。何も分からないより過検知の方が害が少ない）。
+    condition_code = np.select(
+        [merged["course_type"] == "dirt", merged["course_type"] == "turf"],
+        [merged["dirt_condition_code"], merged["turf_condition_code"]],
+        default=np.nan,
+    )
+    missing_mask = pd.isna(condition_code)
+    missing_race_ids = merged.loc[missing_mask, "race_id"].tolist()
+    missing_ratio = len(missing_race_ids) / len(merged) if len(merged) > 0 else 0.0
+    return missing_ratio, missing_race_ids
+
+
 def _download_model_from_gcs(
     project_id: str,
     gcs_uri: str,
@@ -289,6 +370,9 @@ def predict_pipeline(
             result_df["venue_code"] = df["venue_code"]
         if "race_number" in df.columns:
             result_df["race_number"] = df["race_number"]
+        # 馬場状態予報(KAA)の鮮度チェック（check_track_condition_freshness）で使用する
+        if "course_type" in df.columns:
+            result_df["course_type"] = df["course_type"]
 
         result_df["pred_score"] = ranker.predict(X)
 

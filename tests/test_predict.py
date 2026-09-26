@@ -11,6 +11,8 @@ import pytest
 
 from src.models.lgbm_ranker_multi import JRA_PRIZE_WEIGHTS, LGBMRankerMulti, LGBMRankerMultiConfig
 from src.models.predict import (
+    TRACK_CONDITION_FRESHNESS_THRESHOLD,
+    check_track_condition_freshness,
     fetch_prediction_data,
     format_predictions,
     fetch_race_results,
@@ -726,3 +728,127 @@ class TestNormalizeWinPlaceProb:
             .sort_values("pred_score", ascending=False)["win_place_prob"].values
         )
         assert np.allclose(probs_a, probs_b, atol=1e-9)
+
+
+class TestCheckTrackConditionFreshness:
+    """check_track_condition_freshness のテスト（Issue #437）"""
+
+    def _make_result_df(self):
+        return pd.DataFrame({
+            "race_id": ["race_1", "race_2", "race_3"],
+            "race_date": [datetime.date(2026, 5, 17)] * 3,
+            "venue_code": ["05", "05", "06"],
+            "course_type": ["turf", "dirt", "turf"],
+        })
+
+    def test_empty_df_returns_zero(self):
+        """空DataFrameの場合は欠損なし扱いでBigQueryを呼ばないこと"""
+        with patch("src.models.predict.bigquery.Client") as mock_client_cls:
+            ratio, missing = check_track_condition_freshness("test-project", pd.DataFrame())
+        assert ratio == 0.0
+        assert missing == []
+        mock_client_cls.assert_not_called()
+
+    def test_missing_required_columns_returns_zero(self):
+        """必須カラムが無い場合は欠損なし扱いでBigQueryを呼ばないこと"""
+        df = pd.DataFrame({"race_id": ["race_1"]})
+        with patch("src.models.predict.bigquery.Client") as mock_client_cls:
+            ratio, missing = check_track_condition_freshness("test-project", df)
+        assert ratio == 0.0
+        assert missing == []
+        mock_client_cls.assert_not_called()
+
+    @patch("src.models.predict.bigquery.Client")
+    def test_all_conditions_present_no_missing(self, mock_client_cls):
+        """全レースでcourse_typeに対応する馬場状態コードが揃っていれば欠損0件"""
+        venue_df = pd.DataFrame({
+            "venue_code": ["05", "06"],
+            "race_date": [datetime.date(2026, 5, 17)] * 2,
+            "turf_condition_code": [1, 2],
+            "dirt_condition_code": [3, 1],
+        })
+        mock_client_cls.return_value.query.return_value.to_dataframe.return_value = venue_df
+
+        ratio, missing = check_track_condition_freshness("test-project", self._make_result_df())
+
+        assert ratio == 0.0
+        assert missing == []
+
+    @patch("src.models.predict.bigquery.Client")
+    def test_missing_venue_row_flagged(self, mock_client_cls):
+        """venue_infoに当該venue_code/race_dateの行が無いレースは欠損として検出されること"""
+        # race_3 (venue_code=06) の行が存在しない = 当日未ロード
+        # (venue_code, race_date) は本番クエリのQUALIFY ROW_NUMBER()=1により一意なので1行のみ
+        venue_df = pd.DataFrame({
+            "venue_code": ["05"],
+            "race_date": [datetime.date(2026, 5, 17)],
+            "turf_condition_code": [1],
+            "dirt_condition_code": [3],
+        })
+        mock_client_cls.return_value.query.return_value.to_dataframe.return_value = venue_df
+
+        ratio, missing = check_track_condition_freshness("test-project", self._make_result_df())
+
+        assert missing == ["race_3"]
+        assert ratio == pytest.approx(1 / 3)
+
+    @patch("src.models.predict.bigquery.Client")
+    def test_selects_column_by_course_type(self, mock_client_cls):
+        """course_type='dirt'ならdirt_condition_code、'turf'ならturf_condition_codeの欠損のみを見ること"""
+        # race_1/race_2は共にvenue_code=05なので同じ1行のvenue_info行を参照する
+        # (venue_code, race_date) は本番クエリのQUALIFY ROW_NUMBER()=1により一意
+        venue_df = pd.DataFrame({
+            "venue_code": ["05", "06"],
+            "race_date": [datetime.date(2026, 5, 17)] * 2,
+            "turf_condition_code": [1, 2],
+            "dirt_condition_code": [None, None],
+        })
+        mock_client_cls.return_value.query.return_value.to_dataframe.return_value = venue_df
+
+        ratio, missing = check_track_condition_freshness("test-project", self._make_result_df())
+
+        # race_1(turf, turf_code=1)は欠損なし、race_2(dirt, dirt_code=None)は欠損、
+        # race_3(turf, turf_code=2)は欠損なし
+        assert missing == ["race_2"]
+        assert ratio == pytest.approx(1 / 3)
+
+    def test_threshold_constant_is_reasonable(self):
+        """閾値定数が0〜1の範囲であること"""
+        assert 0.0 < TRACK_CONDITION_FRESHNESS_THRESHOLD < 1.0
+
+    @patch("src.models.predict.bigquery.Client")
+    def test_null_race_date_does_not_raise(self, mock_client_cls):
+        """race_dateにNaTが混入していてもTypeErrorにならず処理できること"""
+        df = self._make_result_df()
+        df.loc[0, "race_date"] = pd.NaT
+        venue_df = pd.DataFrame({
+            "venue_code": ["05", "06"],
+            "race_date": [datetime.date(2026, 5, 17)] * 2,
+            "turf_condition_code": [1, 2],
+            "dirt_condition_code": [3, 1],
+        })
+        mock_client_cls.return_value.query.return_value.to_dataframe.return_value = venue_df
+
+        # 例外を送出しないこと
+        ratio, missing = check_track_condition_freshness("test-project", df)
+
+        # race_1(NaT)はvenue_infoとマッチしないため欠損扱いになる
+        assert "race_1" in missing
+        assert 0.0 < ratio <= 1.0
+
+    @patch("src.models.predict.bigquery.Client")
+    def test_unexpected_course_type_flagged_as_missing(self, mock_client_cls):
+        """course_typeがdirt/turf以外・NULLの場合は判定不能として欠損扱いにすること"""
+        df = self._make_result_df()
+        df.loc[df["race_id"] == "race_1", "course_type"] = "jump"  # 障害など想定外の値
+        venue_df = pd.DataFrame({
+            "venue_code": ["05", "06"],
+            "race_date": [datetime.date(2026, 5, 17)] * 2,
+            "turf_condition_code": [1, 2],
+            "dirt_condition_code": [3, 1],
+        })
+        mock_client_cls.return_value.query.return_value.to_dataframe.return_value = venue_df
+
+        ratio, missing = check_track_condition_freshness("test-project", df)
+
+        assert "race_1" in missing
