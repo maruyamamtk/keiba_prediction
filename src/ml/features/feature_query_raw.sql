@@ -2941,15 +2941,13 @@ with temp_race_horse_count as (
 select
   t_p_r_f.* except(
     -- gain=0 特徴量（Issue #296）
-    running_style
-    ,improvement
-    ,stable_index
+    -- running_style / improvement / stable_index / bracket_number は #296 時点で KYF パーサーの位置ズレによる
+    -- ゴミ値だったため gain=0 だった。#452 の位置修正後に再評価し特徴量として復活（Issue #455）
+    pace_forecast
     ,blinker
-    ,pace_forecast
     ,early_advantage
     ,behind_advantage
     ,small_number_early_advantage
-    ,bracket_number
     ,condition_change_flag
     ,improvement_code_2
     ,improvement_code_3
