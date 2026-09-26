@@ -60,6 +60,7 @@ class RefetchResult:
     failed: list[str] = field(default_factory=list)  # 取得・アップロード・ロードのいずれかに失敗した yymmdd
     unavailable: list[str] = field(default_factory=list)  # JRDBにSECが公開されていない yymmdd（開催中止等）
     remaining: list[IncompleteResultDate] = field(default_factory=list)  # 再ロード後も不完全な開催日
+    deferred: list[str] = field(default_factory=list)  # 上限（max_fetch）により今回は見送った yymmdd
     records: int = 0
 
 
@@ -140,6 +141,7 @@ def refetch_sec_files(
     uploader: "GCSUploader",
     loader: "BigQueryLoader",
     yymmdd_list: list[str],
+    max_fetch: int | None = None,
 ) -> RefetchResult:
     """
     指定日の SEC を JRDB から強制再取得し、GCS を上書きして BigQuery に再ロードする
@@ -152,7 +154,8 @@ def refetch_sec_files(
         downloader: JRDB ダウンローダー
         uploader: GCS アップローダー
         loader: BigQuery ローダー
-        yymmdd_list: 再取得する開催日（yymmdd）のリスト
+        yymmdd_list: 再取得する開催日（yymmdd）のリスト（先頭から処理する）
+        max_fetch: ダウンロードする日数の上限（JRDBに公開がない日は数えない）。超えた分は deferred
 
     Returns:
         RefetchResult
@@ -170,6 +173,9 @@ def refetch_sec_files(
         if yymmdd not in available:
             logger.warning(f"JRDBにSECが公開されていません（開催中止等）: {SEC_DATATYPE}{yymmdd}")
             result.unavailable.append(yymmdd)
+            continue
+        if max_fetch is not None and len(result.reloaded) + len(result.failed) >= max_fetch:
+            result.deferred.append(yymmdd)
             continue
 
         local_path = downloader.local_csv_path(SEC_DATATYPE, yymmdd)

@@ -15,6 +15,7 @@ from src.automation.data.jrdb_downloader import DownloadResult
 from src.automation.data.load_to_bq import BatchLoadResult, LoadResult
 from src.automation.data.upload_to_gcs import UploadResult
 from src.automation.pipeline.daily_pipeline import (
+    MAX_REPAIR_DATES_PER_RUN,
     DailyPipeline,
     PipelineResult,
     StepResult,
@@ -635,7 +636,9 @@ class TestDailyPipelineStepRepairResults:
             result = pipeline._step_repair_results(date(2026, 3, 15))
 
         assert result.status == "success"
-        mock_refetch.assert_called_once_with(downloader, uploader, bq_loader, ["260214"])
+        mock_refetch.assert_called_once_with(
+            downloader, uploader, bq_loader, ["260214"], max_fetch=MAX_REPAIR_DATES_PER_RUN
+        )
         assert result.details["reloaded"] == ["260214"]
         assert result.details["remaining"] == []
 
@@ -656,18 +659,21 @@ class TestDailyPipelineStepRepairResults:
         assert result.details["remaining"] == [still.to_dict()]
 
     def test_refetch_is_capped_per_run(self):
-        """1回の実行で修復する日数には上限があり、古い日から修復する"""
+        """1回の実行でダウンロードする日数には上限がある（古い日から修復する）"""
         from src.automation.data.result_integrity import RefetchResult
         from src.automation.pipeline.daily_pipeline import MAX_REPAIR_DATES_PER_RUN
 
-        incomplete = [self._incomplete(date(2026, 2, 8 + i)) for i in range(MAX_REPAIR_DATES_PER_RUN + 3)]
+        incomplete = [self._incomplete(date(2026, 2, 8 + i)) for i in range(3)]
         pipeline = DailyPipeline(downloader=MagicMock(), uploader=MagicMock(), bq_loader=MagicMock())
         with patch(f"{self.MODULE}.find_incomplete_result_dates", return_value=incomplete), \
-                patch(f"{self.MODULE}.refetch_sec_files", return_value=RefetchResult()) as mock_refetch:
-            pipeline._step_repair_results(date(2026, 3, 15))
+                patch(
+                    f"{self.MODULE}.refetch_sec_files", return_value=RefetchResult(deferred=["260210"])
+                ) as mock_refetch:
+            result = pipeline._step_repair_results(date(2026, 3, 15))
 
-        yymmdd_list = mock_refetch.call_args.args[3]
-        assert yymmdd_list == [d.yymmdd for d in incomplete[:MAX_REPAIR_DATES_PER_RUN]]
+        assert mock_refetch.call_args.args[3] == [d.yymmdd for d in incomplete]
+        assert mock_refetch.call_args.kwargs["max_fetch"] == MAX_REPAIR_DATES_PER_RUN
+        assert result.details["deferred"] == ["260210"]
 
     def test_refetch_failure_is_partial(self):
         """再取得に失敗した日があれば partial"""

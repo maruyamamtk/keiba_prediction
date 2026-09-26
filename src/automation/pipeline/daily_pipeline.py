@@ -30,8 +30,9 @@ logger = logging.getLogger(__name__)
 DOWNLOAD_LOOKBACK_DAYS = 7
 # 成績欠損の検査で遡る日数（ロード対象期間より古い開催日を対象にする）
 RESULT_REPAIR_WINDOW_DAYS = 35
-# 1回の実行で再取得する開催日の上限（長期停止後の大量修復で Cloud Run のタイムアウトを超え、
-# 後続の特徴量生成が実行されなくなるのを防ぐ。残りは翌日以降に古い順に修復される）
+# 1回の実行でダウンロードする開催日の上限（長期停止後の大量修復で Cloud Run のタイムアウトを超え、
+# 後続の特徴量生成が実行されなくなるのを防ぐ。残りは翌日以降に古い順に修復される。
+# JRDBに公開がない開催中止日は枠を消費しない）
 MAX_REPAIR_DATES_PER_RUN = 5
 
 
@@ -441,7 +442,7 @@ class DailyPipeline:
         start_time = time.time()
         details: dict = {
             "incomplete_dates": [], "reloaded": [],
-            "failed": [], "unavailable": [], "remaining": [],
+            "failed": [], "unavailable": [], "deferred": [], "remaining": [],
         }
 
         try:
@@ -458,14 +459,15 @@ class DailyPipeline:
             if incomplete:
                 logger.warning(f"成績データが不完全な開催日を検出: {details['incomplete_dates']}")
                 # 古い日（窓から先に外れる日）から上限まで修復する
-                targets = incomplete[:MAX_REPAIR_DATES_PER_RUN]
                 refetch = refetch_sec_files(
-                    self.downloader, self.uploader, self.bq_loader, [d.yymmdd for d in targets]
+                    self.downloader, self.uploader, self.bq_loader, [d.yymmdd for d in incomplete],
+                    max_fetch=MAX_REPAIR_DATES_PER_RUN,
                 )
                 details.update(
                     reloaded=refetch.reloaded,
                     failed=refetch.failed,
                     unavailable=refetch.unavailable,
+                    deferred=refetch.deferred,
                     remaining=[d.to_dict() for d in refetch.remaining],
                 )
 

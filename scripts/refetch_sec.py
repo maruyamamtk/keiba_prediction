@@ -91,6 +91,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.detect:
         end_date = args.end_date or date.today() - timedelta(days=7)
+        if args.start_date > end_date:
+            logger.error(f"--start-date ({args.start_date}) が検査終了日 ({end_date}) より後です")
+            return 1
         incomplete = find_incomplete_result_dates(
             loader.bq_client, loader.project_id, args.start_date, end_date,
             dataset_id=loader.dataset_id,

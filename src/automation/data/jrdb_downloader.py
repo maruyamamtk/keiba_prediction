@@ -382,7 +382,7 @@ class JRDBDownloader:
                 downloaded_path.unlink(missing_ok=True)  # 解凍失敗時に残る .lzh
             if had_existing:
                 if ok:
-                    stale_path.unlink()
+                    stale_path.unlink(missing_ok=True)
                 else:
                     stale_path.replace(csv_path)
         return ok

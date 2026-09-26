@@ -174,6 +174,19 @@ class TestRefetchSecFiles:
         params = {p.name: p.value for p in loader.bq_client.query.call_args.kwargs["job_config"].query_parameters}
         assert (params["start_date"], params["end_date"]) == (date(2026, 1, 24), date(2026, 1, 31))
 
+    def test_max_fetch_skips_unavailable_without_using_slots(self, tmp_path):
+        """上限はダウンロードした日数だけに適用し、JRDBに公開がない日は枠を消費しない"""
+        downloader, uploader, loader = _make_mocks(tmp_path)
+        downloader.get_available_dates.return_value = ["260124", "260125", "260131"]
+
+        result = refetch_sec_files(
+            downloader, uploader, loader, ["260117", "260118", "260124", "260125", "260131"], max_fetch=2
+        )
+
+        assert result.unavailable == ["260117", "260118"]
+        assert result.reloaded == ["260124", "260125"]
+        assert result.deferred == ["260131"]
+
     def test_verification_error_keeps_result(self, tmp_path):
         """再ロード後の検証クエリが失敗しても、再ロード結果は失わない"""
         downloader, uploader, loader = _make_mocks(tmp_path)
@@ -301,6 +314,18 @@ class TestRefetchSecMain:
 
         still = IncompleteResultDate(date(2026, 1, 24), 500, 500, 450)
         assert self._run(RefetchResult(reloaded=["260124"], remaining=[still])) == 1
+
+    def test_start_after_end_is_error(self):
+        from unittest.mock import patch
+
+        from scripts import refetch_sec
+
+        with patch.object(refetch_sec, "load_dotenv"), \
+                patch.object(refetch_sec, "create_loader_from_env", return_value=MagicMock()), \
+                patch.object(refetch_sec, "find_incomplete_result_dates") as mock_find:
+            code = refetch_sec.main(["--detect", "--start-date", "2026-09-25", "--end-date", "2026-09-19"])
+        assert code == 1
+        mock_find.assert_not_called()
 
     def test_failed_is_failure(self):
         from src.automation.data.result_integrity import RefetchResult
