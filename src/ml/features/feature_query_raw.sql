@@ -2937,6 +2937,91 @@ with temp_race_horse_count as (
   where training_index is not null and training_index > 0
 )
 
+/* 出走馬同士の直接対戦成績（Issue #444）
+   今回の出走馬ペア (A, B) について、直近3年の過去レース（race_date < 今回のレース日、厳密）で
+   両馬とも完走（finish_position > 0）したレースを「対戦」とし、A から見た勝敗・タイム差を集計する。
+   勝ち/負けは着順の上下（同着は除外）、相手の強さは今回の発走前IDM（horse_results.idm）で評価する。
+   予測パスでも使えるよう TE ブロックの外に置き、期間は今回レース日からの相対で絞る（start_date は使わない）。 */
+,temp_h2h_current_pairs as (
+  select
+    a.race_id
+    ,a.horse_number
+    ,a.race_date
+    ,a.horse_id as horse_a
+    ,b.horse_id as horse_b
+    ,b.idm as opponent_idm
+  from temp_base_race_entries as a
+    inner join temp_base_race_entries as b
+      on a.race_id = b.race_id
+      and a.horse_id != b.horse_id
+)
+,temp_h2h_past_pairs as (
+  select
+    a.horse_id as horse_a
+    ,b.horse_id as horse_b
+    ,a.race_date
+    ,a.finish_position as a_position
+    ,b.finish_position as b_position
+    -- A から見たタイム差（正=Aが先着）。大敗の影響を抑えるため ±2秒でクリップ
+    ,greatest(-2.0, least(2.0, b.finish_time - a.finish_time)) as time_margin
+  from `{project_id}`.raw.race_results as a
+    inner join `{project_id}`.raw.race_results as b
+      on a.race_id = b.race_id
+      and a.horse_id != b.horse_id
+  where
+    a.finish_position > 0
+    and b.finish_position > 0
+)
+-- 対戦相手単位の集計
+,temp_h2h_opponent as (
+  select
+    c.race_id
+    ,c.horse_number
+    ,c.horse_b
+    ,any_value(c.opponent_idm) as opponent_idm
+    ,count(*) as match_count
+    ,countif(p.a_position < p.b_position) as win_count
+    ,countif(p.a_position > p.b_position) as loss_count
+    ,sum(p.time_margin) as time_margin_sum
+    ,count(p.time_margin) as time_margin_count
+  from temp_h2h_current_pairs as c
+    inner join temp_h2h_past_pairs as p
+      on c.horse_a = p.horse_a
+      and c.horse_b = p.horse_b
+      and p.race_date < c.race_date
+      and p.race_date >= date_sub(c.race_date, interval 3 year)
+  group by
+    c.race_id
+    ,c.horse_number
+    ,c.horse_b
+)
+-- 馬単位の集計（対戦のない馬は行なし → 最終SELECTで件数系は0・他はNULL）
+,temp_h2h as (
+  select
+    race_id
+    ,horse_number
+    ,sum(match_count) as h2h_match_count
+    ,count(*) as h2h_opponent_count
+    ,safe_divide(sum(win_count), sum(win_count) + sum(loss_count)) as h2h_win_rate
+    -- 事前分布 0.5・重み5戦のベイズ平滑化
+    ,safe_divide(sum(win_count) + 2.5, sum(win_count) + sum(loss_count) + 5) as h2h_win_rate_smoothed
+    -- 勝ち越している相手（勝 > 負）の今回IDM
+    ,countif(win_count > loss_count) as h2h_beaten_count
+    ,avg(if(win_count > loss_count, opponent_idm, null)) as h2h_beaten_idm_mean
+    ,approx_quantiles(if(win_count > loss_count, opponent_idm, null), 2)[safe_offset(1)] as h2h_beaten_idm_median
+    ,max(if(win_count > loss_count, opponent_idm, null)) as h2h_beaten_idm_max
+    -- 負け越している相手（勝 < 負）の今回IDM（最小値=「こんな弱い馬にも負けている」）
+    ,countif(win_count < loss_count) as h2h_lost_to_count
+    ,avg(if(win_count < loss_count, opponent_idm, null)) as h2h_lost_to_idm_mean
+    ,approx_quantiles(if(win_count < loss_count, opponent_idm, null), 2)[safe_offset(1)] as h2h_lost_to_idm_median
+    ,min(if(win_count < loss_count, opponent_idm, null)) as h2h_lost_to_idm_min
+    ,safe_divide(sum(time_margin_sum), sum(time_margin_count)) as h2h_margin_mean
+  from temp_h2h_opponent
+  group by
+    race_id
+    ,horse_number
+)
+
 ,temp_final_raw as (
 select
   t_p_r_f.* except(
@@ -4100,6 +4185,21 @@ select
   ,t_g_te.grade_step_up_flag
   ,t_g_te.g1_experience_flag
   ,t_g_te.best_grade_achieved
+  /* 出走馬同士の直接対戦成績（Issue #444）。対戦のない馬は件数0・他はNULL（中央値補完しない） */
+  ,coalesce(t_h2h.h2h_match_count, 0) as h2h_match_count
+  ,coalesce(t_h2h.h2h_opponent_count, 0) as h2h_opponent_count
+  ,t_h2h.h2h_win_rate
+  ,t_h2h.h2h_win_rate_smoothed
+  ,t_h2h.h2h_win_rate - max(t_h2h.h2h_win_rate) over (partition by t_p_r_f.race_id) as h2h_win_rate_diff
+  ,coalesce(t_h2h.h2h_beaten_count, 0) as h2h_beaten_count
+  ,t_h2h.h2h_beaten_idm_mean
+  ,t_h2h.h2h_beaten_idm_median
+  ,t_h2h.h2h_beaten_idm_max
+  ,coalesce(t_h2h.h2h_lost_to_count, 0) as h2h_lost_to_count
+  ,t_h2h.h2h_lost_to_idm_mean
+  ,t_h2h.h2h_lost_to_idm_median
+  ,t_h2h.h2h_lost_to_idm_min
+  ,t_h2h.h2h_margin_mean
 from
   temp_past_race_features2 as t_p_r_f
   left join temp_horse_master_feature2 as t_h_m_f
@@ -4172,6 +4272,9 @@ from
   left join temp_grade_te as t_g_te
     on t_p_r_f.race_id = t_g_te.race_id
     and t_p_r_f.horse_number = t_g_te.horse_number
+  left join temp_h2h as t_h2h
+    on t_p_r_f.race_id = t_h2h.race_id
+    and t_p_r_f.horse_number = t_h2h.horse_number
 )
 
 -- NULL補完: 同一レース内の中央値で補完し、全員NULLの場合はフォールバック値を使用（Issue #330）

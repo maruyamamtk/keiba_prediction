@@ -3434,3 +3434,67 @@ class TestHorseMasterDedupJoin:
         content = (SQL_TEMPLATE_PATH.parent / sql_name).read_text(encoding="utf-8")
         assert "join `{project_id}`.raw.horse_master as h_m" not in content
         assert "partition by horse_id order by data_date desc" in content
+
+
+class TestHeadToHeadFeature:
+    """出走馬同士の直接対戦成績特徴量のテスト（Issue #444）"""
+
+    H2H_COLUMNS = [
+        "h2h_match_count", "h2h_opponent_count", "h2h_win_rate", "h2h_win_rate_smoothed", "h2h_win_rate_diff",
+        "h2h_beaten_count", "h2h_beaten_idm_mean", "h2h_beaten_idm_median", "h2h_beaten_idm_max",
+        "h2h_lost_to_count", "h2h_lost_to_idm_mean", "h2h_lost_to_idm_median", "h2h_lost_to_idm_min",
+        "h2h_margin_mean",
+    ]
+
+    @staticmethod
+    def _section(content: str, start: str, end: str) -> str:
+        i = content.find(start)
+        assert i != -1, f"{start} が見つかりません"
+        return content[i:content.find(end, i)]
+
+    def test_sql_has_h2h_ctes(self):
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        for cte in ("temp_h2h_current_pairs as (", "temp_h2h_past_pairs as (",
+                    "temp_h2h_opponent as (", "temp_h2h as ("):
+            assert cte in content, f"{cte} が見つかりません"
+
+    def test_sql_h2h_uses_only_strictly_past_races_within_3_years(self):
+        """対戦は今回レース日より前（同日を含まない）かつ直近3年に限ること（リーク防止）"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        section = self._section(content, "temp_h2h_opponent as (", "temp_h2h as (")
+        assert "p.race_date < c.race_date" in section
+        assert "p.race_date >= date_sub(c.race_date, interval 3 year)" in section
+
+    def test_sql_h2h_past_pairs_require_finish(self):
+        """過去対戦は両馬とも完走（finish_position > 0）したレースに限ること"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        section = self._section(content, "temp_h2h_past_pairs as (", "temp_h2h_opponent as (")
+        assert "a.finish_position > 0" in section and "b.finish_position > 0" in section
+        assert "greatest(-2.0, least(2.0, b.finish_time - a.finish_time))" in section
+
+    def test_sql_h2h_block_does_not_use_start_date(self):
+        """予測パス（{start_date} を埋め込まない）でも動くよう、H2H ブロックが start_date を参照しないこと"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        section = self._section(content, "temp_h2h_current_pairs as (", "\n,temp_final_raw as (")
+        assert "{start_date}" not in section and "{end_date}" not in section
+
+    def test_sql_final_select_has_all_h2h_features(self):
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        section = self._section(content, ",temp_final_raw as (", ",temp_null_fill_med as (")
+        for col in self.H2H_COLUMNS:
+            assert f"as {col}" in section or f"t_h2h.{col}\n" in section, f"最終 SELECT に {col} がありません"
+        assert "left join temp_h2h as t_h2h" in section
+
+    def test_sql_h2h_counts_default_to_zero(self):
+        """対戦のない馬は件数系が0、率・IDM系はNULL（中央値補完しない）こと"""
+        content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        for col in ("h2h_match_count", "h2h_opponent_count", "h2h_beaten_count", "h2h_lost_to_count"):
+            assert f"coalesce(t_h2h.{col}, 0) as {col}" in content
+        null_fill = self._section(content, ",temp_null_fill_med as (", "-- 同一レース内RANK特徴量を追加")
+        assert "h2h_" not in null_fill
+
+    @patch("src.ml.features.feature_pipeline.bigquery.Client")
+    def test_predict_query_keeps_h2h_block(self, mock_bq):
+        """予測パス（TEブロック差し替え後）にも H2H ブロックが残ること"""
+        sql = FeaturePipeline("test-project").generate_predict_query("2026-06-14")
+        assert "temp_h2h as (" in sql and "left join temp_h2h as t_h2h" in sql
