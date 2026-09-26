@@ -7,8 +7,10 @@ KYF ファイルを再パースしてブリンカーだけを一時テーブル�
 通常の再ロード（MERGE UPSERT）は全列を上書きし、raw.load_history の成功済みファイルはスキップされるため使わない。
 
 手順:
-  1. 対象期間の開催日を raw.race_info（horse_results に存在するレース）から取得し、
-     各日の KYF を GCS（優先）またはローカルから読む
+  1. 対象期間の開催日・レースを raw.race_info（horse_results に存在するレース）から取得し、
+     各日の KYF/KYG/KYH を GCS（優先）→ ローカルの順に、対象レースが揃うまで読む
+     （日によって KYG から取り込まれている・ローカル KYF がメインレースのみの部分ファイル、があるため
+      ファイルの有無ではなく中身のレース網羅で判定し、揃わなかったレースは警告して終了コード1）
   2. (race_id, horse_number, blinker) を一時テーブルへロード（WRITE_TRUNCATE）
   3. 初回のみ raw.horse_results をバックアップテーブルへコピー
   4. blinker のみ UPDATE
@@ -54,16 +56,19 @@ logger = logging.getLogger(__name__)
 TARGET_TABLE = "horse_results"
 STAGING_TABLE = "_blinker_backfill_issue441"
 BACKUP_TABLE = "horse_results_backup_issue441"
-KYF_FOLDER = "Kyf"
-DEFAULT_LOCAL_DIR = PROJECT_ROOT / "downloaded_files" / KYF_FOLDER
+# (GCS/ローカルのフォルダ, データタイプ)。KYF/KYG/KYH はいずれも parse_kyf_line で同じ位置にブリンカーを持つ
+KY_SOURCES = [("Kyf", "KYF"), ("Jrdb", "KYG"), ("Jrdb", "KYH")]
+DEFAULT_LOCAL_DIR = PROJECT_ROOT / "downloaded_files"
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="raw.horse_results の blinker をバックフィルする")
     parser.add_argument("--start-date", required=True, help="対象開始日（YYYY-MM-DD）")
     parser.add_argument("--end-date", required=True, help="対象終了日（YYYY-MM-DD）")
-    parser.add_argument("--dry-run", action="store_true", help="対象日と KYF ソースの有無の表示のみ行う")
-    parser.add_argument("--local-dir", default=str(DEFAULT_LOCAL_DIR), help="ローカル KYF ディレクトリ")
+    parser.add_argument("--dry-run", action="store_true", help="対象日と KY ソースの網羅状況の表示のみ行う")
+    parser.add_argument(
+        "--local-dir", default=str(DEFAULT_LOCAL_DIR), help="ローカルのダウンロード先ルート（Kyf/, Jrdb/ を含む）"
+    )
     args = parser.parse_args(argv)
     try:
         args.start_date = date.fromisoformat(args.start_date)
@@ -75,10 +80,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return args
 
 
-def extract_blinker_rows(content: str, race_ids: set[str] | None = None) -> list[dict]:
-    """KYF ファイル内容から (race_id, horse_number, blinker) を抽出する（race_ids 指定時はそのレースのみ）"""
+def extract_blinker_rows(content: str, data_type: str, race_ids: set[str] | None = None) -> list[dict]:
+    """KY ファイル内容から (race_id, horse_number, blinker) を抽出する（race_ids 指定時はそのレースのみ）"""
     rows = []
-    for record in JRDBParser.parse_file(content, "KYF"):
+    for record in JRDBParser.parse_file(content, data_type):
         if race_ids is not None and record["race_id"] not in race_ids:
             continue
         rows.append(
@@ -91,15 +96,29 @@ def extract_blinker_rows(content: str, race_ids: set[str] | None = None) -> list
     return rows
 
 
-def read_kyf_content(bucket, local_dir: Path, yymmdd: str) -> tuple[str | None, str]:
-    """開催日の KYF 内容を GCS（優先）→ ローカルの順で読む。戻り値は (内容, ソース表記)"""
-    blob = bucket.blob(f"{KYF_FOLDER}/KYF{yymmdd}.csv")
-    if blob.exists():
-        return blob.download_as_bytes().decode("utf-8"), f"gs://{bucket.name}/{blob.name}"
-    local_path = local_dir / f"KYF{yymmdd}.csv"
-    if local_path.exists():
-        return local_path.read_text(encoding="utf-8"), str(local_path)
-    return None, ""
+def iter_ky_contents(bucket, local_dir: Path, yymmdd: str):
+    """開催日の KYF/KYG/KYH 内容を GCS（優先）→ ローカルの順に yield する。要素は (内容, データタイプ, ソース表記)"""
+    for folder, data_type in KY_SOURCES:
+        blob = bucket.blob(f"{folder}/{data_type}{yymmdd}.csv")
+        if blob.exists():
+            yield blob.download_as_bytes().decode("utf-8"), data_type, f"gs://{bucket.name}/{blob.name}"
+        local_path = local_dir / folder / f"{data_type}{yymmdd}.csv"
+        if local_path.exists():
+            yield local_path.read_text(encoding="utf-8"), data_type, str(local_path)
+
+
+def collect_day_rows(sources, race_ids: set[str]) -> tuple[list[dict], set[str]]:
+    """対象レースが揃うまでソースを順に読み、(抽出行, どのソースにもなかったレース) を返す"""
+    rows: list[dict] = []
+    remaining = set(race_ids)
+    for content, data_type, source in sources:
+        found = extract_blinker_rows(content, data_type, remaining)
+        logger.debug(f"{source}: {len(found)}行")
+        rows.extend(found)
+        remaining -= {r["race_id"] for r in found}
+        if not remaining:
+            break
+    return rows, remaining
 
 
 def build_update_sql(table: str, staging: str) -> str:
@@ -163,21 +182,20 @@ def main(argv: list[str] | None = None) -> int:
     bucket = loader.storage_client.bucket(loader.bucket_name)
     local_dir = Path(args.local_dir)
     rows_by_key: dict[tuple[str, int], dict] = {}
-    missing: list[str] = []
+    missing: dict[str, int] = {}
     for race_date in sorted(races_by_date):
         yymmdd = race_date.strftime("%y%m%d")
-        content, source = read_kyf_content(bucket, local_dir, yymmdd)
-        if content is None:
-            missing.append(race_date.isoformat())
-            continue
-        day_rows = extract_blinker_rows(content, races_by_date[race_date])
-        logger.debug(f"{source}: {len(day_rows)}行")
+        day_rows, missing_races = collect_day_rows(
+            iter_ky_contents(bucket, local_dir, yymmdd), races_by_date[race_date]
+        )
+        if missing_races:
+            missing[race_date.isoformat()] = len(missing_races)
         # UPDATE ... FROM は1行に複数のソース行が一致するとエラーになるため、キーで一意化する
         for r in day_rows:
             rows_by_key[(r["race_id"], r["horse_number"])] = r
 
     if missing:
-        logger.warning(f"KYF ソースが見つからない開催日（blinker は旧値のまま）: {missing}")
+        logger.warning(f"KY ソースにないレースがある開催日（{{日付: レース数}}、blinker は旧値のまま）: {missing}")
     rows = list(rows_by_key.values())
     n_blinker = sum(r["blinker"] is not None for r in rows)
     logger.info(f"抽出行数: {len(rows)}（ブリンカー装着 {n_blinker}行）")
