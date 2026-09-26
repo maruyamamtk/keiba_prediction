@@ -2915,6 +2915,109 @@ with temp_race_horse_count as (
   qualify row_number() over (partition by race_id, horse_number) = 1
 )
 
+/* ブリンカー装着状況特徴量（Issue #445）
+   blinker（KYF由来・前日発表の発走前情報）: 1=初装着, 2=再装着, 3=継続, 空白(NULL)=非装着。
+   過去走の装着状況・成績は horse_results を horse_id で時系列に並べて取得する（race_results にはブリンカー列がない）。
+   集計はすべて当該レースより前の日付のみ（range ... 1 preceding）で、当該レースの結果は使わない。
+   出走取消（finish_position=0）の行も残し、集計・前走参照の対象から外す（取消馬の行だけ NULL になって
+   結果が漏れることを防ぐ）。日付フィルタを持たない（予測クエリでも過去走を参照できるよう全期間から計算する）。 */
+,temp_blinker_base as (
+  select
+    h_r.race_id
+    ,h_r.horse_number
+    ,h_r.horse_id
+    ,h_r.trainer_code
+    ,r_i.race_date
+    ,case when h_r.blinker in ('1', '2', '3') then cast(h_r.blinker as int64) else 0 end as blinker_code
+    ,case when h_r.blinker in ('1', '2', '3') then 1 else 0 end as blinker_on
+    -- 出走取消は 0（当日レース・未確定は 1）
+    ,if(coalesce(r_r.finish_position, -1) = 0, 0, 1) as is_valid_run
+    ,case when r_r.finish_position between 1 and 3 then 1 else 0 end as is_top3
+    -- 着順率（取消・当日レース・未確定は NULL）
+    ,if(r_r.finish_position > 0, safe_divide(r_r.finish_position, t_r_h_c.num_horses), null) as finish_position_rate
+  from `{project_id}`.raw.horse_results as h_r
+    inner join `{project_id}`.raw.race_info as r_i
+      on h_r.race_id = r_i.race_id
+    left join `{project_id}`.raw.race_results as r_r
+      on h_r.race_id = r_r.race_id
+      and h_r.horse_number = r_r.horse_number
+    left join temp_race_horse_count as t_r_h_c
+      on h_r.race_id = t_r_h_c.race_id
+  where
+    coalesce(r_i.course_type, '') != 'obstacle'
+)
+,temp_blinker_history as (
+  select
+    race_id
+    ,horse_number
+    ,blinker_code
+    -- 前走（取消を除く直近の出走）の装着状態・着順率
+    ,last_value(if(is_valid_run = 1, blinker_on, null) ignore nulls) over (
+      partition by horse_id
+      order by unix_date(race_date)
+      range between unbounded preceding and 1 preceding
+    ) as prev_blinker_on
+    ,last_value(finish_position_rate ignore nulls) over (
+      partition by horse_id
+      order by unix_date(race_date)
+      range between unbounded preceding and 1 preceding
+    ) as prev_finish_position_rate
+    -- 過去の装着出走回数
+    ,coalesce(sum(if(is_valid_run = 1, blinker_on, 0)) over (
+      partition by horse_id
+      order by unix_date(race_date)
+      range between unbounded preceding and 1 preceding
+    ), 0) as blinker_race_count
+    -- 過去の装着時 / 非装着時の平均着順率
+    ,avg(if(blinker_on = 1, finish_position_rate, null)) over (
+      partition by horse_id
+      order by unix_date(race_date)
+      range between unbounded preceding and 1 preceding
+    ) as blinker_on_avg_fpr
+    ,avg(if(blinker_on = 0, finish_position_rate, null)) over (
+      partition by horse_id
+      order by unix_date(race_date)
+      range between unbounded preceding and 1 preceding
+    ) as blinker_off_avg_fpr
+    -- 厩舎の初ブリンカー時の3着以内率（過去5年・同日除外・スムージング係数m=10）
+    ,coalesce(sum(if(blinker_code = 1 and is_valid_run = 1, 1, 0)) over (
+      partition by trainer_code
+      order by unix_date(race_date)
+      range between 1826 preceding and 1 preceding
+    ), 0) as trainer_first_blinker_count
+    ,safe_divide(
+      coalesce(sum(if(blinker_code = 1, is_top3, 0)) over (
+        partition by trainer_code
+        order by unix_date(race_date)
+        range between 1826 preceding and 1 preceding
+      ), 0) + 10 * g.global_top3_rate,
+      coalesce(sum(if(blinker_code = 1 and is_valid_run = 1, 1, 0)) over (
+        partition by trainer_code
+        order by unix_date(race_date)
+        range between 1826 preceding and 1 preceding
+      ), 0) + 10
+    ) as trainer_first_blinker_te_raw
+  from temp_blinker_base
+    cross join temp_global_mean_te as g
+)
+,temp_blinker_features as (
+  select
+    race_id
+    ,horse_number
+    -- 外し: 前走装着 → 今回非装着
+    ,if(blinker_code = 0 and prev_blinker_on = 1, 1, 0) as blinker_off_flag
+    -- 前走と装着状態が変化（初・再装着・外し）。前走がない馬は 0
+    ,if(prev_blinker_on is not null and prev_blinker_on != if(blinker_code > 0, 1, 0), 1, 0) as blinker_change_flag
+    ,blinker_race_count
+    -- 装着時平均着順率 − 非装着時（両方1走以上の馬のみ。負=装着時のほうが好成績）
+    ,blinker_on_avg_fpr - blinker_off_avg_fpr as blinker_perf_diff
+    -- 初ブリンカー × 前走着順率（前走凡走からの一変狙い。初ブリンカー以外は 0）
+    ,if(blinker_code = 1, prev_finish_position_rate, 0) as blinker_first_x_prev_loss
+    -- 低頻度マスク: 厩舎の過去の初ブリンカー出走が5回未満は NULL
+    ,if(trainer_first_blinker_count >= 5, trainer_first_blinker_te_raw, null) as trainer_first_blinker_te
+  from temp_blinker_history
+)
+
 /* 調教本追切データ (raw.cha_data から) */
 ,temp_training as (
   select
@@ -4100,6 +4203,17 @@ select
   ,t_g_te.grade_step_up_flag
   ,t_g_te.g1_experience_flag
   ,t_g_te.best_grade_achieved
+  /* ブリンカー装着状況特徴量（Issue #445） */
+  -- 当該レースの装着状態は当日の blinker から作る（取消馬など履歴CTEにない行も NULL にしない）
+  ,case when t_p_r_f.blinker in ('1', '2', '3') then cast(t_p_r_f.blinker as int64) else 0 end as blinker_code
+  ,if(t_p_r_f.blinker = '1', 1, 0) as blinker_first_flag
+  ,if(t_p_r_f.blinker in ('1', '2', '3'), 1, 0) as blinker_on_flag
+  ,t_blk.blinker_off_flag
+  ,t_blk.blinker_change_flag
+  ,t_blk.blinker_race_count
+  ,t_blk.blinker_perf_diff
+  ,t_blk.blinker_first_x_prev_loss
+  ,t_blk.trainer_first_blinker_te
 from
   temp_past_race_features2 as t_p_r_f
   left join temp_horse_master_feature2 as t_h_m_f
@@ -4172,6 +4286,9 @@ from
   left join temp_grade_te as t_g_te
     on t_p_r_f.race_id = t_g_te.race_id
     and t_p_r_f.horse_number = t_g_te.horse_number
+  left join temp_blinker_features as t_blk
+    on t_p_r_f.race_id = t_blk.race_id
+    and t_p_r_f.horse_number = t_blk.horse_number
 )
 
 -- NULL補完: 同一レース内の中央値で補完し、全員NULLの場合はフォールバック値を使用（Issue #330）
