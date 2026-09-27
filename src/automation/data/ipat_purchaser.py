@@ -61,6 +61,17 @@ PRE_SUBMIT_MAX_ATTEMPTS = 3
 # 発走までの残り時間がこれ未満になったらリトライを打ち切る（分）
 MIN_MINUTES_BEFORE_START_FOR_RETRY = 2
 
+# 発走までの残り時間がこれ未満のレースは購入を試みない（分）（Issue #465）。
+# IPATは発走直前に発売を締め切り、締切済みレースはレース選択画面から消える。
+# 締切後に購入を試みると「{N}R」リンクのクリック待ちで30秒タイムアウトし、
+# 失敗画面のまま次レースにも影響しうる（2026-09-27 中山8Rで発生）。
+# raw.race_info の発走時刻とIPAT表示の時刻が1分ずれることもあるため余裕を持たせる。
+PURCHASE_CUTOFF_MINUTES_BEFORE_START = 2
+
+# 締切ガードで購入を見送った際の error_message 接頭辞。app.py が想定内の失敗
+# （LINE通知不要）として判定するのに使う。
+PURCHASE_CUTOFF_ERROR_PREFIX = "発売締切済み"
+
 # 失敗時のデバッグ情報（スクリーンショット等）の保存先バケットサフィックス
 DEBUG_BUCKET_SUFFIX = "keiba-predictions"
 
@@ -68,10 +79,10 @@ DEBUG_BUCKET_SUFFIX = "keiba-predictions"
 # Cloud Scheduler は5分おきに次tickを起動するため、それより十分長く取り、
 # クラッシュ等で放置された古いマーカーは次tickでの再挑戦を妨げないようにする。
 #
-# 購入対象ウィンドウ（app.py: window_minutes_before=5, window_minutes_after=-5）は
-# 常に10分幅であり、マーカーは同ウィンドウ内（発走-5分〜+5分）でしか書き込まれない
-# ため、理論上は最も早い書き込み（発走-5分）でもマーカーの失効時刻
-# （書き込み+IN_PROGRESS_STALE_MINUTES）はウィンドウの終端（発走+5分）以降になり、
+# 購入対象ウィンドウ（app.py: 発走 PURCHASE_CUTOFF_MINUTES_BEFORE_START+5分前〜
+# PURCHASE_CUTOFF_MINUTES_BEFORE_START分前。Issue #465）は5分幅であり、マーカーは
+# 同ウィンドウ内でしか書き込まれないため、理論上は最も早い書き込みでもマーカーの
+# 失効時刻（書き込み+IN_PROGRESS_STALE_MINUTES）はウィンドウの終端以降になり、
 # ウィンドウが閉じる前にマーカーだけが先に失効することはない（境界一致のみで
 # 実害はない）はずだが、/code-review指摘を踏まえ、この前提がわずかでも崩れた
 # 場合（例: 発走時刻データの誤差、処理遅延）に備えて安全マージンを確保する。
@@ -510,6 +521,7 @@ class IpatPurchaser:
         logger.info(f"一括購入開始: {venue_name} {race_number}R / {len(bets)}件 合計{total_amount}円 [{summary}]")
 
         retry_deadline: datetime.datetime | None = None
+        purchase_deadline: datetime.datetime | None = None
         if start_time and len(start_time) >= 4:
             try:
                 hour, minute = int(start_time[:2]), int(start_time[2:4])
@@ -523,8 +535,12 @@ class IpatPurchaser:
                 if race_start < now_jst - datetime.timedelta(hours=12):
                     race_start += datetime.timedelta(days=1)
                 retry_deadline = race_start - datetime.timedelta(minutes=MIN_MINUTES_BEFORE_START_FOR_RETRY)
+                purchase_deadline = race_start - datetime.timedelta(
+                    minutes=PURCHASE_CUTOFF_MINUTES_BEFORE_START
+                )
             except ValueError:
                 retry_deadline = None
+                purchase_deadline = None
 
         def _pre_submit_failed(message: str, debug: dict | None) -> dict:
             """フェーズ1（投票送信前）を諦める際の統一されたfailed応答を作る。"""
@@ -534,6 +550,17 @@ class IpatPurchaser:
                 "error_message": message,
                 "debug": debug,
             }
+
+        # --- 締切ガード（Issue #465） ---
+        # 締切済みレースはIPATのレース選択画面に存在せず、試行しても必ずタイムアウトする。
+        # ブラウザを一切操作せずに見送ることで、無駄な待ち時間とセッション破壊を避ける。
+        if purchase_deadline and datetime.datetime.now(ZoneInfo("Asia/Tokyo")) >= purchase_deadline:
+            message = (
+                f"{PURCHASE_CUTOFF_ERROR_PREFIX}（発走まで{PURCHASE_CUTOFF_MINUTES_BEFORE_START}分未満）"
+                f"のため購入を見送りました"
+            )
+            logger.info(f"{venue_name} {race_number}R: {message}")
+            return _pre_submit_failed(message, None)
 
         # --- フェーズ1: 投票一覧への追加（投票送信前。失敗時はリトライ可） ---
         last_error_msg: str | None = None
@@ -1271,7 +1298,7 @@ def finalize_purchase_lock(
 
     # try_acquire_purchase_lock()と同じ「concurrent update」リトライ
     # （/code-review指摘）。他tickのMERGE/UPDATEと衝突すると、ここが失敗した
-    # ままロックがin_progressに取り残され、-5〜5分の購入ウィンドウを過ぎるまで
+    # ままロックがin_progressに取り残され、購入ウィンドウを過ぎるまで
     # 気づかれない可能性がある（二重購入には直結しないフェイルセーフだが、
     # 本来リトライ可能な失敗を見逃す可用性上のリスク）。
     for attempt in range(1, LOCK_ACQUIRE_MAX_ATTEMPTS + 1):
