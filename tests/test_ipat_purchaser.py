@@ -32,6 +32,8 @@ from src.automation.data.ipat_purchaser import (
     IN_PROGRESS_STALE_MINUTES,
     LOCK_ACQUIRE_MAX_ATTEMPTS,
     PRE_SUBMIT_MAX_ATTEMPTS,
+    PURCHASE_CUTOFF_ERROR_PREFIX,
+    PURCHASE_CUTOFF_MINUTES_BEFORE_START,
     IpatLoginError,
     IpatPurchaseError,
     IpatPurchaser,
@@ -73,14 +75,46 @@ class TestFetchTargetRaces:
         デフォルト引数（window_minutes_before=5, window_minutes_after=0）では、
         既に発走したレース（-3分）は除外されること。
 
-        購入エンドポイント側（_purchase_pipeline_async）は Issue #433 でこの関数を
-        window_minutes_after=-5 で明示的に呼び出しウィンドウを広げているが、
+        購入エンドポイント側（_purchase_pipeline_async）はIPAT発売締切に合わせた
+        ウィンドウ（2〜7分。Issue #465）を明示的に指定して呼び出すが、
         この関数自体のデフォルト値は変更していない（0〜5分のみ）。
         """
         now = datetime.datetime(2026, 4, 5, 10, 0, 0)
         races = self._make_races(["0957"])  # 09:57 = now - 3分
         result = fetch_target_races(races, now)
         assert len(result) == 0
+
+    def test_production_window_excludes_races_past_purchase_cutoff(self):
+        """
+        本番ウィンドウ（発走 締切+5分前〜締切分前。Issue #465）では、発走時刻ちょうどの
+        tick（＝IPAT発売締切後）でそのレースを対象にしないこと。
+        2026-09-27 中山8R（発走13:55）は13:55:02のtickで対象になり、締切済みの
+        レースを購入しに行ってタイムアウトしていた。
+        """
+        races = self._make_races(["1355"])
+        window = dict(
+            window_minutes_before=PURCHASE_CUTOFF_MINUTES_BEFORE_START + 5,
+            window_minutes_after=PURCHASE_CUTOFF_MINUTES_BEFORE_START,
+        )
+        # 13:50:02 のtick（発走4分58秒前）→ 対象
+        assert len(fetch_target_races(races, datetime.datetime(2026, 9, 27, 13, 50, 2), **window)) == 1
+        # 13:55:02 のtick（発走後）→ 対象外
+        assert fetch_target_races(races, datetime.datetime(2026, 9, 27, 13, 55, 2), **window) == []
+
+    def test_production_window_covers_every_start_time_once(self):
+        """
+        本番ウィンドウの幅はtick間隔（5分）と同じため、発走時刻が5分刻みでない
+        レースも含め、どのレースも締切前のtickでちょうど1回対象になること。
+        """
+        window = dict(
+            window_minutes_before=PURCHASE_CUTOFF_MINUTES_BEFORE_START + 5,
+            window_minutes_after=PURCHASE_CUTOFF_MINUTES_BEFORE_START,
+        )
+        ticks = [datetime.datetime(2026, 9, 27, 13, m, 2) for m in range(0, 60, 5)]
+        for minute in range(20, 50):
+            races = self._make_races([f"13{minute:02d}"])
+            hits = [t for t in ticks if fetch_target_races(races, t, **window)]
+            assert len(hits) == 1, f"13:{minute:02d} 発走: 対象tick={hits}"
 
     def test_race_too_far_is_excluded(self):
         """ウィンドウより後（15分後）のレースは除外されること"""
@@ -910,13 +944,16 @@ class TestPurchaseBetsRetryAndSafety:
         from zoneinfo import ZoneInfo as _ZoneInfo
 
         now_jst = datetime.datetime.now(_ZoneInfo("Asia/Tokyo"))
-        # 発走時刻を「今」に設定 → リトライ猶予（MIN_MINUTES_BEFORE_START_FOR_RETRY分）を
-        # 既に過ぎている状態を再現する
-        start_time = now_jst.strftime("%H%M")
+        # 発走時刻は締切ガード（PURCHASE_CUTOFF_MINUTES_BEFORE_START）に掛からない
+        # 数分後とし、リトライ猶予だけを大きくして「既に過ぎている」状態を再現する
+        start_time = (
+            now_jst + datetime.timedelta(minutes=PURCHASE_CUTOFF_MINUTES_BEFORE_START + 2)
+        ).strftime("%H%M")
 
-        result = run_async(
-            purchaser.purchase_bets_for_race(self.BETS, "中山(土)", 7, start_time=start_time)
-        )
+        with patch("src.automation.data.ipat_purchaser.MIN_MINUTES_BEFORE_START_FOR_RETRY", 60):
+            result = run_async(
+                purchaser.purchase_bets_for_race(self.BETS, "中山(土)", 7, start_time=start_time)
+            )
 
         assert result["status"] == "failed"
         assert attempts["add_bet"] == 1
@@ -924,6 +961,34 @@ class TestPurchaseBetsRetryAndSafety:
         # 発走間近で諦める場合も、再ログインはしない（時間の無駄）が
         # ページは破棄しておくこと（/code-review指摘）
         assert purchaser._page is None
+
+    def test_skips_browser_when_past_purchase_cutoff(self):
+        """
+        発走まで PURCHASE_CUTOFF_MINUTES_BEFORE_START 分未満（＝IPAT発売締切済み）の
+        レースは、ブラウザを一切操作せず「発売締切済み」で failed を返すこと（Issue #465）。
+        締切済みレースはレース選択画面に無く、試行すると30秒タイムアウトした上で
+        ページが破棄され、同tickの後続レースまで中断させてしまう。
+        """
+        purchaser = self._make_purchaser()
+        purchaser._navigate_to_top_menu = AsyncMock(return_value=None)
+        purchaser._add_bet_to_list = AsyncMock(return_value=None)
+        purchaser.login = AsyncMock(return_value=True)
+
+        from zoneinfo import ZoneInfo as _ZoneInfo
+
+        start_time = datetime.datetime.now(_ZoneInfo("Asia/Tokyo")).strftime("%H%M")
+
+        result = run_async(
+            purchaser.purchase_bets_for_race(self.BETS, "中山(日)", 8, start_time=start_time)
+        )
+
+        assert result["status"] == "failed"
+        assert result["error_message"].startswith(PURCHASE_CUTOFF_ERROR_PREFIX)
+        purchaser._navigate_to_top_menu.assert_not_called()
+        purchaser._add_bet_to_list.assert_not_called()
+        purchaser.login.assert_not_called()
+        # ページは破棄しない（同tickの後続レースを継続できる）
+        assert purchaser._page is not None
 
     def test_no_retry_after_submit_returns_need_confirmation(self):
         """投票送信（_submit_and_confirm）後の例外は絶対にリトライせず need_confirmation を返すこと"""
@@ -1536,6 +1601,18 @@ class TestProductionPurchaseFlow:
                     dry_run=False,
                 )
             )
+
+    def test_target_window_starts_at_purchase_cutoff(self):
+        """
+        購入対象ウィンドウの下端がIPAT発売締切（PURCHASE_CUTOFF_MINUTES_BEFORE_START）で
+        あり、発走後のレースを対象にしないこと（Issue #465。旧実装は-5分）。
+        """
+        mock_fetch_target = MagicMock(return_value=[])
+        self._run({"src.automation.data.ipat_purchaser.fetch_target_races": mock_fetch_target})
+
+        kwargs = mock_fetch_target.call_args.kwargs
+        assert kwargs["window_minutes_after"] == PURCHASE_CUTOFF_MINUTES_BEFORE_START
+        assert kwargs["window_minutes_before"] == PURCHASE_CUTOFF_MINUTES_BEFORE_START + 5
 
     def test_skips_login_when_already_purchased(self):
         """対象レースが既に購入成功済みなら IPAT へログインしないこと"""
@@ -2326,12 +2403,16 @@ class TestProductionPurchaseFlow:
         # purchase_bets_for_race が呼ばれない
         purchaser_instance.purchase_bets_for_race.assert_called_once()
 
-    def test_closing_time_failure_does_not_send_line_alert(self):
+    @pytest.mark.parametrize(
+        "error_message",
+        ["締め切られました", f"{PURCHASE_CUTOFF_ERROR_PREFIX}（発走まで2分未満）のため購入を見送りました"],
+    )
+    def test_closing_time_failure_does_not_send_line_alert(self, error_message):
         """
-        購入ウィンドウ拡張（-5〜5分）により、既に発走済み（締切済み）のレースを
-        再挑戦して「締め切られました」で失敗するのは想定内の挙動のため、
-        他の失敗と同じ警告レベルのLINE通知を送らないこと（/code-review指摘）。
-        BQへの記録（failed）自体は通常どおり行う。
+        処理遅延等で締切を跨いだレースが「締め切られました」で失敗する、または
+        締切ガード（Issue #465）で「発売締切済み」として見送られるのは想定内の
+        挙動のため、他の失敗と同じ警告レベルのLINE通知を送らないこと
+        （/code-review指摘）。BQへの記録（failed）自体は通常どおり行う。
         """
         purchaser_instance = AsyncMock()
         purchaser_instance.login = AsyncMock(return_value=True)
@@ -2339,7 +2420,7 @@ class TestProductionPurchaseFlow:
             return_value={
                 "status": "failed",
                 "total_amount": 300,
-                "error_message": "締め切られました",
+                "error_message": error_message,
             }
         )
         mock_ipat_cls = MagicMock()

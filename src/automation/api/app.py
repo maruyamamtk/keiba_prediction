@@ -1271,7 +1271,7 @@ async def purchase_daily(request: PurchaseDailyRequest):
     発走5分前のレースの推奨馬券を JRA IPAT で自動購入する。
 
     Cloud Scheduler から土日 8:00〜17:00 の5分おきに呼び出されることを想定。
-    現在時刻の0〜5分後に発走するレースを対象とし、
+    現在時刻の2〜7分後（IPAT発売締切前）に発走するレースを対象とし、
     predictions.investment_decisions の推奨馬券を購入する。
 
     前提条件:
@@ -1526,8 +1526,8 @@ async def _purchase_pipeline_async(
 
     フロー:
       1. raw.race_info から当日の発走時刻を取得
-      2. 現在時刻の-5〜5分後に発走するレースを特定
-         （マイナス側は直前tickでの購入失敗を次tickで再挑戦するためのウィンドウ。Issue #433）
+      2. 現在時刻の2〜7分後に発走するレースを特定
+         （下端はIPAT発売締切に合わせた PURCHASE_CUTOFF_MINUTES_BEFORE_START。Issue #465）
       3. 対象レースが0件なら skipped を返す
       4. 対象レースのオッズをリアルタイムスクレイピング（netkeiba）
          失敗時はフォールバック（既存の daily_odds を使用）
@@ -1572,6 +1572,8 @@ async def _purchase_pipeline_async(
         try_acquire_purchase_lock,
         BET_TYPE_MAP,
         DAILY_BUDGET_LIMIT,
+        PURCHASE_CUTOFF_ERROR_PREFIX,
+        PURCHASE_CUTOFF_MINUTES_BEFORE_START,
     )
     from src.automation.data.netkeiba_scraper import scrape_odds_for_race
     from src.utils.line_notify import send_notification
@@ -1617,13 +1619,21 @@ async def _purchase_pipeline_async(
         logger.info(f"{target_date}: start_time付きレースが存在しません")
         return {"status": "skipped", "purchased_races": 0, "total_amount": 0, "results": []}
 
-    # 2. 対象レースを抽出（現在時刻の-5〜5分。マイナス側は直前tickでの購入失敗の再挑戦用）
+    # 2. 対象レースを抽出（発走 PURCHASE_CUTOFF_MINUTES_BEFORE_START+5分前〜
+    #    PURCHASE_CUTOFF_MINUTES_BEFORE_START分前。Issue #465）
     # start_time は JST で格納されているため、now も JST で取得する
-    # 5分おきスケジューラで window_minutes_after=0 のままだと、1回失敗したレースは
-    # 二度と対象にならず購入機会を完全に失っていた（Issue #433, 2026-09-19本番障害）。
-    # ウィンドウを10分に拡張し、二重購入は購入ロック（Issue #435）で防止する。
+    # 旧実装（Issue #433）は失敗時の再挑戦用に発走5分後までを対象にしていたが、
+    # 5分おきtickの2回目は常に発走時刻＝IPAT発売締切後に来るため再挑戦は成立せず、
+    # 締切後に初めて推奨馬券が出たレースを購入しに行きタイムアウトしていた
+    # （2026-09-27 中山8R）。下端を締切に揃え、幅はtick間隔と同じ5分とすることで、
+    # どの発走時刻のレースも締切前のtickでちょうど1回対象になる。
     now = datetime.datetime.now(ZoneInfo("Asia/Tokyo"))
-    target_races = fetch_target_races(all_races, now, window_minutes_before=5, window_minutes_after=-5)
+    target_races = fetch_target_races(
+        all_races,
+        now,
+        window_minutes_before=PURCHASE_CUTOFF_MINUTES_BEFORE_START + 5,
+        window_minutes_after=PURCHASE_CUTOFF_MINUTES_BEFORE_START,
+    )
 
     if not target_races:
         logger.info(f"{target_date}: 現在時刻 {now.strftime('%H:%M')} に対象レースなし")
@@ -1836,7 +1846,7 @@ async def _purchase_pipeline_async(
     # 3. ログイン前に「実際に購入すべきレース」を確定する。
     #    投資判断の更新・推奨馬券取得はIPATセッション不要のため、これをログインより先に
     #    行うことで、購入対象が0件のtickで無駄なログインを発生させない（Issue #433）。
-    #    ウィンドウ拡張（-5〜+5分）により同一レースが複数tickで対象になり得るため、
+    #    並行tick・Schedulerの再試行等で同一レースが複数回対象になり得るため、
     #    既に購入成功済み／要確認（need_confirmation）のレースはここで除外し二重購入を防ぐ。
     _WEEKDAY_JP = ["月", "火", "水", "木", "金", "土", "日"]
     weekday_suffix = f"({_WEEKDAY_JP[target_date.weekday()]})"
@@ -2028,8 +2038,8 @@ async def _purchase_pipeline_async(
                     logger.info(f"race_id={race_id}: 推奨馬券なし（refresh後） → スキップ")
                     # ロックを解放しておく。解放しないと、実際には何も購入していない
                     # にもかかわらずロックが IN_PROGRESS_STALE_MINUTES 分間ブロックし
-                    # 続け、当該レースの残り購入ウィンドウ（-5〜5分＝10分間）を
-                    # ほぼ使い切ってしまう（/code-review指摘）。
+                    # 続け、当該レースの残り購入ウィンドウを使い切ってしまう
+                    # （/code-review指摘）。
                     _safe_finalize_purchase_lock(project_id, target_date, race_id, "failed", acquired_at)
                     continue
 
@@ -2105,10 +2115,8 @@ async def _purchase_pipeline_async(
                             f"馬券購入失敗: {venue_name}{race_number}R [{bet_summary}] "
                             f"- {error_message}{_debug_suffix(debug)}"
                         )
-                        # 購入ウィンドウを-5〜+5分に拡張したことで（Issue #433）、
-                        # 直前tickで未購入だったレースが発走後（既に締切済み）に
-                        # 再挑戦され、「締め切られました」で失敗するのは設計上
-                        # 想定内の挙動。これを他の失敗と同じ警告レベルでLINE
+                        # 処理遅延等で締切を跨いだレースが「締め切られました」で
+                        # 失敗するのは想定内の挙動。これを他の失敗と同じ警告レベルでLINE
                         # 通知すると、既に終わったレースについて運用担当者に
                         # 「異常が起きた」と誤解させるノイズになる
                         # （/code-review指摘）。BQへの記録は他の失敗と同様に行う。
@@ -2119,8 +2127,10 @@ async def _purchase_pipeline_async(
                         # 締切がフェーズ1側で先に検知されたケースが素通りし、既に
                         # 終わったレースへの無駄なリトライ・ノイズアラートを防げて
                         # いなかった。
+                        # 締切ガード（Issue #465）で購入を見送った場合も同様に想定内とする。
                         if error_message and any(
-                            pat in error_message for pat in ("締め切られました", "締め切り")
+                            pat in error_message
+                            for pat in ("締め切られました", "締め切り", PURCHASE_CUTOFF_ERROR_PREFIX)
                         ):
                             logger.info(f"[想定内: 発走済みのため締切] {msg}")
                         else:

@@ -176,14 +176,16 @@ launchctl list | grep com.keiba.monthly-retrain      # 登録確認
 
 **夏競馬対応（2026-07-25追加）**: 夏場（7〜9月）は暑さを避けるためナイター開催が組まれ、最終レースの発走が19:00頃まで続く。通常スケジュール（〜17:55）のままでは19:00頃発走のレースを取りこぼすため、7〜9月のみ稼働する `race-day-purchase-summer`（〜19:55）を別ジョブとして追加した。処理ロジック・エンドポイントは `race-day-purchase` と完全に同一で、cron式の月フィールド（`1-6,10-12` と `7-9`）のみが異なる。
 
-**概要**: 5分おきに起動し、現在時刻の-5〜5分後に発走するレースが存在する場合に以下を実行します。netkeibaで最新オッズをスクレイピングして `daily_odds` を上書きし、投資戦略を再計算して `investment_decisions` を更新した上で、JRA IPAT SP版（`https://www.ipat.jra.go.jp/sp/`）で馬券を自動購入します。
+**概要**: 5分おきに起動し、現在時刻の2〜7分後に発走するレースが存在する場合に以下を実行します。netkeibaで最新オッズをスクレイピングして `daily_odds` を上書きし、投資戦略を再計算して `investment_decisions` を更新した上で、JRA IPAT SP版（`https://www.ipat.jra.go.jp/sp/`）で馬券を自動購入します。
 
 **対応馬券種**: 単勝・複勝・馬連・ワイド・馬単・三連複
 
 **処理フロー**（両モード共通 → dry_run 分岐）:
 1. `raw.race_info` から当日の発走時刻付きレース一覧を取得
-2. 現在時刻の **-5〜5分後**に発走するレースを抽出（`window_minutes_before=5, window_minutes_after=-5`）
-   - マイナス側（発走を過ぎたレース）は、直前tickでの購入失敗を次tickで再挑戦するためのウィンドウ（Issue #433）。
+2. 現在時刻の **2〜7分後**に発走するレースを抽出（`window_minutes_before=PURCHASE_CUTOFF_MINUTES_BEFORE_START+5, window_minutes_after=PURCHASE_CUTOFF_MINUTES_BEFORE_START`）
+   - 下端はIPAT発売締切（`PURCHASE_CUTOFF_MINUTES_BEFORE_START`=発走2分前）。幅はtick間隔と同じ5分のため、各レースは締切前のtickでちょうど1回対象になる（Issue #465）。
+     旧ウィンドウ（-5〜5分・Issue #433）は2回目のtickが常に締切後になり、締切済みレースを購入しに行ってタイムアウトしていた（2026-09-27 中山8R）。
+   - `purchase_bets_for_race()` 冒頭でも発走2分前を過ぎていればブラウザ操作をせず「発売締切済み」で見送る（想定内の失敗としてLINE通知なし）。
      既に購入成功済み／要確認（need_confirmation）／処理中（in_progress。下記参照）のレースは
      `has_purchase_lock()` で除外し二重購入を防ぐ（読み取り専用の事前チェック。Issue #435）。
    - 対象レースが0件の場合はそのまま終了（skipped）
@@ -211,7 +213,7 @@ launchctl list | grep com.keiba.monthly-retrain      # 登録確認
         > への`in_progress`マーカー）と新ロック機構（`predictions.purchase_locks`）は
         > 互いを一切参照しない。`infrastructure/scripts/deploy_cloud_run.sh`は
         > `--no-traffic`を使わない即時切替のデプロイのため、稼働中の購入tick
-        > （発走-5〜+5分の対象レース処理中）とデプロイが重なると、旧リビジョンの
+        > （発走2〜7分前の対象レース処理中）とデプロイが重なると、旧リビジョンの
         > インスタンスが処理を続けている間に新リビジョンが同じレースを別途
         > 処理してしまい、互いのロックが見えず二重購入しうる。このPR（Issue #435）
         > を含む本番デプロイは、土日 8:00〜19:55（`race-day-purchase`/
