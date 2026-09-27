@@ -2068,6 +2068,12 @@ with temp_race_horse_count as (
   from temp_mare_te_pre
 )
 
+/* 注意（Issue #460 / #463）: ここから下は TEブロック（generate_predict_query で feature_query_predict_te.sql に
+   差し替わる範囲）の外。予測SQLにも残るため、TEブロック内だけにある CTE（temp_jockey_te_pre など）は参照しない。
+   参照してよいのは TEブロックより前の CTE（temp_te_history_base など）と、feature_query_predict_te.sql にも
+   同名で定義されている CTE（temp_global_mean_te / temp_jockey_te / temp_mare_te など）。
+   馬自身の TE・TE_diff は予測SQLでもこの定義で計算する（過去走の時系列平均を entity_te_daily では再現できないため）。 */
+
 /* 馬自身 Target Encoding（累積3着以内率、スムージング係数m=10、同日除外）
    出走数 < 5 の馬は全TE値をNULLとして扱う（若馬・低頻度の情報ノイズ除去） */
 ,temp_horse_te_pre as (
@@ -2330,11 +2336,6 @@ with temp_race_horse_count as (
     ,avg(IF(h_wcc_diff IS NOT NULL, h_wcc_diff_rank, NULL)) over (partition by horse_id order by unix_date(race_date) rows between unbounded preceding and 1 preceding) as horse_wcc_te_diff_rank_avg
   from temp_horse_te_diff_pre
 )
-
-/* 注意（Issue #460）: ここから下は TEブロック（generate_predict_query で feature_query_predict_te.sql に
-   差し替わる範囲）の外。予測SQLにも残るため、TEブロック内だけにある CTE（temp_jockey_te_pre など）は参照しない。
-   参照してよいのは TEブロックより前の CTE（temp_te_history_base など）と、feature_query_predict_te.sql にも
-   同名で定義されている CTE（temp_global_mean_te / temp_jockey_te / temp_horse_te など）。 */
 
 /* 馬の距離帯別・距離別 TE 計算の元データ
    horse_results を起点にすることで、race_results にまだ存在しない当日予測レースも含める。 */

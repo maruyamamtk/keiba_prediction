@@ -42,8 +42,10 @@ PREDICT_TE_SQL_TEMPLATE_PATH = Path(__file__).parent / "feature_query_predict_te
 # generate_predict_query() で使用する文字列置換マーカー
 # START〜END の範囲が feature_query_predict_te.sql に差し替わる。範囲外のCTEから範囲内だけにある
 # CTEを参照すると予測SQLが未定義エラーになる（Issue #460）。tests で静的に検証している。
+# 馬自身の TE・TE_diff（temp_horse_te_pre 以降）は範囲外に置き、予測SQLでも学習SQLと同じ定義で
+# 計算する。entity_te_daily 版では過去走の時系列平均（*_te_diff_avg）を再現できないため（Issue #463）。
 _TE_BLOCK_START = "/* TEスムージング用グローバル平均（全期間3着以内率） */"
-_TE_BLOCK_END = "\n/* 馬の距離帯別・距離別 TE 計算の元データ"
+_TE_BLOCK_END = "\n/* 注意（Issue #460 / #463）: ここから下は TEブロック"
 
 
 def retry_with_backoff(
@@ -415,8 +417,9 @@ class FeaturePipeline:
 
         feature_query_raw.sql をベースに以下の変換を行う:
           1. 日付フィルタ (BETWEEN '{start_date}' AND '{end_date}') を = date('{target_date}') に置換
-          2. 重いTE計算ブロック（temp_global_mean_te〜temp_horse_te_diff_summary）を
+          2. 重いTE計算ブロック（temp_global_mean_te〜temp_mare_te）を
              entity_te_daily JOIN 版（feature_query_predict_te.sql）に差し替える
+             （馬自身の TE・TE_diff は学習SQLと同じ定義で計算する。Issue #463）
 
         Args:
             target_date: 予測対象日 (YYYY-MM-DD)
