@@ -82,6 +82,10 @@ DEFAULT_HOLDOUT_MIN_BETS = 150  # ホールドアウト賭け数の参考下限�
 # これを下回る賭け数では回収率が実質ノイズ（数件のまぐれ的中で95%ラインを超えうる）となるため、
 # 回収率の値によらずデプロイを止める絶対下限（Issue #430レビュー対応）
 DEFAULT_HOLDOUT_MIN_BETS_HARD = 30
+# 戦略最適化の min_prob_threshold 探索下限。下限なしだと低確率・高配当馬を狙う解が選ばれ、
+# 最適化期間では高回収率でもホールドアウトで崩壊する（2026-09-08: 155.7%/DD33.9%、
+# 2026-09-28: 最適化274%→ホールドアウト42.2%/DD133.9%）。0.1 版はいずれもホールドアウトで安定。
+DEFAULT_MIN_PROB_THRESHOLD_FLOOR = 0.1
 
 # --- 期間の既定値 ---
 FEATURE_START = "2016-01-01"
@@ -144,6 +148,12 @@ def main() -> int:
     parser.add_argument("--ndcg-min", type=float, default=DEFAULT_NDCG_MIN)
     parser.add_argument("--recall-min", type=float, default=DEFAULT_RECALL_MIN)
     parser.add_argument("--recovery-min", type=float, default=DEFAULT_RECOVERY_MIN)
+    parser.add_argument(
+        "--min-prob-threshold-floor",
+        type=float,
+        default=DEFAULT_MIN_PROB_THRESHOLD_FLOOR,
+        help="戦略最適化の min_prob_threshold 探索下限（0.0 で制約なし）",
+    )
     args = parser.parse_args()
 
     if not args.project_id:
@@ -298,6 +308,7 @@ def main() -> int:
         "--end-date", optimize_end.isoformat(),
         "--n-trials", str(args.n_trials),
         "--min-total-bets", str(optimize_min_bets),
+        "--min-prob-threshold-floor", str(args.min_prob_threshold_floor),
     ]
     if prev_use_harville:
         optimize_cmd.append("--use-harville")
