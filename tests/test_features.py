@@ -2906,12 +2906,17 @@ class TestPredictTeSqlTemplate:
             "temp_trainer_te",
             "temp_sire_te",
             "temp_mare_te",
-            "temp_horse_te",
-            "temp_horse_te_diff_pre",
-            "temp_horse_te_diff_summary",
         ]
         for cte in required:
             assert cte in content, f"必須 CTE '{cte}' が feature_query_predict_te.sql にありません"
+
+    def test_predict_te_sql_does_not_define_horse_te(self):
+        """Issue #463: 馬自身の TE・TE_diff は feature_query_raw.sql の定義を予測SQLでも使う"""
+        import re
+
+        content = PREDICT_TE_SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
+        assert not re.search(r",\s*temp_horse_te\w*\s+as\s*\(", content), \
+            "feature_query_predict_te.sql に馬TEの CTE が定義されています（学習SQLと定義がずれる原因）"
 
     def test_predict_te_sql_uses_entity_te_daily(self):
         content = PREDICT_TE_SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
@@ -2926,16 +2931,6 @@ class TestPredictTeSqlTemplate:
         assert "range between" not in content.lower(), \
             "feature_query_predict_te.sql に RANGE BETWEEN 窓関数が残っています（パフォーマンス問題の原因）"
 
-    def test_predict_te_sql_horse_diff_summary_has_all_avg_columns(self):
-        content = PREDICT_TE_SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
-        for col in (
-            "horse_course_type_te_diff_avg",
-            "horse_venue_te_diff_avg",
-            "horse_wcc_te_diff_avg",
-            "horse_course_type_te_diff_rank_avg",
-            "horse_wcc_te_diff_rank_avg",
-        ):
-            assert col in content, f"diff_summary 列 '{col}' が見つかりません"
 
 
 class TestGeneratePredictQuery:
@@ -2961,10 +2956,11 @@ class TestGeneratePredictQuery:
         pipeline = FeaturePipeline("test-project")
         sql = pipeline.generate_predict_query("2026-06-14")
         # TE ブロックの RANGE BETWEEN が除去されているか確認
-        # （temp_global_mean_te 以降、temp_horse_distance_base より前）
+        # （temp_global_mean_te 以降、馬自身TE temp_horse_te_pre より前。馬TEは学習SQLと同じ定義: Issue #463）
         te_start = sql.find("temp_global_mean_te")
-        dist_base_start = sql.find("temp_horse_distance_base")
-        te_section = sql[te_start:dist_base_start]
+        horse_te_start = sql.find(",temp_horse_te_pre as (")
+        assert 0 < te_start < horse_te_start
+        te_section = sql[te_start:horse_te_start]
         assert "range between" not in te_section.lower(), \
             "予測クエリの TE セクションに RANGE BETWEEN が残っています"
 
@@ -3014,6 +3010,29 @@ class TestGeneratePredictQuery:
         pipeline = FeaturePipeline("test-project")
         sql = pipeline.generate_query("2026-06-01", "2026-06-14")
         assert self._undefined_cte_refs(sql) == []
+
+    @staticmethod
+    def _cte_body(sql: str, name: str) -> str:
+        """CTE `name` の定義本文（次の CTE 定義の直前まで）を返す"""
+        import re
+
+        m = re.search(rf",{name} as \(", sql)
+        assert m, f"CTE {name} が見つかりません"
+        nxt = re.compile(r"\n,[a-z_][a-z0-9_]* as \(").search(sql, m.end())
+        return sql[m.start():nxt.start() if nxt else len(sql)]
+
+    @patch("src.ml.features.feature_pipeline.bigquery.Client")
+    def test_predict_query_horse_te_same_as_training(self, mock_bq):
+        """Issue #463: 予測SQLの馬TE・TE_diff は学習SQLと同じ定義（過去走の時系列平均）で計算する"""
+        pipeline = FeaturePipeline("test-project")
+        predict_sql = pipeline.generate_predict_query("2026-06-14")
+        train_sql = pipeline.generate_query("2026-06-14", "2026-06-14")
+        for cte in ("temp_horse_te_pre", "temp_horse_te", "temp_horse_te_diff_pre", "temp_horse_te_diff_summary"):
+            assert predict_sql.count(f",{cte} as (") == 1, f"{cte} が予測SQLで1回だけ定義されていません"
+            assert self._cte_body(predict_sql, cte) == self._cte_body(train_sql, cte)
+        assert "rows between unbounded preceding and 1 preceding" in self._cte_body(
+            predict_sql, "temp_horse_te_diff_summary"
+        )
 
     def test_undefined_cte_detector_catches_missing_definition(self):
         sql = "with a as (select 1), b as (select * from a) select * from b left join c on true"
