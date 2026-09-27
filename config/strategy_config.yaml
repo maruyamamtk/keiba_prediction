@@ -1,10 +1,10 @@
-expected_return_threshold: 1.8106284452111994
+expected_return_threshold: 1.8826200698323525
 prob_weight_r: 1.0
 budget_per_race: 2000
 min_bet_amount: 100
-min_prob_threshold: 0.20052695240029547
-top_n: 6
-max_wide_odds: 13.102842036833184
+min_prob_threshold: 0.2471754918735998
+top_n: 4
+max_wide_odds: null
 use_harville: false
 gamma: 1.0
 enabled_bet_types:
@@ -12,14 +12,14 @@ enabled_bet_types:
 - wide
 - umaren
 optimization:
-  last_run: '2026-09-08T23:27:28'
+  last_run: '2026-09-28T00:44:06'
   method: optuna
   metric: recovery_rate
   n_trials: 500
-  start_date: '2026-04-18'
-  end_date: '2026-07-16'
-  recovery_rate: 162.78
-  hit_rate: 15.61
-  max_drawdown: 14.18
-  total_bets: 378
+  start_date: '2026-05-02'
+  end_date: '2026-07-30'
+  recovery_rate: 201.61
+  hit_rate: 18.3
+  max_drawdown: 16.85
+  total_bets: 317
   min_prob_threshold_floor: 0.1

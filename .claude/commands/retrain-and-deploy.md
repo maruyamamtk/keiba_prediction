@@ -77,12 +77,19 @@ train/valid/testの3分割にし、testを学習・検証のどちらにも使�
     --model-path gs://keiba-prediction-1768734113-keiba-models/lgbm_ranker_multi/$(date +%Y%m%d)/lgbm_ranker_multi_$(date +%Y%m%d).txt \
     --start-date <training_period.test_from> \
     --end-date <test_fromの89日後> \
-    --n-trials 500
+    --n-trials 500 \
+    --min-total-bets 300 \
+    --min-prob-threshold-floor 0.1
 ```
+
+- `--min-prob-threshold-floor 0.1` は必須。下限なしだと低確率・高配当馬狙いの解が選ばれ、
+  最適化期間では高回収率でもホールドアウトで崩壊する（2026-09-28: 最適化274%→ホールドアウト42.2%/DD133.9%。
+  0.1 版は 166.6%/DD13.6%）。`monthly_retrain.py` も既定で 0.1 を渡す。
 
 - `--min-total-bets`（デフォルト600）は約6ヶ月の期間を前提とした値（Issue #399）。上記の
   期間が数ヶ月に満たない場合は、期間の長さに応じて `--min-total-bets` を明示的に下げること
   （デフォルトのままだとほぼ全試行が制約落ちする）。
+- `--min-total-bets 300` は90日の期間に合わせた値（`monthly_retrain.py` と同じ按分）。
 - 最適化対象は `expected_return_threshold` / `top_n` / `min_prob_threshold` / `max_wide_odds`。
   `prob_weight_r` は 1.0 固定（校正後は odds × prob がそのまま真の EV のため純 EV 順が正解）。
 - 結果は `config/strategy_config.yaml` に自動反映されます。`prob_weight_r: 1.0` であることを確認。
