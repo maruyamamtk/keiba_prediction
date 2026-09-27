@@ -40,6 +40,8 @@ TE_DAILY_SQL_TEMPLATE_PATH = Path(__file__).parent / "te_daily_query.sql"
 PREDICT_TE_SQL_TEMPLATE_PATH = Path(__file__).parent / "feature_query_predict_te.sql"
 
 # generate_predict_query() で使用する文字列置換マーカー
+# START〜END の範囲が feature_query_predict_te.sql に差し替わる。範囲外のCTEから範囲内だけにある
+# CTEを参照すると予測SQLが未定義エラーになる（Issue #460）。tests で静的に検証している。
 _TE_BLOCK_START = "/* TEスムージング用グローバル平均（全期間3着以内率） */"
 _TE_BLOCK_END = "\n/* 馬の距離帯別・距離別 TE 計算の元データ"
 

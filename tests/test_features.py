@@ -251,7 +251,7 @@ class TestSQLTemplate:
         """グローバル平均がrace_resultsから計算されること（Issue #270）"""
         content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
         global_mean_section = content[
-            content.find("temp_global_mean_te"): content.find("temp_te_history_base")
+            content.find("temp_global_mean_te as ("): content.find("temp_jockey_te_pre as (")
         ]
         assert "raw.race_results" in global_mean_section, (
             "temp_global_mean_te で raw.race_results が参照されていません"
@@ -2981,6 +2981,44 @@ class TestGeneratePredictQuery:
         with pytest.raises(ValueError):
             pipeline.generate_predict_query("not-a-date")
 
+    @staticmethod
+    def _undefined_cte_refs(sql: str) -> list[str]:
+        """FROM/JOIN で参照しているのに、それより前で CTE として定義されていない名前を返す"""
+        import re
+
+        sql = re.sub(r"/\*.*?\*/", "", sql, flags=re.S)
+        sql = re.sub(r"--[^\n]*", "", sql)
+        sql = re.sub(r"extract\s*\([^)]*\)", "", sql, flags=re.I)
+        defined_at = {
+            m.group(1).lower(): m.start()
+            for m in re.finditer(r"(?:\bwith|,)\s*([a-z_][a-z0-9_]*)\s+as\s*\(", sql, flags=re.I)
+        }
+        undefined = set()
+        for m in re.finditer(r"\b(?:from|join)\s+([a-z_][a-z0-9_]*)\b(?!\s*\.)", sql, flags=re.I):
+            name = m.group(1).lower()
+            if name in ("unnest", "select"):
+                continue
+            if name not in defined_at or defined_at[name] > m.start():
+                undefined.add(name)
+        return sorted(undefined)
+
+    @patch("src.ml.features.feature_pipeline.bigquery.Client")
+    def test_generate_predict_query_has_no_undefined_cte(self, mock_bq):
+        """Issue #460: TEブロック外から TEブロック内だけの CTE を参照すると予測SQLが未定義エラーになる"""
+        pipeline = FeaturePipeline("test-project")
+        sql = pipeline.generate_predict_query("2026-06-14")
+        assert self._undefined_cte_refs(sql) == []
+
+    @patch("src.ml.features.feature_pipeline.bigquery.Client")
+    def test_generate_query_has_no_undefined_cte(self, mock_bq):
+        pipeline = FeaturePipeline("test-project")
+        sql = pipeline.generate_query("2026-06-01", "2026-06-14")
+        assert self._undefined_cte_refs(sql) == []
+
+    def test_undefined_cte_detector_catches_missing_definition(self):
+        sql = "with a as (select 1), b as (select * from a) select * from b left join c on true"
+        assert self._undefined_cte_refs(sql) == ["c"]
+
 
 class TestRunTeDaily:
     """run_te_daily() のモックテスト"""
@@ -3185,25 +3223,27 @@ class TestJockeyHorseComboFeature:
         content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
         change_start = content.find("temp_jockey_change as (")
         # 次のCTEを探す
-        change_end = content.find("/* 調教師 Target Encoding", change_start)
+        change_end = content.find("/* 母馬（繁殖牝馬）競走実績特徴量", change_start)
         change_section = content[change_start:change_end]
-        assert "lag(b.jockey_code, 1)" in change_section, "prev1_jockey_code の LAG がありません"
-        assert "lag(b.jockey_code, 2)" in change_section, "prev2_jockey_code の LAG がありません"
-        assert "lag(b.jockey_code, 3)" in change_section, "prev3_jockey_code の LAG がありません"
-        assert "partition by b.horse_id order by b.race_date" in change_section, \
+        assert "lag(jockey_code, 1)" in change_section, "prev1_jockey_code の LAG がありません"
+        assert "lag(jockey_code, 2)" in change_section, "prev2_jockey_code の LAG がありません"
+        assert "lag(jockey_code, 3)" in change_section, "prev3_jockey_code の LAG がありません"
+        assert "partition by horse_id order by race_date" in change_section, \
             "LAGのウィンドウが horse_id パーティション + race_date ORDER でありません"
 
-    def test_sql_jockey_change_has_jockey_te_join(self):
-        """temp_jockey_change が temp_jockey_te_pre を INNER JOIN して jockey_te を取得すること"""
+    def test_sql_jockey_change_computes_jockey_te(self):
+        """temp_jockey_change が jockey_te を自前で計算し、TEブロック内の temp_jockey_te_pre を参照しないこと（Issue #460）"""
         content = SQL_TEMPLATE_PATH.read_text(encoding="utf-8")
         change_start = content.find("temp_jockey_change as (")
-        change_end = content.find("/* 調教師 Target Encoding", change_start)
+        change_end = content.find("/* 母馬（繁殖牝馬）競走実績特徴量", change_start)
         change_section = content[change_start:change_end]
-        assert "inner join temp_jockey_te_pre as p" in change_section, \
-            "temp_jockey_te_pre への INNER JOIN がありません"
-        assert "p.jockey_te as cur_jockey_te" in change_section, \
+        assert "join temp_jockey_te_pre" not in change_section and "from temp_jockey_te_pre" not in change_section, \
+            "予測SQLでは temp_jockey_te_pre が差し替えで消えるため参照できません"
+        assert "partition by b.jockey_code" in change_section, \
+            "騎手TEのウィンドウがありません"
+        assert "jockey_te as cur_jockey_te" in change_section, \
             "cur_jockey_te がありません"
-        assert "lag(p.jockey_te, 1)" in change_section, \
+        assert "lag(jockey_te, 1)" in change_section, \
             "prev_jockey_te の LAG がありません"
 
     def test_sql_final_select_has_all_new_features(self):
