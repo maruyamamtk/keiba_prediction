@@ -490,11 +490,15 @@ class JRDBDownloader:
 
         Returns:
             データタイプごとのダウンロード結果
+
+        Raises:
+            RuntimeError: データタイプ一覧を取得できなかった場合（認証エラー等）。
+                空結果で返すと呼び出し側が「失敗0件=成功」と誤判定するため例外にする。
         """
         datatypes = self.get_available_datatypes()
         if not datatypes:
             logger.error("データタイプの取得に失敗しました")
-            return {}
+            raise RuntimeError("JRDBデータタイプの取得に失敗しました（dataindex.html 取得失敗の可能性）")
 
         logger.info(f"利用可能なデータタイプ: {', '.join(datatypes)}")
 

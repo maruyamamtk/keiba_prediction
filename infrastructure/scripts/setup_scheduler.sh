@@ -195,7 +195,7 @@ log_info "権限設定が完了しました"
 # ========================================
 
 # ジョブ作成/更新の共通関数
-# 引数: job_name schedule uri [deadline] [message_body]
+# 引数: job_name schedule uri [deadline] [message_body] [min_backoff] [max_backoff]
 # --message-body に直接 JSON を渡すとシェルの引用符処理で }} が混入するため、
 # 一時ファイル経由の --message-body-from-file を使用する。
 create_or_update_job() {
@@ -204,6 +204,8 @@ create_or_update_job() {
     local uri="$3"
     local deadline="${4:-900s}"
     local message_body="$5"
+    local min_backoff="${6:-5s}"
+    local max_backoff="${7:-300s}"
     if [ -z "${message_body}" ]; then
         # bash 3.2 (macOSデフォルトの/bin/bash) と 5.x で ${5:-{}} 系の展開結果が
         # 異なる（3.2は"{\}"のように余分なバックスラッシュが残る）ため、
@@ -232,8 +234,8 @@ create_or_update_job() {
             --oidc-token-audience="${SERVICE_URL}" \
             --attempt-deadline="${deadline}" \
             --max-retry-attempts=3 \
-            --min-backoff=5s \
-            --max-backoff=300s \
+            --min-backoff="${min_backoff}" \
+            --max-backoff="${max_backoff}" \
             --quiet
 
         log_info "ジョブを更新しました: ${job_name}"
@@ -252,8 +254,8 @@ create_or_update_job() {
             --oidc-token-audience="${SERVICE_URL}" \
             --attempt-deadline="${deadline}" \
             --max-retry-attempts=3 \
-            --min-backoff=5s \
-            --max-backoff=300s \
+            --min-backoff="${min_backoff}" \
+            --max-backoff="${max_backoff}" \
             --quiet
 
         log_info "ジョブを作成しました: ${job_name}"
@@ -266,12 +268,18 @@ create_or_update_job() {
 log_info "Cloud Schedulerジョブを設定しています..."
 
 # 4-1. データロードジョブ（daily-data-pipeline）
+# JRDBの一時障害（2026-10-23/24 に dataindex.html が数時間 401）を乗り切るため
+# バックオフを10分〜60分に広げる。3回リトライで AM 6:10 / 6:30 / 7:10 頃に再試行され、
+# AM 7:45 の te-daily-batch より前に完了できる。
 log_info "--- データロードジョブの設定 ---"
 create_or_update_job \
     "${LOAD_JOB_NAME}" \
     "${LOAD_SCHEDULE}" \
     "${LOAD_TARGET_URI}" \
-    "900s"
+    "900s" \
+    "" \
+    "600s" \
+    "3600s"
 
 # 4-2. 予測ジョブ（race-day-predict）
 # attempt-deadline は Cloud Run タイムアウト(900s)より短く設定し競合を回避

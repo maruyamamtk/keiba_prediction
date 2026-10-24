@@ -8,7 +8,7 @@
 
 | ジョブ名 | スケジュール (JST) | cron式 | ターゲットエンドポイント | 用途 |
 |---------|-----------------|--------|----------------------|------|
-| `daily-data-pipeline` | 毎日 AM 6:00 | `0 6 * * *` | `POST /api/v1/load/daily/async` | JRDBデータロード |
+| `daily-data-pipeline` | 毎日 AM 6:00 | `0 6 * * *` | `POST /api/v1/load/daily` | JRDBデータロード |
 | `te-daily-batch` | 毎日 AM 7:45 | `45 7 * * *` | `POST /api/v1/features/te-daily` | entity_te_daily 計算・追記（予測高速化） |
 | `race-day-predict` | 毎日 AM 8:00 | `0 8 * * *` | `POST /api/v1/predict/daily` | レース予測・BQ/GCS保存 |
 | `race-day-odds-scrape` | 毎日 AM 8:15 | `15 8 * * *` | `POST /api/v1/odds/scrape` | netkeibaオッズ取得 |
@@ -24,7 +24,7 @@
 **全ジョブ共通設定:**
 - 認証: OIDCトークン（`keiba-pipeline-sa` サービスアカウント）
 - タイムアウト: 900秒（15分）
-- リトライ: 最大3回、バックオフ 5秒〜300秒
+- リトライ: 最大3回、バックオフ 5秒〜300秒（`daily-data-pipeline` のみ 10分〜60分。下記参照）
 - タイムゾーン: Asia/Tokyo
 
 ---
@@ -43,6 +43,8 @@
 3. BigQueryへMERGE/UPSERTロード（`raw.load_history` で重複スキップ）
 4. 成績欠損チェック（Issue #440）: 7〜35日前の開催日で `race_results` が不完全（IDM NULL率20%超＝速報版のまま、または成績行なし）な日を検知し、SECをJRDBから再取得→再ロード（1回あたり古い順に最大5日）。再取得に失敗した日があれば `partial`（JRDBにSECがない開催中止日は失敗扱いにしない）。修復結果は月次再学習の `training_data` 全期間再生成で反映される
 5. 特徴量生成（`features.training_data` 更新）
+
+**リトライ（PR #468）**: JRDBのデータ一覧（`dataindex.html`）を取得できない場合（401等）は HTTP 500 を返す。バックオフ 10分〜60分・最大3回で、AM 6:10 / 6:30 / 7:10 頃に再試行される（AM 7:45 の `te-daily-batch` より前）。以前は空振りでも `success` を返していたため、当日のレースが未ロードのまま推論0件になった（2026-10-23/24）。
 
 **リクエストボディ**: `{}` （空ボディ、当日日付を自動使用）
 
