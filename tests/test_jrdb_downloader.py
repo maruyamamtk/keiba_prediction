@@ -7,6 +7,7 @@ Issue #53: JRDBダウンローダーのコンテナ化
 
 import os
 import tempfile
+import urllib.error
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -269,6 +270,18 @@ class TestDownloadFromDateWithEndDate:
 
         # 240701 と 241201 はダウンロードされない（end_date=240630 を超えている）
         assert result.total_files == 2  # 240101, 240601 のみ
+
+    @patch("urllib.request.urlopen")
+    def test_download_all_from_date_raises_when_dataindex_unauthorized(self, mock_urlopen):
+        """dataindex.html が401等で取得できない場合、空結果ではなく例外を送出すること"""
+        mock_urlopen.side_effect = urllib.error.HTTPError(
+            JRDBDownloader.JRDB_DATAINDEX_URL, 401, "Unauthorized", {}, None
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            downloader = JRDBDownloader("user", "pass", Path(tmpdir))
+            with pytest.raises(RuntimeError, match="データタイプの取得に失敗"):
+                downloader.download_all_from_date("240101", "240630")
 
     @patch.object(JRDBDownloader, "download_from_date")
     @patch.object(JRDBDownloader, "get_available_datatypes")
